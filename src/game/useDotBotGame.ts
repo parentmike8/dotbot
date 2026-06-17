@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } 
 import { defaultGameConfig } from "./config";
 import { miniCityBlockMap } from "./content/miniCityBlock";
 import { DotBotSimulation } from "./simulation";
-import { getKeyboardVector, mergeMoveVectors } from "./input";
+import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
 import { clamp, normalizeInputVector } from "./math";
 import { PixiGameRenderer } from "./renderer/PixiGameRenderer";
 import type { GameSnapshot, Vec2 } from "./types";
@@ -36,6 +36,16 @@ export function useDotBotGame() {
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
   const [debugVisible, setDebugVisible] = useState(false);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
+
+  const resetJoystick = useCallback(() => {
+    joystickRef.current = emptyJoystick;
+    setJoystickView(emptyJoystick);
+  }, []);
+
+  const clearMovementInput = useCallback(() => {
+    keysRef.current.clear();
+    resetJoystick();
+  }, [resetJoystick]);
 
   useEffect(() => {
     let disposed = false;
@@ -135,20 +145,50 @@ export function useDotBotGame() {
         return;
       }
 
-      keysRef.current.add(event.code);
+      if (movementKeyCodes.has(event.code)) {
+        event.preventDefault();
+        keysRef.current.add(event.code);
+      }
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      keysRef.current.delete(event.code);
+      if (movementKeyCodes.has(event.code)) {
+        event.preventDefault();
+        keysRef.current.delete(event.code);
+      }
+    };
+
+    const onPointerRelease = (event: globalThis.PointerEvent) => {
+      if (joystickRef.current.pointerId === event.pointerId) {
+        resetJoystick();
+      }
+    };
+
+    const onWindowBlur = () => {
+      clearMovementInput();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        clearMovementInput();
+      }
     };
 
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("pointerup", onPointerRelease);
+    window.addEventListener("pointercancel", onPointerRelease);
+    window.addEventListener("blur", onWindowBlur);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       disposed = true;
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("pointerup", onPointerRelease);
+      window.removeEventListener("pointercancel", onPointerRelease);
+      window.removeEventListener("blur", onWindowBlur);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       resizeObserver?.disconnect();
 
       if (frameRef.current !== null) {
@@ -160,7 +200,7 @@ export function useDotBotGame() {
       rendererRef.current = null;
       simulationRef.current = null;
     };
-  }, []);
+  }, [clearMovementInput, resetJoystick]);
 
   const queueDash = useCallback(() => {
     dashQueuedRef.current = true;
@@ -191,6 +231,7 @@ export function useDotBotGame() {
   const joystickHandlers = useMemo(
     () => ({
       onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
+        event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
         const origin = {
           x: event.clientX,
@@ -207,6 +248,7 @@ export function useDotBotGame() {
         setJoystickView(next);
       },
       onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
+        event.preventDefault();
         const state = joystickRef.current;
 
         if (!state.active || state.pointerId !== event.pointerId) {
@@ -217,16 +259,25 @@ export function useDotBotGame() {
       },
       onPointerUp: (event: PointerEvent<HTMLDivElement>) => {
         if (joystickRef.current.pointerId === event.pointerId) {
-          joystickRef.current = emptyJoystick;
-          setJoystickView(emptyJoystick);
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+
+          resetJoystick();
         }
       },
-      onPointerCancel: () => {
-        joystickRef.current = emptyJoystick;
-        setJoystickView(emptyJoystick);
+      onPointerCancel: (event: PointerEvent<HTMLDivElement>) => {
+        if (joystickRef.current.pointerId === event.pointerId) {
+          resetJoystick();
+        }
+      },
+      onLostPointerCapture: (event: PointerEvent<HTMLDivElement>) => {
+        if (joystickRef.current.pointerId === event.pointerId) {
+          resetJoystick();
+        }
       },
     }),
-    [updateJoystick],
+    [resetJoystick, updateJoystick],
   );
 
   return {

@@ -1,6 +1,8 @@
 import { add, normalizeInputVector, zeroVec } from "./math";
 import type { InputCommand, Vec2 } from "./types";
 
+export const movementKeyCodes = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+
 export function createEmptyInputCommand(): InputCommand {
   return {
     move: zeroVec(),
