@@ -212,6 +212,46 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("consumes a downed hostile bot from a forgiving hover overlap", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 135, y: 180 } }),
+      enemySpawn({
+        position: { x: 100, y: 180 },
+        state: "downed",
+        shields: 0,
+        inventoryDots: 1,
+      }),
+    ]);
+
+    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    runTicks(simulation, 12);
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("consumed");
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(1);
+    simulation.dispose();
+  });
+
+  it("does not consume a downed hostile bot from merely nearby", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 146, y: 180 } }),
+      enemySpawn({
+        position: { x: 100, y: 180 },
+        state: "downed",
+        shields: 0,
+        inventoryDots: 1,
+      }),
+    ]);
+
+    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    runTicks(simulation, 12);
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(0);
+    simulation.dispose();
+  });
+
   it("lets alive bots pass over downed bots without being blocked", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 80, y: 180 } }),

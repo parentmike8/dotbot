@@ -676,7 +676,8 @@ function separateCircleFromRect(position: Vec2, radius: number, wall: { x: numbe
 }
 
 function canCoverDownedBot(actor: InternalBot, target: InternalBot, minimumTolerance: number): boolean {
-  return distance(actor.position, target.position) <= Math.max(minimumTolerance, actor.radius);
+  const downedFootprintRadius = target.radius * 0.55;
+  return distance(actor.position, target.position) <= Math.max(minimumTolerance, actor.radius + downedFootprintRadius);
 }
 
 function makeAiTarget(position: Vec2, stopDistance: number, slowDistance: number): AiTarget {
