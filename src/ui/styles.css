@@ -1,0 +1,656 @@
+:root {
+  color: #111111;
+  background: #ffffff;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+button {
+  font: inherit;
+}
+
+.app-shell {
+  width: 100%;
+  height: 100%;
+  background: #ffffff;
+}
+
+.game-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #ffffff;
+  touch-action: none;
+  user-select: none;
+}
+
+.game-canvas-host {
+  position: absolute;
+  inset: 0;
+}
+
+.game-canvas-host canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hud {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.top-left {
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  left: max(22px, calc(env(safe-area-inset-left) + 16px));
+  display: grid;
+  gap: 10px;
+}
+
+.top-right {
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  right: max(16px, env(safe-area-inset-right));
+  width: 184px;
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.bottom-right {
+  position: absolute;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  pointer-events: auto;
+}
+
+.dot-dock {
+  position: absolute;
+  left: 50%;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  height: 62px;
+  min-width: 258px;
+  transform: translateX(-50%);
+  border: 2px solid #111111;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.dock-slot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 100%;
+  border-right: 1px solid #c9ccd1;
+}
+
+.dock-slot:last-child {
+  border-right: 0;
+}
+
+.dock-slot::before {
+  content: "";
+  width: 38px;
+  height: 38px;
+  border: 2px dashed #111111;
+  border-radius: 999px;
+  opacity: 0.82;
+}
+
+.dock-slot.filled::before {
+  border-style: solid;
+  border-color: #c7cbd1;
+}
+
+.dock-dot {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+}
+
+.loadout-stack {
+  display: grid;
+  gap: 12px;
+  padding: 3px 5px 3px 2px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.loadout-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  height: 28px;
+}
+
+.loadout-bot {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background:
+    conic-gradient(
+      #111111 0 50deg,
+      transparent 50deg 68deg,
+      #111111 68deg 118deg,
+      transparent 118deg 138deg,
+      #111111 138deg 188deg,
+      transparent 188deg 207deg,
+      #111111 207deg 257deg,
+      transparent 257deg 277deg,
+      #111111 277deg 327deg,
+      transparent 327deg 360deg
+    );
+}
+
+.loadout-bot::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #111111;
+}
+
+.loadout-bot::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border: 1px solid #111111;
+  border-radius: 999px;
+  background: var(--loadout-color);
+}
+
+.loadout-shields {
+  display: flex;
+  gap: 5px;
+}
+
+.shield-pill {
+  width: 19px;
+  height: 10px;
+  border: 1.5px solid #111111;
+  border-radius: 4px;
+  background: #ffffff;
+  transform: skewX(-8deg);
+}
+
+.shield-pill.filled {
+  background: #111111;
+}
+
+.panel {
+  min-width: 168px;
+  padding: 10px 12px;
+  border: 1px solid #111111;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111111;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.panel-title {
+  margin-bottom: 5px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  line-height: 1.45;
+}
+
+.muted {
+  color: #6b7280;
+}
+
+.dot-list {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-height: 20px;
+}
+
+.mini-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 1px solid #111111;
+}
+
+.mini-map {
+  position: relative;
+  width: 184px;
+  height: 132px;
+  overflow: hidden;
+  border: 2px solid #111111;
+  border-radius: 14px;
+  background:
+    linear-gradient(90deg, transparent 0 22px, rgba(17, 17, 17, 0.28) 22px 23px, transparent 23px 48px),
+    linear-gradient(0deg, transparent 0 28px, rgba(17, 17, 17, 0.2) 28px 29px, transparent 29px 52px),
+    #ffffff;
+  box-shadow: 0 0 0 1px rgba(17, 17, 17, 0.08) inset;
+}
+
+.mini-map::before {
+  content: "";
+  position: absolute;
+  inset: 11px;
+  border: 1px solid rgba(17, 17, 17, 0.38);
+  background:
+    linear-gradient(90deg, transparent 0 34%, rgba(17, 17, 17, 0.34) 34% calc(34% + 1px), transparent calc(34% + 1px)),
+    linear-gradient(90deg, transparent 0 67%, rgba(17, 17, 17, 0.3) 67% calc(67% + 1px), transparent calc(67% + 1px)),
+    linear-gradient(0deg, transparent 0 43%, rgba(17, 17, 17, 0.28) 43% calc(43% + 1px), transparent calc(43% + 1px));
+}
+
+.mini-map-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 1px solid #111111;
+  border-radius: 999px;
+  z-index: 1;
+}
+
+.mini-map-player {
+  left: 76px;
+  top: 56px;
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  background: #ffffff;
+  box-shadow: 0 0 0 4px #2f80ed inset;
+}
+
+.mini-map-blue {
+  left: 46px;
+  top: 31px;
+  background: #2f80ed;
+}
+
+.mini-map-green {
+  right: 29px;
+  top: 45px;
+  background: #27ae60;
+}
+
+.mini-map-yellow {
+  left: 73px;
+  bottom: 33px;
+  background: #f2c94c;
+}
+
+.mini-map-purple {
+  left: 30px;
+  bottom: 24px;
+  background: #9b51e0;
+}
+
+.mini-map-radar {
+  position: absolute;
+  right: -24px;
+  bottom: -24px;
+  width: 82px;
+  height: 82px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, #111111 0 5px, transparent 6px),
+    repeating-radial-gradient(circle, transparent 0 16px, rgba(17, 17, 17, 0.78) 17px 19px, transparent 20px 26px);
+}
+
+.scan-button {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #111111;
+  pointer-events: auto;
+}
+
+.scan-button::before,
+.scan-button::after {
+  content: "";
+  position: absolute;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.scan-button::before {
+  inset: 20px;
+  border: 2px dashed #111111;
+  opacity: 0.88;
+}
+
+.scan-button::after {
+  inset: 36px;
+  background: #111111;
+}
+
+.scan-button.ready {
+  box-shadow: 0 0 0 5px rgba(47, 128, 237, 0.14);
+}
+
+.scan-corners {
+  position: absolute;
+  inset: 18px;
+}
+
+.scan-corners::before {
+  content: "";
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(#111111, #111111) left top / 12px 2px no-repeat,
+    linear-gradient(#111111, #111111) left top / 2px 12px no-repeat,
+    linear-gradient(#111111, #111111) right top / 12px 2px no-repeat,
+    linear-gradient(#111111, #111111) right top / 2px 12px no-repeat,
+    linear-gradient(#111111, #111111) left bottom / 12px 2px no-repeat,
+    linear-gradient(#111111, #111111) left bottom / 2px 12px no-repeat,
+    linear-gradient(#111111, #111111) right bottom / 12px 2px no-repeat,
+    linear-gradient(#111111, #111111) right bottom / 2px 12px no-repeat;
+}
+
+.scan-core {
+  position: absolute;
+  inset: 31px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background: #ffffff;
+  z-index: 1;
+}
+
+.scan-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #111111;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 800;
+  z-index: 2;
+}
+
+.action-button {
+  width: min(148px, 36vw);
+  min-height: 42px;
+  border: 1px solid #111111;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111111;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.action-button:disabled {
+  color: #9ca3af;
+  border-color: #c7cbd1;
+}
+
+.joystick {
+  position: absolute;
+  left: max(18px, env(safe-area-inset-left));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  width: 132px;
+  height: 132px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.66);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.joystick::before,
+.joystick::after {
+  content: "";
+  position: absolute;
+  inset: 15px;
+  border: 1px dashed #c3c6cb;
+  border-radius: 999px;
+}
+
+.joystick::after {
+  inset: 45px;
+  border-style: solid;
+  border-color: #111111;
+}
+
+.joystick-thumb {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 34px;
+  height: 34px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background: #ffffff;
+  transform: translate(calc(-50% + var(--jx, 0px)), calc(-50% + var(--jy, 0px)));
+}
+
+.help {
+  position: absolute;
+  left: 50%;
+  bottom: max(92px, calc(env(safe-area-inset-bottom) + 92px));
+  width: min(430px, calc(100vw - 192px));
+  transform: translateX(-50%);
+  padding: 9px 11px;
+  border: 1px solid #111111;
+  background: rgba(255, 255, 255, 0.86);
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+  display: none;
+}
+
+.status-panel {
+  display: none;
+}
+
+.loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #ffffff;
+  color: #111111;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 680px) {
+  .top-left {
+    top: max(12px, env(safe-area-inset-top));
+    left: max(16px, calc(env(safe-area-inset-left) + 12px));
+    gap: 8px;
+  }
+
+  .top-right {
+    top: max(12px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+    width: 142px;
+    gap: 6px;
+  }
+
+  .bottom-right {
+    right: max(10px, env(safe-area-inset-right));
+    bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .panel {
+    min-width: 138px;
+    padding: 8px 9px;
+    font-size: 11px;
+    line-height: 1.25;
+  }
+
+  .loadout-stack {
+    gap: 9px;
+  }
+
+  .loadout-row {
+    gap: 8px;
+    height: 25px;
+  }
+
+  .loadout-bot {
+    width: 25px;
+    height: 25px;
+  }
+
+  .loadout-bot::before {
+    inset: 4px;
+  }
+
+  .loadout-bot::after {
+    inset: 7px;
+  }
+
+  .loadout-shields {
+    gap: 4px;
+  }
+
+  .shield-pill {
+    width: 16px;
+    height: 9px;
+    border-radius: 3px;
+  }
+
+  .status-panel {
+    display: none;
+  }
+
+  .mini-map {
+    width: 142px;
+    height: 104px;
+    border-radius: 12px;
+  }
+
+  .mini-map-radar {
+    right: -22px;
+    bottom: -22px;
+    width: 66px;
+    height: 66px;
+  }
+
+  .action-button {
+    width: 116px;
+    min-height: 40px;
+    font-size: 11px;
+  }
+
+  .scan-button {
+    width: 64px;
+    height: 64px;
+  }
+
+  .scan-button::before {
+    inset: 14px;
+  }
+
+  .scan-button::after {
+    inset: 26px;
+  }
+
+  .scan-corners {
+    inset: 13px;
+  }
+
+  .scan-core {
+    inset: 22px;
+  }
+
+  .dot-dock {
+    left: calc(50% + 18px);
+    bottom: max(12px, env(safe-area-inset-bottom));
+    height: 48px;
+    min-width: 148px;
+    border-radius: 13px;
+  }
+
+  .dock-slot {
+    width: 37px;
+  }
+
+  .dock-slot::before {
+    width: 28px;
+    height: 28px;
+  }
+
+  .dock-dot {
+    width: 23px;
+    height: 23px;
+  }
+
+  .joystick {
+    left: max(12px, env(safe-area-inset-left));
+    bottom: max(12px, env(safe-area-inset-bottom));
+    width: 96px;
+    height: 96px;
+  }
+
+  .joystick::before {
+    inset: 11px;
+  }
+
+  .joystick::after {
+    inset: 32px;
+  }
+
+  .help {
+    display: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .shield-pill {
+    width: 14px;
+  }
+}
