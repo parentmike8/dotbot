@@ -26,17 +26,276 @@ body {
   overflow: hidden;
 }
 
+button {
+  font: inherit;
+}
+
 .app-shell {
-  display: grid;
+  position: relative;
   width: 100%;
   height: 100%;
-  place-items: center;
+  overflow: hidden;
+  background: #ffffff;
+  touch-action: none;
+  user-select: none;
+}
+
+.game-canvas {
+  position: absolute;
+  inset: 0;
   background: #ffffff;
 }
 
-.app-shell h1 {
-  margin: 0;
+.game-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hud {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.hud-top-left {
+  top: max(14px, env(safe-area-inset-top));
+  left: max(14px, env(safe-area-inset-left));
+}
+
+.hud-top-right {
+  top: max(14px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+}
+
+.bot-readout,
+.dot-count,
+.debug-panel {
+  border: 1px solid #111111;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 0 rgba(17, 17, 17, 0.08);
+}
+
+.bot-readout {
+  display: grid;
+  min-width: 136px;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.shield-row {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.shield {
+  width: 28px;
+  height: 12px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.shield.filled {
+  background: #111111;
+}
+
+.status-line {
+  min-height: 15px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.dot-count {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 62px;
+  gap: 9px;
+  padding: 9px 11px;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.dot-count-mark {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background: #f2c94c;
+}
+
+.coverage-meter {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  bottom: max(102px, calc(env(safe-area-inset-bottom) + 96px));
+  width: min(280px, calc(100vw - 48px));
+  height: 10px;
+  transform: translateX(-50%);
+  border: 1px solid #111111;
+  background: rgba(255, 255, 255, 0.86);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.coverage-meter span {
+  display: block;
+  height: 100%;
+  background: #111111;
+}
+
+.touch-controls {
+  position: absolute;
+  z-index: 8;
+  inset-inline: 0;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  padding: 0 max(18px, env(safe-area-inset-right)) 0 max(18px, env(safe-area-inset-left));
+  pointer-events: none;
+}
+
+.joystick {
+  position: relative;
+  width: 118px;
+  height: 118px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.joystick::before {
+  content: "";
+  position: absolute;
+  inset: 31px;
+  border: 1px dashed #111111;
+  border-radius: 999px;
+  opacity: 0.5;
+}
+
+.joystick-knob {
+  position: absolute;
+  top: 38px;
+  left: 38px;
+  width: 38px;
+  height: 38px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 10px #ff3b6b;
+  will-change: transform;
+}
+
+.joystick.active {
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.dash-button {
+  position: relative;
+  width: 92px;
+  height: 92px;
+  border: 2px solid #111111;
+  border-radius: 999px;
+  background:
+    conic-gradient(#111111 calc(var(--dash-progress) * 1turn), #ffffff 0),
+    #ffffff;
   color: #111111;
-  font-size: 24px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.dash-button::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 999px;
+  background: #ffffff;
+  z-index: 0;
+}
+
+.dash-button {
+  isolation: isolate;
+}
+
+.dash-button > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dash-button:disabled {
+  color: #747980;
+}
+
+.dash-button:disabled::before {
+  background: #f8f8f8;
+}
+
+.debug-panel {
+  position: absolute;
+  z-index: 10;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(124px, calc(env(safe-area-inset-bottom) + 124px));
+  min-width: 156px;
+  padding: 10px 12px;
+  color: #111111;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .touch-controls {
+    opacity: 0.32;
+    transition: opacity 160ms ease;
+  }
+
+  .touch-controls:hover,
+  .touch-controls:focus-within {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 620px) {
+  .bot-readout {
+    min-width: 118px;
+    padding: 9px 10px;
+  }
+
+  .shield {
+    width: 24px;
+  }
+
+  .dot-count {
+    min-width: 54px;
+  }
+
+  .joystick {
+    width: 106px;
+    height: 106px;
+  }
+
+  .joystick-knob {
+    top: 34px;
+    left: 34px;
+    width: 34px;
+    height: 34px;
+  }
+
+  .dash-button {
+    width: 82px;
+    height: 82px;
+    font-size: 12px;
+  }
 }
