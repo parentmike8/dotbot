@@ -1,9 +1,7 @@
-import { GameCanvas } from "../game/GameCanvas";
-
 export function App() {
   return (
     <main className="app-shell">
-      <GameCanvas />
+      <h1>DotBot</h1>
     </main>
   );
 }

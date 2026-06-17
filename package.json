@@ -9,8 +9,6 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
-    "@dimforge/rapier2d-compat": "^0.19.3",
-    "pixi.js": "^8.14.3",
     "react": "^19.2.1",
     "react-dom": "^19.2.1"
   },
