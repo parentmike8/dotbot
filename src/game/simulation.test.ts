@@ -168,6 +168,45 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("consumes a downed hostile bot when standing over its footprint", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 122, y: 180 } }),
+      enemySpawn({
+        position: { x: 100, y: 180 },
+        state: "downed",
+        shields: 0,
+        inventoryDots: 1,
+      }),
+    ]);
+
+    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    runTicks(simulation, 12);
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("consumed");
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(1);
+    simulation.dispose();
+  });
+
+  it("lets alive bots pass over downed bots without being blocked", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 80, y: 180 } }),
+      enemySpawn({
+        position: { x: 128, y: 180 },
+        state: "downed",
+        shields: 0,
+        inventoryDots: 0,
+      }),
+    ]);
+
+    simulation.applyInput({ move: { x: 1, y: 0 }, dash: false });
+    runTicks(simulation, 32);
+
+    const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
+    expect(player?.position.x).toBeGreaterThan(128);
+    simulation.dispose();
+  });
+
   it("revives a downed friendly bot and spends one Dot", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 }, inventoryDots: 1 }),
@@ -184,6 +223,25 @@ describe("DotBotSimulation", () => {
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.state).toBe("alive");
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(1);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(0);
+    simulation.dispose();
+  });
+
+  it("revives a downed friendly bot when standing over its footprint", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 122, y: 180 }, inventoryDots: 1 }),
+      allySpawn({
+        position: { x: 100, y: 180 },
+        state: "downed",
+        shields: 0,
+      }),
+    ]);
+
+    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    runTicks(simulation, 12);
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "ally")?.state).toBe("alive");
     expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(0);
     simulation.dispose();
   });

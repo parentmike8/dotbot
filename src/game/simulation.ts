@@ -483,7 +483,7 @@ export class DotBotSimulation {
 
     for (const downed of downedBots) {
       const coveringBot = aliveBots.find(
-        (bot) => bot.id !== downed.id && distance(bot.position, downed.position) <= this.config.coverCenterTolerance,
+        (bot) => bot.id !== downed.id && canCoverDownedBot(bot, downed, this.config.coverCenterTolerance),
       );
       const coverageKey = `downed:${downed.id}`;
 
@@ -588,8 +588,8 @@ export class DotBotSimulation {
 
     if (state === "downed") {
       bot.body.setEnabled(true);
-      bot.collider.setEnabled(true);
       bot.collider.setSensor(true);
+      bot.collider.setEnabled(false);
       return;
     }
 
@@ -667,4 +667,8 @@ function separateCircleFromRect(position: Vec2, radius: number, wall: { x: numbe
   }
 
   return { x: position.x, y: wall.y + wall.h + radius };
+}
+
+function canCoverDownedBot(actor: InternalBot, target: InternalBot, minimumTolerance: number): boolean {
+  return distance(actor.position, target.position) <= Math.max(minimumTolerance, actor.radius);
 }
