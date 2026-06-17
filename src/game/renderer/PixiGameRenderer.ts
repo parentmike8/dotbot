@@ -186,16 +186,34 @@ export class PixiGameRenderer {
       const angleStart = start + index * (segment + gap);
       const angleEnd = angleStart + segment;
       const filled = index < bot.shields;
-      this.dynamicGraphics
-        .arc(bot.position.x, bot.position.y, bot.radius + 6, angleStart, angleEnd)
-        .stroke({ color: filled ? color : 0x111111, width: filled ? 6 : 2, alpha: filled ? 1 : 0.35 });
+      this.drawArcStroke(bot.position, bot.radius + 6, angleStart, angleEnd, {
+        color: filled ? color : 0x111111,
+        width: filled ? 6 : 2,
+        alpha: filled ? 1 : 0.35,
+      });
     }
   }
 
   private drawProgressRing(center: Vec2, radius: number, progress: number, color: number, width: number): void {
     const clamped = clamp01(progress);
+    this.drawArcStroke(center, radius, -Math.PI / 2, -Math.PI / 2 + clamped * Math.PI * 2, {
+      color,
+      width,
+      alpha: 0.95,
+    });
+  }
+
+  private drawArcStroke(
+    center: Vec2,
+    radius: number,
+    startAngle: number,
+    endAngle: number,
+    stroke: { color: number; width: number; alpha: number },
+  ): void {
     this.dynamicGraphics
-      .arc(center.x, center.y, radius, -Math.PI / 2, -Math.PI / 2 + clamped * Math.PI * 2)
-      .stroke({ color, width, alpha: 0.95 });
+      .beginPath()
+      .moveTo(center.x + Math.cos(startAngle) * radius, center.y + Math.sin(startAngle) * radius)
+      .arc(center.x, center.y, radius, startAngle, endAngle)
+      .stroke(stroke);
   }
 }
