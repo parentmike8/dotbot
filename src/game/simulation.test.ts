@@ -94,6 +94,28 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("keeps an alive bot outside thin interior walls", async () => {
+    const wallX = 220;
+    const simulation = await DotBotSimulation.create({
+      map: {
+        ...makeMap([playerSpawn({ position: { x: 160, y: 180 } })]),
+        walls: [...bounds(500, 360), { id: "thin-wall", x: wallX, y: 80, w: 12, h: 220 }],
+      },
+      config: {
+        ...testConfig,
+        dashDurationMs: 260,
+        dashSpeed: 900,
+      },
+    });
+
+    simulation.applyInput({ move: { x: 1, y: 0 }, dash: true });
+    runTicks(simulation, 90);
+
+    const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
+    expect(player?.position.x).toBeLessThanOrEqual(wallX - defaultGameConfig.botRadius + 1);
+    simulation.dispose();
+  });
+
   it("captures a covered Dot and adds it to inventory", async () => {
     const simulation = await makeSimulation(
       [playerSpawn({ position: { x: 100, y: 100 } })],

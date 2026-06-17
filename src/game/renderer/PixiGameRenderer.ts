@@ -143,26 +143,24 @@ export class PixiGameRenderer {
 
   private drawBotBody(bot: DotBotEntity, snapshot: GameSnapshot): void {
     const color = colorToNumber(bot.color);
-    const radius = bot.state === "downed" ? bot.radius * 0.72 : bot.radius;
+    const coreRadius = bot.state === "downed" ? bot.radius * 0.34 : bot.radius * 0.4;
     const alpha = bot.state === "downed" ? 0.72 : 1;
-
-    this.dynamicGraphics.circle(bot.position.x, bot.position.y, radius).fill({ color: 0xffffff, alpha });
-    this.dynamicGraphics.circle(bot.position.x, bot.position.y, radius).stroke({ color, width: bot.state === "downed" ? 4 : 5, alpha });
 
     if (bot.state === "alive") {
       this.drawShieldSegments(bot, color);
-      this.dynamicGraphics.circle(bot.position.x, bot.position.y, bot.radius * 0.32).fill({ color, alpha: 0.92 });
-      this.dynamicGraphics.circle(bot.position.x, bot.position.y, bot.radius * 0.32).stroke({ color: 0x111111, width: 1.5 });
     } else {
-      this.dynamicGraphics.circle(bot.position.x, bot.position.y, radius * 0.5).stroke({ color: 0x111111, width: 2, alpha: 0.65 });
+      this.drawShieldSegments(bot, 0x111111);
     }
 
+    this.dynamicGraphics.circle(bot.position.x, bot.position.y, coreRadius).fill({ color, alpha: bot.state === "downed" ? 0.28 : 0.95 });
+    this.dynamicGraphics.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: 0x111111, width: 2, alpha });
+
     if (bot.dashActiveMs > 0) {
-      this.dynamicGraphics.circle(bot.position.x, bot.position.y, bot.radius + 9).stroke({ color, width: 3, alpha: 0.45 });
+      this.dynamicGraphics.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color, width: 3, alpha: 0.45 });
     }
 
     if (bot.invulnerabilityMs > 0 && bot.state === "alive") {
-      this.dynamicGraphics.circle(bot.position.x, bot.position.y, bot.radius + 13).stroke({ color: 0x111111, width: 2, alpha: 0.18 });
+      this.dynamicGraphics.circle(bot.position.x, bot.position.y, bot.radius - 3).stroke({ color: 0x111111, width: 2, alpha: 0.18 });
     }
 
     const coverage = snapshot.coverages.find((item) => item.targetId === bot.id && item.kind !== "capture");
@@ -172,24 +170,27 @@ export class PixiGameRenderer {
         bot.radius + 15,
         coverage.progressMs / coverage.durationMs,
         coverage.kind === "revive" ? 0x2f80ed : 0xeb5757,
-        5,
+        4,
       );
     }
   }
 
   private drawShieldSegments(bot: DotBotEntity, color: number): void {
     const start = -Math.PI / 2;
-    const gap = 0.2;
+    const gap = 0.24;
     const segment = (Math.PI * 2 - gap * 3) / 3;
+    const shieldRadius = bot.radius * 0.78;
+    const filledWidth = bot.state === "downed" ? 2 : 5;
+    const emptyWidth = 2;
 
     for (let index = 0; index < bot.maxShields; index += 1) {
       const angleStart = start + index * (segment + gap);
       const angleEnd = angleStart + segment;
       const filled = index < bot.shields;
-      this.drawArcStroke(bot.position, bot.radius + 6, angleStart, angleEnd, {
+      this.drawArcStroke(bot.position, shieldRadius, angleStart, angleEnd, {
         color: filled ? color : 0x111111,
-        width: filled ? 6 : 2,
-        alpha: filled ? 1 : 0.35,
+        width: filled ? filledWidth : emptyWidth,
+        alpha: filled ? 1 : 0.3,
       });
     }
   }

@@ -133,6 +133,7 @@ export class DotBotSimulation {
     this.applyMovement();
 
     this.world.step();
+    this.resolveWallPenetration();
     this.syncPhysicsPositions();
     this.resolveCombat();
     this.resolveDotCapture(dtMs);
@@ -331,6 +332,43 @@ export class DotBotSimulation {
         x: clamp(translation.x, this.config.botRadius, this.map.width - this.config.botRadius),
         y: clamp(translation.y, this.config.botRadius, this.map.height - this.config.botRadius),
       };
+    }
+  }
+
+  private resolveWallPenetration(): void {
+    for (const bot of this.bots.values()) {
+      if (bot.state !== "alive") {
+        continue;
+      }
+
+      let position = bot.body.translation();
+
+      for (let iteration = 0; iteration < 3; iteration += 1) {
+        let moved = false;
+
+        for (const wall of this.map.walls) {
+          const next = separateCircleFromRect(position, bot.radius, wall);
+
+          if (next.x !== position.x || next.y !== position.y) {
+            position = next;
+            moved = true;
+          }
+        }
+
+        if (!moved) {
+          break;
+        }
+      }
+
+      const clampedPosition = {
+        x: clamp(position.x, bot.radius, this.map.width - bot.radius),
+        y: clamp(position.y, bot.radius, this.map.height - bot.radius),
+      };
+
+      if (clampedPosition.x !== bot.body.translation().x || clampedPosition.y !== bot.body.translation().y) {
+        bot.body.setTranslation(clampedPosition, true);
+        bot.body.setLinvel(zeroVec(), true);
+      }
     }
   }
 
@@ -585,4 +623,48 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     dashActiveMs: bot.dashActiveMs,
     invulnerabilityMs: bot.invulnerabilityMs,
   };
+}
+
+function separateCircleFromRect(position: Vec2, radius: number, wall: { x: number; y: number; w: number; h: number }): Vec2 {
+  const closestX = clamp(position.x, wall.x, wall.x + wall.w);
+  const closestY = clamp(position.y, wall.y, wall.y + wall.h);
+  const offset = {
+    x: position.x - closestX,
+    y: position.y - closestY,
+  };
+  const distanceSquared = offset.x * offset.x + offset.y * offset.y;
+  const radiusSquared = radius * radius;
+
+  if (distanceSquared >= radiusSquared) {
+    return position;
+  }
+
+  if (distanceSquared > 0.0001) {
+    const distanceToWall = Math.sqrt(distanceSquared);
+    const push = (radius - distanceToWall) / distanceToWall;
+    return {
+      x: position.x + offset.x * push,
+      y: position.y + offset.y * push,
+    };
+  }
+
+  const left = Math.abs(position.x - wall.x);
+  const right = Math.abs(wall.x + wall.w - position.x);
+  const top = Math.abs(position.y - wall.y);
+  const bottom = Math.abs(wall.y + wall.h - position.y);
+  const nearest = Math.min(left, right, top, bottom);
+
+  if (nearest === left) {
+    return { x: wall.x - radius, y: position.y };
+  }
+
+  if (nearest === right) {
+    return { x: wall.x + wall.w + radius, y: position.y };
+  }
+
+  if (nearest === top) {
+    return { x: position.x, y: wall.y - radius };
+  }
+
+  return { x: position.x, y: wall.y + wall.h + radius };
 }
