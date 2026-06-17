@@ -131,6 +131,30 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("holds AI bots steady while they cover Dots", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap(
+        [enemySpawn({ position: { x: 120, y: 180 } })],
+        [{ id: "dot", color: "#f2c94c", position: { x: 100, y: 180 } }],
+      ),
+      config: {
+        ...testConfig,
+        dotCaptureDurationMs: 3000,
+      },
+    });
+
+    runTicks(simulation, 110);
+    const firstHold = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.position;
+    runTicks(simulation, 30);
+    const secondHold = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.position;
+
+    expect(firstHold).toBeDefined();
+    expect(secondHold).toBeDefined();
+    expect(Math.hypot((secondHold!.x - firstHold!.x), (secondHold!.y - firstHold!.y))).toBeLessThan(1);
+    expect(simulation.getSnapshot().dots.find((dot) => dot.id === "dot")?.active).toBe(true);
+    simulation.dispose();
+  });
+
   it("turns a bot downed after a damaging Dash collision", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),

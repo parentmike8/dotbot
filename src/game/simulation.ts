@@ -48,6 +48,12 @@ type InternalDot = DotEntity;
 
 type ActiveCoverage = CoverageSnapshot;
 
+type AiTarget = {
+  position: Vec2;
+  stopDistance: number;
+  slowDistance: number;
+};
+
 type SimulationOptions = {
   map?: MapDefinition;
   config?: Partial<GameConfig>;
@@ -251,7 +257,7 @@ export class DotBotSimulation {
       }
 
       const target = this.pickBotTarget(bot, dtMs);
-      const desired = normalize(subtract(target, bot.position));
+      const desired = steerToward(bot.position, target);
       bot.desiredMove = desired;
 
       if (length(desired) > 0.05) {
@@ -260,13 +266,13 @@ export class DotBotSimulation {
     }
   }
 
-  private pickBotTarget(bot: InternalBot, dtMs: number): Vec2 {
+  private pickBotTarget(bot: InternalBot, dtMs: number): AiTarget {
     const friendlyDowned = [...this.bots.values()]
       .filter((target) => target.id !== bot.id && target.state === "downed" && areFriendly(bot, target))
       .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
 
     if (friendlyDowned && bot.inventoryDots > 0 && distance(bot.position, friendlyDowned.position) < 280) {
-      return friendlyDowned.position;
+      return makeAiTarget(friendlyDowned.position, bot.radius * 0.42, bot.radius * 3);
     }
 
     const hostileDowned = [...this.bots.values()]
@@ -274,7 +280,7 @@ export class DotBotSimulation {
       .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
 
     if (hostileDowned && distance(bot.position, hostileDowned.position) < 330) {
-      return hostileDowned.position;
+      return makeAiTarget(hostileDowned.position, bot.radius * 0.42, bot.radius * 3);
     }
 
     const dot = [...this.dots.values()]
@@ -282,7 +288,7 @@ export class DotBotSimulation {
       .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
 
     if (dot && distance(bot.position, dot.position) < 310) {
-      return dot.position;
+      return makeAiTarget(dot.position, Math.max(2, bot.radius - dot.radius - 4), bot.radius * 3.2);
     }
 
     const hostileAlive = [...this.bots.values()]
@@ -290,7 +296,7 @@ export class DotBotSimulation {
       .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
 
     if (hostileAlive && distance(bot.position, hostileAlive.position) < 380) {
-      return hostileAlive.position;
+      return makeAiTarget(hostileAlive.position, bot.radius * 1.8, bot.radius * 4);
     }
 
     bot.aiRetargetMs -= dtMs;
@@ -303,7 +309,7 @@ export class DotBotSimulation {
       bot.aiRetargetMs = 1400 + this.nextRandom() * 1500;
     }
 
-    return bot.aiWanderTarget;
+    return makeAiTarget(bot.aiWanderTarget, 48, bot.radius * 4);
   }
 
   private applyMovement(): void {
@@ -671,4 +677,24 @@ function separateCircleFromRect(position: Vec2, radius: number, wall: { x: numbe
 
 function canCoverDownedBot(actor: InternalBot, target: InternalBot, minimumTolerance: number): boolean {
   return distance(actor.position, target.position) <= Math.max(minimumTolerance, actor.radius);
+}
+
+function makeAiTarget(position: Vec2, stopDistance: number, slowDistance: number): AiTarget {
+  return {
+    position,
+    stopDistance,
+    slowDistance: Math.max(slowDistance, stopDistance + 1),
+  };
+}
+
+function steerToward(position: Vec2, target: AiTarget): Vec2 {
+  const offset = subtract(target.position, position);
+  const targetDistance = length(offset);
+
+  if (targetDistance <= target.stopDistance) {
+    return zeroVec();
+  }
+
+  const speedScale = clamp((targetDistance - target.stopDistance) / (target.slowDistance - target.stopDistance), 0, 1);
+  return scale(normalize(offset), speedScale);
 }
