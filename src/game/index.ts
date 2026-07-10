@@ -1,12 +1,12 @@
 export { DotBotSimulation } from "./simulation";
 export { defaultGameConfig } from "./config";
-export { miniCityBlockMap } from "./content/miniCityBlock";
+export { downtownMap } from "./content/downtown";
 export type {
   DotBotEntity,
   DotEntity,
   GameConfig,
   GameSnapshot,
   InputCommand,
-  MapDefinition,
+  MapDocument,
   Vec2,
 } from "./types";

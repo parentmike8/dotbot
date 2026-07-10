@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { defaultGameConfig } from "./config";
-import { miniCityBlockMap } from "./content/miniCityBlock";
+import { downtownMap } from "./content/downtown";
 import { DotBotSimulation } from "./simulation";
 import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
 import { clamp, normalizeInputVector } from "./math";
-import { PixiGameRenderer } from "./renderer/PixiGameRenderer";
+import { GameRenderer } from "./renderer/GameRenderer";
 import type { GameSnapshot, Vec2 } from "./types";
 
 type JoystickState = {
@@ -28,7 +28,7 @@ const emptyJoystick: JoystickState = {
 export function useDotBotGame() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const simulationRef = useRef<DotBotSimulation | null>(null);
-  const rendererRef = useRef<PixiGameRenderer | null>(null);
+  const rendererRef = useRef<GameRenderer | null>(null);
   const keysRef = useRef(new Set<string>());
   const joystickRef = useRef<JoystickState>(emptyJoystick);
   const dashQueuedRef = useRef(false);
@@ -67,10 +67,10 @@ export function useDotBotGame() {
       }
 
       const simulation = await DotBotSimulation.create({
-        map: miniCityBlockMap,
+        map: downtownMap,
         config: defaultGameConfig,
       });
-      const renderer = await PixiGameRenderer.create(host, miniCityBlockMap);
+      const renderer = await GameRenderer.create(host, downtownMap);
 
       if (disposed) {
         renderer.destroy();
@@ -122,6 +122,10 @@ export function useDotBotGame() {
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);
           lastHudUpdate = now;
+
+          if (import.meta.env.DEV) {
+            (window as unknown as { __dotbotSnapshot?: GameSnapshot }).__dotbotSnapshot = nextSnapshot;
+          }
         }
 
         frameRef.current = requestAnimationFrame(loop);

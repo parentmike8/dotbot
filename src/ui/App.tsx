@@ -25,6 +25,10 @@ export function App() {
       return "Capturing";
     }
 
+    if (playerCoverage?.kind === "extract") {
+      return "Extracting";
+    }
+
     if (playerCoverage?.kind === "consume") {
       return playerCoverage.actorId === player.id ? "Consuming" : "Being consumed";
     }
@@ -47,6 +51,12 @@ export function App() {
     >
       <div ref={hostRef} className="game-canvas" />
 
+      {snapshot ? (
+        <div className="hud location-label" aria-label="Current location">
+          {snapshot.locationLabel}
+        </div>
+      ) : null}
+
       <section className="hud hud-top-left" aria-label="Run status">
         <div className="bot-readout">
           <div className="shield-row" aria-label={`${player?.shields ?? 0} shields`}>
@@ -62,6 +72,10 @@ export function App() {
         <div className="dot-count">
           <span className="dot-count-mark" />
           <span>{player?.inventoryDots ?? 0}</span>
+        </div>
+        <div className="dot-count banked" aria-label="Banked dots">
+          <span className="dot-count-mark banked-mark" />
+          <span>{snapshot?.bankedDots ?? 0}</span>
         </div>
       </section>
 

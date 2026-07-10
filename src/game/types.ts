@@ -3,9 +3,187 @@ export type Vec2 = {
   y: number;
 };
 
+export type Rect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
 export type BotTeam = "player" | "ally" | "enemy";
 
 export type BotState = "alive" | "downed" | "consumed";
+
+// ---------------------------------------------------------------------------
+// Map document model
+//
+// The map is pure data. The renderer interprets it; the simulation builds
+// per-floor collision from it. Nothing visual lives outside this document.
+// ---------------------------------------------------------------------------
+
+export const OUTDOOR_FLOOR_ID = "outdoor";
+
+export type FloorLabel = "GROUND" | "B1" | "F1" | "F2" | "F3" | "ROOF";
+
+export type WallSegment = Rect & {
+  id: string;
+};
+
+/** A gap in a wall run, recorded so the renderer can draw door leaf + swing arc. */
+export type Doorway = {
+  id: string;
+  /** Center of the gap. */
+  x: number;
+  y: number;
+  width: number;
+  /** Direction of the wall run the doorway sits in. */
+  dir: "h" | "v";
+  /** Rendered without leaf/arc (roll-up doors, open archways). */
+  open?: boolean;
+};
+
+export type ObjectKind =
+  | "bed"
+  | "cot"
+  | "cabinet"
+  | "medicalCabinet"
+  | "desk"
+  | "chair"
+  | "table"
+  | "conferenceTable"
+  | "counter"
+  | "receptionDesk"
+  | "serverRack"
+  | "shelf"
+  | "filingCabinet"
+  | "locker"
+  | "crateStack"
+  | "workbench"
+  | "toolCabinet"
+  | "generator"
+  | "utilityBox"
+  | "vending"
+  | "fridge"
+  | "couch"
+  | "plant"
+  | "planter"
+  | "bench"
+  | "kiosk"
+  | "tree"
+  | "car"
+  | "bikeRack"
+  | "hydrant"
+  | "hvac"
+  | "skylight"
+  | "vent"
+  | "parkingStall";
+
+export type Facing = "N" | "S" | "E" | "W";
+
+export type MapObject = {
+  id: string;
+  kind: ObjectKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Which way the object faces (pillow end, chair side, …). Default "S". */
+  facing?: Facing;
+  /** Solid objects get physics colliders. Default varies by kind (see solidByDefault). */
+  solid?: boolean;
+  /** Scannable objects can later be scanned for Base unlocks. Data-only for now. */
+  scannable?: boolean;
+};
+
+export type StairLink = {
+  id: string;
+  /** Trigger + render zone. */
+  rect: Rect;
+  direction: "up" | "down";
+  toFloorId: string;
+  /** Where the bot lands on the target floor. */
+  landing: Vec2;
+};
+
+export type DotSpawn = {
+  id: string;
+  color: string;
+  position: Vec2;
+  radius?: number;
+};
+
+export type FloorPlan = {
+  /** Globally unique, e.g. "mercy:F2". The outdoor plan uses OUTDOOR_FLOOR_ID. */
+  id: string;
+  label: FloorLabel;
+  walls: WallSegment[];
+  doorways: Doorway[];
+  objects: MapObject[];
+  stairs: StairLink[];
+  dotSpawns: DotSpawn[];
+};
+
+export type BuildingKind = "hospital" | "office" | "warehouse";
+
+export type Building = {
+  id: string;
+  kind: BuildingKind;
+  name: string;
+  footprint: Rect;
+  /** Includes the GROUND floor. GROUND shares physics with the outdoor plane. */
+  floors: FloorPlan[];
+};
+
+export type Road = Rect & {
+  id: string;
+};
+
+export type ParkArea = Rect & {
+  id: string;
+};
+
+export type ExtractionPoint = {
+  id: string;
+  name: string;
+  rect: Rect;
+};
+
+export type OutdoorPlan = {
+  roads: Road[];
+  parks: ParkArea[];
+  /** Map edges plus anything outdoors that collides (hedges, low walls). */
+  walls: WallSegment[];
+  objects: MapObject[];
+  dotSpawns: DotSpawn[];
+};
+
+export type BotSpawn = {
+  id: string;
+  name: string;
+  team: BotTeam;
+  color: string;
+  position: Vec2;
+  floorId?: string;
+  state?: BotState;
+  maxShields?: number;
+  shields?: number;
+  inventoryDots?: number;
+};
+
+export type MapDocument = {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  outdoor: OutdoorPlan;
+  buildings: Building[];
+  extractionPoints: ExtractionPoint[];
+  botSpawns: BotSpawn[];
+};
+
+// ---------------------------------------------------------------------------
+// Runtime entities
+// ---------------------------------------------------------------------------
 
 export type GameEntity = {
   id: string;
@@ -18,6 +196,7 @@ export type DotBotEntity = GameEntity & {
   team: BotTeam;
   color: string;
   state: BotState;
+  floorId: string;
   maxShields: number;
   shields: number;
   inventoryDots: number;
@@ -28,57 +207,10 @@ export type DotBotEntity = GameEntity & {
 
 export type DotEntity = GameEntity & {
   color: string;
+  floorId: string;
   active: boolean;
   capturedBy?: string;
   captureProgressMs: number;
-};
-
-export type Wall = {
-  id: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-};
-
-export type MapZone = {
-  id: string;
-  kind: "road" | "building" | "room" | "park";
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  label?: string;
-};
-
-export type BotSpawn = {
-  id: string;
-  name: string;
-  team: BotTeam;
-  color: string;
-  position: Vec2;
-  state?: BotState;
-  maxShields?: number;
-  shields?: number;
-  inventoryDots?: number;
-};
-
-export type DotSpawn = {
-  id: string;
-  color: string;
-  position: Vec2;
-  radius?: number;
-};
-
-export type MapDefinition = {
-  id: string;
-  name: string;
-  width: number;
-  height: number;
-  zones: MapZone[];
-  walls: Wall[];
-  botSpawns: BotSpawn[];
-  dotSpawns: DotSpawn[];
 };
 
 export type InputCommand = {
@@ -86,7 +218,22 @@ export type InputCommand = {
   dash: boolean;
 };
 
-export type CoverageKind = "capture" | "consume" | "revive";
+export type CoverageKind = "capture" | "consume" | "revive" | "extract";
+
+export type NoiseKind = "dash" | "impact" | "stairs" | "channel";
+
+/** A sound the simulation emitted; rendered as an expanding ink ring. */
+export type NoiseEvent = {
+  id: string;
+  kind: NoiseKind;
+  position: Vec2;
+  /** Physics floor the sound originated on. */
+  floorId: string;
+  /** 0..1 — ring size, and whether the sound leaks through walls/floors. */
+  loudness: number;
+  ageMs: number;
+  ttlMs: number;
+};
 
 export type CoverageSnapshot = {
   kind: CoverageKind;
@@ -113,15 +260,22 @@ export type GameConfig = {
   coverDurationMs: number;
   respawnDelayMs: number;
   coverCenterTolerance: number;
+  stairHoldMs: number;
+  extractionDurationMs: number;
 };
 
 export type GameSnapshot = {
   timeMs: number;
   playerId: string;
-  map: MapDefinition;
+  map: MapDocument;
   bots: DotBotEntity[];
   dots: DotEntity[];
   coverages: CoverageSnapshot[];
+  noises: NoiseEvent[];
+  /** Dots banked through extraction this session. */
+  bankedDots: number;
+  /** "MERCY CLINIC / F2" indoors, map name outdoors. */
+  locationLabel: string;
   debug: {
     tickHz: number;
     tickCount: number;

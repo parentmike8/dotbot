@@ -17,4 +17,6 @@ export const defaultGameConfig: GameConfig = {
   coverDurationMs: 1850,
   respawnDelayMs: 1200,
   coverCenterTolerance: 12,
+  stairHoldMs: 280,
+  extractionDurationMs: 4000,
 };

@@ -66,6 +66,33 @@ button {
 .hud-top-right {
   top: max(14px, env(safe-area-inset-top));
   right: max(14px, env(safe-area-inset-right));
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.location-label {
+  top: max(14px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border: 1px solid #111111;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 0 rgba(17, 17, 17, 0.08);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.dot-count.banked {
+  opacity: 0.85;
+}
+
+.banked-mark {
+  background: #ffffff;
+  box-shadow: inset 0 0 0 3px #111111;
 }
 
 .bot-readout,

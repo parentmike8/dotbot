@@ -1,0 +1,196 @@
+import { describe, expect, it } from "vitest";
+import { defaultGameConfig } from "./config";
+import { downtownMap } from "./content/downtown";
+import { isGroundFloor, isSolidObject, physicsFloorId } from "./mapModel";
+import { OUTDOOR_FLOOR_ID } from "./types";
+import type { Rect, Vec2 } from "./types";
+
+/**
+ * Map validation (spec: "Dot spawn zones do not overlap walls", "Objects do
+ * not block critical paths"): flood-fill each physics floor on a coarse grid
+ * and assert every dot spawn and bot spawn is reachable from a seed point.
+ */
+
+const CELL = 8;
+const BOT_RADIUS = defaultGameConfig.botRadius;
+/** A bot must get its center within this range of a dot to capture it. */
+const CAPTURE_RANGE = BOT_RADIUS - defaultGameConfig.dotRadius - 2;
+
+type FloorWorld = {
+  floorId: string;
+  solids: Rect[];
+  seeds: Vec2[];
+  dots: Array<{ id: string; position: Vec2 }>;
+  spawns: Array<{ id: string; position: Vec2 }>;
+};
+
+function collectFloors(): FloorWorld[] {
+  const map = downtownMap;
+  const floors = new Map<string, FloorWorld>();
+  const floor = (floorId: string): FloorWorld => {
+    let world = floors.get(floorId);
+
+    if (!world) {
+      world = { floorId, solids: [], seeds: [], dots: [], spawns: [] };
+      floors.set(floorId, world);
+    }
+
+    return world;
+  };
+
+  const outdoor = floor(OUTDOOR_FLOOR_ID);
+  outdoor.solids.push(...map.outdoor.walls, ...map.outdoor.objects.filter(isSolidObject));
+  outdoor.dots.push(...map.outdoor.dotSpawns.map((spawn) => ({ id: spawn.id, position: spawn.position })));
+
+  for (const building of map.buildings) {
+    for (const plan of building.floors) {
+      const world = floor(physicsFloorId(map, plan.id));
+      world.solids.push(...plan.walls, ...plan.objects.filter(isSolidObject));
+      world.dots.push(...plan.dotSpawns.map((spawn) => ({ id: spawn.id, position: spawn.position })));
+
+      // Stair landings seed non-ground floors; GROUND floors flow from outdoors.
+      if (!isGroundFloor(plan)) {
+        for (const other of building.floors) {
+          for (const stair of other.stairs) {
+            if (stair.toFloorId === plan.id) {
+              world.seeds.push(stair.landing);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (const spawn of map.botSpawns) {
+    const world = floor(physicsFloorId(map, spawn.floorId ?? OUTDOOR_FLOOR_ID));
+    world.spawns.push({ id: spawn.id, position: spawn.position });
+
+    if (spawn.team === "player") {
+      world.seeds.push(spawn.position);
+    }
+  }
+
+  return [...floors.values()];
+}
+
+function circleClearsRects(center: Vec2, radius: number, rects: Rect[]): boolean {
+  for (const rect of rects) {
+    const dx = center.x - Math.max(rect.x, Math.min(center.x, rect.x + rect.w));
+    const dy = center.y - Math.max(rect.y, Math.min(center.y, rect.y + rect.h));
+
+    if (dx * dx + dy * dy < radius * radius) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function floodReachable(world: FloorWorld): Set<number> {
+  const cols = Math.ceil(downtownMap.width / CELL);
+  const rows = Math.ceil(downtownMap.height / CELL);
+  const cellCenter = (index: number): Vec2 => ({
+    x: (index % cols) * CELL + CELL / 2,
+    y: Math.floor(index / cols) * CELL + CELL / 2,
+  });
+  const open = (index: number): boolean => {
+    const center = cellCenter(index);
+
+    if (
+      center.x < BOT_RADIUS ||
+      center.y < BOT_RADIUS ||
+      center.x > downtownMap.width - BOT_RADIUS ||
+      center.y > downtownMap.height - BOT_RADIUS
+    ) {
+      return false;
+    }
+
+    return circleClearsRects(center, BOT_RADIUS - 1, world.solids);
+  };
+
+  const reachable = new Set<number>();
+  const queue: number[] = [];
+
+  for (const seed of world.seeds) {
+    const index = Math.floor(seed.y / CELL) * cols + Math.floor(seed.x / CELL);
+
+    if (open(index)) {
+      reachable.add(index);
+      queue.push(index);
+    }
+  }
+
+  while (queue.length > 0) {
+    const index = queue.pop()!;
+    const col = index % cols;
+
+    for (const next of [index - cols, index + cols, col > 0 ? index - 1 : -1, col < cols - 1 ? index + 1 : -1]) {
+      if (next >= 0 && next < cols * rows && !reachable.has(next) && open(next)) {
+        reachable.add(next);
+        queue.push(next);
+      }
+    }
+  }
+
+  return reachable;
+}
+
+function nearestReachableDistance(target: Vec2, reachable: Set<number>, range: number): number {
+  const cols = Math.ceil(downtownMap.width / CELL);
+  let best = Number.POSITIVE_INFINITY;
+  const span = Math.ceil((range + CELL) / CELL);
+  const baseCol = Math.floor(target.x / CELL);
+  const baseRow = Math.floor(target.y / CELL);
+
+  for (let row = baseRow - span; row <= baseRow + span; row += 1) {
+    for (let col = baseCol - span; col <= baseCol + span; col += 1) {
+      if (!reachable.has(row * cols + col)) {
+        continue;
+      }
+
+      const cx = col * CELL + CELL / 2;
+      const cy = row * CELL + CELL / 2;
+      best = Math.min(best, Math.hypot(cx - target.x, cy - target.y));
+    }
+  }
+
+  return best;
+}
+
+describe("downtown map validation", () => {
+  const worlds = collectFloors();
+
+  it("has a seed for every physics floor", () => {
+    for (const world of worlds) {
+      expect(world.seeds.length, `floor ${world.floorId} needs a seed`).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps every dot spawn capturable from reachable ground", () => {
+    for (const world of worlds) {
+      const reachable = floodReachable(world);
+
+      for (const dot of world.dots) {
+        const distance = nearestReachableDistance(dot.position, reachable, CAPTURE_RANGE);
+        expect(
+          distance,
+          `dot ${dot.id} at (${dot.position.x}, ${dot.position.y}) on ${world.floorId} is not capturable`,
+        ).toBeLessThanOrEqual(CAPTURE_RANGE);
+      }
+    }
+  });
+
+  it("keeps every bot spawn on reachable ground", () => {
+    for (const world of worlds) {
+      const reachable = floodReachable(world);
+
+      for (const spawn of world.spawns) {
+        const distance = nearestReachableDistance(spawn.position, reachable, BOT_RADIUS);
+        expect(
+          distance,
+          `bot ${spawn.id} at (${spawn.position.x}, ${spawn.position.y}) on ${world.floorId} spawns in a sealed spot`,
+        ).toBeLessThanOrEqual(BOT_RADIUS);
+      }
+    }
+  });
+});
