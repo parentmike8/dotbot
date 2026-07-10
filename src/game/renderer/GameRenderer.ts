@@ -877,7 +877,7 @@ export class GameRenderer {
     }
 
     for (const doorway of floor.doorways) {
-      this.drawDoorway(g, doorway);
+      this.drawDoorway(g, doorway, this.doorwayMode(doorway, floor, fp));
     }
 
     if (!isRoof && !isBasement) {
@@ -1006,7 +1006,51 @@ export class GameRenderer {
     this.drawStairExitHalf(g, stair);
   }
 
-  private drawDoorway(g: Graphics, doorway: Doorway): void {
+  /** Bounding box the swing arc would sweep on the default or flipped side. */
+  private swingBounds(doorway: Doorway, flipped: boolean): Rect {
+    const w = doorway.width;
+
+    if (doorway.dir === "h") {
+      return { x: doorway.x - w / 2, y: flipped ? doorway.y - w : doorway.y, w, h: w };
+    }
+
+    return { x: flipped ? doorway.x - w : doorway.x, y: doorway.y - w / 2, w, h: w };
+  }
+
+  /**
+   * Doors must not swing over a stair flight (both plan convention and
+   * clutter): flip the leaf to the other side of the wall, and if that side
+   * is also a stair or outside the building, draw a plain threshold instead.
+   */
+  private doorwayMode(doorway: Doorway, floor: FloorPlan, footprint: Rect): "swing" | "flipped" | "plain" {
+    if (doorway.open) {
+      return "swing"; // open doorways never draw a leaf anyway
+    }
+
+    const sweepsStairs = (bounds: Rect) =>
+      floor.stairs.some(
+        (stair) =>
+          bounds.x < stair.rect.x + stair.rect.w + 2 &&
+          bounds.x + bounds.w > stair.rect.x - 2 &&
+          bounds.y < stair.rect.y + stair.rect.h + 2 &&
+          bounds.y + bounds.h > stair.rect.y - 2,
+      );
+
+    if (!sweepsStairs(this.swingBounds(doorway, false))) {
+      return "swing";
+    }
+
+    const flipped = this.swingBounds(doorway, true);
+    const insideBuilding =
+      flipped.x >= footprint.x &&
+      flipped.y >= footprint.y &&
+      flipped.x + flipped.w <= footprint.x + footprint.w &&
+      flipped.y + flipped.h <= footprint.y + footprint.h;
+
+    return insideBuilding && !sweepsStairs(flipped) ? "flipped" : "plain";
+  }
+
+  private drawDoorway(g: Graphics, doorway: Doorway, mode: "swing" | "flipped" | "plain" = "swing"): void {
     const w = doorway.width;
 
     if (doorway.open) {
@@ -1023,20 +1067,32 @@ export class GameRenderer {
       return;
     }
 
+    if (mode === "plain") {
+      // Threshold only: keeps the opening readable without an arc.
+      if (doorway.dir === "h") {
+        g.moveTo(doorway.x - w / 2 + 2, doorway.y).lineTo(doorway.x + w / 2 - 2, doorway.y).stroke({ color: INK.faint, width: 1.5 });
+      } else {
+        g.moveTo(doorway.x, doorway.y - w / 2 + 2).lineTo(doorway.x, doorway.y + w / 2 - 2).stroke({ color: INK.faint, width: 1.5 });
+      }
+      return;
+    }
+
     // Architectural door swing: leaf + quarter arc from the hinge.
+    const sign = mode === "flipped" ? -1 : 1;
+
     if (doorway.dir === "h") {
       const hx = doorway.x - w / 2;
       const hy = doorway.y;
-      g.moveTo(hx, hy).lineTo(hx, hy + w).stroke({ color: INK.soft, width: 1.5 });
-      g.moveTo(hx, hy + w)
-        .arc(hx, hy, w, Math.PI / 2, 0, true)
+      g.moveTo(hx, hy).lineTo(hx, hy + sign * w).stroke({ color: INK.soft, width: 1.5 });
+      g.moveTo(hx, hy + sign * w)
+        .arc(hx, hy, w, sign * (Math.PI / 2), 0, sign > 0)
         .stroke({ color: INK.faint, width: 1.25 });
     } else {
       const hx = doorway.x;
       const hy = doorway.y - w / 2;
-      g.moveTo(hx, hy).lineTo(hx + w, hy).stroke({ color: INK.soft, width: 1.5 });
-      g.moveTo(hx + w, hy)
-        .arc(hx, hy, w, 0, Math.PI / 2)
+      g.moveTo(hx, hy).lineTo(hx + sign * w, hy).stroke({ color: INK.soft, width: 1.5 });
+      g.moveTo(hx + sign * w, hy)
+        .arc(hx, hy, w, sign > 0 ? 0 : Math.PI, Math.PI / 2, sign < 0)
         .stroke({ color: INK.faint, width: 1.25 });
     }
   }
