@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
-import { isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint } from "./mapModel";
+import { isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import type { Rect, Vec2 } from "./types";
+import type { Doorway, Rect, StairLink, Vec2 } from "./types";
 
 /**
  * Map validation (spec: "Dot spawn zones do not overlap walls", "Objects do
@@ -22,6 +22,8 @@ type FloorWorld = {
   seeds: Vec2[];
   dots: Array<{ id: string; position: Vec2 }>;
   spawns: Array<{ id: string; position: Vec2 }>;
+  stairs: StairLink[];
+  doorways: Doorway[];
 };
 
 function collectFloors(): FloorWorld[] {
@@ -31,7 +33,7 @@ function collectFloors(): FloorWorld[] {
     let world = floors.get(floorId);
 
     if (!world) {
-      world = { floorId, solids: [], seeds: [], dots: [], spawns: [] };
+      world = { floorId, solids: [], seeds: [], dots: [], spawns: [], stairs: [], doorways: [] };
       floors.set(floorId, world);
     }
 
@@ -47,6 +49,8 @@ function collectFloors(): FloorWorld[] {
       const world = floor(physicsFloorId(map, plan.id));
       world.solids.push(...plan.walls, ...plan.objects.filter(isSolidObject));
       world.dots.push(...plan.dotSpawns.map((spawn) => ({ id: spawn.id, position: spawn.position })));
+      world.stairs.push(...plan.stairs);
+      world.doorways.push(...plan.doorways);
 
       // Stair arrival points seed non-ground floors; GROUND flows from outdoors.
       if (!isGroundFloor(plan)) {
@@ -190,6 +194,45 @@ describe("downtown map validation", () => {
           distance,
           `bot ${spawn.id} at (${spawn.position.x}, ${spawn.position.y}) on ${world.floorId} spawns in a sealed spot`,
         ).toBeLessThanOrEqual(BOT_RADIUS);
+      }
+    }
+  });
+
+  it("keeps every stair entrance reachable on its floor", () => {
+    for (const world of worlds) {
+      const reachable = floodReachable(world);
+
+      for (const stair of world.stairs) {
+        const { entry } = stairHalves(stair);
+        const point = { x: entry.x + entry.w / 2, y: entry.y + entry.h / 2 };
+        const distance = nearestReachableDistance(point, reachable, BOT_RADIUS);
+        expect(
+          distance,
+          `stair ${stair.id} entry on ${world.floorId} cannot be reached`,
+        ).toBeLessThanOrEqual(BOT_RADIUS);
+      }
+    }
+  });
+
+  it("keeps every doorway usable from both sides", () => {
+    // A door is usable when a bot can stand just off the wall on either side.
+    const clearance = 38;
+
+    for (const world of worlds) {
+      const reachable = floodReachable(world);
+
+      for (const doorway of world.doorways) {
+        for (const side of [-1, 1]) {
+          const point =
+            doorway.dir === "h"
+              ? { x: doorway.x, y: doorway.y + side * clearance }
+              : { x: doorway.x + side * clearance, y: doorway.y };
+          const distance = nearestReachableDistance(point, reachable, BOT_RADIUS);
+          expect(
+            distance,
+            `doorway ${doorway.id} at (${doorway.x}, ${doorway.y}) on ${world.floorId} is blocked on one side`,
+          ).toBeLessThanOrEqual(BOT_RADIUS);
+        }
       }
     }
   });

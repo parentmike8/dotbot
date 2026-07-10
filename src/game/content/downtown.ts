@@ -171,12 +171,9 @@ function mercyClinic(): Building {
     top: [{ at: 560, w: DOOR }], // staff door into pharmacy
   });
   const groundPartitions = mergeRuns([
-    // Exam wing (west): corridor wall with a door per exam room.
-    vRun(372, 132, 288, INT, [
-      { at: 58, w: DOOR },
-      { at: 188, w: DOOR },
-    ]),
-    hRun(152, 272, 220, INT),
+    // Exam wing (west): one enclosed exam room up top, an open exam bay and
+    // the waiting area below it.
+    vRun(372, 132, 288, INT, [{ at: 58, w: DOOR }]),
     // Ward / pharmacy divider (with a connecting door) and their south walls.
     vRun(612, 132, 208, INT, [{ at: 130, w: DOOR }]),
     hRun(380, 332, 240, INT, [{ at: 70, w: DOOR }]),
@@ -197,7 +194,7 @@ function mercyClinic(): Building {
       obj("bed", 162, 150, 48, 96, { facing: "N", scannable: true }),
       obj("medicalCabinet", 296, 140, 44, 24, { scannable: true }),
       obj("chair", 320, 220, 22, 22),
-      // Exam room 2 (SW)
+      // Open exam bay (SW), part of the waiting area.
       obj("bed", 162, 296, 48, 96, { facing: "N", scannable: true }),
       obj("medicalCabinet", 296, 288, 44, 24),
       obj("chair", 320, 368, 22, 22),
@@ -205,14 +202,13 @@ function mercyClinic(): Building {
       obj("bed", 436, 144, 48, 96, { facing: "N", scannable: true }),
       obj("bed", 496, 144, 48, 96, { facing: "N" }),
       obj("bed", 556, 144, 48, 96, { facing: "N" }),
-      obj("cabinet", 578, 260, 26, 44),
       obj("chair", 420, 272, 22, 22),
       // Pharmacy (NE): shelving on the east wall, dispensing counter south.
       obj("shelf", 786, 150, 26, 120, { scannable: true }),
       obj("locker", 636, 140, 26, 38, { scannable: true }),
       obj("counter", 700, 286, 90, 22),
-      // Lobby: reception + waiting row.
-      obj("receptionDesk", 430, 396, 150, 26, { facing: "S", scannable: true }),
+      // Lobby: reception faces the entrance, clear of the stair corridor.
+      obj("receptionDesk", 420, 470, 150, 26, { facing: "S", scannable: true }),
       obj("chair", 190, 470, 22, 22),
       obj("chair", 234, 470, 22, 22),
       obj("chair", 278, 470, 22, 22),
@@ -295,32 +291,48 @@ function mercyClinic(): Building {
 }
 
 // ---------------------------------------------------------------------------
-// Civic Tower — office, NE quadrant. Footprint 1460,120 640x480.
-// GROUND: lobby, server room, conference room, open office, stair core.
-// F2: desk floor, break room, records room, cores down and up to roof.
-// ROOF: parapet, bulkhead, HVAC, skylights.
+// Civic Tower — office, NE quadrant. Footprint 1460,120 640x480. Five levels:
+// GROUND lobby/mailroom/conference, F1 open office, F2 server & records,
+// F3 executive floor, walkable ROOF. Two scissor-stair shafts alternate:
+// shaft A serves GROUND↔F1 and F2↔F3, shaft B serves F1↔F2 and F3↔ROOF,
+// so climbing the tower means crossing every floor.
 // ---------------------------------------------------------------------------
 
 function civicTower(): Building {
   const fp = { x: 1460, y: 120, w: 640, h: 480 };
+
+  // Shaft A (north) and shaft B (south), stacked along the west wall.
+  const CORE_A = { x: 1472, y: 132, w: 88, h: 160 };
+  const CORE_B = { x: 1472, y: 324, w: 88, h: 152 };
+  // Door sits in the run's south half going up, north half coming down.
+  const UP_DOOR = 104;
+  const DOWN_DOOR = 8;
+
+  const coreAWalls = (doorAt: number): RunResult =>
+    mergeRuns([vRun(1560, 132, 160, INT, [{ at: doorAt, w: DOOR }]), hRun(1472, 292, 96, INT)]);
+  const coreBWalls = (doorAt: number): RunResult =>
+    mergeRuns([
+      hRun(1472, 316, 96, INT),
+      vRun(1560, 316, 160, INT, [{ at: doorAt, w: DOOR }]),
+      hRun(1472, 476, 96, INT),
+    ]);
+  // Enclosed room in the SE corner, reused on F1/F2/F3.
+  const seRoomWalls = (): RunResult =>
+    mergeRuns([vRun(1942, 380, 208, INT, [{ at: 70, w: DOOR }]), hRun(1942, 372, 146, INT)]);
+  // Enclosed room center-north, used on GROUND (mail) and F2 (servers).
+  const northRoomWalls = (): RunResult =>
+    mergeRuns([vRun(1652, 132, 188, INT), vRun(1900, 132, 188, INT), hRun(1652, 312, 256, INT, [{ at: 120, w: DOOR }])]);
 
   const groundShell = perimeter(fp, {
     left: [{ at: 210, w: DOUBLE_DOOR }], // main entrance from 3rd Ave
     bottom: [{ at: 440, w: DOOR }], // side exit to Main St
   });
   const groundPartitions = mergeRuns([
-    // Stair core NW: a long run climbing north along the west wall.
-    vRun(1560, 132, 160, INT, [{ at: 104, w: DOOR }]),
-    hRun(1472, 292, 96, INT),
-    // Server room, north center.
-    vRun(1652, 132, 168, INT),
-    vRun(1860, 132, 168, INT),
-    hRun(1652, 292, 216, INT, [{ at: 78, w: DOOR }]),
-    // Conference room NE.
-    vRun(1922, 132, 188, INT, [{ at: 78, w: DOOR }]),
-    hRun(1922, 312, 166, INT),
-    // Lobby / open office divider.
-    hRun(1652, 372, 60, INT),
+    coreAWalls(UP_DOOR),
+    northRoomWalls(),
+    // Conference room NE, entered from the open office to the south.
+    vRun(1922, 132, 188, INT),
+    hRun(1922, 312, 166, INT, [{ at: 60, w: DOOR }]),
   ]);
 
   const ground: FloorPlan = {
@@ -329,16 +341,16 @@ function civicTower(): Building {
     walls: [...groundShell.walls, ...groundPartitions.walls],
     doorways: [...groundShell.doorways, ...groundPartitions.doorways],
     objects: [
-      // Server room racks.
-      obj("serverRack", 1672, 142, 36, 70, { facing: "S", scannable: true }),
-      obj("serverRack", 1722, 142, 36, 70, { facing: "S" }),
-      obj("serverRack", 1772, 142, 36, 70, { facing: "S" }),
-      obj("utilityBox", 1826, 146, 24, 20),
+      // Mailroom (center north): lockers, sorting counter.
+      obj("locker", 1700, 140, 26, 38, { scannable: true }),
+      obj("locker", 1734, 140, 26, 38),
+      obj("locker", 1768, 140, 26, 38),
+      obj("counter", 1676, 180, 26, 90),
+      obj("utilityBox", 1856, 146, 24, 20),
       // Conference room.
       obj("conferenceTable", 1958, 180, 104, 62, { scannable: true }),
-      // Lobby.
-      obj("receptionDesk", 1530, 300, 118, 26, { facing: "W", scannable: true }),
-      obj("bench", 1484, 460, 24, 92, { facing: "E" }),
+      // Lobby: reception faces the entrance, clear of the stair corridor.
+      obj("receptionDesk", 1500, 470, 130, 26, { facing: "N", scannable: true }),
       obj("plant", 1480, 566, 20, 20),
       obj("plant", 1630, 566, 20, 20),
       // Open office SE.
@@ -350,42 +362,21 @@ function civicTower(): Building {
       obj("plant", 2056, 552, 20, 20),
     ],
     stairs: [
-      {
-        id: "civic-stair-up",
-        rect: { x: 1472, y: 132, w: 88, h: 160 },
-        direction: "up",
-        toFloorId: "civic:F2",
-        bottom: "S",
-      },
+      { id: "civic-g-up", rect: CORE_A, direction: "up", toFloorId: "civic:F1", bottom: "S" },
     ],
     dotSpawns: [dot(DOT.scanner, 1780, 250), dot(DOT.decoy, 2020, 545)],
   };
 
-  const f2Shell = perimeter(fp);
-  const f2Partitions = mergeRuns([
-    // Down shaft (same as the GROUND core), entered at its top end.
-    vRun(1560, 132, 160, INT, [{ at: 8, w: DOOR }]),
-    hRun(1472, 292, 96, INT),
-    // Up shaft to the roof, just south of it, entered at its bottom end.
-    hRun(1472, 316, 96, INT),
-    vRun(1560, 316, 160, INT, [{ at: 104, w: DOOR }]),
-    hRun(1472, 476, 96, INT),
-    // Break room, center south.
-    vRun(1650, 400, 188, INT),
-    hRun(1650, 392, 240, INT, [{ at: 46, w: DOOR }]),
-    vRun(1882, 400, 188, INT),
-    // Records room SE.
-    vRun(1942, 380, 208, INT, [{ at: 70, w: DOOR }]),
-    hRun(1942, 372, 146, INT),
-  ]);
+  const f1Shell = perimeter(fp);
+  const f1Partitions = mergeRuns([coreAWalls(DOWN_DOOR), coreBWalls(UP_DOOR), seRoomWalls()]);
 
-  const f2: FloorPlan = {
-    id: "civic:F2",
-    label: "F2",
-    walls: [...f2Shell.walls, ...f2Partitions.walls],
-    doorways: [...f2Shell.doorways, ...f2Partitions.doorways],
+  const f1: FloorPlan = {
+    id: "civic:F1",
+    label: "F1",
+    walls: [...f1Shell.walls, ...f1Partitions.walls],
+    doorways: [...f1Shell.doorways, ...f1Partitions.doorways],
     objects: [
-      // Desk floor, two rows facing each other.
+      // Open desk floor, two rows facing each other.
       obj("desk", 1680, 150, 96, 46, { facing: "S" }),
       obj("desk", 1820, 150, 96, 46, { facing: "S", scannable: true }),
       obj("desk", 1960, 150, 96, 46, { facing: "S" }),
@@ -393,42 +384,91 @@ function civicTower(): Building {
       obj("desk", 1820, 244, 96, 46, { facing: "N" }),
       obj("desk", 1960, 244, 96, 46, { facing: "N" }),
       obj("plant", 2062, 330, 20, 20),
-      // Break room.
-      obj("vending", 1678, 540, 38, 34, { facing: "N", scannable: true }),
-      obj("fridge", 1728, 540, 34, 34, { facing: "N", scannable: true }),
-      obj("table", 1762, 448, 72, 72),
-      obj("couch", 1662, 430, 40, 92, { facing: "E", scannable: true }),
-      // Records room: shelving along the north and east walls.
-      obj("shelf", 1976, 388, 100, 26),
-      obj("shelf", 2056, 440, 26, 110),
-      obj("filingCabinet", 1962, 548, 30, 26),
+      // Break corner SW.
+      obj("vending", 1500, 548, 38, 34, { facing: "N", scannable: true }),
+      obj("fridge", 1548, 548, 34, 34, { facing: "N", scannable: true }),
+      obj("table", 1630, 480, 70, 70),
+      obj("couch", 1480, 500, 40, 88, { facing: "E", scannable: true }),
+      // Meeting room SE.
+      obj("conferenceTable", 1990, 410, 80, 48),
+      obj("filingCabinet", 2050, 548, 30, 26),
     ],
     stairs: [
-      {
-        id: "civic-stair-down",
-        rect: { x: 1472, y: 132, w: 88, h: 160 },
-        direction: "down",
-        toFloorId: OUTDOOR_FLOOR_ID,
-        bottom: "S",
-      },
-      {
-        id: "civic-stair-roof",
-        rect: { x: 1472, y: 324, w: 88, h: 152 },
-        direction: "up",
-        toFloorId: "civic:ROOF",
-        bottom: "S",
-      },
+      { id: "civic-f1-down", rect: CORE_A, direction: "down", toFloorId: OUTDOOR_FLOOR_ID, bottom: "S" },
+      { id: "civic-f1-up", rect: CORE_B, direction: "up", toFloorId: "civic:F2", bottom: "S" },
     ],
-    dotSpawns: [dot(DOT.decoy, 1732, 480), dot(DOT.scanner, 2000, 470)],
+    dotSpawns: [dot(DOT.decoy, 1750, 320), dot(DOT.shield, 2010, 505)],
+  };
+
+  const f2Shell = perimeter(fp);
+  const f2Partitions = mergeRuns([coreAWalls(UP_DOOR), coreBWalls(DOWN_DOOR), northRoomWalls(), seRoomWalls()]);
+
+  const f2: FloorPlan = {
+    id: "civic:F2",
+    label: "F2",
+    walls: [...f2Shell.walls, ...f2Partitions.walls],
+    doorways: [...f2Shell.doorways, ...f2Partitions.doorways],
+    objects: [
+      // Server room (center north).
+      obj("serverRack", 1672, 142, 36, 70, { facing: "S", scannable: true }),
+      obj("serverRack", 1722, 142, 36, 70, { facing: "S" }),
+      obj("serverRack", 1772, 142, 36, 70, { facing: "S" }),
+      obj("serverRack", 1822, 142, 36, 70, { facing: "S" }),
+      obj("generator", 1840, 240, 60, 44, { scannable: true }),
+      obj("utilityBox", 1866, 146, 24, 20),
+      // Records room SE.
+      obj("shelf", 1980, 396, 100, 26),
+      obj("shelf", 2056, 450, 26, 110),
+      obj("filingCabinet", 1960, 548, 30, 26),
+      // Storage overflow on the open floor.
+      obj("crateStack", 1700, 480, 44, 44),
+      obj("utilityBox", 1660, 540, 26, 22),
+      obj("plant", 2062, 330, 20, 20),
+    ],
+    stairs: [
+      { id: "civic-f2-down", rect: CORE_B, direction: "down", toFloorId: "civic:F1", bottom: "S" },
+      { id: "civic-f2-up", rect: CORE_A, direction: "up", toFloorId: "civic:F3", bottom: "S" },
+    ],
+    dotSpawns: [dot(DOT.scanner, 1740, 260), dot(DOT.regen, 2010, 505)],
+  };
+
+  const f3Shell = perimeter(fp);
+  const f3Partitions = mergeRuns([
+    coreAWalls(DOWN_DOOR),
+    coreBWalls(UP_DOOR),
+    // Executive office NE.
+    vRun(1892, 132, 168, INT, [{ at: 60, w: DOOR }]),
+    hRun(1892, 292, 196, INT),
+    seRoomWalls(),
+  ]);
+
+  const f3: FloorPlan = {
+    id: "civic:F3",
+    label: "F3",
+    walls: [...f3Shell.walls, ...f3Partitions.walls],
+    doorways: [...f3Shell.doorways, ...f3Partitions.doorways],
+    objects: [
+      // Executive office NE.
+      obj("desk", 1960, 160, 96, 46, { facing: "S", scannable: true }),
+      obj("couch", 2044, 220, 36, 72, { facing: "W" }),
+      // Lounge on the open floor.
+      obj("couch", 1660, 180, 40, 92, { facing: "E", scannable: true }),
+      obj("table", 1745, 195, 70, 70),
+      obj("plant", 1850, 150, 20, 20),
+      // Private office SE.
+      obj("desk", 1990, 420, 96, 46, { facing: "S" }),
+      obj("filingCabinet", 2050, 548, 30, 26),
+      obj("plant", 1600, 552, 20, 20),
+    ],
+    stairs: [
+      { id: "civic-f3-down", rect: CORE_A, direction: "down", toFloorId: "civic:F2", bottom: "S" },
+      { id: "civic-f3-up", rect: CORE_B, direction: "up", toFloorId: "civic:ROOF", bottom: "S" },
+    ],
+    dotSpawns: [dot(DOT.rare, 1700, 320), dot(DOT.damage, 1980, 255)],
   };
 
   const roofShell = perimeter(fp);
-  const roofPartitions = mergeRuns([
-    // Stair bulkhead over the roof shaft, entered at its top end.
-    hRun(1472, 316, 96, INT),
-    vRun(1560, 316, 160, INT, [{ at: 8, w: DOOR }]),
-    hRun(1472, 476, 96, INT),
-  ]);
+  const roofPartitions = mergeRuns([coreBWalls(DOWN_DOOR)]);
 
   const roof: FloorPlan = {
     id: "civic:ROOF",
@@ -445,13 +485,7 @@ function civicTower(): Building {
       obj("skylight", 1950, 480, 82, 52),
     ],
     stairs: [
-      {
-        id: "civic-roof-down",
-        rect: { x: 1472, y: 324, w: 88, h: 152 },
-        direction: "down",
-        toFloorId: "civic:F2",
-        bottom: "S",
-      },
+      { id: "civic-roof-down", rect: CORE_B, direction: "down", toFloorId: "civic:F3", bottom: "S" },
     ],
     dotSpawns: [dot(DOT.rare, 2040, 546)],
   };
@@ -461,7 +495,7 @@ function civicTower(): Building {
     kind: "office",
     name: "CIVIC TOWER",
     footprint: fp,
-    floors: [ground, f2, roof],
+    floors: [ground, f1, f2, f3, roof],
   };
 }
 
@@ -489,9 +523,9 @@ function lot6Depot(): Building {
     // Workshop west.
     hRun(152, 1142, 148, INT, [{ at: 48, w: DOOR }]),
     vRun(292, 1142, 306, INT, [{ at: 108, w: DOOR }]),
-    // Office nook SE.
-    vRun(712, 1302, 146, INT, [{ at: 48, w: DOOR }]),
-    hRun(712, 1302, 176, INT),
+    // Office nook SE, entered from the loading floor to the north.
+    vRun(712, 1302, 146, INT),
+    hRun(712, 1302, 176, INT, [{ at: 60, w: DOOR }]),
   ]);
 
   const ground: FloorPlan = {
@@ -512,9 +546,8 @@ function lot6Depot(): Building {
       // Workshop.
       obj("workbench", 160, 1388, 120, 36, { facing: "N", scannable: true }),
       obj("toolCabinet", 160, 1160, 44, 28, { scannable: true }),
-      obj("crateStack", 228, 1160, 44, 44),
       // Office nook.
-      obj("desk", 752, 1330, 96, 46, { facing: "S" }),
+      obj("desk", 740, 1380, 96, 46, { facing: "N" }),
       obj("filingCabinet", 852, 1330, 30, 50),
       obj("plant", 856, 1416, 18, 18),
     ],
