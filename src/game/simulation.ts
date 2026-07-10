@@ -8,6 +8,7 @@ import {
   isSolidObject,
   locationLabel,
   physicsFloorId,
+  stairHalves,
 } from "./mapModel";
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { loadRapier } from "./rapier";
@@ -56,11 +57,11 @@ type InternalBot = DotBotEntity & {
   collider: RapierCollider;
   desiredMove: Vec2;
   lastAim: Vec2;
+  /** Position at the start of the tick, for stair midline-crossing checks. */
+  prevPosition: Vec2;
   aiWanderTarget: Vec2;
   aiRetargetMs: number;
   consumedRespawnMs: number;
-  stairHoldMs: number;
-  stairLocked: boolean;
 };
 
 type InternalDot = DotEntity;
@@ -257,11 +258,10 @@ export class DotBotSimulation {
       collider,
       desiredMove: zeroVec(),
       lastAim: { x: 1, y: 0 },
+      prevPosition: { ...spawn.position },
       aiWanderTarget: { ...spawn.position },
       aiRetargetMs: 0,
       consumedRespawnMs: 0,
-      stairHoldMs: 0,
-      stairLocked: false,
     };
 
     this.setBotPhysicsState(bot, state);
@@ -292,6 +292,11 @@ export class DotBotSimulation {
 
     this.ageNoises(dtMs);
     this.updateTimers(dtMs);
+
+    for (const bot of this.bots.values()) {
+      bot.prevPosition = { ...bot.position };
+    }
+
     this.updatePlayerIntent();
     this.updateBotAi(dtMs);
     this.applyMovement();
@@ -299,7 +304,7 @@ export class DotBotSimulation {
     this.world.step();
     this.resolveWallPenetration();
     this.syncPhysicsPositions();
-    this.resolveStairs(dtMs);
+    this.resolveStairs();
     this.resolveCombat();
     this.resolveDotCapture(dtMs);
     this.resolveDownedCoverage(dtMs);
@@ -566,49 +571,40 @@ export class DotBotSimulation {
   }
 
   /**
-   * Standing on a stair zone briefly moves the bot to the linked floor.
+   * Stairs are walk-through: the two floors share the shaft's coordinates, so
+   * crossing the run's midline (the break line on the plan) while inside the
+   * stair swaps the bot's floor mid-stride — no teleport. Walking back across
+   * the midline descends again via the paired stair on the other floor.
    * Only the player rides stairs for now; AI keeps to its own floor.
    */
-  private resolveStairs(dtMs: number): void {
+  private resolveStairs(): void {
     const player = this.bots.get("player");
 
     if (!player || player.state !== "alive") {
       return;
     }
 
-    const stairs = this.stairsByFloor.get(player.floorId) ?? [];
-    const active = stairs.find((stair) => rectContainsPoint(stair.rect, player.position));
+    for (const stair of this.stairsByFloor.get(player.floorId) ?? []) {
+      if (!rectContainsPoint(stair.rect, player.position) || !rectContainsPoint(stair.rect, player.prevPosition)) {
+        continue;
+      }
 
-    if (!active) {
-      player.stairHoldMs = 0;
-      player.stairLocked = false;
-      return;
+      const { entry, exit } = stairHalves(stair);
+
+      if (!rectContainsPoint(entry, player.prevPosition) || !rectContainsPoint(exit, player.position)) {
+        continue;
+      }
+
+      const sourceFloor = player.floorId;
+      const targetFloor = physicsFloorId(this.map, stair.toFloorId);
+      player.floorId = targetFloor;
+      player.collider.setCollisionGroups(this.interactionGroups(targetFloor));
+
+      // Stairs announce themselves on both connected floors.
+      this.emitNoise("stairs", player.position, sourceFloor, NOISE_LOUDNESS.stairs);
+      this.emitNoise("stairs", player.position, targetFloor, NOISE_LOUDNESS.stairs);
+      break;
     }
-
-    if (player.stairLocked) {
-      return;
-    }
-
-    player.stairHoldMs += dtMs;
-
-    if (player.stairHoldMs < this.config.stairHoldMs) {
-      return;
-    }
-
-    const sourceFloor = player.floorId;
-    const targetFloor = physicsFloorId(this.map, active.toFloorId);
-    player.floorId = targetFloor;
-    player.stairHoldMs = 0;
-    player.stairLocked = true;
-    player.position = { ...active.landing };
-    player.body.setTranslation(active.landing, true);
-    player.body.setLinvel(zeroVec(), true);
-    player.collider.setCollisionGroups(this.interactionGroups(targetFloor));
-
-    // Stairs announce themselves on both connected floors.
-    const stairCenter = { x: active.rect.x + active.rect.w / 2, y: active.rect.y + active.rect.h / 2 };
-    this.emitNoise("stairs", stairCenter, sourceFloor, NOISE_LOUDNESS.stairs);
-    this.emitNoise("stairs", active.landing, targetFloor, NOISE_LOUDNESS.stairs);
   }
 
   private resolveCombat(): void {
@@ -868,8 +864,7 @@ export class DotBotSimulation {
       bot.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
       bot.floorId = bot.spawnFloorId;
       bot.position = { ...bot.spawn };
-      bot.stairHoldMs = 0;
-      bot.stairLocked = false;
+      bot.prevPosition = { ...bot.spawn };
       bot.body.setEnabled(true);
       bot.collider.setEnabled(true);
       bot.collider.setCollisionGroups(this.interactionGroups(bot.spawnFloorId));

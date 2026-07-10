@@ -1,6 +1,14 @@
 import { Application, Container, Graphics, Text } from "pixi.js";
 import { clamp, clamp01, colorToNumber } from "../math";
-import { buildingContaining, classifyNoise, contextKey, isGroundFloor } from "../mapModel";
+import {
+  buildingContaining,
+  classifyNoise,
+  contextKey,
+  floorPlanById,
+  isGroundFloor,
+  resolvePlan,
+  stairHalves,
+} from "../mapModel";
 import { hasLineOfSight, visibilityPolygon, visionContext } from "../visibility";
 import { OUTDOOR_FLOOR_ID } from "../types";
 import type {
@@ -82,6 +90,9 @@ export class GameRenderer {
   private readonly visionMaskGfx = new Graphics();
   /** Always-visible layer: player, squad, noise rings, extraction pulse. */
   private readonly dynamicGfx = new Graphics();
+  /** Far half of each stair run on the active floor, drawn over the bots so
+   * they slide under the break line while changing floors. */
+  private readonly stairOverlayGfx = new Graphics();
 
   private buildingViews: BuildingView[] = [];
   private map: MapDocument;
@@ -102,6 +113,7 @@ export class GameRenderer {
       this.labelsLayer,
       this.maskedLayer,
       this.dynamicGfx,
+      this.stairOverlayGfx,
     );
   }
 
@@ -152,6 +164,24 @@ export class GameRenderer {
 
     if (player) {
       this.drawNoises(snapshot, player);
+    }
+
+    this.drawStairOverlay(player ?? null);
+  }
+
+  /** Redraw the far half of the active floor's stairs above the bot layer. */
+  private drawStairOverlay(player: DotBotEntity | null): void {
+    this.stairOverlayGfx.clear();
+
+    if (!player) {
+      return;
+    }
+
+    const planRef = resolvePlan(this.map, player.floorId, player.position);
+    const plan = planRef ? floorPlanById(this.map, planRef.planId) : null;
+
+    for (const stair of plan?.stairs ?? []) {
+      this.drawStairExitHalf(this.stairOverlayGfx, stair);
     }
   }
 
@@ -419,7 +449,15 @@ export class GameRenderer {
     }
   }
 
-  private dashedSegment(g: Graphics, x1: number, y1: number, x2: number, y2: number): void {
+  private dashedSegment(
+    g: Graphics,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    color: number = INK.soft,
+    width = 1.5,
+  ): void {
     const dash = 6;
     const gap = 4;
     const total = Math.hypot(x2 - x1, y2 - y1);
@@ -430,7 +468,7 @@ export class GameRenderer {
       const end = Math.min(d + dash, total);
       g.moveTo(x1 + ux * d, y1 + uy * d)
         .lineTo(x1 + ux * end, y1 + uy * end)
-        .stroke({ color: INK.soft, width: 1.5 });
+        .stroke({ color, width });
     }
   }
 
@@ -829,8 +867,7 @@ export class GameRenderer {
         },
       });
       tag.resolution = 2;
-      tag.anchor.set(0.5, 0);
-      tag.position.set(stair.rect.x + stair.rect.w / 2, stair.rect.y + stair.rect.h + 3);
+      this.placeStairTag(tag, stair);
       container.addChild(tag);
     }
 
@@ -855,26 +892,118 @@ export class GameRenderer {
     return container;
   }
 
+  /** Which end of the run the bot enters from on this floor. */
+  private stairEntryEnd(stair: StairLink): "N" | "S" | "E" | "W" {
+    const { entry, vertical } = stairHalves(stair);
+    const entryLow = entry.x === stair.rect.x && entry.y === stair.rect.y;
+    return vertical ? (entryLow ? "N" : "S") : entryLow ? "W" : "E";
+  }
+
+  private placeStairTag(tag: Text, stair: StairLink): void {
+    const { x, y, w, h } = stair.rect;
+    const end = this.stairEntryEnd(stair);
+
+    if (end === "N") {
+      tag.anchor.set(0.5, 1);
+      tag.position.set(x + w / 2, y - 4);
+    } else if (end === "S") {
+      tag.anchor.set(0.5, 0);
+      tag.position.set(x + w / 2, y + h + 4);
+    } else if (end === "W") {
+      tag.anchor.set(1, 0.5);
+      tag.position.set(x - 5, y + h / 2);
+    } else {
+      tag.anchor.set(0, 0.5);
+      tag.position.set(x + w + 5, y + h / 2);
+    }
+  }
+
+  private drawStairTreads(g: Graphics, half: Rect, vertical: boolean, dashed: boolean): void {
+    if (vertical) {
+      for (let ty = half.y + 12; ty < half.y + half.h - 4; ty += 12) {
+        if (dashed) {
+          this.dashedSegment(g, half.x + 3, ty, half.x + half.w - 3, ty, INK.faint, 1.25);
+        } else {
+          g.moveTo(half.x + 2, ty).lineTo(half.x + half.w - 2, ty).stroke({ color: INK.soft, width: 1.25 });
+        }
+      }
+    } else {
+      for (let tx = half.x + 12; tx < half.x + half.w - 4; tx += 12) {
+        if (dashed) {
+          this.dashedSegment(g, tx, half.y + 3, tx, half.y + half.h - 3, INK.faint, 1.25);
+        } else {
+          g.moveTo(tx, half.y + 2).lineTo(tx, half.y + half.h - 2).stroke({ color: INK.soft, width: 1.25 });
+        }
+      }
+    }
+  }
+
+  /**
+   * The half of the run beyond the break line: the flight belonging to the
+   * other floor. Drawn in the floor plan AND redrawn above the bot layer so
+   * bots crossing the break line slide underneath it.
+   */
+  private drawStairExitHalf(g: Graphics, stair: StairLink): void {
+    const { entry, exit, vertical } = stairHalves(stair);
+
+    g.rect(exit.x, exit.y, exit.w, exit.h).fill({ color: INK.fill });
+    g.rect(exit.x, exit.y, exit.w, exit.h).stroke({ color: COLOR.wall, width: 1.5 });
+    this.drawStairTreads(g, exit, vertical, true);
+
+    // Break line: the plan-convention zigzag at the cut plane.
+    if (vertical) {
+      const my = exit.y === entry.y + entry.h ? exit.y : exit.y + exit.h;
+      const { x, w } = stair.rect;
+      g.moveTo(x, my)
+        .lineTo(x + w * 0.38, my)
+        .lineTo(x + w * 0.48, my - 8)
+        .lineTo(x + w * 0.58, my + 8)
+        .lineTo(x + w * 0.68, my)
+        .lineTo(x + w, my)
+        .stroke({ color: COLOR.wall, width: 2 });
+    } else {
+      const mx = exit.x === entry.x + entry.w ? exit.x : exit.x + exit.w;
+      const { y, h } = stair.rect;
+      g.moveTo(mx, y)
+        .lineTo(mx, y + h * 0.38)
+        .lineTo(mx - 8, y + h * 0.48)
+        .lineTo(mx + 8, y + h * 0.58)
+        .lineTo(mx, y + h * 0.68)
+        .lineTo(mx, y + h)
+        .stroke({ color: COLOR.wall, width: 2 });
+    }
+  }
+
   private drawStair(g: Graphics, stair: StairLink): void {
     const { x, y, w, h } = stair.rect;
+    const { entry, vertical } = stairHalves(stair);
 
     g.rect(x, y, w, h).fill({ color: INK.fill });
     g.rect(x, y, w, h).stroke({ color: COLOR.wall, width: 2 });
 
-    // Treads.
-    for (let tx = x + 12; tx < x + w - 4; tx += 12) {
-      g.moveTo(tx, y + 2).lineTo(tx, y + h - 2).stroke({ color: INK.soft, width: 1.25 });
-    }
+    // Solid treads on this floor's side of the break line.
+    this.drawStairTreads(g, entry, vertical, false);
 
-    // Center rail + direction arrow.
-    const cy = y + h / 2;
-    g.moveTo(x + 6, cy).lineTo(x + w - 14, cy).stroke({ color: COLOR.wall, width: 2 });
+    // Travel arrow: from the entry end toward the break line.
+    const cx = entry.x + entry.w / 2;
+    const cy = entry.y + entry.h / 2;
+    const end = this.stairEntryEnd(stair);
 
-    if (stair.direction === "up") {
-      g.moveTo(x + w - 22, cy - 7).lineTo(x + w - 12, cy).lineTo(x + w - 22, cy + 7).stroke({ color: COLOR.wall, width: 2 });
+    if (vertical) {
+      const from = end === "N" ? entry.y + 10 : entry.y + entry.h - 10;
+      const to = end === "N" ? entry.y + entry.h - 8 : entry.y + 8;
+      const sign = to > from ? 1 : -1;
+      g.moveTo(cx, from).lineTo(cx, to).stroke({ color: COLOR.wall, width: 2 });
+      g.moveTo(cx - 6, to - sign * 8).lineTo(cx, to).lineTo(cx + 6, to - sign * 8).stroke({ color: COLOR.wall, width: 2 });
     } else {
-      g.moveTo(x + 18, cy - 7).lineTo(x + 8, cy).lineTo(x + 18, cy + 7).stroke({ color: COLOR.wall, width: 2 });
+      const from = end === "W" ? entry.x + 10 : entry.x + entry.w - 10;
+      const to = end === "W" ? entry.x + entry.w - 8 : entry.x + 8;
+      const sign = to > from ? 1 : -1;
+      g.moveTo(from, cy).lineTo(to, cy).stroke({ color: COLOR.wall, width: 2 });
+      g.moveTo(to - sign * 8, cy - 6).lineTo(to, cy).lineTo(to - sign * 8, cy + 6).stroke({ color: COLOR.wall, width: 2 });
     }
+
+    this.drawStairExitHalf(g, stair);
   }
 
   private drawDoorway(g: Graphics, doorway: Doorway): void {

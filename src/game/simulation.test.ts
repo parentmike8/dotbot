@@ -12,7 +12,6 @@ const testConfig: Partial<GameConfig> = {
   respawnDelayMs: 120,
   dashCooldownMs: 300,
   shieldInvulnerabilityMs: 120,
-  stairHoldMs: 100,
   extractionDurationMs: 200,
 };
 
@@ -325,8 +324,10 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("moves the player between floors via stairs and locks until they step off", async () => {
-    const baseMap = makeMap([playerSpawn({ position: { x: 270, y: 130 } })]);
+  it("changes floors by walking across the stair break line, both directions", async () => {
+    // Vertical run, bottom at the south end: walking north climbs to F2.
+    const stairRect = { x: 250, y: 80, w: 60, h: 160 };
+    const baseMap = makeMap([playerSpawn({ position: { x: 280, y: 210 } })]);
     const simulation = await DotBotSimulation.create({
       map: {
         ...baseMap,
@@ -335,7 +336,7 @@ describe("DotBotSimulation", () => {
             id: "tower",
             kind: "office",
             name: "TOWER",
-            footprint: { x: 200, y: 60, w: 220, h: 220 },
+            footprint: { x: 200, y: 60, w: 220, h: 240 },
             floors: [
               {
                 id: "tower:GROUND",
@@ -344,13 +345,7 @@ describe("DotBotSimulation", () => {
                 doorways: [],
                 objects: [],
                 stairs: [
-                  {
-                    id: "tower-up",
-                    rect: { x: 240, y: 100, w: 60, h: 60 },
-                    direction: "up",
-                    toFloorId: "tower:F2",
-                    landing: { x: 270, y: 130 },
-                  },
+                  { id: "tower-up", rect: stairRect, direction: "up", toFloorId: "tower:F2", bottom: "S" },
                 ],
                 dotSpawns: [],
               },
@@ -361,13 +356,7 @@ describe("DotBotSimulation", () => {
                 doorways: [],
                 objects: [],
                 stairs: [
-                  {
-                    id: "tower-down",
-                    rect: { x: 240, y: 100, w: 60, h: 60 },
-                    direction: "down",
-                    toFloorId: "outdoor",
-                    landing: { x: 270, y: 130 },
-                  },
+                  { id: "tower-down", rect: stairRect, direction: "down", toFloorId: "outdoor", bottom: "S" },
                 ],
                 dotSpawns: [],
               },
@@ -378,21 +367,29 @@ describe("DotBotSimulation", () => {
       config: testConfig,
     });
 
+    // Standing still in the entry half does nothing.
     simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
-    runTicks(simulation, 12);
+    runTicks(simulation, 20);
+    let player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
+    expect(player?.floorId).toBe("outdoor");
+
+    // Walk north through the run: crossing the midline swaps to F2 mid-stride.
+    simulation.applyInput({ move: { x: 0, y: -1 }, dash: false });
+    runTicks(simulation, 30);
 
     const snapshot = simulation.getSnapshot();
-    let player = snapshot.bots.find((bot) => bot.id === "player");
+    player = snapshot.bots.find((bot) => bot.id === "player");
     expect(player?.floorId).toBe("tower:F2");
 
     // Taking the stairs announces itself on both connected floors.
     const stairNoises = snapshot.noises.filter((noise) => noise.kind === "stairs");
     expect(stairNoises.map((noise) => noise.floorId).sort()).toEqual(["outdoor", "tower:F2"]);
 
-    // Standing still on the landing must not bounce back down.
+    // Walking back south through the run descends again.
+    simulation.applyInput({ move: { x: 0, y: 1 }, dash: false });
     runTicks(simulation, 30);
     player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
-    expect(player?.floorId).toBe("tower:F2");
+    expect(player?.floorId).toBe("outdoor");
     simulation.dispose();
   });
 

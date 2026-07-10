@@ -177,14 +177,14 @@ function mercyClinic(): Building {
       { at: 188, w: DOOR },
     ]),
     hRun(152, 272, 220, INT),
-    // Ward / pharmacy divider and their south walls.
-    vRun(612, 132, 208, INT),
+    // Ward / pharmacy divider (with a connecting door) and their south walls.
+    vRun(612, 132, 208, INT, [{ at: 130, w: DOOR }]),
     hRun(380, 332, 240, INT, [{ at: 70, w: DOOR }]),
-    hRun(620, 332, 84, INT, [{ at: 14, w: DOOR }]),
-    // Stair core, NE of the lobby.
-    vRun(704, 340, 130, INT, [{ at: 40, w: DOOR }]),
-    hRun(704, 340, 124, INT),
-    hRun(704, 462, 124, INT),
+    hRun(620, 332, 84, INT),
+    // Stair core: a long run rising eastward, entered from the lobby.
+    hRun(620, 356, 208, INT),
+    hRun(620, 444, 208, INT),
+    vRun(620, 364, 80, INT, [{ at: 12, w: DOOR }]),
   ]);
 
   const ground: FloorPlan = {
@@ -207,11 +207,10 @@ function mercyClinic(): Building {
       obj("bed", 556, 144, 48, 96, { facing: "N" }),
       obj("cabinet", 578, 260, 26, 44),
       obj("chair", 420, 272, 22, 22),
-      // Pharmacy (NE): shelving aisle open from the south, counter by the door.
+      // Pharmacy (NE): shelving on the east wall, dispensing counter south.
       obj("shelf", 786, 150, 26, 120, { scannable: true }),
-      obj("shelf", 700, 150, 26, 120),
       obj("locker", 636, 140, 26, 38, { scannable: true }),
-      obj("counter", 732, 144, 48, 22),
+      obj("counter", 700, 286, 90, 22),
       // Lobby: reception + waiting row.
       obj("receptionDesk", 430, 396, 150, 26, { facing: "S", scannable: true }),
       obj("chair", 190, 470, 22, 22),
@@ -224,10 +223,10 @@ function mercyClinic(): Building {
     stairs: [
       {
         id: "mercy-stair-up",
-        rect: { x: 724, y: 360, w: 96, h: 92 },
+        rect: { x: 628, y: 364, w: 200, h: 80 },
         direction: "up",
         toFloorId: "mercy:F2",
-        landing: { x: 772, y: 406 },
+        bottom: "W",
       },
     ],
     dotSpawns: [dot(DOT.regen, 250, 200), dot(DOT.shield, 766, 210)],
@@ -238,15 +237,15 @@ function mercyClinic(): Building {
     // Ward south wall with two openings.
     hRun(152, 312, 676, INT, [
       { at: 228, w: DOOR },
-      { at: 488, w: DOOR },
+      { at: 380, w: DOOR },
     ]),
     // Supply room (SW).
     vRun(340, 420, 168, INT, [{ at: 50, w: DOOR }]),
     hRun(152, 420, 196, INT),
-    // Stair core (same position as GROUND).
-    vRun(704, 340, 130, INT, [{ at: 40, w: DOOR }]),
-    hRun(704, 340, 124, INT),
-    hRun(704, 462, 124, INT),
+    // Stair core (same shaft as GROUND), entered from the south at its top end.
+    hRun(620, 356, 208, INT),
+    hRun(620, 444, 208, INT, [{ at: 144, w: DOOR }]),
+    vRun(620, 364, 80, INT),
   ]);
 
   const f2: FloorPlan = {
@@ -266,8 +265,8 @@ function mercyClinic(): Building {
       // Nurse station on the open floor.
       obj("counter", 420, 380, 140, 26, { scannable: true }),
       obj("chair", 470, 420, 22, 22),
-      obj("cot", 600, 470, 44, 88, { facing: "S" }),
-      obj("medicalCabinet", 760, 500, 44, 26),
+      obj("cot", 500, 470, 44, 88, { facing: "S" }),
+      obj("medicalCabinet", 696, 500, 44, 26),
       obj("plant", 668, 552, 20, 20),
       // Supply room shelving.
       obj("shelf", 164, 440, 26, 120),
@@ -277,10 +276,10 @@ function mercyClinic(): Building {
     stairs: [
       {
         id: "mercy-stair-down",
-        rect: { x: 724, y: 360, w: 96, h: 92 },
+        rect: { x: 628, y: 364, w: 200, h: 80 },
         direction: "down",
         toFloorId: OUTDOOR_FLOOR_ID,
-        landing: { x: 772, y: 406 },
+        bottom: "W",
       },
     ],
     dotSpawns: [dot(DOT.regen, 240, 270), dot(DOT.regen, 520, 270), dot(DOT.rare, 240, 500)],
@@ -310,9 +309,9 @@ function civicTower(): Building {
     bottom: [{ at: 440, w: DOOR }], // side exit to Main St
   });
   const groundPartitions = mergeRuns([
-    // Stair core NW.
-    vRun(1588, 132, 130, INT),
-    hRun(1472, 254, 124, INT, [{ at: 28, w: DOOR }]),
+    // Stair core NW: a long run climbing north along the west wall.
+    vRun(1560, 132, 160, INT, [{ at: 104, w: DOOR }]),
+    hRun(1472, 292, 96, INT),
     // Server room, north center.
     vRun(1652, 132, 168, INT),
     vRun(1860, 132, 168, INT),
@@ -338,7 +337,7 @@ function civicTower(): Building {
       // Conference room.
       obj("conferenceTable", 1958, 180, 104, 62, { scannable: true }),
       // Lobby.
-      obj("receptionDesk", 1530, 330, 118, 26, { facing: "W", scannable: true }),
+      obj("receptionDesk", 1530, 300, 118, 26, { facing: "W", scannable: true }),
       obj("bench", 1484, 460, 24, 92, { facing: "E" }),
       obj("plant", 1480, 566, 20, 20),
       obj("plant", 1630, 566, 20, 20),
@@ -353,10 +352,10 @@ function civicTower(): Building {
     stairs: [
       {
         id: "civic-stair-up",
-        rect: { x: 1482, y: 148, w: 96, h: 92 },
+        rect: { x: 1472, y: 132, w: 88, h: 160 },
         direction: "up",
         toFloorId: "civic:F2",
-        landing: { x: 1530, y: 194 },
+        bottom: "S",
       },
     ],
     dotSpawns: [dot(DOT.scanner, 1780, 250), dot(DOT.decoy, 2020, 545)],
@@ -364,13 +363,13 @@ function civicTower(): Building {
 
   const f2Shell = perimeter(fp);
   const f2Partitions = mergeRuns([
-    // Core going down (NW).
-    vRun(1588, 132, 130, INT),
-    hRun(1472, 254, 124, INT, [{ at: 28, w: DOOR }]),
-    // Core going up to roof, just south of it.
-    hRun(1472, 278, 124, INT),
-    vRun(1588, 278, 122, INT, [{ at: 30, w: DOOR }]),
-    hRun(1472, 392, 124, INT),
+    // Down shaft (same as the GROUND core), entered at its top end.
+    vRun(1560, 132, 160, INT, [{ at: 8, w: DOOR }]),
+    hRun(1472, 292, 96, INT),
+    // Up shaft to the roof, just south of it, entered at its bottom end.
+    hRun(1472, 316, 96, INT),
+    vRun(1560, 316, 160, INT, [{ at: 104, w: DOOR }]),
+    hRun(1472, 476, 96, INT),
     // Break room, center south.
     vRun(1650, 400, 188, INT),
     hRun(1650, 392, 240, INT, [{ at: 46, w: DOOR }]),
@@ -407,17 +406,17 @@ function civicTower(): Building {
     stairs: [
       {
         id: "civic-stair-down",
-        rect: { x: 1482, y: 148, w: 96, h: 92 },
+        rect: { x: 1472, y: 132, w: 88, h: 160 },
         direction: "down",
         toFloorId: OUTDOOR_FLOOR_ID,
-        landing: { x: 1530, y: 194 },
+        bottom: "S",
       },
       {
         id: "civic-stair-roof",
-        rect: { x: 1482, y: 292, w: 96, h: 92 },
+        rect: { x: 1472, y: 324, w: 88, h: 152 },
         direction: "up",
         toFloorId: "civic:ROOF",
-        landing: { x: 1530, y: 194 },
+        bottom: "S",
       },
     ],
     dotSpawns: [dot(DOT.decoy, 1732, 480), dot(DOT.scanner, 2000, 470)],
@@ -425,9 +424,10 @@ function civicTower(): Building {
 
   const roofShell = perimeter(fp);
   const roofPartitions = mergeRuns([
-    // Stair bulkhead NW.
-    vRun(1588, 132, 130, INT),
-    hRun(1472, 254, 124, INT, [{ at: 28, w: DOOR }]),
+    // Stair bulkhead over the roof shaft, entered at its top end.
+    hRun(1472, 316, 96, INT),
+    vRun(1560, 316, 160, INT, [{ at: 8, w: DOOR }]),
+    hRun(1472, 476, 96, INT),
   ]);
 
   const roof: FloorPlan = {
@@ -447,10 +447,10 @@ function civicTower(): Building {
     stairs: [
       {
         id: "civic-roof-down",
-        rect: { x: 1482, y: 148, w: 96, h: 92 },
+        rect: { x: 1472, y: 324, w: 88, h: 152 },
         direction: "down",
         toFloorId: "civic:F2",
-        landing: { x: 1530, y: 338 },
+        bottom: "S",
       },
     ],
     dotSpawns: [dot(DOT.rare, 2040, 546)],
@@ -482,9 +482,10 @@ function lot6Depot(): Building {
     ],
   });
   const groundPartitions = mergeRuns([
-    // Stair core NE (reached from outside or from the floor).
-    vRun(756, 992, 128, INT),
-    hRun(756, 1112, 132, INT, [{ at: 34, w: DOOR }]),
+    // Stair core NE: a long run descending southward. The exterior person
+    // door enters at its top; the west door serves the loading floor.
+    vRun(780, 992, 152, INT, [{ at: 14, w: DOOR }]),
+    hRun(780, 1144, 96, INT),
     // Workshop west.
     hRun(152, 1142, 148, INT, [{ at: 48, w: DOOR }]),
     vRun(292, 1142, 306, INT, [{ at: 108, w: DOOR }]),
@@ -520,10 +521,10 @@ function lot6Depot(): Building {
     stairs: [
       {
         id: "lot6-stair-down",
-        rect: { x: 776, y: 1008, w: 96, h: 92 },
+        rect: { x: 788, y: 992, w: 88, h: 152 },
         direction: "down",
         toFloorId: "lot6:B1",
-        landing: { x: 824, y: 1054 },
+        bottom: "S",
       },
     ],
     dotSpawns: [dot(DOT.damage, 210, 1060), dot(DOT.shield, 600, 1300)],
@@ -531,9 +532,9 @@ function lot6Depot(): Building {
 
   const b1Shell = perimeter(fp);
   const b1Partitions = mergeRuns([
-    // Stair core NE (mirror of GROUND).
-    vRun(756, 992, 128, INT),
-    hRun(756, 1112, 132, INT, [{ at: 34, w: DOOR }]),
+    // Stair core NE (same shaft), entered from the cellar at its bottom end.
+    vRun(780, 992, 152, INT, [{ at: 90, w: DOOR }]),
+    hRun(780, 1144, 96, INT),
     // Generator room west.
     vRun(332, 992, 188, INT, [{ at: 68, w: DOOR }]),
     hRun(152, 1172, 188, INT),
@@ -561,10 +562,10 @@ function lot6Depot(): Building {
     stairs: [
       {
         id: "lot6-stair-up",
-        rect: { x: 776, y: 1008, w: 96, h: 92 },
+        rect: { x: 788, y: 992, w: 88, h: 152 },
         direction: "up",
         toFloorId: OUTDOOR_FLOOR_ID,
-        landing: { x: 824, y: 1054 },
+        bottom: "S",
       },
     ],
     dotSpawns: [dot(DOT.damage, 210, 1400), dot(DOT.rare, 600, 1400)],

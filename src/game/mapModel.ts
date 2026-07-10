@@ -1,5 +1,15 @@
 import { OUTDOOR_FLOOR_ID } from "./types";
-import type { Building, FloorLabel, FloorPlan, MapDocument, MapObject, ObjectKind, Rect, Vec2 } from "./types";
+import type {
+  Building,
+  FloorLabel,
+  FloorPlan,
+  MapDocument,
+  MapObject,
+  ObjectKind,
+  Rect,
+  StairLink,
+  Vec2,
+} from "./types";
 
 /**
  * Object kinds that get physics colliders unless the object overrides `solid`.
@@ -126,6 +136,41 @@ export function contextKey(map: MapDocument, floorId: string, position: Vec2): s
 
   const building = buildingContaining(map, position);
   return building ? `outdoor:${building.id}` : "outdoor:street";
+}
+
+export type StairHalves = {
+  /** Half of the run you walk in from on this floor. */
+  entry: Rect;
+  /** Half beyond the break line — the flight continuing to the other floor. */
+  exit: Rect;
+  /** Run direction: true when the flight runs along the y axis. */
+  vertical: boolean;
+};
+
+/**
+ * Split a stair run at its midline (the architectural break line). Walking
+ * from the entry half into the exit half moves the bot to the linked floor.
+ */
+export function stairHalves(stair: StairLink): StairHalves {
+  const { x, y, w, h } = stair.rect;
+  const vertical = h >= w;
+  const bottomLow = stair.bottom === "N" || stair.bottom === "W";
+  const entryLow = (stair.direction === "up") === bottomLow;
+
+  const low: Rect = vertical ? { x, y, w, h: h / 2 } : { x, y, w: w / 2, h };
+  const high: Rect = vertical ? { x, y: y + h / 2, w, h: h / 2 } : { x: x + w / 2, y, w: w / 2, h };
+
+  return {
+    entry: entryLow ? low : high,
+    exit: entryLow ? high : low,
+    vertical,
+  };
+}
+
+/** Where a bot arriving via this stair ends up: the center of its exit half. */
+export function stairExitPoint(stair: StairLink): Vec2 {
+  const { exit } = stairHalves(stair);
+  return { x: exit.x + exit.w / 2, y: exit.y + exit.h / 2 };
 }
 
 const FLOOR_HEIGHTS: Record<FloorLabel, number> = {

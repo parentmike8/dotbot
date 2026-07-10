@@ -97,12 +97,13 @@ export type MapObject = {
 
 export type StairLink = {
   id: string;
-  /** Trigger + render zone. */
+  /** The walkable stair run. Bots walk through it; crossing the midline (the
+   * architectural break line) swaps them to the linked floor — no teleport. */
   rect: Rect;
   direction: "up" | "down";
   toFloorId: string;
-  /** Where the bot lands on the target floor. */
-  landing: Vec2;
+  /** Which side of the rect is the bottom of the flight. */
+  bottom: Facing;
 };
 
 export type DotSpawn = {
@@ -260,7 +261,6 @@ export type GameConfig = {
   coverDurationMs: number;
   respawnDelayMs: number;
   coverCenterTolerance: number;
-  stairHoldMs: number;
   extractionDurationMs: number;
 };
 

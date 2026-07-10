@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
-import { isGroundFloor, isSolidObject, physicsFloorId } from "./mapModel";
+import { isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Rect, Vec2 } from "./types";
 
@@ -48,12 +48,12 @@ function collectFloors(): FloorWorld[] {
       world.solids.push(...plan.walls, ...plan.objects.filter(isSolidObject));
       world.dots.push(...plan.dotSpawns.map((spawn) => ({ id: spawn.id, position: spawn.position })));
 
-      // Stair landings seed non-ground floors; GROUND floors flow from outdoors.
+      // Stair arrival points seed non-ground floors; GROUND flows from outdoors.
       if (!isGroundFloor(plan)) {
         for (const other of building.floors) {
           for (const stair of other.stairs) {
             if (stair.toFloorId === plan.id) {
-              world.seeds.push(stair.landing);
+              world.seeds.push(stairExitPoint(stair));
             }
           }
         }
