@@ -4,6 +4,7 @@
   --paper-glass: rgba(255, 255, 255, 0.91);
   --muted: #6d7278;
   --hairline: rgba(17, 17, 17, 0.18);
+  --squad-cyan: #15aabf;
   color: var(--ink);
   background: var(--paper);
   font-family:
@@ -154,11 +155,11 @@ button {
 }
 
 .shield.filled {
-  background: var(--ink);
+  background: var(--squad-cyan);
 }
 
 .shield.cracked {
-  background: linear-gradient(90deg, var(--ink) 0 42%, var(--paper) 42% 58%, var(--ink) 58% 100%);
+  background: linear-gradient(90deg, var(--squad-cyan) 0 42%, var(--paper) 42% 58%, var(--squad-cyan) 58% 100%);
 }
 
 .run-readout {

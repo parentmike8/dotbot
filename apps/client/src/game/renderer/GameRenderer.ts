@@ -15,6 +15,10 @@ import { shieldArcSpan } from "@dotbot/game/shields";
 import { buildMapArt, drawStairExitHalf, type MapArt } from "./mapArt";
 import { INK } from "./style";
 
+const SQUAD_CYAN = 0x15aabf;
+const RIVAL_RED = 0xe03131;
+const AMBIENT_GREY = 0x868e96;
+
 /**
  * The live-game renderer: static map art (from mapArt.ts, shared with Map
  * Studio) plus the gameplay overlay — bots, dots, rings, noise, fog, and the
@@ -105,8 +109,8 @@ export class GameRenderer {
 
     this.maskedGfx.clear();
     this.dynamicGfx.clear();
-    this.drawExtractionPulse(snapshot);
-    this.drawDots(snapshot, playerContext);
+    this.drawExtractionPulse(snapshot, player?.squadId);
+    this.drawDots(snapshot, player?.squadId, playerContext);
     this.drawBots(snapshot, playerId, playerContext);
 
     if (player) {
@@ -221,7 +225,7 @@ export class GameRenderer {
   // Dynamic entities
   // ---------------------------------------------------------------------------
 
-  private drawExtractionPulse(snapshot: GameSnapshot): void {
+  private drawExtractionPulse(snapshot: GameSnapshot, viewerSquadId: string | undefined): void {
     const extract = snapshot.coverages.find((coverage) => coverage.kind === "extract");
 
     if (!extract) {
@@ -238,12 +242,14 @@ export class GameRenderer {
     const cy = point.rect.y + point.rect.h / 2;
     const progress = clamp01(extract.progressMs / extract.durationMs);
     const pulse = 1 + 0.06 * Math.sin(snapshot.timeMs / 120);
+    const channeler = snapshot.bots.find((bot) => bot.id === extract.actorId);
+    const channelColor = channeler ? this.relationshipColor(channeler, viewerSquadId) : INK.opening;
 
     this.dynamicGfx.circle(cx, cy, (point.rect.w / 2 + 10) * pulse).stroke({ color: INK.opening, width: 2, alpha: 0.35 });
-    this.drawProgressRing(this.dynamicGfx, { x: cx, y: cy }, point.rect.w / 2 + 4, progress, INK.opening, 4);
+    this.drawProgressRing(this.dynamicGfx, { x: cx, y: cy }, point.rect.w / 2 + 4, progress, channelColor, 4);
   }
 
-  private drawDots(snapshot: GameSnapshot, playerContext: string): void {
+  private drawDots(snapshot: GameSnapshot, viewerSquadId: string | undefined, playerContext: string): void {
     for (const dot of snapshot.dots) {
       if (!dot.active || this.contextKey(dot.floorId, dot.position) !== playerContext) {
         continue;
@@ -255,7 +261,9 @@ export class GameRenderer {
 
       const coverage = snapshot.coverages.find((item) => item.kind === "capture" && item.targetId === dot.id);
       if (coverage) {
-        this.drawProgressRing(this.maskedGfx, dot.position, dot.radius + 8, coverage.progressMs / coverage.durationMs, 0x111111, 3);
+        const channeler = snapshot.bots.find((bot) => bot.id === coverage.actorId);
+        const channelColor = channeler ? this.relationshipColor(channeler, viewerSquadId) : INK.structure;
+        this.drawProgressRing(this.maskedGfx, dot.position, dot.radius + 8, coverage.progressMs / coverage.durationMs, channelColor, 3);
       }
     }
   }
@@ -346,26 +354,31 @@ export class GameRenderer {
         const seen =
           bot.id === playerId ||
           (sameArena && (!player || hasLineOfSight(this.map, playerContext, player.position, bot.position)));
-        this.drawBotBody(this.dynamicGfx, bot, snapshot, seen ? 1 : 0.35);
+        this.drawBotBody(this.dynamicGfx, bot, snapshot, viewerSquadId, seen ? 1 : 0.35);
       } else if (sameArena) {
         // Enemies render into the masked layer: hidden outside line of sight.
-        this.drawBotBody(this.maskedGfx, bot, snapshot, 1);
+        this.drawBotBody(this.maskedGfx, bot, snapshot, viewerSquadId, 1);
       }
     }
   }
 
-  private drawBotBody(g: Graphics, bot: DotBotEntity, snapshot: GameSnapshot, fade: number): void {
-    const color = colorToNumber(bot.color);
+  private drawBotBody(g: Graphics, bot: DotBotEntity, snapshot: GameSnapshot, viewerSquadId: string | undefined, fade: number): void {
+    const color = this.relationshipColor(bot, viewerSquadId);
     const coreRadius = bot.state === "downed" ? bot.radius * 0.34 : bot.radius * 0.4;
     const alpha = (bot.state === "downed" ? 0.72 : 1) * fade;
+    const serrated = !bot.isAmbient && viewerSquadId !== undefined && bot.squadId !== viewerSquadId;
 
-    this.drawShieldSegments(g, bot, bot.state === "alive" ? color : 0x111111, fade);
+    this.drawShieldSegments(g, bot, color, serrated, fade);
 
-    g.circle(bot.position.x, bot.position.y, coreRadius).fill({ color, alpha: (bot.state === "downed" ? 0.28 : 0.95) * fade });
-    g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: 0x111111, width: 2, alpha });
+    if (bot.state === "downed") {
+      g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color, width: 2.5, alpha });
+    } else {
+      g.circle(bot.position.x, bot.position.y, coreRadius).fill({ color: INK.structure, alpha: 0.95 * fade });
+      g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: INK.structure, width: 2, alpha });
+    }
 
     if (bot.dashActiveMs > 0) {
-      g.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color, width: 3, alpha: 0.45 * fade });
+      g.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color: INK.structure, width: 3, alpha: 0.45 * fade });
     }
 
     if (bot.invulnerabilityMs > 0 && bot.state === "alive") {
@@ -374,15 +387,23 @@ export class GameRenderer {
 
     const coverage = snapshot.coverages.find((item) => item.targetId === bot.id && item.kind !== "capture");
     if (coverage) {
+      const channeler = snapshot.bots.find((candidate) => candidate.id === coverage.actorId);
       this.drawProgressRing(
         g,
         bot.position,
         bot.radius + 15,
         coverage.progressMs / coverage.durationMs,
-        coverage.kind === "revive" ? 0x2f80ed : 0xeb5757,
+        channeler ? this.relationshipColor(channeler, viewerSquadId) : INK.structure,
         4,
       );
     }
+  }
+
+  private relationshipColor(bot: DotBotEntity, viewerSquadId: string | undefined): number {
+    if (viewerSquadId !== undefined && bot.squadId === viewerSquadId) {
+      return SQUAD_CYAN;
+    }
+    return bot.isAmbient ? AMBIENT_GREY : RIVAL_RED;
   }
 
   /**
@@ -390,7 +411,7 @@ export class GameRenderer {
    * plates draw solid, cracked plates split at the middle, broken plates
    * leave a faint ghost so the exposed side stays readable.
    */
-  private drawShieldSegments(g: Graphics, bot: DotBotEntity, color: number, fade: number): void {
+  private drawShieldSegments(g: Graphics, bot: DotBotEntity, color: number, serrated: boolean, fade: number): void {
     const span = shieldArcSpan(bot.maxShields);
     const step = (Math.PI * 2) / bot.maxShields;
     const shieldRadius = bot.radius * 0.78;
@@ -406,6 +427,13 @@ export class GameRenderer {
           width: intactWidth,
           alpha: fade,
         });
+        if (serrated) {
+          this.drawArcStroke(g, bot.position, shieldRadius + 3, start, start + span, {
+            color,
+            width: 2,
+            alpha: fade,
+          });
+        }
       } else if (state > 0) {
         // Cracked: the plate splits into two halves around a central break.
         for (const [from, to] of [
@@ -420,7 +448,7 @@ export class GameRenderer {
         }
       } else {
         this.drawArcStroke(g, bot.position, shieldRadius, start, start + span, {
-          color: 0x111111,
+          color,
           width: 2,
           alpha: 0.3 * fade,
         });
