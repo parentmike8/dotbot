@@ -27,6 +27,7 @@ export class NetSession implements GameSession {
   private sendFrame = false;
   private pendingInput: InputCommand = { move: { x: 0, y: 0 }, dash: false };
   private tickHz = 60;
+  private roomCode = "";
   private startPromise: Promise<void> | null = null;
   private resolveStart: (() => void) | null = null;
   private rejectStart: ((error: Error) => void) | null = null;
@@ -145,6 +146,7 @@ export class NetSession implements GameSession {
     switch (message.type) {
       case "welcome":
         this.playerIdValue = message.playerId;
+        this.roomCode = message.roomCode;
         this.options.onLobby?.({
           roomCode: message.roomCode,
           members: message.members,
@@ -154,7 +156,7 @@ export class NetSession implements GameSession {
         return;
       case "lobby":
         this.options.onLobby?.({
-          roomCode: this.options.roomCode,
+          roomCode: this.roomCode || this.options.roomCode,
           members: message.members,
           hostId: message.hostId,
           playerId: this.playerIdValue,
