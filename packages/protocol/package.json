@@ -7,5 +7,13 @@
   },
   "dependencies": {
     "@dotbot/game": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   }
 }

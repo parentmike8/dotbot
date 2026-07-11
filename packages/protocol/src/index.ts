@@ -1,2 +1,2 @@
-// wire types land in M1
-export {};
+export * from "./messages";
+export * from "./wire";
