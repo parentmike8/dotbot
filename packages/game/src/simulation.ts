@@ -10,7 +10,6 @@ import {
   floorPlanById,
   isGroundFloor,
   isSolidObject,
-  locationLabel,
   physicsFloorId,
   resolvePlan,
   stairConnections,
@@ -28,6 +27,7 @@ import type {
   BotState,
   BotTeam,
   Building,
+  Controller,
   CoverageKind,
   CoverageSnapshot,
   DotBotEntity,
@@ -39,6 +39,7 @@ import type {
   NoiseEvent,
   NoiseKind,
   Rect,
+  SimEvent,
   StairLink,
   Vec2,
 } from "./types";
@@ -110,6 +111,8 @@ export class DotBotSimulation {
   private readonly rapier: RapierApi;
   private readonly world: RapierWorld;
   private readonly bots = new Map<string, InternalBot>();
+  private readonly controllers = new Map<string, Controller>();
+  private readonly inputs = new Map<string, InputCommand>();
   private readonly dots = new Map<string, InternalDot>();
   private readonly coverages = new Map<string, ActiveCoverage>();
   /** Physics layer index per floor id (GROUND floors resolve to the outdoor layer). */
@@ -119,7 +122,7 @@ export class DotBotSimulation {
   /** Stairs per physics floor. */
   private readonly stairsByFloor = new Map<string, StairLink[]>();
   private disposed = false;
-  private input: InputCommand = { move: zeroVec(), dash: false };
+  private events: SimEvent[] = [];
   private timeMs = 0;
   private tickCount = 0;
   private fps = 0;
@@ -142,7 +145,7 @@ export class DotBotSimulation {
     this.collectStairs();
 
     for (const spawn of map.botSpawns) {
-      this.addBot(spawn);
+      this.spawnBot(spawn, spawn.team === "player" ? "human" : "ai");
     }
 
     this.spawnDots();
@@ -244,7 +247,11 @@ export class DotBotSimulation {
     }
   }
 
-  private addBot(spawn: BotSpawn): void {
+  spawnBot(spawn: BotSpawn, controller: Controller): string {
+    if (this.bots.has(spawn.id)) {
+      throw new Error(`Bot already exists: ${spawn.id}`);
+    }
+
     const maxShields = spawn.maxShields ?? this.config.maxShields;
     const state = spawn.state ?? "alive";
     const shields = spawn.shields ?? (state === "alive" ? maxShields : 0);
@@ -303,17 +310,71 @@ export class DotBotSimulation {
 
     this.setBotPhysicsState(bot, state);
     this.bots.set(bot.id, bot);
+    this.controllers.set(bot.id, controller);
+    this.inputs.set(bot.id, { move: zeroVec(), dash: false });
+    return bot.id;
   }
 
   // ---------------------------------------------------------------------------
   // Public API
   // ---------------------------------------------------------------------------
 
-  applyInput(input: InputCommand): void {
-    this.input = {
+  applyInput(botId: string, input: InputCommand): void {
+    if (!this.bots.has(botId) || this.controllers.get(botId) !== "human") {
+      return;
+    }
+
+    const current = this.inputs.get(botId);
+    this.inputs.set(botId, {
       move: normalizeInputVector(input.move),
-      dash: input.dash,
-    };
+      dash: (current?.dash ?? false) || input.dash,
+    });
+  }
+
+  setController(botId: string, controller: Controller): void {
+    const bot = this.bots.get(botId);
+    if (!bot) {
+      return;
+    }
+
+    this.controllers.set(botId, controller);
+    if (controller === "frozen") {
+      bot.desiredMove = zeroVec();
+      bot.body.setLinvel(zeroVec(), true);
+    }
+  }
+
+  removeBot(botId: string): void {
+    const bot = this.bots.get(botId);
+    if (!bot) {
+      return;
+    }
+
+    this.world.removeCollider(bot.collider, true);
+    this.world.removeRigidBody(bot.body);
+    this.bots.delete(botId);
+    this.controllers.delete(botId);
+    this.inputs.delete(botId);
+
+    for (const [key, coverage] of this.coverages) {
+      if (coverage.actorId === botId || coverage.targetId === botId) {
+        this.coverages.delete(key);
+      }
+    }
+
+    for (const dot of this.dots.values()) {
+      if (dot.capturedBy === botId) {
+        dot.capturedBy = undefined;
+      }
+    }
+
+    for (const other of this.bots.values()) {
+      other.aiAvoidTargets.delete(botId);
+    }
+  }
+
+  drainEvents(): SimEvent[] {
+    return this.events.splice(0);
   }
 
   setMeasuredFps(fps: number): void {
@@ -338,7 +399,7 @@ export class DotBotSimulation {
       bot.prevPosition = { ...bot.position };
     }
 
-    this.updatePlayerIntent();
+    this.updateHumanIntents();
     this.updateBotAi();
     this.applyMovement();
 
@@ -356,19 +417,15 @@ export class DotBotSimulation {
   getSnapshot(): GameSnapshot {
     const bots = [...this.bots.values()].map(toBotSnapshot);
     const dots = [...this.dots.values()].map((dot) => ({ ...dot, position: { ...dot.position } }));
-    const player = this.bots.get("player");
 
     return {
       timeMs: this.timeMs,
-      playerId: "player",
-      map: this.map,
       bots,
       dots,
       coverages: [...this.coverages.values()].map((coverage) => ({ ...coverage })),
       noises: this.noises.map((noise) => ({ ...noise, position: { ...noise.position } })),
       bankedDots: this.bankedDots,
       rivalBankedDots: this.rivalBankedDots,
-      locationLabel: player ? locationLabel(this.map, player.floorId, player.position) : this.map.name.toUpperCase(),
       debug: {
         tickHz: this.config.tickHz,
         tickCount: this.tickCount,
@@ -441,29 +498,36 @@ export class DotBotSimulation {
     }
   }
 
-  private updatePlayerIntent(): void {
-    const player = this.bots.get("player");
+  private updateHumanIntents(): void {
+    for (const bot of this.bots.values()) {
+      const controller = this.controllers.get(bot.id);
+      if (controller === "frozen") {
+        bot.desiredMove = zeroVec();
+        continue;
+      }
+      if (controller !== "human" || bot.state !== "alive") {
+        continue;
+      }
 
-    if (!player || player.state !== "alive") {
-      return;
-    }
+      const input = this.inputs.get(bot.id) ?? { move: zeroVec(), dash: false };
+      bot.desiredMove = input.move;
 
-    player.desiredMove = this.input.move;
+      if (length(input.move) > 0.05) {
+        bot.lastAim = input.move;
+      }
 
-    if (length(this.input.move) > 0.05) {
-      player.lastAim = this.input.move;
-    }
-
-    if (this.input.dash && player.dashCooldownMs <= 0 && player.dashActiveMs <= 0) {
-      player.dashActiveMs = this.config.dashDurationMs;
-      player.dashCooldownMs = this.config.dashCooldownMs;
-      this.emitNoise("dash", player.position, player.floorId, NOISE_LOUDNESS.dash);
+      if (input.dash && bot.dashCooldownMs <= 0 && bot.dashActiveMs <= 0) {
+        bot.dashActiveMs = this.config.dashDurationMs;
+        bot.dashCooldownMs = this.config.dashCooldownMs;
+        this.inputs.set(bot.id, { ...input, dash: false });
+        this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash);
+      }
     }
   }
 
   private updateBotAi(): void {
     for (const bot of this.bots.values()) {
-      if (bot.team === "player" || bot.state !== "alive") {
+      if (this.controllers.get(bot.id) !== "ai" || bot.state !== "alive") {
         continue;
       }
 
@@ -916,6 +980,11 @@ export class DotBotSimulation {
         continue;
       }
 
+      if (this.controllers.get(bot.id) === "frozen") {
+        bot.body.setLinvel(zeroVec(), true);
+        continue;
+      }
+
       const speed = bot.dashActiveMs > 0 ? this.config.dashSpeed : bot.team === "player" ? this.config.playerSpeed : this.config.botSpeed;
       const direction = bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
       bot.body.setLinvel(scale(direction, speed), true);
@@ -1085,6 +1154,7 @@ export class DotBotSimulation {
       target.dashActiveMs = 0;
       target.body.setLinvel(zeroVec(), true);
       this.setBotPhysicsState(target, "downed");
+      this.events.push({ type: "downed", botId: target.id, byBotId: source.id });
     }
   }
 
@@ -1131,6 +1201,7 @@ export class DotBotSimulation {
       if (dot.captureProgressMs >= this.config.dotCaptureDurationMs) {
         dot.active = false;
         coveringBot.inventoryDots = Math.min(this.config.maxInventoryDots, coveringBot.inventoryDots + 1);
+        this.events.push({ type: "dotCaptured", botId: coveringBot.id, dotId: dot.id });
         this.coverages.delete(`capture:${dot.id}`);
       }
     }
@@ -1228,11 +1299,13 @@ export class DotBotSimulation {
       });
 
       if (progressMs >= this.config.extractionDurationMs) {
+        const count = bot.inventoryDots;
         if (bot.team === "enemy") {
-          this.rivalBankedDots += bot.inventoryDots;
+          this.rivalBankedDots += count;
         } else {
-          this.bankedDots += bot.inventoryDots;
+          this.bankedDots += count;
         }
+        this.events.push({ type: "dotsBanked", botId: bot.id, count });
         bot.inventoryDots = 0;
         bot.aiPath = [];
         bot.aiPathProjected = false;
@@ -1266,6 +1339,7 @@ export class DotBotSimulation {
     );
     target.body.setLinvel(zeroVec(), true);
     this.setBotPhysicsState(target, "alive");
+    this.events.push({ type: "revived", botId: target.id, byBotId: reviver.id });
   }
 
   private consumeBot(target: InternalBot, consumer: InternalBot): void {
@@ -1277,6 +1351,7 @@ export class DotBotSimulation {
     target.inventoryDots = 0;
     target.consumedRespawnMs = this.config.respawnDelayMs;
     this.setBotPhysicsState(target, "consumed");
+    this.events.push({ type: "consumed", botId: target.id, byBotId: consumer.id });
   }
 
   private respawnConsumedBots(dtMs: number): void {

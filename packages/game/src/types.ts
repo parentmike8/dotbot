@@ -14,6 +14,15 @@ export type BotTeam = "player" | "ally" | "enemy";
 
 export type BotState = "alive" | "downed" | "consumed";
 
+export type Controller = "human" | "ai" | "frozen";
+
+export type SimEvent =
+  | { type: "downed"; botId: string; byBotId?: string }
+  | { type: "consumed"; botId: string; byBotId: string }
+  | { type: "revived"; botId: string; byBotId: string }
+  | { type: "dotCaptured"; botId: string; dotId: string }
+  | { type: "dotsBanked"; botId: string; count: number };
+
 // ---------------------------------------------------------------------------
 // Map document model
 //
@@ -299,8 +308,6 @@ export type GameConfig = {
 
 export type GameSnapshot = {
   timeMs: number;
-  playerId: string;
-  map: MapDocument;
   bots: DotBotEntity[];
   dots: DotEntity[];
   coverages: CoverageSnapshot[];
@@ -309,8 +316,6 @@ export type GameSnapshot = {
   bankedDots: number;
   /** Dots opposing bots have successfully removed from the map. */
   rivalBankedDots: number;
-  /** "MERCY CLINIC / F2" indoors, map name outdoors. */
-  locationLabel: string;
   debug: {
     tickHz: number;
     tickCount: number;

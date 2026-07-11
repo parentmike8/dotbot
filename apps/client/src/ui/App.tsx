@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { defaultGameConfig } from "@dotbot/game";
-import { floorHeight, resolvePlan } from "@dotbot/game/mapModel";
+import { floorHeight, locationLabel, resolvePlan } from "@dotbot/game/mapModel";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
 
@@ -22,9 +22,9 @@ export function App() {
 }
 
 function GameSession({ onRestart }: { onRestart: () => void }) {
-  const { hostRef, snapshot, debugVisible, joystick, joystickHandlers, queueDash } = useDotBotGame();
-  const player = snapshot?.bots.find((bot) => bot.id === snapshot.playerId);
-  const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === snapshot.playerId || coverage.targetId === snapshot.playerId);
+  const { hostRef, snapshot, map, playerId, debugVisible, joystick, joystickHandlers, queueDash } = useDotBotGame();
+  const player = snapshot?.bots.find((bot) => bot.id === playerId);
+  const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / defaultGameConfig.dashCooldownMs) : 1;
   const runClock = formatRunClock(snapshot?.timeMs ?? 0);
   const activeRivalCount = snapshot?.bots.filter((bot) => bot.team === "enemy" && bot.state === "alive").length ?? 0;
@@ -33,8 +33,8 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
       return null;
     }
 
-    const activePlan = resolvePlan(snapshot.map, player.floorId, player.position);
-    const building = activePlan ? snapshot.map.buildings.find((candidate) => candidate.id === activePlan.buildingId) : undefined;
+    const activePlan = resolvePlan(map, player.floorId, player.position);
+    const building = activePlan ? map.buildings.find((candidate) => candidate.id === activePlan.buildingId) : undefined;
 
     if (!activePlan || !building) {
       return null;
@@ -45,7 +45,8 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
       activeFloorId: activePlan.planId,
       floors: [...building.floors].sort((a, b) => floorHeight(b.label) - floorHeight(a.label)),
     };
-  }, [player, snapshot]);
+  }, [map, player, snapshot]);
+  const currentLocation = player ? locationLabel(map, player.floorId, player.position) : map.name.toUpperCase();
   const coachPhase =
     snapshot && snapshot.timeMs < coachDismissAtMs ? (snapshot.timeMs >= coachFadeAtMs ? "is-leaving" : "") : null;
   const statusText = useMemo(() => {
@@ -93,7 +94,7 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
 
       {snapshot ? (
         <div className="hud location-label" aria-label="Current location">
-          {snapshot.locationLabel}
+          {currentLocation}
         </div>
       ) : null}
 

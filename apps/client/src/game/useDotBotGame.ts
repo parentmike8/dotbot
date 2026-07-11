@@ -106,7 +106,7 @@ export function useDotBotGame() {
         while (accumulator >= tickSeconds) {
           const keyboardMove = getKeyboardVector(keysRef.current);
           const joystickMove = joystickRef.current.move;
-          simulation.applyInput({
+          simulation.applyInput("player", {
             move: mergeMoveVectors(keyboardMove, joystickMove),
             dash: dashQueuedRef.current,
           });
@@ -117,7 +117,7 @@ export function useDotBotGame() {
 
         simulation.setMeasuredFps(fps);
         const nextSnapshot = simulation.getSnapshot();
-        renderer.render(nextSnapshot);
+        renderer.render(nextSnapshot, "player");
 
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);
@@ -287,6 +287,8 @@ export function useDotBotGame() {
   return {
     hostRef,
     snapshot,
+    map: downtownMap,
+    playerId: "player",
     debugVisible,
     joystick: joystickView,
     joystickHandlers,

@@ -116,7 +116,7 @@ describe("DotBotSimulation", () => {
   it("keeps the player inside map bounds", async () => {
     const simulation = await makeSimulation([playerSpawn({ position: { x: 70, y: 180 } })]);
 
-    simulation.applyInput({ move: { x: -1, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: -1, y: 0 }, dash: false });
     runTicks(simulation, 140);
 
     const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
@@ -142,7 +142,7 @@ describe("DotBotSimulation", () => {
       },
     });
 
-    simulation.applyInput({ move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
     runTicks(simulation, 90);
 
     const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
@@ -156,7 +156,7 @@ describe("DotBotSimulation", () => {
       [{ id: "dot", color: "#f2c94c", position: { x: 100, y: 100 } }],
     );
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 18);
 
     const snapshot = simulation.getSnapshot();
@@ -268,9 +268,9 @@ describe("DotBotSimulation", () => {
       enemySpawn({ position: { x: 156, y: 180 }, maxShields: 1, shields: 1 }),
     ]);
 
-    simulation.applyInput({ move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
     simulation.step();
-    simulation.applyInput({ move: { x: 1, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
     runTicks(simulation, 18);
 
     const enemy = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy");
@@ -285,9 +285,9 @@ describe("DotBotSimulation", () => {
       enemySpawn({ position: { x: 156, y: 180 } }),
     ]);
 
-    simulation.applyInput({ move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
     simulation.step();
-    simulation.applyInput({ move: { x: 1, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
     runTicks(simulation, 18);
 
     const enemy = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy");
@@ -306,9 +306,9 @@ describe("DotBotSimulation", () => {
       allySpawn({ position: { x: 156, y: 180 }, maxShields: 1, shields: 1 }),
     ]);
 
-    simulation.applyInput({ move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
     simulation.step();
-    simulation.applyInput({ move: { x: 1, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
     runTicks(simulation, 18);
 
     const ally = simulation.getSnapshot().bots.find((bot) => bot.id === "ally");
@@ -328,7 +328,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
@@ -348,7 +348,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
@@ -368,7 +368,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
@@ -388,7 +388,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
@@ -408,7 +408,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput({ move: { x: 1, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
     runTicks(simulation, 32);
 
     const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
@@ -426,7 +426,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
@@ -446,7 +446,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
@@ -499,13 +499,13 @@ describe("DotBotSimulation", () => {
     });
 
     // Standing still in the entry half does nothing.
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 20);
     let player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
     expect(player?.floorId).toBe("outdoor");
 
     // Walk north through the run: crossing the midline swaps to F2 mid-stride.
-    simulation.applyInput({ move: { x: 0, y: -1 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: -1 }, dash: false });
     runTicks(simulation, 30);
 
     const snapshot = simulation.getSnapshot();
@@ -517,7 +517,7 @@ describe("DotBotSimulation", () => {
     expect(stairNoises.map((noise) => noise.floorId).sort()).toEqual(["outdoor", "tower:F2"]);
 
     // Walking back south through the run descends again.
-    simulation.applyInput({ move: { x: 0, y: 1 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 1 }, dash: false });
     runTicks(simulation, 30);
     player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
     expect(player?.floorId).toBe("outdoor");
@@ -581,7 +581,7 @@ describe("DotBotSimulation", () => {
       config: testConfig,
     });
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 8);
 
     let snapshot = simulation.getSnapshot();
@@ -597,7 +597,7 @@ describe("DotBotSimulation", () => {
   it("emits a dash noise on the player's floor", async () => {
     const simulation = await makeSimulation([playerSpawn()]);
 
-    simulation.applyInput({ move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
     simulation.step();
 
     const noises = simulation.getSnapshot().noises;
@@ -614,7 +614,7 @@ describe("DotBotSimulation", () => {
       config: { ...testConfig, dotCaptureDurationMs: 3000 },
     });
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 48); // ~800ms > one 700ms ping interval
 
     const noises = simulation.getSnapshot().noises;
@@ -681,13 +681,120 @@ describe("DotBotSimulation", () => {
       enemySpawn({ position: { x: 100, y: 180 } }),
     ]);
 
-    simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 24);
 
     const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
     expect(player?.state).toBe("alive");
     expect(player?.shields).toBe(defaultGameConfig.maxShields);
     expect(player?.inventoryDots).toBe(1);
+    simulation.dispose();
+  });
+
+  it("moves two human-controlled bots independently", async () => {
+    const simulation = await makeSimulation([playerSpawn({ position: { x: 100, y: 120 } })]);
+    const secondId = simulation.spawnBot(
+      allySpawn({ id: "second-human", name: "Second Human", position: { x: 360, y: 240 } }),
+      "human",
+    );
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+    simulation.applyInput(secondId, { move: { x: -1, y: 0 }, dash: false });
+    runTicks(simulation, 12);
+
+    const snapshot = simulation.getSnapshot();
+    const player = snapshot.bots.find((bot) => bot.id === "player");
+    const second = snapshot.bots.find((bot) => bot.id === secondId);
+    expect(player?.position.x).toBeGreaterThan(100);
+    expect(second?.position.x).toBeLessThan(360);
+    expect(player?.position.y).toBeCloseTo(120, 1);
+    expect(second?.position.y).toBeCloseTo(240, 1);
+    simulation.dispose();
+  });
+
+  it("removes a bot mid-run and clears its active references", async () => {
+    const simulation = await makeSimulation(
+      [playerSpawn({ position: { x: 100, y: 100 } })],
+      [{ id: "claimed-dot", color: "#f2c94c", position: { x: 100, y: 100 } }],
+    );
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
+    simulation.step();
+    expect(simulation.getSnapshot().dots.find((dot) => dot.id === "claimed-dot")?.capturedBy).toBe("player");
+
+    simulation.removeBot("player");
+    simulation.removeBot("unknown");
+    runTicks(simulation, 4);
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.some((bot) => bot.id === "player")).toBe(false);
+    expect(snapshot.dots.find((dot) => dot.id === "claimed-dot")?.capturedBy).toBeUndefined();
+    expect(snapshot.coverages.some((coverage) => coverage.actorId === "player" || coverage.targetId === "player")).toBe(false);
+    simulation.dispose();
+  });
+
+  it("freezes a bot's movement while keeping its body solid", async () => {
+    const simulation = await makeSimulation([playerSpawn({ position: { x: 250, y: 180 } })]);
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+    runTicks(simulation, 8);
+    simulation.setController("player", "frozen");
+    const frozenAt = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position;
+    runTicks(simulation, 8);
+    const stillFrozen = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position;
+    expect(stillFrozen.x).toBeCloseTo(frozenAt.x, 1);
+    expect(stillFrozen.y).toBeCloseTo(frozenAt.y, 1);
+
+    const moverId = simulation.spawnBot(
+      allySpawn({ id: "mover", name: "Mover", position: { x: stillFrozen.x - 100, y: stillFrozen.y } }),
+      "human",
+    );
+    simulation.applyInput(moverId, { move: { x: 1, y: 0 }, dash: false });
+    runTicks(simulation, 60);
+
+    const snapshot = simulation.getSnapshot();
+    const frozen = snapshot.bots.find((bot) => bot.id === "player")!;
+    const mover = snapshot.bots.find((bot) => bot.id === moverId)!;
+    expect(mover.position.x).toBeLessThan(frozen.position.x);
+    expect(Math.hypot(mover.position.x - frozen.position.x, mover.position.y - frozen.position.y)).toBeGreaterThanOrEqual(
+      defaultGameConfig.botRadius * 2 - 1,
+    );
+    simulation.dispose();
+  });
+
+  it("drains downed, revived, and consumed events from a scripted fight", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 }, inventoryDots: 1 }),
+      enemySpawn({ position: { x: 156, y: 180 }, maxShields: 1, shields: 1, inventoryDots: 2 }),
+    ]);
+    simulation.setController("enemy", "frozen");
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    for (let tick = 0; tick < 18; tick += 1) {
+      simulation.step();
+      if (simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state === "downed") {
+        break;
+      }
+    }
+    simulation.removeBot("enemy");
+    simulation.setController("player", "frozen");
+    const playerPosition = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position;
+    simulation.spawnBot(
+      enemySpawn({ id: "consumable", position: playerPosition, state: "downed", shields: 0, inventoryDots: 2 }),
+      "frozen",
+    );
+    runTicks(simulation, 12);
+    simulation.spawnBot(allySpawn({ id: "downed-ally", position: playerPosition, state: "downed", shields: 0 }), "frozen");
+    runTicks(simulation, 12);
+
+    expect(simulation.drainEvents()).toEqual(
+      expect.arrayContaining([
+        { type: "downed", botId: "enemy", byBotId: "player" },
+        { type: "consumed", botId: "consumable", byBotId: "player" },
+        { type: "revived", botId: "downed-ally", byBotId: "player" },
+      ]),
+    );
+    expect(simulation.drainEvents()).toEqual([]);
     simulation.dispose();
   });
 

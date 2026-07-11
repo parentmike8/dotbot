@@ -91,8 +91,8 @@ export class GameRenderer {
     }
   }
 
-  render(snapshot: GameSnapshot): void {
-    const player = snapshot.bots.find((bot) => bot.id === snapshot.playerId) ?? snapshot.bots[0];
+  render(snapshot: GameSnapshot, playerId: string): void {
+    const player = snapshot.bots.find((bot) => bot.id === playerId) ?? snapshot.bots[0];
     const center = player?.position ?? { x: this.map.width / 2, y: this.map.height / 2 };
     const camera = this.getCamera(center);
 
@@ -107,7 +107,7 @@ export class GameRenderer {
     this.dynamicGfx.clear();
     this.drawExtractionPulse(snapshot);
     this.drawDots(snapshot, playerContext);
-    this.drawBots(snapshot, playerContext);
+    this.drawBots(snapshot, playerId, playerContext);
 
     if (player) {
       this.drawNoises(snapshot, player);
@@ -326,9 +326,9 @@ export class GameRenderer {
     g.circle(x, y, Math.max(1.4, radius * 0.15)).fill({ color: INK.structure });
   }
 
-  private drawBots(snapshot: GameSnapshot, playerContext: string): void {
+  private drawBots(snapshot: GameSnapshot, playerId: string, playerContext: string): void {
     const sorted = [...snapshot.bots].sort((a, b) => a.position.y - b.position.y);
-    const player = snapshot.bots.find((bot) => bot.id === snapshot.playerId);
+    const player = snapshot.bots.find((bot) => bot.id === playerId);
 
     for (const bot of sorted) {
       if (bot.state === "consumed") {
@@ -343,7 +343,7 @@ export class GameRenderer {
         // full strength when actually seen — otherwise as a faded ghost, so
         // "I see them" and "I know where they are" read differently.
         const seen =
-          bot.id === snapshot.playerId ||
+          bot.id === playerId ||
           (sameArena && (!player || hasLineOfSight(this.map, playerContext, player.position, bot.position)));
         this.drawBotBody(this.dynamicGfx, bot, snapshot, seen ? 1 : 0.35);
       } else if (sameArena) {
