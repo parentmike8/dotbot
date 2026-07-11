@@ -97,8 +97,6 @@ function runTicks(simulation: DotBotSimulation, count: number): void {
 function snapshotDigest(snapshot: GameSnapshot): string {
   return JSON.stringify({
     timeMs: Number(snapshot.timeMs.toFixed(3)),
-    bankedDots: snapshot.bankedDots,
-    rivalBankedDots: snapshot.rivalBankedDots,
     bots: [...snapshot.bots]
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((bot) => ({
@@ -246,11 +244,8 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("lets AI rivals extract carried Dots", async () => {
-    const baseMap = makeMap([
-      playerSpawn({ position: { x: 400, y: 300 } }),
-      enemySpawn({ position: { x: 100, y: 100 }, inventoryDots: 3 }),
-    ]);
+  it("never lets ambient AI acquire an extraction channel", async () => {
+    const baseMap = makeMap([enemySpawn({ position: { x: 100, y: 100 }, inventoryDots: 3 })]);
     const simulation = await DotBotSimulation.create({
       map: {
         ...baseMap,
@@ -259,11 +254,15 @@ describe("DotBotSimulation", () => {
       config: testConfig,
     });
 
-    runTicks(simulation, 18);
+    let sawExtraction = false;
+    for (let tick = 0; tick < 60; tick += 1) {
+      simulation.step();
+      sawExtraction ||= simulation.getSnapshot().coverages.some((coverage) => coverage.kind === "extract");
+    }
 
     const snapshot = simulation.getSnapshot();
-    expect(snapshot.rivalBankedDots).toBe(3);
-    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.inventoryDots).toBe(0);
+    expect(sawExtraction).toBe(false);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.inventoryDots).toBe(3);
     simulation.dispose();
   });
 
@@ -604,7 +603,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("banks inventory dots at an extraction point", async () => {
+  it("emits extracted and removes the bot after an extraction channel", async () => {
     const baseMap = makeMap([playerSpawn({ position: { x: 100, y: 100 }, inventoryDots: 2 })]);
     const simulation = await DotBotSimulation.create({
       map: {
@@ -622,8 +621,8 @@ describe("DotBotSimulation", () => {
 
     runTicks(simulation, 10);
     snapshot = simulation.getSnapshot();
-    expect(snapshot.bankedDots).toBe(2);
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(0);
+    expect(snapshot.bots.some((bot) => bot.id === "player")).toBe(false);
+    expect(simulation.drainEvents()).toContainEqual({ type: "extracted", botId: "player", squadId: "alpha", inventoryDots: 2 });
     simulation.dispose();
   });
 
@@ -832,7 +831,7 @@ describe("DotBotSimulation", () => {
   });
 
   it(
-    "exercises movement, capture, combat, stairs, and extraction through a two-minute neighborhood soak",
+    "exercises movement, capture, combat, and stairs through a two-minute neighborhood soak",
     async () => {
       const simulation = await DotBotSimulation.create({ map: downtownMap });
       const initialActiveDots = simulation.getSnapshot().debug.activeDots;
@@ -851,7 +850,6 @@ describe("DotBotSimulation", () => {
         capture: false,
         combat: false,
         floorChange: false,
-        rivalExtraction: false,
       };
 
       for (let tick = 0; tick < 7_200; tick += 1) {
@@ -869,7 +867,6 @@ describe("DotBotSimulation", () => {
             const spawn = spawnById.get(bot.id);
             return spawn !== undefined && spawn.controller !== "human" && bot.floorId !== spawn.floorId;
           });
-          milestones.rivalExtraction ||= snapshot.rivalBankedDots > 0;
         }
       }
 
@@ -880,7 +877,6 @@ describe("DotBotSimulation", () => {
         capture: true,
         combat: true,
         floorChange: true,
-        rivalExtraction: true,
       });
       for (const bot of snapshot.bots) {
         expect(Number.isFinite(bot.position.x), `${bot.id} x position`).toBe(true);

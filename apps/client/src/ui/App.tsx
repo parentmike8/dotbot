@@ -146,20 +146,6 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
               <strong>{player?.inventoryDots ?? 0}</strong>
             </span>
           </div>
-          <div className="dot-count banked" aria-label={`${snapshot?.bankedDots ?? 0} banked dots`}>
-            <span className="dot-count-mark banked-mark" />
-            <span className="inventory-value">
-              <span className="hud-caption">Bank</span>
-              <strong>{snapshot?.bankedDots ?? 0}</strong>
-            </span>
-          </div>
-          <div className="dot-count rival-bank" aria-label={`${snapshot?.rivalBankedDots ?? 0} dots extracted by rivals`}>
-            <span className="dot-count-mark rival-bank-mark" />
-            <span className="inventory-value">
-              <span className="hud-caption">Rivals</span>
-              <strong>{snapshot?.rivalBankedDots ?? 0}</strong>
-            </span>
-          </div>
         </div>
       </section>
 

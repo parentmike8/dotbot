@@ -19,7 +19,7 @@ export type SimEvent =
   | { type: "consumed"; botId: string; byBotId: string }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
-  | { type: "dotsBanked"; botId: string; count: number };
+  | { type: "extracted"; botId: string; squadId: string; inventoryDots: number };
 
 // ---------------------------------------------------------------------------
 // Map document model
@@ -313,10 +313,6 @@ export type GameSnapshot = {
   dots: DotEntity[];
   coverages: CoverageSnapshot[];
   noises: NoiseEvent[];
-  /** Dots banked through extraction this session. */
-  bankedDots: number;
-  /** Dots opposing bots have successfully removed from the map. */
-  rivalBankedDots: number;
   debug: {
     tickHz: number;
     tickCount: number;

@@ -110,7 +110,6 @@ export class DotBotSimulation {
   private readonly bots = new Map<string, InternalBot>();
   private readonly controllers = new Map<string, Controller>();
   private readonly inputs = new Map<string, InputCommand>();
-  private readonly primarySquadId: string;
   private readonly dots = new Map<string, InternalDot>();
   private readonly coverages = new Map<string, ActiveCoverage>();
   /** Physics layer index per floor id (GROUND floors resolve to the outdoor layer). */
@@ -125,8 +124,6 @@ export class DotBotSimulation {
   private tickCount = 0;
   private fps = 0;
   private rngState = 481516234;
-  private bankedDots = 0;
-  private rivalBankedDots = 0;
   private noises: NoiseEvent[] = [];
   private noiseSeq = 0;
 
@@ -145,9 +142,6 @@ export class DotBotSimulation {
     for (const spawn of map.botSpawns) {
       this.spawnBot(spawn, spawn.controller ?? "ai");
     }
-
-    const primaryBot = [...this.bots.values()].find((bot) => this.controllers.get(bot.id) === "human") ?? this.bots.values().next().value;
-    this.primarySquadId = primaryBot?.squadId ?? "";
 
     this.spawnDots();
   }
@@ -426,8 +420,6 @@ export class DotBotSimulation {
       dots,
       coverages: [...this.coverages.values()].map((coverage) => ({ ...coverage })),
       noises: this.noises.map((noise) => ({ ...noise, position: { ...noise.position } })),
-      bankedDots: this.bankedDots,
-      rivalBankedDots: this.rivalBankedDots,
       debug: {
         tickHz: this.config.tickHz,
         tickCount: this.tickCount,
@@ -574,7 +566,7 @@ export class DotBotSimulation {
     const shouldFlee = bot.inventoryDots > 0 && bot.shields <= 1;
     const inventoryFull = bot.inventoryDots >= this.config.maxInventoryDots;
 
-    if (shouldFlee || inventoryFull) {
+    if (!bot.isAmbient && (shouldFlee || inventoryFull)) {
       const extraction = this.nearestExtractionTarget(bot);
       if (extraction) {
         return extraction;
@@ -618,7 +610,7 @@ export class DotBotSimulation {
       return makeAiTarget(dot.position, dot.floorId, Math.max(2, bot.radius - dot.radius - 4), bot.radius * 3.2, "loot", dot.id);
     }
 
-    if (bot.inventoryDots >= Math.max(2, this.config.maxInventoryDots - 2)) {
+    if (!bot.isAmbient && bot.inventoryDots >= Math.max(2, this.config.maxInventoryDots - 2)) {
       const extraction = this.nearestExtractionTarget(bot);
       if (extraction) {
         return extraction;
@@ -1285,7 +1277,7 @@ export class DotBotSimulation {
     const activeKeys = new Set<string>();
 
     for (const bot of this.bots.values()) {
-      if (bot.state !== "alive" || bot.floorId !== OUTDOOR_FLOOR_ID || bot.inventoryDots <= 0) {
+      if (bot.isAmbient || bot.state !== "alive" || bot.floorId !== OUTDOOR_FLOOR_ID || bot.inventoryDots <= 0) {
         continue;
       }
 
@@ -1312,19 +1304,8 @@ export class DotBotSimulation {
       });
 
       if (progressMs >= this.config.extractionDurationMs) {
-        const count = bot.inventoryDots;
-        if (bot.squadId === this.primarySquadId) {
-          this.bankedDots += count;
-        } else {
-          this.rivalBankedDots += count;
-        }
-        this.events.push({ type: "dotsBanked", botId: bot.id, count });
-        bot.inventoryDots = 0;
-        bot.aiPath = [];
-        bot.aiPathProjected = false;
-        bot.aiRepathMs = 0;
-        bot.aiRetargetMs = 0;
-        this.coverages.delete(coverageKey);
+        this.events.push({ type: "extracted", botId: bot.id, squadId: bot.squadId, inventoryDots: bot.inventoryDots });
+        this.removeBot(bot.id);
       }
     }
 
