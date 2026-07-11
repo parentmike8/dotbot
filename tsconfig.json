@@ -2,6 +2,8 @@
   "files": [],
   "references": [
     { "path": "./packages/game" },
-    { "path": "./apps/client" }
+    { "path": "./packages/protocol" },
+    { "path": "./apps/client" },
+    { "path": "./apps/server" }
   ]
 }

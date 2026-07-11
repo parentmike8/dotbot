@@ -6,8 +6,13 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "pnpm --filter @dotbot/client dev",
-    "build": "pnpm --filter @dotbot/client build",
+    "dev:server": "pnpm --filter @dotbot/server dev",
+    "dev:all": "concurrently -n client,server -c blue,magenta \"pnpm dev\" \"pnpm dev:server\"",
+    "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }
