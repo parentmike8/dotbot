@@ -1,13 +1,53 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { defaultGameConfig } from "../game";
+import { floorHeight, resolvePlan } from "../game/mapModel";
 import { clamp01 } from "../game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
 
+const coachFadeAtMs = 12_000;
+const coachDismissAtMs = 15_000;
+
+function formatRunClock(timeMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(timeMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 export function App() {
+  // Remounting the session tears down and rebuilds the simulation and
+  // renderer — a full fresh run without reloading the page.
+  const [session, setSession] = useState(0);
+  return <GameSession key={session} onRestart={() => setSession((run) => run + 1)} />;
+}
+
+function GameSession({ onRestart }: { onRestart: () => void }) {
   const { hostRef, snapshot, debugVisible, joystick, joystickHandlers, queueDash } = useDotBotGame();
   const player = snapshot?.bots.find((bot) => bot.id === snapshot.playerId);
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === snapshot.playerId || coverage.targetId === snapshot.playerId);
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / defaultGameConfig.dashCooldownMs) : 1;
+  const runClock = formatRunClock(snapshot?.timeMs ?? 0);
+  const activeRivalCount = snapshot?.bots.filter((bot) => bot.team === "enemy" && bot.state === "alive").length ?? 0;
+  const floorContext = useMemo(() => {
+    if (!snapshot || !player) {
+      return null;
+    }
+
+    const activePlan = resolvePlan(snapshot.map, player.floorId, player.position);
+    const building = activePlan ? snapshot.map.buildings.find((candidate) => candidate.id === activePlan.buildingId) : undefined;
+
+    if (!activePlan || !building) {
+      return null;
+    }
+
+    return {
+      building,
+      activeFloorId: activePlan.planId,
+      floors: [...building.floors].sort((a, b) => floorHeight(b.label) - floorHeight(a.label)),
+    };
+  }, [player, snapshot]);
+  const coachPhase =
+    snapshot && snapshot.timeMs < coachDismissAtMs ? (snapshot.timeMs >= coachFadeAtMs ? "is-leaving" : "") : null;
   const statusText = useMemo(() => {
     if (!snapshot || !player) {
       return "Starting";
@@ -59,30 +99,112 @@ export function App() {
 
       <section className="hud hud-top-left" aria-label="Run status">
         <div className="bot-readout">
+          <div className="status-block">
+            <span className="hud-caption">Status</span>
+            <div className="status-line">{statusText}</div>
+          </div>
           <div className="shield-row" aria-label={`${player?.shields ?? 0} shields`}>
-            {Array.from({ length: player?.maxShields ?? 3 }).map((_, index) => (
-              <span key={index} className={`shield ${index < (player?.shields ?? 0) ? "filled" : ""}`} />
+            {(player?.shieldSegments ?? Array.from({ length: 3 }, () => 0)).map((plate, index) => (
+              <span key={index} className={`shield ${plate >= 1 ? "filled" : plate > 0 ? "cracked" : ""}`} />
             ))}
           </div>
-          <div className="status-line">{statusText}</div>
+          <dl className="run-readout">
+            <div>
+              <dt>Run</dt>
+              <dd>
+                <time dateTime={`PT${Math.floor((snapshot?.timeMs ?? 0) / 1000)}S`}>{runClock}</time>
+              </dd>
+            </div>
+            <div>
+              <dt>Rivals</dt>
+              <dd aria-label={`${activeRivalCount} active rivals`}>{activeRivalCount}</dd>
+            </div>
+          </dl>
         </div>
+        <button
+          type="button"
+          className="restart-button"
+          onClick={(event) => {
+            // Blur so a follow-up Space press dashes instead of re-triggering.
+            event.currentTarget.blur();
+            onRestart();
+          }}
+        >
+          ↻ Restart run
+        </button>
       </section>
 
       <section className="hud hud-top-right" aria-label="Inventory">
-        <div className="dot-count">
-          <span className="dot-count-mark" />
-          <span>{player?.inventoryDots ?? 0}</span>
-        </div>
-        <div className="dot-count banked" aria-label="Banked dots">
-          <span className="dot-count-mark banked-mark" />
-          <span>{snapshot?.bankedDots ?? 0}</span>
+        <div className="inventory-readout">
+          <div className="dot-count" aria-label={`${player?.inventoryDots ?? 0} carried dots`}>
+            <span className="dot-count-mark" />
+            <span className="inventory-value">
+              <span className="hud-caption">Carry</span>
+              <strong>{player?.inventoryDots ?? 0}</strong>
+            </span>
+          </div>
+          <div className="dot-count banked" aria-label={`${snapshot?.bankedDots ?? 0} banked dots`}>
+            <span className="dot-count-mark banked-mark" />
+            <span className="inventory-value">
+              <span className="hud-caption">Bank</span>
+              <strong>{snapshot?.bankedDots ?? 0}</strong>
+            </span>
+          </div>
+          <div className="dot-count rival-bank" aria-label={`${snapshot?.rivalBankedDots ?? 0} dots extracted by rivals`}>
+            <span className="dot-count-mark rival-bank-mark" />
+            <span className="inventory-value">
+              <span className="hud-caption">Rivals</span>
+              <strong>{snapshot?.rivalBankedDots ?? 0}</strong>
+            </span>
+          </div>
         </div>
       </section>
+
+      {floorContext ? (
+        <aside className="hud floor-rail" aria-label={`${floorContext.building.name} floor guide`}>
+          <span className="floor-rail-name">{floorContext.building.name}</span>
+          <ol>
+            {floorContext.floors.map((floor) => {
+              const isActive = floor.id === floorContext.activeFloorId;
+              return (
+                <li key={floor.id} className={isActive ? "active" : ""} aria-current={isActive ? "location" : undefined}>
+                  <span className="floor-label">{floor.label}</span>
+                  <span className="floor-tick" />
+                </li>
+              );
+            })}
+          </ol>
+        </aside>
+      ) : null}
 
       {playerCoverage ? (
         <div className="coverage-meter" aria-label="Coverage progress">
           <span style={{ width: `${clamp01(playerCoverage.progressMs / playerCoverage.durationMs) * 100}%` }} />
         </div>
+      ) : null}
+
+      {coachPhase !== null ? (
+        <section className={`quick-coach ${coachPhase}`} aria-label="Quick start guide">
+          <span className="coach-title">Quick start</span>
+          <ol>
+            <li>
+              <strong>Move</strong>
+              <span>WASD / arrows</span>
+            </li>
+            <li>
+              <strong>Dash</strong>
+              <span>Space / button</span>
+            </li>
+            <li>
+              <strong>Collect</strong>
+              <span>Cover a Dot</span>
+            </li>
+            <li>
+              <strong>Bank</strong>
+              <span>Extraction pad</span>
+            </li>
+          </ol>
+        </section>
       ) : null}
 
       <div className="touch-controls" aria-label="Touch controls">

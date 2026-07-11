@@ -3,14 +3,23 @@ import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import {
   buildingContaining,
+  classifyNoise,
   collisionLayers,
   contextKey,
+  floorHeight,
+  floorPlanById,
+  isGroundFloor,
   isSolidObject,
   locationLabel,
   physicsFloorId,
+  resolvePlan,
+  stairConnections,
+  stairExitPoint,
   stairHalves,
 } from "./mapModel";
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
+import { findNavigationPath, prewarmNavigation } from "./navigation";
+import { applyShieldHit, platesForCount, plateSum } from "./shields";
 import { loadRapier } from "./rapier";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import { hasLineOfSight } from "./visibility";
@@ -18,6 +27,7 @@ import type {
   BotSpawn,
   BotState,
   BotTeam,
+  Building,
   CoverageKind,
   CoverageSnapshot,
   DotBotEntity,
@@ -61,6 +71,12 @@ type InternalBot = DotBotEntity & {
   prevPosition: Vec2;
   aiWanderTarget: Vec2;
   aiRetargetMs: number;
+  aiPath: Vec2[];
+  aiPathTarget: Vec2;
+  aiPathFloorId: string;
+  aiRepathMs: number;
+  aiPathProjected: boolean;
+  aiAvoidTargets: Map<string, number>;
   consumedRespawnMs: number;
 };
 
@@ -68,10 +84,16 @@ type InternalDot = DotEntity;
 
 type ActiveCoverage = CoverageSnapshot;
 
+type AiIntent = "loot" | "hunt" | "revive" | "consume" | "extract" | "investigate" | "escort" | "wander";
+
 type AiTarget = {
   position: Vec2;
+  floorId: string;
   stopDistance: number;
   slowDistance: number;
+  intent: AiIntent;
+  projectionAllowed: boolean;
+  targetId?: string;
 };
 
 type SimulationOptions = {
@@ -96,12 +118,14 @@ export class DotBotSimulation {
   private readonly solidRects = new Map<string, Rect[]>();
   /** Stairs per physics floor. */
   private readonly stairsByFloor = new Map<string, StairLink[]>();
+  private disposed = false;
   private input: InputCommand = { move: zeroVec(), dash: false };
   private timeMs = 0;
   private tickCount = 0;
   private fps = 0;
   private rngState = 481516234;
   private bankedDots = 0;
+  private rivalBankedDots = 0;
   private noises: NoiseEvent[] = [];
   private noiseSeq = 0;
 
@@ -128,6 +152,10 @@ export class DotBotSimulation {
     const rapier = await loadRapier();
     const config = { ...defaultGameConfig, ...options.config };
     const map = options.map ?? downtownMap;
+
+    // Navigation graph construction is intentionally paid during the async
+    // loading boundary, never in the first live AI tick.
+    prewarmNavigation(map, config.botRadius);
 
     return new DotBotSimulation(rapier, map, config);
   }
@@ -237,6 +265,7 @@ export class DotBotSimulation {
     );
     collider.setCollisionGroups(this.interactionGroups(floorId));
 
+    const shieldSegments = platesForCount(maxShields, shields);
     const bot: InternalBot = {
       id: spawn.id,
       name: spawn.name,
@@ -246,8 +275,10 @@ export class DotBotSimulation {
       radius: this.config.botRadius,
       state,
       floorId,
+      facing: 0,
       maxShields,
-      shields,
+      shields: plateSum(shieldSegments),
+      shieldSegments,
       inventoryDots: spawn.inventoryDots ?? 0,
       dashCooldownMs: 0,
       dashActiveMs: 0,
@@ -261,6 +292,12 @@ export class DotBotSimulation {
       prevPosition: { ...spawn.position },
       aiWanderTarget: { ...spawn.position },
       aiRetargetMs: 0,
+      aiPath: [],
+      aiPathTarget: { ...spawn.position },
+      aiPathFloorId: floorId,
+      aiRepathMs: 0,
+      aiPathProjected: false,
+      aiAvoidTargets: new Map(),
       consumedRespawnMs: 0,
     };
 
@@ -284,6 +321,10 @@ export class DotBotSimulation {
   }
 
   step(): void {
+    if (this.disposed) {
+      return;
+    }
+
     const dtSeconds = 1 / this.config.tickHz;
     const dtMs = dtSeconds * 1000;
 
@@ -298,7 +339,7 @@ export class DotBotSimulation {
     }
 
     this.updatePlayerIntent();
-    this.updateBotAi(dtMs);
+    this.updateBotAi();
     this.applyMovement();
 
     this.world.step();
@@ -326,6 +367,7 @@ export class DotBotSimulation {
       coverages: [...this.coverages.values()].map((coverage) => ({ ...coverage })),
       noises: this.noises.map((noise) => ({ ...noise, position: { ...noise.position } })),
       bankedDots: this.bankedDots,
+      rivalBankedDots: this.rivalBankedDots,
       locationLabel: player ? locationLabel(this.map, player.floorId, player.position) : this.map.name.toUpperCase(),
       debug: {
         tickHz: this.config.tickHz,
@@ -338,7 +380,17 @@ export class DotBotSimulation {
   }
 
   dispose(): void {
-    this.world.free();
+    if (this.disposed) {
+      return;
+    }
+
+    this.disposed = true;
+    try {
+      this.world.free();
+    } catch {
+      // React Fast Refresh can tear down a WASM world that has already been
+      // released. Cleanup must remain safe and idempotent.
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -376,6 +428,16 @@ export class DotBotSimulation {
       bot.dashActiveMs = Math.max(0, bot.dashActiveMs - dtMs);
       bot.invulnerabilityMs = Math.max(0, bot.invulnerabilityMs - dtMs);
       bot.aiRetargetMs = Math.max(0, bot.aiRetargetMs - dtMs);
+      bot.aiRepathMs = Math.max(0, bot.aiRepathMs - dtMs);
+
+      for (const [targetId, remainingMs] of bot.aiAvoidTargets) {
+        const nextRemainingMs = remainingMs - dtMs;
+        if (nextRemainingMs <= 0) {
+          bot.aiAvoidTargets.delete(targetId);
+        } else {
+          bot.aiAvoidTargets.set(targetId, nextRemainingMs);
+        }
+      }
     }
   }
 
@@ -399,19 +461,22 @@ export class DotBotSimulation {
     }
   }
 
-  private updateBotAi(dtMs: number): void {
+  private updateBotAi(): void {
     for (const bot of this.bots.values()) {
       if (bot.team === "player" || bot.state !== "alive") {
         continue;
       }
 
-      const target = this.pickBotTarget(bot, dtMs);
-      const desired = steerToward(bot.position, target);
+      const objective = this.pickBotTarget(bot);
+      const routedTarget = this.routeAiTarget(bot, objective);
+      const desired = this.steerBotAlongPath(bot, routedTarget);
       bot.desiredMove = desired;
 
       if (length(desired) > 0.05) {
         bot.lastAim = desired;
       }
+
+      this.tryAiDash(bot, objective, desired);
     }
   }
 
@@ -419,64 +484,408 @@ export class DotBotSimulation {
     return contextKey(this.map, bot.floorId, bot.position) === contextKey(this.map, floorId, position);
   }
 
-  private pickBotTarget(bot: InternalBot, dtMs: number): AiTarget {
-    const reachable = (target: { floorId: string; position: Vec2 }) => this.sameArena(bot, target.floorId, target.position);
+  private pickBotTarget(bot: InternalBot): AiTarget {
+    const sameBuilding = (target: { floorId: string; position: Vec2 }) => {
+      const botPlan = resolvePlan(this.map, bot.floorId, bot.position);
+      const targetPlan = resolvePlan(this.map, target.floorId, target.position);
+      return botPlan !== null && targetPlan !== null && botPlan.buildingId === targetPlan.buildingId;
+    };
+    const localOrVertical = (target: { floorId: string; position: Vec2 }) => this.sameArena(bot, target.floorId, target.position) || sameBuilding(target);
+    const available = (target: { id: string }) => !bot.aiAvoidTargets.has(target.id);
+    const rank = <T extends { floorId: string; position: Vec2 }>(values: T[]) =>
+      values.sort((a, b) => this.strategicDistance(bot, a) - this.strategicDistance(bot, b))[0];
 
-    const friendlyDowned = [...this.bots.values()]
-      .filter((target) => target.id !== bot.id && target.state === "downed" && areFriendly(bot, target) && reachable(target))
-      .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
+    const friendlyDowned = rank(
+      [...this.bots.values()].filter(
+        (target) => target.id !== bot.id && target.state === "downed" && areFriendly(bot, target) && localOrVertical(target) && available(target),
+      ),
+    );
 
-    if (friendlyDowned && bot.inventoryDots > 0 && distance(bot.position, friendlyDowned.position) < 280) {
-      return makeAiTarget(friendlyDowned.position, bot.radius * 0.42, bot.radius * 3);
+    if (friendlyDowned && bot.inventoryDots > 0 && this.strategicDistance(bot, friendlyDowned) < 760) {
+      return makeAiTarget(friendlyDowned.position, friendlyDowned.floorId, bot.radius * 0.42, bot.radius * 3, "revive", friendlyDowned.id);
     }
 
-    const hostileDowned = [...this.bots.values()]
-      .filter((target) => target.id !== bot.id && target.state === "downed" && !areFriendly(bot, target) && reachable(target))
-      .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
+    const shouldFlee = bot.inventoryDots > 0 && bot.shields <= 1;
+    const inventoryFull = bot.inventoryDots >= this.config.maxInventoryDots;
 
-    if (hostileDowned && distance(bot.position, hostileDowned.position) < 330) {
-      return makeAiTarget(hostileDowned.position, bot.radius * 0.42, bot.radius * 3);
-    }
-
-    const dot = [...this.dots.values()]
-      .filter((candidate) => candidate.active && bot.inventoryDots < this.config.maxInventoryDots && reachable(candidate))
-      .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
-
-    if (dot && distance(bot.position, dot.position) < 310) {
-      return makeAiTarget(dot.position, Math.max(2, bot.radius - dot.radius - 4), bot.radius * 3.2);
-    }
-
-    const hostileAlive = [...this.bots.values()]
-      .filter((target) => target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && reachable(target))
-      .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
-
-    if (
-      hostileAlive &&
-      distance(bot.position, hostileAlive.position) < 380 &&
-      hasLineOfSight(this.map, contextKey(this.map, bot.floorId, bot.position), bot.position, hostileAlive.position)
-    ) {
-      // Stop just outside contact range (sum of radii ~2r), otherwise the
-      // chaser presses into its target forever and bulldozes it across the map.
-      return makeAiTarget(hostileAlive.position, bot.radius * 2.3, bot.radius * 4.5);
-    }
-
-    // Idle allies escort the player instead of wandering off.
-    if (bot.team === "ally") {
-      const player = this.bots.get("player");
-
-      if (player && player.state === "alive" && this.sameArena(bot, player.floorId, player.position)) {
-        return makeAiTarget(player.position, bot.radius * 3, bot.radius * 6);
+    if (shouldFlee || inventoryFull) {
+      const extraction = this.nearestExtractionTarget(bot);
+      if (extraction) {
+        return extraction;
       }
     }
 
-    bot.aiRetargetMs -= dtMs;
+    const hostileDowned = rank(
+      [...this.bots.values()].filter(
+        (target) => target.id !== bot.id && target.state === "downed" && !areFriendly(bot, target) && localOrVertical(target) && available(target),
+      ),
+    );
+
+    if (hostileDowned && this.strategicDistance(bot, hostileDowned) < 760) {
+      return makeAiTarget(hostileDowned.position, hostileDowned.floorId, bot.radius * 0.42, bot.radius * 3, "consume", hostileDowned.id);
+    }
+
+    const visibleHostile = rank(
+      [...this.bots.values()].filter(
+        (target) =>
+          target.id !== bot.id &&
+          target.state === "alive" &&
+          !areFriendly(bot, target) &&
+          available(target) &&
+          this.sameArena(bot, target.floorId, target.position) &&
+          distance(bot.position, target.position) < 540 &&
+          hasLineOfSight(this.map, contextKey(this.map, bot.floorId, bot.position), bot.position, target.position),
+      ),
+    );
+
+    if (visibleHostile) {
+      return makeAiTarget(visibleHostile.position, visibleHostile.floorId, bot.radius * 1.85, bot.radius * 4.5, "hunt", visibleHostile.id);
+    }
+
+    const dot = rank(
+      [...this.dots.values()].filter(
+        (candidate) => candidate.active && bot.inventoryDots < this.config.maxInventoryDots && localOrVertical(candidate) && available(candidate),
+      ),
+    );
+
+    if (dot && this.strategicDistance(bot, dot) < 820) {
+      return makeAiTarget(dot.position, dot.floorId, Math.max(2, bot.radius - dot.radius - 4), bot.radius * 3.2, "loot", dot.id);
+    }
+
+    if (bot.inventoryDots >= Math.max(2, this.config.maxInventoryDots - 2)) {
+      const extraction = this.nearestExtractionTarget(bot);
+      if (extraction) {
+        return extraction;
+      }
+    }
+
+    const strategicHostile = rank(
+      [...this.bots.values()].filter(
+        (target) => target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && localOrVertical(target) && available(target),
+      ),
+    );
+
+    if (strategicHostile && this.strategicDistance(bot, strategicHostile) < 900) {
+      return makeAiTarget(strategicHostile.position, strategicHostile.floorId, bot.radius * 1.85, bot.radius * 4.5, "hunt", strategicHostile.id);
+    }
+
+    const heard = [...this.noises]
+      .reverse()
+      .find(
+        (noise) =>
+          available(noise) && classifyNoise(this.map, bot.floorId, bot.position, noise.floorId, noise.position, noise.loudness) !== null,
+      );
+
+    if (heard) {
+      return makeAiTarget(heard.position, heard.floorId, 34, bot.radius * 5, "investigate", heard.id);
+    }
+
+    // Idle allies keep the player in view, including climbing after them.
+    if (bot.team === "ally") {
+      const player = this.bots.get("player");
+
+      if (player && player.state === "alive" && available(player)) {
+        return makeAiTarget(player.position, player.floorId, bot.radius * 3, bot.radius * 7, "escort", player.id);
+      }
+    }
 
     if (bot.aiRetargetMs <= 0 || distance(bot.position, bot.aiWanderTarget) < 48) {
       bot.aiWanderTarget = this.pickWanderTarget(bot);
       bot.aiRetargetMs = 1400 + this.nextRandom() * 1500;
     }
 
-    return makeAiTarget(bot.aiWanderTarget, 48, bot.radius * 4);
+    return makeAiTarget(bot.aiWanderTarget, bot.floorId, 48, bot.radius * 4, "wander");
+  }
+
+  private strategicDistance(bot: InternalBot, target: { floorId: string; position: Vec2 }): number {
+    const botPlan = resolvePlan(this.map, bot.floorId, bot.position);
+    const targetPlan = resolvePlan(this.map, target.floorId, target.position);
+    let score = distance(bot.position, target.position);
+
+    if (botPlan && targetPlan) {
+      if (botPlan.buildingId === targetPlan.buildingId) {
+        const building = this.map.buildings.find((candidate) => candidate.id === botPlan.buildingId);
+        const botIndex = building?.floors.findIndex((floor) => floor.id === botPlan.planId) ?? -1;
+        const targetIndex = building?.floors.findIndex((floor) => floor.id === targetPlan.planId) ?? -1;
+        const botLevel = botIndex >= 0 ? botIndex : floorHeight(botPlan.label);
+        const targetLevel = targetIndex >= 0 ? targetIndex : floorHeight(targetPlan.label);
+        score += Math.abs(botLevel - targetLevel) * 150;
+      } else {
+        score += Math.abs(floorHeight(botPlan.label) - floorHeight(targetPlan.label)) * 150;
+        score += 420;
+      }
+    } else if (botPlan || targetPlan) {
+      score += 180;
+    }
+
+    return score;
+  }
+
+  private nearestExtractionTarget(bot: InternalBot): AiTarget | null {
+    const point = this.map.extractionPoints
+      .filter((candidate) => !bot.aiAvoidTargets.has(candidate.id))
+      .sort((a, b) => {
+        const aCenter = { x: a.rect.x + a.rect.w / 2, y: a.rect.y + a.rect.h / 2 };
+        const bCenter = { x: b.rect.x + b.rect.w / 2, y: b.rect.y + b.rect.h / 2 };
+        return distance(bot.position, aCenter) - distance(bot.position, bCenter);
+      })[0];
+
+    if (!point) {
+      return null;
+    }
+
+    return makeAiTarget(
+      { x: point.rect.x + point.rect.w / 2, y: point.rect.y + point.rect.h / 2 },
+      OUTDOOR_FLOOR_ID,
+      12,
+      bot.radius * 5,
+      "extract",
+      point.id,
+    );
+  }
+
+  /** Convert a strategic target into the next same-floor navigation target. */
+  private routeAiTarget(bot: InternalBot, target: AiTarget): AiTarget {
+    const targetFloorId = physicsFloorId(this.map, target.floorId);
+
+    if (bot.floorId === targetFloorId) {
+      return { ...target, floorId: bot.floorId };
+    }
+
+    const currentPlan = resolvePlan(this.map, bot.floorId, bot.position);
+    const finalPlan = resolvePlan(this.map, targetFloorId, target.position);
+
+    if (currentPlan) {
+      const currentBuilding = this.map.buildings.find((building) => building.id === currentPlan.buildingId);
+      const ground = currentBuilding?.floors.find(isGroundFloor);
+      const destinationPlanId = finalPlan?.buildingId === currentPlan.buildingId ? finalPlan.planId : ground?.id;
+
+      if (destinationPlanId && destinationPlanId !== currentPlan.planId) {
+        const nextPlanId = this.nextPlanOnRoute(currentPlan.planId, destinationPlanId);
+        const plan = floorPlanById(this.map, currentPlan.planId);
+        const stair = nextPlanId
+          ? plan?.stairs.find((candidate) => this.stairTargetPlanId(currentBuilding!, candidate) === nextPlanId)
+          : undefined;
+
+        if (stair) {
+          return {
+            ...target,
+            floorId: bot.floorId,
+            position: stairExitPoint(stair),
+            stopDistance: 1,
+            slowDistance: bot.radius * 4,
+            projectionAllowed: false,
+          };
+        }
+      }
+    }
+
+    // From the street, enter the target building through a real ground door.
+    if (!currentPlan && finalPlan) {
+      const building = this.map.buildings.find((candidate) => candidate.id === finalPlan.buildingId);
+      if (building) {
+        return {
+          ...target,
+          floorId: OUTDOOR_FLOOR_ID,
+          position: this.nearestBuildingEntrance(building, bot.position),
+          stopDistance: 8,
+          slowDistance: bot.radius * 4,
+          projectionAllowed: false,
+        };
+      }
+    }
+
+    return { ...target, floorId: bot.floorId };
+  }
+
+  private nextPlanOnRoute(start: string, goal: string): string | null {
+    const connections = stairConnections(this.map);
+    const queue = [start];
+    const previous = new Map<string, string | null>([[start, null]]);
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current === goal) {
+        break;
+      }
+
+      for (const next of connections.get(current) ?? []) {
+        if (!previous.has(next)) {
+          previous.set(next, current);
+          queue.push(next);
+        }
+      }
+    }
+
+    if (!previous.has(goal)) {
+      return null;
+    }
+
+    let cursor = goal;
+    while (previous.get(cursor) && previous.get(cursor) !== start) {
+      cursor = previous.get(cursor)!;
+    }
+    return cursor === start ? null : cursor;
+  }
+
+  private stairTargetPlanId(building: Building, stair: StairLink): string | null {
+    if (stair.toFloorId !== OUTDOOR_FLOOR_ID) {
+      return stair.toFloorId;
+    }
+    return building.floors.find(isGroundFloor)?.id ?? null;
+  }
+
+  private nearestBuildingEntrance(building: Building, from: Vec2): Vec2 {
+    const ground = building.floors.find(isGroundFloor);
+    const fp = building.footprint;
+    const inset = this.config.botRadius + 18;
+    const candidates = (ground?.doorways ?? []).flatMap((doorway) => {
+      if (doorway.dir === "h" && Math.abs(doorway.y - (fp.y + 6)) < 10) {
+        return [{ x: doorway.x, y: fp.y + inset }];
+      }
+      if (doorway.dir === "h" && Math.abs(doorway.y - (fp.y + fp.h - 6)) < 10) {
+        return [{ x: doorway.x, y: fp.y + fp.h - inset }];
+      }
+      if (doorway.dir === "v" && Math.abs(doorway.x - (fp.x + 6)) < 10) {
+        return [{ x: fp.x + inset, y: doorway.y }];
+      }
+      if (doorway.dir === "v" && Math.abs(doorway.x - (fp.x + fp.w - 6)) < 10) {
+        return [{ x: fp.x + fp.w - inset, y: doorway.y }];
+      }
+      return [];
+    });
+
+    return candidates.sort((a, b) => distance(from, a) - distance(from, b))[0] ?? {
+      x: fp.x + fp.w / 2,
+      y: fp.y + fp.h / 2,
+    };
+  }
+
+  private steerBotAlongPath(bot: InternalBot, target: AiTarget): Vec2 {
+    const targetChanged =
+      bot.aiPathFloorId !== bot.floorId ||
+      distance(bot.aiPathTarget, target.position) > (target.intent === "hunt" || target.intent === "escort" ? 64 : 20);
+
+    if (bot.aiRepathMs <= 0 || targetChanged) {
+      let path = findNavigationPath(this.map, bot.floorId, bot.position, target.position, bot.radius);
+      let projected = false;
+
+      if (path.length === 0) {
+        const projectedPath = this.projectedInteractionPath(bot, target);
+        path = projectedPath ?? [];
+        projected = projectedPath !== null;
+      }
+
+      bot.aiPathTarget = { ...target.position };
+      bot.aiPathFloorId = bot.floorId;
+      bot.aiRepathMs = 700 + this.nextRandom() * 300;
+      bot.aiPathProjected = projected;
+
+      if (path.length === 0) {
+        bot.aiPath = [];
+        bot.aiRepathMs = 0;
+
+        if (target.targetId) {
+          bot.aiAvoidTargets.set(target.targetId, 1800 + this.nextRandom() * 1200);
+        } else if (target.intent === "wander") {
+          bot.aiRetargetMs = 0;
+        }
+
+        // An empty A* result is not permission to steer through geometry.
+        return zeroVec();
+      }
+
+      bot.aiPath = path.length > 1 ? path.slice(1) : [];
+    }
+
+    while (bot.aiPath.length > 1 && distance(bot.position, bot.aiPath[0]) < bot.radius * 0.8) {
+      bot.aiPath.shift();
+    }
+
+    const waypoint = bot.aiPath[0] ?? target.position;
+    const onFinalSegment = bot.aiPath.length <= 1;
+    return steerToward(
+      bot.position,
+      onFinalSegment
+        ? { ...target, position: waypoint, stopDistance: bot.aiPathProjected ? 1 : target.stopDistance }
+        : { ...target, position: waypoint, stopDistance: 4, slowDistance: bot.radius * 2.5 },
+    );
+  }
+
+  /**
+   * Some interaction centers intentionally sit closer to scenery than a bot
+   * center may. Try deterministic, interaction-safe points around them before
+   * abandoning the objective; never project combat or traversal destinations.
+   */
+  private projectedInteractionPath(bot: InternalBot, target: AiTarget): Vec2[] | null {
+    if (!target.projectionAllowed) {
+      return null;
+    }
+
+    const maximumRadius =
+      target.intent === "loot"
+        ? target.stopDistance
+        : target.intent === "revive" || target.intent === "consume"
+          ? Math.max(target.stopDistance, bot.radius * 1.35)
+          : 0;
+
+    if (maximumRadius <= 1) {
+      return null;
+    }
+
+    const radii = [maximumRadius, maximumRadius * 0.66, maximumRadius * 0.33];
+    const directions = [
+      { x: 1, y: 0 },
+      { x: Math.SQRT1_2, y: Math.SQRT1_2 },
+      { x: 0, y: 1 },
+      { x: -Math.SQRT1_2, y: Math.SQRT1_2 },
+      { x: -1, y: 0 },
+      { x: -Math.SQRT1_2, y: -Math.SQRT1_2 },
+      { x: 0, y: -1 },
+      { x: Math.SQRT1_2, y: -Math.SQRT1_2 },
+    ];
+    const candidates = radii.flatMap((radius, ring) =>
+      directions.map((direction, directionIndex) => ({
+        position: add(target.position, scale(direction, radius)),
+        order: ring * directions.length + directionIndex,
+      })),
+    );
+
+    candidates.sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position) || a.order - b.order);
+
+    for (const candidate of candidates) {
+      const path = findNavigationPath(this.map, bot.floorId, bot.position, candidate.position, bot.radius);
+      if (path.length > 0) {
+        return path;
+      }
+    }
+
+    return null;
+  }
+
+  private tryAiDash(bot: InternalBot, target: AiTarget, desired: Vec2): void {
+    if (target.intent !== "hunt" || !target.targetId || bot.dashCooldownMs > 0 || bot.dashActiveMs > 0 || length(desired) < 0.01) {
+      return;
+    }
+
+    const hostile = this.bots.get(target.targetId);
+    if (!hostile || hostile.state !== "alive" || !this.sameArena(bot, hostile.floorId, hostile.position)) {
+      return;
+    }
+
+    const targetDistance = distance(bot.position, hostile.position);
+    if (
+      targetDistance < bot.radius * 1.9 ||
+      targetDistance > 290 ||
+      !hasLineOfSight(this.map, contextKey(this.map, bot.floorId, bot.position), bot.position, hostile.position)
+    ) {
+      return;
+    }
+
+    bot.lastAim = normalize(desired);
+    bot.dashActiveMs = this.config.dashDurationMs;
+    bot.dashCooldownMs = this.config.dashCooldownMs + 250 + this.nextRandom() * 450;
+    this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash);
   }
 
   /** Indoor bots wander their building footprint; outdoor bots wander the map. */
@@ -507,14 +916,14 @@ export class DotBotSimulation {
         continue;
       }
 
-      const speed =
-        bot.id === "player" && bot.dashActiveMs > 0
-          ? this.config.dashSpeed
-          : bot.team === "player"
-            ? this.config.playerSpeed
-            : this.config.botSpeed;
-      const direction = bot.id === "player" && bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
+      const speed = bot.dashActiveMs > 0 ? this.config.dashSpeed : bot.team === "player" ? this.config.playerSpeed : this.config.botSpeed;
+      const direction = bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
       bot.body.setLinvel(scale(direction, speed), true);
+
+      // Shield plates follow the direction of travel.
+      if (length(direction) > 0.05) {
+        bot.facing = Math.atan2(direction.y, direction.x);
+      }
     }
   }
 
@@ -575,35 +984,38 @@ export class DotBotSimulation {
    * crossing the run's midline (the break line on the plan) while inside the
    * stair swaps the bot's floor mid-stride — no teleport. Walking back across
    * the midline descends again via the paired stair on the other floor.
-   * Only the player rides stairs for now; AI keeps to its own floor.
+   * Player and AI use the same geometry and transition rules.
    */
   private resolveStairs(): void {
-    const player = this.bots.get("player");
-
-    if (!player || player.state !== "alive") {
-      return;
-    }
-
-    for (const stair of this.stairsByFloor.get(player.floorId) ?? []) {
-      if (!rectContainsPoint(stair.rect, player.position) || !rectContainsPoint(stair.rect, player.prevPosition)) {
+    for (const bot of this.bots.values()) {
+      if (bot.state !== "alive") {
         continue;
       }
 
-      const { entry, exit } = stairHalves(stair);
+      for (const stair of this.stairsByFloor.get(bot.floorId) ?? []) {
+        if (!rectContainsPoint(stair.rect, bot.position) || !rectContainsPoint(stair.rect, bot.prevPosition)) {
+          continue;
+        }
 
-      if (!rectContainsPoint(entry, player.prevPosition) || !rectContainsPoint(exit, player.position)) {
-        continue;
+        const { entry, exit } = stairHalves(stair);
+
+        if (!rectContainsPoint(entry, bot.prevPosition) || !rectContainsPoint(exit, bot.position)) {
+          continue;
+        }
+
+        const sourceFloor = bot.floorId;
+        const targetFloor = physicsFloorId(this.map, stair.toFloorId);
+        bot.floorId = targetFloor;
+        bot.collider.setCollisionGroups(this.interactionGroups(targetFloor));
+        bot.aiPath = [];
+        bot.aiRepathMs = 0;
+        bot.aiPathProjected = false;
+
+        // Stairs announce themselves on both connected floors.
+        this.emitNoise("stairs", bot.position, sourceFloor, NOISE_LOUDNESS.stairs);
+        this.emitNoise("stairs", bot.position, targetFloor, NOISE_LOUDNESS.stairs);
+        break;
       }
-
-      const sourceFloor = player.floorId;
-      const targetFloor = physicsFloorId(this.map, stair.toFloorId);
-      player.floorId = targetFloor;
-      player.collider.setCollisionGroups(this.interactionGroups(targetFloor));
-
-      // Stairs announce themselves on both connected floors.
-      this.emitNoise("stairs", player.position, sourceFloor, NOISE_LOUDNESS.stairs);
-      this.emitNoise("stairs", player.position, targetFloor, NOISE_LOUDNESS.stairs);
-      break;
     }
   }
 
@@ -616,6 +1028,11 @@ export class DotBotSimulation {
         const b = aliveBots[j];
 
         if (a.floorId !== b.floorId) {
+          continue;
+        }
+
+        // No friendly fire: squadmates bump, never wound each other.
+        if (areFriendly(a, b)) {
           continue;
         }
 
@@ -655,7 +1072,11 @@ export class DotBotSimulation {
       return;
     }
 
-    target.shields = Math.max(0, target.shields - 1);
+    // A hit on a live plate shatters it; a hit on bare body cracks the
+    // nearest surviving plate by half (see shields.ts for the model).
+    const impactAngle = Math.atan2(source.position.y - target.position.y, source.position.x - target.position.x);
+    applyShieldHit(target.facing, target.shieldSegments, impactAngle);
+    target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     this.emitNoise("impact", target.position, target.floorId, NOISE_LOUDNESS.impact);
 
@@ -777,41 +1198,53 @@ export class DotBotSimulation {
   }
 
   private resolveExtraction(dtMs: number): void {
-    const player = this.bots.get("player");
+    const activeKeys = new Set<string>();
 
-    for (const point of this.map.extractionPoints) {
-      const coverageKey = `extract:${point.id}`;
-      const eligible =
-        player &&
-        player.state === "alive" &&
-        player.floorId === OUTDOOR_FLOOR_ID &&
-        player.inventoryDots > 0 &&
-        rectContainsPoint(point.rect, player.position);
-
-      if (!eligible) {
-        this.coverages.delete(coverageKey);
+    for (const bot of this.bots.values()) {
+      if (bot.state !== "alive" || bot.floorId !== OUTDOOR_FLOOR_ID || bot.inventoryDots <= 0) {
         continue;
       }
 
+      const point = this.map.extractionPoints.find((candidate) => rectContainsPoint(candidate.rect, bot.position));
+      if (!point) {
+        continue;
+      }
+
+      const coverageKey = `extract:${bot.id}`;
+      activeKeys.add(coverageKey);
       const existing = this.coverages.get(coverageKey);
-      const progressMs = existing ? existing.progressMs + dtMs : dtMs;
+      const progressMs = existing?.targetId === point.id ? existing.progressMs + dtMs : dtMs;
 
       if (this.channelPingDue(progressMs, dtMs)) {
-        this.emitNoise("channel", player.position, player.floorId, NOISE_LOUDNESS.extractChannel);
+        this.emitNoise("channel", bot.position, bot.floorId, NOISE_LOUDNESS.extractChannel);
       }
 
       this.coverages.set(coverageKey, {
         kind: "extract",
-        actorId: player.id,
+        actorId: bot.id,
         targetId: point.id,
         progressMs,
         durationMs: this.config.extractionDurationMs,
       });
 
       if (progressMs >= this.config.extractionDurationMs) {
-        this.bankedDots += player.inventoryDots;
-        player.inventoryDots = 0;
+        if (bot.team === "enemy") {
+          this.rivalBankedDots += bot.inventoryDots;
+        } else {
+          this.bankedDots += bot.inventoryDots;
+        }
+        bot.inventoryDots = 0;
+        bot.aiPath = [];
+        bot.aiPathProjected = false;
+        bot.aiRepathMs = 0;
+        bot.aiRetargetMs = 0;
         this.coverages.delete(coverageKey);
+      }
+    }
+
+    for (const [key, coverage] of this.coverages) {
+      if (coverage.kind === "extract" && !activeKeys.has(key)) {
+        this.coverages.delete(key);
       }
     }
   }
@@ -819,7 +1252,8 @@ export class DotBotSimulation {
   private reviveBot(target: InternalBot, reviver: InternalBot): void {
     reviver.inventoryDots = Math.max(0, reviver.inventoryDots - 1);
     target.state = "alive";
-    target.shields = 1;
+    target.shieldSegments = platesForCount(target.maxShields, 1);
+    target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     const nudge = scale(length(reviver.lastAim) > 0 ? reviver.lastAim : { x: 1, y: 0 }, this.config.botRadius * 2.4);
     const revivedPosition = add(target.position, nudge);
@@ -838,6 +1272,7 @@ export class DotBotSimulation {
     const loot = Math.min(this.config.maxInventoryDots - consumer.inventoryDots, target.inventoryDots);
     consumer.inventoryDots += Math.max(0, loot);
     target.state = "consumed";
+    target.shieldSegments = platesForCount(target.maxShields, 0);
     target.shields = 0;
     target.inventoryDots = 0;
     target.consumedRespawnMs = this.config.respawnDelayMs;
@@ -857,7 +1292,8 @@ export class DotBotSimulation {
       }
 
       bot.state = "alive";
-      bot.shields = bot.maxShields;
+      bot.shieldSegments = platesForCount(bot.maxShields, bot.maxShields);
+      bot.shields = plateSum(bot.shieldSegments);
       bot.inventoryDots = bot.team === "player" || bot.team === "ally" ? 1 : 0;
       bot.dashActiveMs = 0;
       bot.dashCooldownMs = 0;
@@ -865,6 +1301,13 @@ export class DotBotSimulation {
       bot.floorId = bot.spawnFloorId;
       bot.position = { ...bot.spawn };
       bot.prevPosition = { ...bot.spawn };
+      bot.aiPath = [];
+      bot.aiPathTarget = { ...bot.spawn };
+      bot.aiPathFloorId = bot.spawnFloorId;
+      bot.aiRepathMs = 0;
+      bot.aiPathProjected = false;
+      bot.aiAvoidTargets.clear();
+      bot.aiRetargetMs = 0;
       bot.body.setEnabled(true);
       bot.collider.setEnabled(true);
       bot.collider.setCollisionGroups(this.interactionGroups(bot.spawnFloorId));
@@ -913,8 +1356,10 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     radius: bot.radius,
     state: bot.state,
     floorId: bot.floorId,
+    facing: bot.facing,
     maxShields: bot.maxShields,
     shields: bot.shields,
+    shieldSegments: [...bot.shieldSegments],
     inventoryDots: bot.inventoryDots,
     dashCooldownMs: bot.dashCooldownMs,
     dashActiveMs: bot.dashActiveMs,
@@ -975,11 +1420,22 @@ function canCoverDownedBot(actor: InternalBot, target: InternalBot, minimumToler
   return distance(actor.position, target.position) <= Math.max(minimumTolerance, actor.radius + downedFootprintRadius);
 }
 
-function makeAiTarget(position: Vec2, stopDistance: number, slowDistance: number): AiTarget {
+function makeAiTarget(
+  position: Vec2,
+  floorId: string,
+  stopDistance: number,
+  slowDistance: number,
+  intent: AiIntent,
+  targetId?: string,
+): AiTarget {
   return {
-    position,
+    position: { ...position },
+    floorId,
     stopDistance,
     slowDistance: Math.max(slowDistance, stopDistance + 1),
+    intent,
+    projectionAllowed: intent === "loot" || intent === "revive" || intent === "consume",
+    targetId,
   };
 }
 

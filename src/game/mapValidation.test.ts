@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
-import { isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
+import { collisionLayers, isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import type { Doorway, Rect, StairLink, Vec2 } from "./types";
+import type { Doorway, MapDocument, Rect, StairLink, Vec2 } from "./types";
 
 /**
  * Map validation (spec: "Dot spawn zones do not overlap walls", "Objects do
@@ -163,6 +163,43 @@ function nearestReachableDistance(target: Vec2, reachable: Set<number>, range: n
 
 describe("downtown map validation", () => {
   const worlds = collectFloors();
+
+  it("ships four distinct buildings with an eight-floor tower", () => {
+    expect(downtownMap.buildings).toHaveLength(4);
+    expect(new Set(downtownMap.buildings.map((building) => building.kind))).toEqual(
+      new Set(["hospital", "office", "warehouse", "residential"]),
+    );
+
+    const civic = downtownMap.buildings.find((building) => building.id === "civic");
+    expect(civic?.floors.filter((floor) => floor.label !== "ROOF")).toHaveLength(8);
+    expect(civic?.floors.at(-1)?.label).toBe("ROOF");
+    expect(new Set(collisionLayers(downtownMap).values()).size).toBeLessThanOrEqual(16);
+  });
+
+  it("fails explicitly before a map exceeds Rapier's 16 collision layers", () => {
+    const overflowMap: MapDocument = {
+      ...downtownMap,
+      buildings: [
+        {
+          id: "overflow",
+          kind: "office",
+          name: "OVERFLOW",
+          footprint: { x: 40, y: 40, w: 200, h: 200 },
+          floors: Array.from({ length: 16 }, (_, index) => ({
+            id: `overflow:F${index + 1}`,
+            label: "F1" as const,
+            walls: [],
+            doorways: [],
+            objects: [],
+            stairs: [],
+            dotSpawns: [],
+          })),
+        },
+      ],
+    };
+
+    expect(() => collisionLayers(overflowMap)).toThrow(/at most 16 physics collision layers/);
+  });
 
   it("has a seed for every physics floor", () => {
     for (const world of worlds) {

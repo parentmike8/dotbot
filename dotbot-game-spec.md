@@ -4,6 +4,13 @@ Working title: DotBot
 
 Status: concept spec for future web prototype
 
+> **Superseded decisions (July 2026).** `dotbot-systems-spec.md` is now authoritative where it overlaps this document, and `dotbot-implementation-roadmap.md` defines build order. Specifically superseded here:
+> - **Revives**: no longer cost 1 Dot (§ Revive rules below). Revives are free; the cost is the long, loud, stationary channel. Revived bots return with one cracked shield plate.
+> - **"Scans"**: replaced by **blueprint dots** that spawn anchored to their real-world objects and must be extracted to count (systems spec §5). The `scannable` flag becomes the blueprint spawn table.
+> - **Dot colors as identity**: replaced by the relationship-based color system (systems spec §6) — bodies black, faction color on shield plates only, dot types distinguished by glyph within orange (powerups) / blue (blueprints).
+> - **Score / banking framing**: there is no score. Extraction ends your run with your haul; the end screen is a manifest.
+> - **Base**: an off-map hideout that doubles as the menu (systems spec §2), not an on-map structure.
+
 ## 1. High Concept
 
 DotBot is a minimalist 2D multiplayer extraction game on a white canvas map.

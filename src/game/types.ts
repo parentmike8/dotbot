@@ -23,7 +23,7 @@ export type BotState = "alive" | "downed" | "consumed";
 
 export const OUTDOOR_FLOOR_ID = "outdoor";
 
-export type FloorLabel = "GROUND" | "B1" | "F1" | "F2" | "F3" | "ROOF";
+export type FloorLabel = "GROUND" | "B1" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "ROOF";
 
 export type WallSegment = Rect & {
   id: string;
@@ -40,6 +40,17 @@ export type Doorway = {
   dir: "h" | "v";
   /** Rendered without leaf/arc (roll-up doors, open archways). */
   open?: boolean;
+};
+
+/** A glazed band within a wall run. Purely visual; walls stay solid. */
+export type WindowBand = {
+  id: string;
+  /** Center of the band. */
+  x: number;
+  y: number;
+  length: number;
+  /** Direction of the wall run the band sits in. */
+  dir: "h" | "v";
 };
 
 export type ObjectKind =
@@ -76,7 +87,22 @@ export type ObjectKind =
   | "hvac"
   | "skylight"
   | "vent"
-  | "parkingStall";
+  | "parkingStall"
+  | "lampPost"
+  | "bollard"
+  | "dumpster"
+  | "pallet"
+  | "drum"
+  | "forklift"
+  | "ivStand"
+  | "medicalCart"
+  | "coffeeStation"
+  | "washer"
+  | "toilet"
+  | "sink"
+  | "stove"
+  | "column"
+  | "rug";
 
 export type Facing = "N" | "S" | "E" | "W";
 
@@ -119,12 +145,14 @@ export type FloorPlan = {
   label: FloorLabel;
   walls: WallSegment[];
   doorways: Doorway[];
+  /** Authored glazing. Windows are composed, never auto-sprayed. */
+  windows?: WindowBand[];
   objects: MapObject[];
   stairs: StairLink[];
   dotSpawns: DotSpawn[];
 };
 
-export type BuildingKind = "hospital" | "office" | "warehouse";
+export type BuildingKind = "hospital" | "office" | "warehouse" | "residential";
 
 export type Building = {
   id: string;
@@ -198,8 +226,13 @@ export type DotBotEntity = GameEntity & {
   color: string;
   state: BotState;
   floorId: string;
+  /** Radians; the last direction of travel. Shield plates anchor to it. */
+  facing: number;
   maxShields: number;
+  /** Sum of shieldSegments, kept for HUD and AI threshold checks. */
   shields: number;
+  /** Per-plate state: 1 intact, 0.5 cracked, 0 broken. Plate 0 faces forward. */
+  shieldSegments: number[];
   inventoryDots: number;
   dashCooldownMs: number;
   dashActiveMs: number;
@@ -274,6 +307,8 @@ export type GameSnapshot = {
   noises: NoiseEvent[];
   /** Dots banked through extraction this session. */
   bankedDots: number;
+  /** Dots opposing bots have successfully removed from the map. */
+  rivalBankedDots: number;
   /** "MERCY CLINIC / F2" indoors, map name outdoors. */
   locationLabel: string;
   debug: {

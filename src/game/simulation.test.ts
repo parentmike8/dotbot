@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
-import { classifyNoise } from "./mapModel";
+import { classifyNoise, physicsFloorId } from "./mapModel";
 import { DotBotSimulation } from "./simulation";
 import { hasLineOfSight } from "./visibility";
-import type { BotSpawn, DotSpawn, GameConfig, MapDocument, WallSegment } from "./types";
+import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, MapDocument, WallSegment } from "./types";
 
 const testConfig: Partial<GameConfig> = {
   dotCaptureDurationMs: 120,
@@ -92,6 +92,26 @@ function runTicks(simulation: DotBotSimulation, count: number): void {
   }
 }
 
+function snapshotDigest(snapshot: GameSnapshot): string {
+  return JSON.stringify({
+    timeMs: Number(snapshot.timeMs.toFixed(3)),
+    bankedDots: snapshot.bankedDots,
+    rivalBankedDots: snapshot.rivalBankedDots,
+    bots: [...snapshot.bots]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((bot) => ({
+        id: bot.id,
+        x: Number(bot.position.x.toFixed(3)),
+        y: Number(bot.position.y.toFixed(3)),
+        floorId: bot.floorId,
+        state: bot.state,
+        shields: bot.shields,
+        inventoryDots: bot.inventoryDots,
+      })),
+    activeDots: snapshot.dots.filter((dot) => dot.active).map((dot) => dot.id).sort(),
+  });
+}
+
 describe("DotBotSimulation", () => {
   it("keeps the player inside map bounds", async () => {
     const simulation = await makeSimulation([playerSpawn({ position: { x: 70, y: 180 } })]);
@@ -137,7 +157,7 @@ describe("DotBotSimulation", () => {
     );
 
     simulation.applyInput({ move: { x: 0, y: 0 }, dash: false });
-    runTicks(simulation, 12);
+    runTicks(simulation, 18);
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.dots.find((dot) => dot.id === "dot")?.active).toBe(false);
@@ -169,6 +189,79 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("blacklists multiple unreachable objectives and continues to reachable loot", async () => {
+    const baseMap = makeMap(
+      [enemySpawn({ position: { x: 50, y: 300 } })],
+      [
+        { id: "blocked-a", color: "#f2c94c", position: { x: 100, y: 210 } },
+        { id: "blocked-b", color: "#27ae60", position: { x: 112, y: 210 } },
+        { id: "reachable", color: "#2f80ed", position: { x: 400, y: 300 } },
+      ],
+    );
+    const simulation = await DotBotSimulation.create({
+      map: {
+        ...baseMap,
+        outdoor: {
+          ...baseMap.outdoor,
+          walls: [
+            ...baseMap.outdoor.walls,
+            { id: "block-a", x: 60, y: 170, w: 80, h: 80 },
+          ],
+        },
+      },
+      config: testConfig,
+    });
+
+    runTicks(simulation, 300);
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.dots.find((dot) => dot.id === "blocked-a")?.active).toBe(true);
+    expect(snapshot.dots.find((dot) => dot.id === "blocked-b")?.active).toBe(true);
+    expect(snapshot.dots.find((dot) => dot.id === "reachable")?.active).toBe(false);
+    simulation.dispose();
+  });
+
+  it("lets AI bots initiate Dash attacks against visible rivals", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 240, y: 180 }, maxShields: 1, shields: 1 }),
+      enemySpawn({ position: { x: 120, y: 180 } }),
+    ]);
+
+    let sawDash = false;
+    let playerWasDowned = false;
+    for (let tick = 0; tick < 90; tick += 1) {
+      simulation.step();
+      const snapshot = simulation.getSnapshot();
+      sawDash ||= snapshot.noises.some((noise) => noise.kind === "dash");
+      playerWasDowned ||= snapshot.bots.find((bot) => bot.id === "player")?.state === "downed";
+      if (playerWasDowned) {
+        break;
+      }
+    }
+
+    expect(sawDash).toBe(true);
+    expect(playerWasDowned).toBe(true);
+    simulation.dispose();
+  });
+
+  it("lets AI rivals extract carried Dots", async () => {
+    const baseMap = makeMap([enemySpawn({ position: { x: 100, y: 100 }, inventoryDots: 3 })]);
+    const simulation = await DotBotSimulation.create({
+      map: {
+        ...baseMap,
+        extractionPoints: [{ id: "rival-pad", name: "RIVAL PAD", rect: { x: 60, y: 60, w: 80, h: 80 } }],
+      },
+      config: testConfig,
+    });
+
+    runTicks(simulation, 18);
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.rivalBankedDots).toBe(3);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.inventoryDots).toBe(0);
+    simulation.dispose();
+  });
+
   it("turns a bot downed after a damaging Dash collision", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
@@ -183,6 +276,44 @@ describe("DotBotSimulation", () => {
     const enemy = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy");
     expect(enemy?.state).toBe("downed");
     expect(enemy?.shields).toBe(0);
+    simulation.dispose();
+  });
+
+  it("resolves dash damage through directional plates in half-shield steps", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ position: { x: 156, y: 180 } }),
+    ]);
+
+    simulation.applyInput({ move: { x: 1, y: 0 }, dash: true });
+    simulation.step();
+    simulation.applyInput({ move: { x: 1, y: 0 }, dash: false });
+    runTicks(simulation, 18);
+
+    const enemy = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy");
+    expect(enemy?.shields).toBeLessThan(3);
+    // Damage only ever lands as full plates (1) or cracks (0.5).
+    expect((enemy!.shields * 2) % 1).toBe(0);
+    // The visible plates always account exactly for the shield total.
+    expect(enemy!.shieldSegments.reduce((total, plate) => total + plate, 0)).toBe(enemy!.shields);
+    expect(enemy!.shieldSegments.every((plate) => [0, 0.5, 1].includes(plate))).toBe(true);
+    simulation.dispose();
+  });
+
+  it("never applies friendly fire: a Dash through a squadmate leaves them unhurt", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      allySpawn({ position: { x: 156, y: 180 }, maxShields: 1, shields: 1 }),
+    ]);
+
+    simulation.applyInput({ move: { x: 1, y: 0 }, dash: true });
+    simulation.step();
+    simulation.applyInput({ move: { x: 1, y: 0 }, dash: false });
+    runTicks(simulation, 18);
+
+    const ally = simulation.getSnapshot().bots.find((bot) => bot.id === "ally");
+    expect(ally?.state).toBe("alive");
+    expect(ally?.shields).toBe(1);
     simulation.dispose();
   });
 
@@ -393,6 +524,53 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("lets AI rivals climb stairs to pursue a player on another floor", async () => {
+    const stairRect = { x: 250, y: 80, w: 60, h: 160 };
+    const baseMap = makeMap([
+      playerSpawn({ position: { x: 360, y: 180 }, floorId: "tower:F2" }),
+      enemySpawn({ position: { x: 280, y: 210 } }),
+    ]);
+    const simulation = await DotBotSimulation.create({
+      map: {
+        ...baseMap,
+        buildings: [
+          {
+            id: "tower",
+            kind: "office",
+            name: "TOWER",
+            footprint: { x: 200, y: 60, w: 220, h: 240 },
+            floors: [
+              {
+                id: "tower:GROUND",
+                label: "GROUND",
+                walls: [],
+                doorways: [],
+                objects: [],
+                stairs: [{ id: "tower-ai-up", rect: stairRect, direction: "up", toFloorId: "tower:F2", bottom: "S" }],
+                dotSpawns: [],
+              },
+              {
+                id: "tower:F2",
+                label: "F2",
+                walls: [],
+                doorways: [],
+                objects: [],
+                stairs: [{ id: "tower-ai-down", rect: stairRect, direction: "down", toFloorId: "outdoor", bottom: "S" }],
+                dotSpawns: [],
+              },
+            ],
+          },
+        ],
+      },
+      config: testConfig,
+    });
+
+    runTicks(simulation, 90);
+
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.floorId).toBe("tower:F2");
+    simulation.dispose();
+  });
+
   it("banks inventory dots at an extraction point", async () => {
     const baseMap = makeMap([playerSpawn({ position: { x: 100, y: 100 }, inventoryDots: 2 })]);
     const simulation = await DotBotSimulation.create({
@@ -461,7 +639,7 @@ describe("DotBotSimulation", () => {
   it("classifies noise audibility across rooms and floors", () => {
     const street = { x: 1000, y: 660 };
     const clinicLobby = { x: 500, y: 500 };
-    const clinicWardF2 = { x: 400, y: 250 };
+    const clinicWardF1 = { x: 400, y: 250 };
     const depotB1 = { x: 500, y: 1200 };
 
     // Same arena: always audible, clear ring.
@@ -477,20 +655,20 @@ describe("DotBotSimulation", () => {
     });
     expect(classifyNoise(downtownMap, "outdoor", street, "outdoor", clinicLobby, 0.5)).toBeNull();
 
-    // Clinic ground floor listener, noise on F2 above: muffled with up chevron.
-    expect(classifyNoise(downtownMap, "outdoor", clinicLobby, "mercy:F2", clinicWardF2, 0.8)).toEqual({
+    // Clinic ground floor listener, noise on F1 above: muffled with up chevron.
+    expect(classifyNoise(downtownMap, "outdoor", clinicLobby, "mercy:F1", clinicWardF1, 0.8)).toEqual({
       muffled: true,
       vertical: 1,
     });
 
     // And the reverse leaks downward.
-    expect(classifyNoise(downtownMap, "mercy:F2", clinicWardF2, "outdoor", clinicLobby, 0.8)).toEqual({
+    expect(classifyNoise(downtownMap, "mercy:F1", clinicWardF1, "outdoor", clinicLobby, 0.8)).toEqual({
       muffled: true,
       vertical: -1,
     });
 
     // Unrelated building/floor: inaudible no matter how loud.
-    expect(classifyNoise(downtownMap, "mercy:F2", clinicWardF2, "lot6:B1", depotB1, 1)).toBeNull();
+    expect(classifyNoise(downtownMap, "mercy:F1", clinicWardF1, "lot6:B1", depotB1, 1)).toBeNull();
   });
 
   it("quickly respawns the player after being consumed", async () => {
@@ -512,4 +690,81 @@ describe("DotBotSimulation", () => {
     expect(player?.inventoryDots).toBe(1);
     simulation.dispose();
   });
+
+  it(
+    "exercises movement, capture, combat, stairs, and extraction through a two-minute neighborhood soak",
+    async () => {
+      const simulation = await DotBotSimulation.create({ map: downtownMap });
+      const initialActiveDots = simulation.getSnapshot().debug.activeDots;
+      const spawnById = new Map(
+        downtownMap.botSpawns.map((spawn) => [
+          spawn.id,
+          {
+            position: spawn.position,
+            floorId: physicsFloorId(downtownMap, spawn.floorId ?? "outdoor"),
+          },
+        ]),
+      );
+      const milestones = {
+        movement: false,
+        capture: false,
+        combat: false,
+        floorChange: false,
+        rivalExtraction: false,
+      };
+
+      for (let tick = 0; tick < 7_200; tick += 1) {
+        simulation.step();
+
+        if (tick % 30 === 0) {
+          const snapshot = simulation.getSnapshot();
+          milestones.movement ||= snapshot.bots.some((bot) => {
+            const spawn = spawnById.get(bot.id);
+            return bot.team !== "player" && spawn !== undefined && Math.hypot(bot.position.x - spawn.position.x, bot.position.y - spawn.position.y) > 48;
+          });
+          milestones.capture ||= snapshot.debug.activeDots < initialActiveDots;
+          milestones.combat ||= snapshot.bots.some((bot) => bot.shields < bot.maxShields || bot.state !== "alive");
+          milestones.floorChange ||= snapshot.bots.some((bot) => {
+            const spawn = spawnById.get(bot.id);
+            return bot.team !== "player" && spawn !== undefined && bot.floorId !== spawn.floorId;
+          });
+          milestones.rivalExtraction ||= snapshot.rivalBankedDots > 0;
+        }
+      }
+
+      const snapshot = simulation.getSnapshot();
+      expect(snapshot.timeMs).toBeGreaterThanOrEqual(119_000);
+      expect(milestones).toEqual({
+        movement: true,
+        capture: true,
+        combat: true,
+        floorChange: true,
+        rivalExtraction: true,
+      });
+      for (const bot of snapshot.bots) {
+        expect(Number.isFinite(bot.position.x), `${bot.id} x position`).toBe(true);
+        expect(Number.isFinite(bot.position.y), `${bot.id} y position`).toBe(true);
+      }
+      simulation.dispose();
+    },
+    20_000,
+  );
+
+  it(
+    "replays the same autonomous neighborhood state deterministically",
+    async () => {
+      const first = await DotBotSimulation.create({ map: downtownMap });
+      const second = await DotBotSimulation.create({ map: downtownMap });
+
+      for (let tick = 0; tick < 120; tick += 1) {
+        first.step();
+        second.step();
+      }
+
+      expect(snapshotDigest(first.getSnapshot())).toBe(snapshotDigest(second.getSnapshot()));
+      first.dispose();
+      second.dispose();
+    },
+    10_000,
+  );
 });

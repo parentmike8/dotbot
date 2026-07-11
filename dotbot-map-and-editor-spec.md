@@ -2,6 +2,12 @@
 
 Status: companion spec for Maps, object Scans, Base building, and future player-created Maps.
 
+> **Superseded decisions (July 2026).** `dotbot-systems-spec.md` is now authoritative where it overlaps this document; `dotbot-implementation-roadmap.md` defines build order. Specifically superseded here:
+> - **"Scans" / scan progression (§8–§9)**: replaced by blueprint dots (systems spec §5) — spatially anchored via the `scannable` flag, extracted copies complete a permanent unlock. Scan-count tiers are replaced by copy-set sizes tuned by location risk.
+> - **Color rules (§1)**: refined by systems spec §6 — bot bodies are black; faction color lives only on shield plates (cyan squad / red enemy / grey AI); dot value classes are orange (powerups) and blue (blueprints) with glyph identities.
+> - **Base building (§13)**: direction confirmed (same editor foundation, same data model) but the base is a small off-map hideout that doubles as the game's menu; no combat, no adjacency bonuses, layout is expression only.
+> - The map direction, structure, object language, and editor foundation sections (§1–§7, §14–§16) remain fully in force.
+
 ## 1. Map Direction
 
 Maps should be visually minimal:

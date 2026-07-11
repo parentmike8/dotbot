@@ -40,6 +40,8 @@ const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "car",
   "hvac",
   "planter",
+  "stove",
+  "column",
 ]);
 
 export function isSolidObject(object: MapObject): boolean {
@@ -102,6 +104,10 @@ export function collisionLayers(map: MapDocument): Map<string, number> {
   for (const building of map.buildings) {
     for (const floor of building.floors) {
       if (!isGroundFloor(floor)) {
+        if (next >= 16) {
+          throw new Error("DotBot maps support at most 16 physics collision layers, including the shared outdoor layer.");
+        }
+
         layers.set(floor.id, next);
         next += 1;
       }
@@ -179,7 +185,11 @@ const FLOOR_HEIGHTS: Record<FloorLabel, number> = {
   F1: 1,
   F2: 2,
   F3: 3,
-  ROOF: 4,
+  F4: 4,
+  F5: 5,
+  F6: 6,
+  F7: 7,
+  ROOF: 8,
 };
 
 export function floorHeight(label: FloorLabel): number {
