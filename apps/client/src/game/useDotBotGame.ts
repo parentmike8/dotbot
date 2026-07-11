@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
-import { DotBotSimulation } from "@dotbot/game/simulation";
 import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer } from "./renderer/GameRenderer";
+import { createSession } from "./session/createSession";
+import type { GameSession } from "./session/GameSession";
 import type { GameSnapshot, Vec2 } from "@dotbot/game/types";
 
 type JoystickState = {
@@ -27,7 +28,7 @@ const emptyJoystick: JoystickState = {
 
 export function useDotBotGame() {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const simulationRef = useRef<DotBotSimulation | null>(null);
+  const sessionRef = useRef<GameSession | null>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
   const keysRef = useRef(new Set<string>());
   const joystickRef = useRef<JoystickState>(emptyJoystick);
@@ -54,10 +55,7 @@ export function useDotBotGame() {
     let frameCounter = 0;
     let fpsWindowStart = lastFrame;
     let fps = 0;
-    let accumulator = 0;
     let resizeObserver: ResizeObserver | undefined;
-
-    const tickSeconds = 1 / defaultGameConfig.tickHz;
 
     async function start() {
       const host = hostRef.current;
@@ -66,21 +64,23 @@ export function useDotBotGame() {
         return;
       }
 
-      const simulation = await DotBotSimulation.create({
+      const session = createSession("local", {
         map: downtownMap,
         config: defaultGameConfig,
+        playerId: "player",
       });
-      const renderer = await GameRenderer.create(host, downtownMap);
+      await session.start();
+      const renderer = await GameRenderer.create(host, session.map);
 
       if (disposed) {
         renderer.destroy();
-        simulation.dispose();
+        session.dispose();
         return;
       }
 
-      simulationRef.current = simulation;
+      sessionRef.current = session;
       rendererRef.current = renderer;
-      setSnapshot(simulation.getSnapshot());
+      setSnapshot(session.update(0));
 
       resizeObserver = new ResizeObserver(([entry]) => {
         renderer.resize(entry.contentRect.width, entry.contentRect.height);
@@ -92,9 +92,8 @@ export function useDotBotGame() {
           return;
         }
 
-        const deltaSeconds = Math.min(0.1, (now - lastFrame) / 1000);
+        const elapsedMs = now - lastFrame;
         lastFrame = now;
-        accumulator += deltaSeconds;
         frameCounter += 1;
 
         if (now - fpsWindowStart >= 500) {
@@ -103,21 +102,22 @@ export function useDotBotGame() {
           frameCounter = 0;
         }
 
-        while (accumulator >= tickSeconds) {
-          const keyboardMove = getKeyboardVector(keysRef.current);
-          const joystickMove = joystickRef.current.move;
-          simulation.applyInput("player", {
-            move: mergeMoveVectors(keyboardMove, joystickMove),
-            dash: dashQueuedRef.current,
-          });
-          dashQueuedRef.current = false;
-          simulation.step();
-          accumulator -= tickSeconds;
+        const keyboardMove = getKeyboardVector(keysRef.current);
+        const joystickMove = joystickRef.current.move;
+        session.sendInput({
+          move: mergeMoveVectors(keyboardMove, joystickMove),
+          dash: dashQueuedRef.current,
+        });
+        dashQueuedRef.current = false;
+        session.setMeasuredFps?.(fps);
+        const nextSnapshot = session.update(elapsedMs);
+
+        if (!nextSnapshot) {
+          frameRef.current = requestAnimationFrame(loop);
+          return;
         }
 
-        simulation.setMeasuredFps(fps);
-        const nextSnapshot = simulation.getSnapshot();
-        renderer.render(nextSnapshot, "player");
+        renderer.render(nextSnapshot, session.playerId);
 
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);
@@ -200,9 +200,9 @@ export function useDotBotGame() {
       }
 
       rendererRef.current?.destroy();
-      simulationRef.current?.dispose();
+      sessionRef.current?.dispose();
       rendererRef.current = null;
-      simulationRef.current = null;
+      sessionRef.current = null;
     };
   }, [clearMovementInput, resetJoystick]);
 
