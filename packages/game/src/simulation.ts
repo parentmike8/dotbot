@@ -1350,7 +1350,7 @@ export class DotBotSimulation {
 
   private respawnConsumedBots(dtMs: number): void {
     for (const bot of this.bots.values()) {
-      if (bot.state !== "consumed") {
+      if (bot.state !== "consumed" || !bot.isAmbient) {
         continue;
       }
 

@@ -886,3 +886,100 @@ button {
   background: var(--ink);
   color: var(--paper);
 }
+
+.manifest-overlay {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.78);
+  pointer-events: auto;
+  backdrop-filter: blur(3px);
+}
+
+.manifest-panel {
+  width: min(520px, 100%);
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  box-shadow: 8px 8px 0 rgba(17, 17, 17, 0.14);
+  color: var(--ink);
+  text-transform: uppercase;
+}
+
+.manifest-header {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.8px;
+}
+
+.manifest-header strong {
+  font-size: clamp(28px, 7vw, 54px);
+  letter-spacing: 0.08em;
+  line-height: 0.95;
+}
+
+.manifest-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border-bottom: 1px solid var(--ink);
+}
+
+.manifest-grid > div {
+  min-height: 88px;
+  padding: 14px 16px;
+  border-right: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.manifest-grid > div:nth-child(even) {
+  border-right: 0;
+}
+
+.manifest-grid dt {
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: 1.4px;
+}
+
+.manifest-grid dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 20px;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+}
+
+.manifest-kills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 14px !important;
+}
+
+.manifest-new-run {
+  width: 100%;
+  padding: 15px 20px;
+  border: 0;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.manifest-new-run:hover {
+  background: var(--ink);
+  color: var(--paper);
+}

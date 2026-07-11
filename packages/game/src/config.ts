@@ -18,4 +18,5 @@ export const defaultGameConfig: GameConfig = {
   respawnDelayMs: 1200,
   coverCenterTolerance: 12,
   extractionDurationMs: 4000,
+  runDurationMs: 480_000,
 };

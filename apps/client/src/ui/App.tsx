@@ -3,6 +3,7 @@ import { defaultGameConfig } from "@dotbot/game";
 import { floorHeight, locationLabel, resolvePlan } from "@dotbot/game/mapModel";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
+import { ManifestScreen } from "./ManifestScreen";
 
 const coachFadeAtMs = 12_000;
 const coachDismissAtMs = 15_000;
@@ -22,11 +23,12 @@ export function App() {
 }
 
 function GameSession({ onRestart }: { onRestart: () => void }) {
-  const { hostRef, snapshot, map, playerId, debugVisible, joystick, joystickHandlers, queueDash } = useDotBotGame();
+  const { hostRef, snapshot, events, runResult, map, playerId, debugVisible, joystick, joystickHandlers, queueDash } = useDotBotGame();
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / defaultGameConfig.dashCooldownMs) : 1;
-  const runClock = formatRunClock(snapshot?.timeMs ?? 0);
+  const remainingRunMs = Math.max(0, defaultGameConfig.runDurationMs - (snapshot?.timeMs ?? 0));
+  const runClock = formatRunClock(remainingRunMs);
   const activeRivalCount = player
     ? (snapshot?.bots.filter((bot) => bot.squadId !== player.squadId && bot.state === "alive").length ?? 0)
     : 0;
@@ -49,6 +51,26 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
     };
   }, [map, player, snapshot]);
   const currentLocation = player ? locationLabel(map, player.floorId, player.position) : map.name.toUpperCase();
+  const killCounts = useMemo(() => {
+    const spawnById = new Map(map.botSpawns.map((spawn) => [spawn.id, spawn]));
+    const viewerSquadId = spawnById.get(playerId)?.squadId;
+    let ai = 0;
+    let players = 0;
+
+    for (const event of events) {
+      if (event.type !== "consumed" || spawnById.get(event.byBotId)?.squadId !== viewerSquadId) {
+        continue;
+      }
+
+      if (spawnById.get(event.botId)?.isAmbient) {
+        ai += 1;
+      } else {
+        players += 1;
+      }
+    }
+
+    return { ai, players };
+  }, [events, map, playerId]);
   const coachPhase =
     snapshot && snapshot.timeMs < coachDismissAtMs ? (snapshot.timeMs >= coachFadeAtMs ? "is-leaving" : "") : null;
   const statusText = useMemo(() => {
@@ -115,7 +137,7 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
             <div>
               <dt>Run</dt>
               <dd>
-                <time dateTime={`PT${Math.floor((snapshot?.timeMs ?? 0) / 1000)}S`}>{runClock}</time>
+                <time dateTime={`PT${Math.floor(remainingRunMs / 1000)}S`}>{runClock}</time>
               </dd>
             </div>
             <div>
@@ -189,8 +211,8 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
               <span>Cover a Dot</span>
             </li>
             <li>
-              <strong>Bank</strong>
-              <span>Extraction pad</span>
+              <strong>Extract</strong>
+              <span>Exit on a pad</span>
             </li>
           </ol>
         </section>
@@ -213,7 +235,7 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
             queueDash();
           }}
           style={{ "--dash-progress": dashProgress } as React.CSSProperties}
-          disabled={!player || player.state !== "alive" || player.dashCooldownMs > 0}
+          disabled={runResult !== null || !player || player.state !== "alive" || player.dashCooldownMs > 0}
           aria-label="Dash"
         >
           Dash
@@ -230,6 +252,16 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
           <div>Cover {defaultGameConfig.coverDurationMs}ms</div>
           <div>Damage {defaultGameConfig.damageSpeed}</div>
         </aside>
+      ) : null}
+
+      {runResult ? (
+        <ManifestScreen
+          result={runResult}
+          aiKills={killCounts.ai}
+          playerKills={killCounts.players}
+          runTime={formatRunClock(runResult.runTimeMs)}
+          onNewRun={onRestart}
+        />
       ) : null}
     </main>
   );

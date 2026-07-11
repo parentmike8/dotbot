@@ -6,7 +6,16 @@ import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer } from "./renderer/GameRenderer";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
-import type { GameSnapshot, Vec2 } from "@dotbot/game/types";
+import type { GameSnapshot, SimEvent, Vec2 } from "@dotbot/game/types";
+
+export type RunOutcome = "extracted" | "died" | "timeout";
+
+export type RunResult = {
+  outcome: RunOutcome;
+  keptDots: number;
+  lostDots: number;
+  runTimeMs: number;
+};
 
 type JoystickState = {
   active: boolean;
@@ -33,8 +42,11 @@ export function useDotBotGame() {
   const keysRef = useRef(new Set<string>());
   const joystickRef = useRef<JoystickState>(emptyJoystick);
   const dashQueuedRef = useRef(false);
+  const runEndedRef = useRef(false);
   const frameRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
+  const [events, setEvents] = useState<SimEvent[]>([]);
+  const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [debugVisible, setDebugVisible] = useState(false);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
 
@@ -55,6 +67,7 @@ export function useDotBotGame() {
     let frameCounter = 0;
     let fpsWindowStart = lastFrame;
     let fps = 0;
+    let latestSnapshot: GameSnapshot | null = null;
     let resizeObserver: ResizeObserver | undefined;
 
     async function start() {
@@ -80,7 +93,8 @@ export function useDotBotGame() {
 
       sessionRef.current = session;
       rendererRef.current = renderer;
-      setSnapshot(session.update(0));
+      latestSnapshot = session.update(0);
+      setSnapshot(latestSnapshot);
 
       resizeObserver = new ResizeObserver(([entry]) => {
         renderer.resize(entry.contentRect.width, entry.contentRect.height);
@@ -102,21 +116,70 @@ export function useDotBotGame() {
           frameCounter = 0;
         }
 
-        const keyboardMove = getKeyboardVector(keysRef.current);
-        const joystickMove = joystickRef.current.move;
-        session.sendInput({
-          move: mergeMoveVectors(keyboardMove, joystickMove),
-          dash: dashQueuedRef.current,
-        });
+        if (runEndedRef.current) {
+          session.sendInput({ move: { x: 0, y: 0 }, dash: false });
+        } else {
+          const keyboardMove = getKeyboardVector(keysRef.current);
+          const joystickMove = joystickRef.current.move;
+          session.sendInput({
+            move: mergeMoveVectors(keyboardMove, joystickMove),
+            dash: dashQueuedRef.current,
+          });
+        }
         dashQueuedRef.current = false;
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
+        const frameEvents = session.drainEvents();
+
+        if (frameEvents.length > 0) {
+          setEvents((current) => [...current, ...frameEvents]);
+        }
 
         if (!nextSnapshot) {
           frameRef.current = requestAnimationFrame(loop);
           return;
         }
 
+        if (!runEndedRef.current) {
+          const extracted = frameEvents.find((event) => event.type === "extracted" && event.botId === session.playerId);
+          const consumed = frameEvents.find((event) => event.type === "consumed" && event.botId === session.playerId);
+          const previousPlayer = latestSnapshot?.bots.find((bot) => bot.id === session.playerId);
+          const currentPlayer = nextSnapshot.bots.find((bot) => bot.id === session.playerId);
+          let result: RunResult | null = null;
+
+          if (extracted?.type === "extracted") {
+            result = {
+              outcome: "extracted",
+              keptDots: extracted.inventoryDots,
+              lostDots: 0,
+              runTimeMs: nextSnapshot.timeMs,
+            };
+          } else if (consumed) {
+            result = {
+              outcome: "died",
+              keptDots: 0,
+              lostDots: previousPlayer?.inventoryDots ?? 0,
+              runTimeMs: nextSnapshot.timeMs,
+            };
+          } else if (nextSnapshot.timeMs >= defaultGameConfig.runDurationMs) {
+            result = {
+              outcome: "timeout",
+              keptDots: 0,
+              lostDots: currentPlayer?.inventoryDots ?? 0,
+              runTimeMs: defaultGameConfig.runDurationMs,
+            };
+          }
+
+          if (result) {
+            runEndedRef.current = true;
+            keysRef.current.clear();
+            joystickRef.current = emptyJoystick;
+            setJoystickView(emptyJoystick);
+            setRunResult(result);
+          }
+        }
+
+        latestSnapshot = nextSnapshot;
         renderer.render(nextSnapshot, session.playerId);
 
         if (now - lastHudUpdate >= 80) {
@@ -145,13 +208,17 @@ export function useDotBotGame() {
 
       if (event.code === "Space") {
         event.preventDefault();
-        dashQueuedRef.current = true;
+        if (!runEndedRef.current) {
+          dashQueuedRef.current = true;
+        }
         return;
       }
 
       if (movementKeyCodes.has(event.code)) {
         event.preventDefault();
-        keysRef.current.add(event.code);
+        if (!runEndedRef.current) {
+          keysRef.current.add(event.code);
+        }
       }
     };
 
@@ -207,7 +274,9 @@ export function useDotBotGame() {
   }, [clearMovementInput, resetJoystick]);
 
   const queueDash = useCallback(() => {
-    dashQueuedRef.current = true;
+    if (!runEndedRef.current) {
+      dashQueuedRef.current = true;
+    }
   }, []);
 
   const updateJoystick = useCallback((clientX: number, clientY: number) => {
@@ -287,6 +356,8 @@ export function useDotBotGame() {
   return {
     hostRef,
     snapshot,
+    events,
+    runResult,
     map: downtownMap,
     playerId: "player",
     debugVisible,

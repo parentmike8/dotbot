@@ -703,7 +703,7 @@ describe("DotBotSimulation", () => {
     expect(classifyNoise(downtownMap, "mercy:F1", clinicWardF1, "lot6:B1", depotB1, 1)).toBeNull();
   });
 
-  it("quickly respawns the player after being consumed", async () => {
+  it("does not respawn a non-ambient player after being consumed", async () => {
     const simulation = await makeSimulation([
       playerSpawn({
         position: { x: 100, y: 180 },
@@ -717,9 +717,9 @@ describe("DotBotSimulation", () => {
     runTicks(simulation, 24);
 
     const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
-    expect(player?.state).toBe("alive");
-    expect(player?.shields).toBe(defaultGameConfig.maxShields);
-    expect(player?.inventoryDots).toBe(1);
+    expect(player?.state).toBe("consumed");
+    expect(player?.shields).toBe(0);
+    expect(player?.inventoryDots).toBe(0);
     simulation.dispose();
   });
 

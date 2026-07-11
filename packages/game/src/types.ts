@@ -305,6 +305,7 @@ export type GameConfig = {
   respawnDelayMs: number;
   coverCenterTolerance: number;
   extractionDurationMs: number;
+  runDurationMs: number;
 };
 
 export type GameSnapshot = {
