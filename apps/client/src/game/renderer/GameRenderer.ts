@@ -1,5 +1,5 @@
 import { Application, Container, Graphics } from "pixi.js";
-import { clamp, clamp01, colorToNumber } from "../math";
+import { clamp, clamp01, colorToNumber } from "@dotbot/game/math";
 import {
   buildingContaining,
   classifyNoise,
@@ -7,11 +7,11 @@ import {
   floorPlanById,
   isGroundFloor,
   resolvePlan,
-} from "../mapModel";
-import { hasLineOfSight, visibilityPolygon, visionContext } from "../visibility";
-import { OUTDOOR_FLOOR_ID } from "../types";
-import type { DotBotEntity, GameSnapshot, MapDocument, Vec2 } from "../types";
-import { shieldArcSpan } from "../shields";
+} from "@dotbot/game/mapModel";
+import { hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/visibility";
+import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
+import type { DotBotEntity, GameSnapshot, MapDocument, Vec2 } from "@dotbot/game/types";
+import { shieldArcSpan } from "@dotbot/game/shields";
 import { buildMapArt, drawStairExitHalf, type MapArt } from "./mapArt";
 import { INK } from "./style";
 

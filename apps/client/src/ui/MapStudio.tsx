@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Application, Container, Graphics } from "pixi.js";
-import { defaultGameConfig } from "../game/config";
-import { downtownMap } from "../game/content/downtown";
-import { floorHeight, isGroundFloor, isSolidObject, rectContains } from "../game/mapModel";
+import { defaultGameConfig } from "@dotbot/game/config";
+import { downtownMap } from "@dotbot/game/content/downtown";
+import { floorHeight, isGroundFloor, isSolidObject, rectContains } from "@dotbot/game/mapModel";
 import { buildMapArt, fitCamera, type MapArt } from "../game/renderer/mapArt";
-import type { Building, FloorPlan, MapDocument, Rect, Vec2 } from "../game/types";
+import type { Building, FloorPlan, MapDocument, Rect, Vec2 } from "@dotbot/game/types";
 
 /**
  * Map Studio: the development-only authoring and review environment.

@@ -1,0 +1,11 @@
+{
+  "name": "@dotbot/protocol",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@dotbot/game": "workspace:*"
+  }
+}

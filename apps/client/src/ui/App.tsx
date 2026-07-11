@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { defaultGameConfig } from "../game";
-import { floorHeight, resolvePlan } from "../game/mapModel";
-import { clamp01 } from "../game/math";
+import { defaultGameConfig } from "@dotbot/game";
+import { floorHeight, resolvePlan } from "@dotbot/game/mapModel";
+import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
 
 const coachFadeAtMs = 12_000;

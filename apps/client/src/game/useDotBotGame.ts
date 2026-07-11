@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { defaultGameConfig } from "./config";
-import { downtownMap } from "./content/downtown";
-import { DotBotSimulation } from "./simulation";
+import { defaultGameConfig } from "@dotbot/game/config";
+import { downtownMap } from "@dotbot/game/content/downtown";
+import { DotBotSimulation } from "@dotbot/game/simulation";
 import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
-import { clamp, normalizeInputVector } from "./math";
+import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer } from "./renderer/GameRenderer";
-import type { GameSnapshot, Vec2 } from "./types";
+import type { GameSnapshot, Vec2 } from "@dotbot/game/types";
 
 type JoystickState = {
   active: boolean;

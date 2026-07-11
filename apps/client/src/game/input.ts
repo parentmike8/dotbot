@@ -1,5 +1,5 @@
-import { add, normalizeInputVector, zeroVec } from "./math";
-import type { InputCommand, Vec2 } from "./types";
+import { add, normalizeInputVector, zeroVec } from "@dotbot/game/math";
+import type { InputCommand, Vec2 } from "@dotbot/game/types";
 
 export const movementKeyCodes = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 

@@ -1,0 +1,21 @@
+{
+  "name": "@dotbot/game",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts",
+    "./content/*": "./src/content/*.ts"
+  },
+  "dependencies": {
+    "@dimforge/rapier2d-compat": "^0.19.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  }
+}

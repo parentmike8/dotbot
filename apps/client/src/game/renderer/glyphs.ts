@@ -1,5 +1,5 @@
 import type { Graphics } from "pixi.js";
-import type { Facing, MapObject, ObjectKind } from "../types";
+import type { Facing, MapObject, ObjectKind } from "@dotbot/game/types";
 import { INK, PAPER, strokes, type StrokeStyle } from "./style";
 
 /**

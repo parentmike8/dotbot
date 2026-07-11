@@ -1,5 +1,5 @@
 import { Container, Graphics, Text } from "pixi.js";
-import { isGroundFloor, stairHalves } from "../mapModel";
+import { isGroundFloor, stairHalves } from "@dotbot/game/mapModel";
 import type {
   Building,
   Doorway,
@@ -10,7 +10,7 @@ import type {
   Vec2,
   WallSegment,
   WindowBand,
-} from "../types";
+} from "@dotbot/game/types";
 import { drawObject } from "./glyphs";
 import { INK, PAPER, strokes, WEIGHT } from "./style";
 
