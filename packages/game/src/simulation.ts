@@ -559,7 +559,7 @@ export class DotBotSimulation {
       ),
     );
 
-    if (friendlyDowned && bot.inventoryDots > 0 && this.strategicDistance(bot, friendlyDowned) < 760) {
+    if (friendlyDowned && this.strategicDistance(bot, friendlyDowned) < 760) {
       return makeAiTarget(friendlyDowned.position, friendlyDowned.floorId, bot.radius * 0.42, bot.radius * 3, "revive", friendlyDowned.id);
     }
 
@@ -1241,11 +1241,6 @@ export class DotBotSimulation {
 
       const kind: CoverageKind = areFriendly(coveringBot, downed) ? "revive" : "consume";
 
-      if (kind === "revive" && coveringBot.inventoryDots <= 0) {
-        this.coverages.delete(coverageKey);
-        continue;
-      }
-
       const existing = this.coverages.get(coverageKey);
       const progressMs = existing?.actorId === coveringBot.id && existing.kind === kind ? existing.progressMs + dtMs : dtMs;
 
@@ -1317,9 +1312,11 @@ export class DotBotSimulation {
   }
 
   private reviveBot(target: InternalBot, reviver: InternalBot): void {
-    reviver.inventoryDots = Math.max(0, reviver.inventoryDots - 1);
     target.state = "alive";
-    target.shieldSegments = platesForCount(target.maxShields, 1);
+    target.shieldSegments = platesForCount(target.maxShields, 0);
+    if (target.shieldSegments.length > 0) {
+      target.shieldSegments[0] = 0.5;
+    }
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     const nudge = scale(length(reviver.lastAim) > 0 ? reviver.lastAim : { x: 1, y: 0 }, this.config.botRadius * 2.4);

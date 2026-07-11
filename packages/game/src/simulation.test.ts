@@ -448,9 +448,9 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("revives a downed friendly bot and spends one Dot", async () => {
+  it("revives a downed friendly bot for free with one cracked plate", async () => {
     const simulation = await makeSimulation([
-      playerSpawn({ position: { x: 100, y: 180 }, inventoryDots: 1 }),
+      playerSpawn({ position: { x: 100, y: 180 }, inventoryDots: 0 }),
       allySpawn({
         position: { x: 100, y: 180 },
         state: "downed",
@@ -463,7 +463,8 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.state).toBe("alive");
-    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(1);
+    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(0.5);
+    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shieldSegments).toEqual([0.5, 0, 0]);
     expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(0);
     simulation.dispose();
   });
@@ -483,7 +484,8 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.state).toBe("alive");
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(0);
+    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(0.5);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(1);
     simulation.dispose();
   });
 
