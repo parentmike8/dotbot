@@ -46,3 +46,4 @@ No gameplay, tuning, team-based speed, AI targeting, map content, shield logic, 
 - `pnpm build`: passed with Vite 8.0.16; 739 modules transformed. Existing large-chunk warning remains.
 - Browser game route: joystick movement, dash, AI combat, restart, HUD, location label, and floor rail verified. Location changed from `DOWNTOWN` to `LOT 6 DEPOT / GROUND`; the GROUND/B1 rail rendered. Existing revive behavior is covered by the unchanged simulation test plus the new event test. Zero console errors.
 - Browser Map Studio route: rendered unchanged; building selection and floor chips worked. Zero console errors.
+- Git history: authorized T2 handoff, implementation, and report are separate atomic commits. All T2 changes are committed. A concurrent untracked `handoffs/M0-T3-squad-refactor.md` appeared during T2 and was preserved untouched, so repository-wide `git status` is not empty.
