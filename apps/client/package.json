@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "@dotbot/game": "workspace:*",
+    "@dotbot/protocol": "workspace:*",
     "pixi.js": "^8.19.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1"

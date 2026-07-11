@@ -17,6 +17,9 @@ importers:
       '@dotbot/game':
         specifier: workspace:*
         version: link:../../packages/game
+      '@dotbot/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       pixi.js:
         specifier: ^8.19.0
         version: 8.19.0
