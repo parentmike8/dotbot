@@ -69,7 +69,7 @@ function collectFloors(): FloorWorld[] {
     const world = floor(physicsFloorId(map, spawn.floorId ?? OUTDOOR_FLOOR_ID));
     world.spawns.push({ id: spawn.id, position: spawn.position });
 
-    if (spawn.team === "player") {
+    if (spawn.controller === "human") {
       world.seeds.push(spawn.position);
     }
   }

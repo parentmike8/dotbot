@@ -27,7 +27,9 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / defaultGameConfig.dashCooldownMs) : 1;
   const runClock = formatRunClock(snapshot?.timeMs ?? 0);
-  const activeRivalCount = snapshot?.bots.filter((bot) => bot.team === "enemy" && bot.state === "alive").length ?? 0;
+  const activeRivalCount = player
+    ? (snapshot?.bots.filter((bot) => bot.squadId !== player.squadId && bot.state === "alive").length ?? 0)
+    : 0;
   const floorContext = useMemo(() => {
     if (!snapshot || !player) {
       return null;

@@ -1281,19 +1281,19 @@ function outdoorPlan() {
 // ---------------------------------------------------------------------------
 
 const botSpawns: BotSpawn[] = [
-  { id: "player", name: "You", team: "player", color: "#ff3b6b", position: { x: 300, y: 920 }, inventoryDots: 1 },
-  { id: "ally-1", name: "Indigo", team: "ally", color: "#2f80ed", position: { x: 380, y: 920 }, inventoryDots: 1 },
-  { id: "ally-2", name: "Sky", team: "ally", color: "#56ccf2", position: { x: 240, y: 890 }, inventoryDots: 1 },
-  { id: "enemy-1", name: "Ochre", team: "enemy", color: "#f2994a", position: { x: 2280, y: 650 } },
-  { id: "enemy-2", name: "Mint", team: "enemy", color: "#27ae60", position: { x: 900, y: 1520 } },
-  { id: "enemy-3", name: "Violet", team: "enemy", color: "#9b51e0", position: { x: 1620, y: 800 } },
-  { id: "enemy-4", name: "Amber", team: "enemy", color: "#f2c94c", position: { x: 1080, y: 320 } },
-  { id: "enemy-5", name: "Slate", team: "enemy", color: "#7f8c8d", position: { x: 500, y: 300 }, floorId: "mercy:F1" },
-  { id: "enemy-6", name: "Coal", team: "enemy", color: "#4f5b66", position: { x: 500, y: 1240 }, floorId: "lot6:B1" },
-  { id: "enemy-7", name: "Coral", team: "enemy", color: "#ff7f6e", position: { x: 1750, y: 430 }, floorId: "civic:F4" },
-  { id: "enemy-8", name: "Plum", team: "enemy", color: "#7d5ba6", position: { x: 1700, y: 430 }, floorId: "civic:F7" },
-  { id: "enemy-9", name: "Sage", team: "enemy", color: "#6b8f71", position: { x: 1800, y: 1236 }, floorId: "beacon:F1" },
-  { id: "enemy-10", name: "Rose", team: "enemy", color: "#c75b7a", position: { x: 1750, y: 1120 }, floorId: "beacon:ROOF" },
+  { id: "player", name: "You", squadId: "alpha", controller: "human", color: "#ff3b6b", position: { x: 300, y: 920 }, inventoryDots: 1 },
+  { id: "ally-1", name: "Indigo", squadId: "alpha", color: "#2f80ed", position: { x: 380, y: 920 }, inventoryDots: 1 },
+  { id: "ally-2", name: "Sky", squadId: "alpha", color: "#56ccf2", position: { x: 240, y: 890 }, inventoryDots: 1 },
+  { id: "enemy-1", name: "Ochre", squadId: "rival-1", isAmbient: true, color: "#f2994a", position: { x: 2280, y: 650 } },
+  { id: "enemy-2", name: "Mint", squadId: "rival-2", isAmbient: true, color: "#27ae60", position: { x: 900, y: 1520 } },
+  { id: "enemy-3", name: "Violet", squadId: "rival-3", isAmbient: true, color: "#9b51e0", position: { x: 1620, y: 800 } },
+  { id: "enemy-4", name: "Amber", squadId: "rival-4", isAmbient: true, color: "#f2c94c", position: { x: 1080, y: 320 } },
+  { id: "enemy-5", name: "Slate", squadId: "rival-5", isAmbient: true, color: "#7f8c8d", position: { x: 500, y: 300 }, floorId: "mercy:F1" },
+  { id: "enemy-6", name: "Coal", squadId: "rival-6", isAmbient: true, color: "#4f5b66", position: { x: 500, y: 1240 }, floorId: "lot6:B1" },
+  { id: "enemy-7", name: "Coral", squadId: "rival-7", isAmbient: true, color: "#ff7f6e", position: { x: 1750, y: 430 }, floorId: "civic:F4" },
+  { id: "enemy-8", name: "Plum", squadId: "rival-8", isAmbient: true, color: "#7d5ba6", position: { x: 1700, y: 430 }, floorId: "civic:F7" },
+  { id: "enemy-9", name: "Sage", squadId: "rival-9", isAmbient: true, color: "#6b8f71", position: { x: 1800, y: 1236 }, floorId: "beacon:F1" },
+  { id: "enemy-10", name: "Rose", squadId: "rival-10", isAmbient: true, color: "#c75b7a", position: { x: 1750, y: 1120 }, floorId: "beacon:ROOF" },
 ];
 
 export const downtownMap: MapDocument = {

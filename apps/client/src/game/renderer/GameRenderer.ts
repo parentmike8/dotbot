@@ -329,13 +329,14 @@ export class GameRenderer {
   private drawBots(snapshot: GameSnapshot, playerId: string, playerContext: string): void {
     const sorted = [...snapshot.bots].sort((a, b) => a.position.y - b.position.y);
     const player = snapshot.bots.find((bot) => bot.id === playerId);
+    const viewerSquadId = player?.squadId;
 
     for (const bot of sorted) {
       if (bot.state === "consumed") {
         continue;
       }
 
-      const squad = bot.team === "player" || bot.team === "ally";
+      const squad = viewerSquadId !== undefined && bot.squadId === viewerSquadId;
       const sameArena = this.contextKey(bot.floorId, bot.position) === playerContext;
 
       if (squad) {

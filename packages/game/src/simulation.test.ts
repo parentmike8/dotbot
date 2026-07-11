@@ -54,7 +54,8 @@ function playerSpawn(overrides: Partial<BotSpawn> = {}): BotSpawn {
   return {
     id: "player",
     name: "Player",
-    team: "player",
+    squadId: "alpha",
+    controller: "human",
     color: "#ff3b6b",
     position: { x: 100, y: 180 },
     inventoryDots: 0,
@@ -66,7 +67,8 @@ function enemySpawn(overrides: Partial<BotSpawn> = {}): BotSpawn {
   return {
     id: "enemy",
     name: "Enemy",
-    team: "enemy",
+    squadId: "rival-1",
+    isAmbient: true,
     color: "#f2994a",
     position: { x: 220, y: 180 },
     inventoryDots: 0,
@@ -78,7 +80,7 @@ function allySpawn(overrides: Partial<BotSpawn> = {}): BotSpawn {
   return {
     id: "ally",
     name: "Ally",
-    team: "ally",
+    squadId: "alpha",
     color: "#2f80ed",
     position: { x: 100, y: 180 },
     inventoryDots: 0,
@@ -245,7 +247,10 @@ describe("DotBotSimulation", () => {
   });
 
   it("lets AI rivals extract carried Dots", async () => {
-    const baseMap = makeMap([enemySpawn({ position: { x: 100, y: 100 }, inventoryDots: 3 })]);
+    const baseMap = makeMap([
+      playerSpawn({ position: { x: 400, y: 300 } }),
+      enemySpawn({ position: { x: 100, y: 100 }, inventoryDots: 3 }),
+    ]);
     const simulation = await DotBotSimulation.create({
       map: {
         ...baseMap,
@@ -314,6 +319,34 @@ describe("DotBotSimulation", () => {
     const ally = simulation.getSnapshot().bots.find((bot) => bot.id === "ally");
     expect(ally?.state).toBe("alive");
     expect(ally?.shields).toBe(1);
+    simulation.dispose();
+  });
+
+  it("never damages two same-squad AI bots during a Dash collision", async () => {
+    const simulation = await makeSimulation([
+      allySpawn({ id: "alpha-ai-1", position: { x: 100, y: 180 }, maxShields: 1, shields: 1 }),
+      allySpawn({ id: "alpha-ai-2", position: { x: 145, y: 180 }, maxShields: 1, shields: 1 }),
+      enemySpawn({ id: "rival-target", position: { x: 260, y: 180 }, maxShields: 1, shields: 1 }),
+    ]);
+    simulation.setController("rival-target", "frozen");
+
+    runTicks(simulation, 30);
+
+    const squad = simulation.getSnapshot().bots.filter((bot) => bot.squadId === "alpha");
+    expect(squad.every((bot) => bot.state === "alive" && bot.shields === 1)).toBe(true);
+    simulation.dispose();
+  });
+
+  it("lets different-squad ambient AI bots damage each other", async () => {
+    const simulation = await makeSimulation([
+      enemySpawn({ id: "ambient-a", squadId: "rival-a", position: { x: 100, y: 180 }, maxShields: 1, shields: 1 }),
+      enemySpawn({ id: "ambient-b", squadId: "rival-b", position: { x: 220, y: 180 }, maxShields: 1, shields: 1 }),
+    ]);
+
+    runTicks(simulation, 90);
+
+    const bots = simulation.getSnapshot().bots;
+    expect(bots.some((bot) => bot.state !== "alive" || bot.shields < 1)).toBe(true);
     simulation.dispose();
   });
 
@@ -809,6 +842,7 @@ describe("DotBotSimulation", () => {
           {
             position: spawn.position,
             floorId: physicsFloorId(downtownMap, spawn.floorId ?? "outdoor"),
+            controller: spawn.controller,
           },
         ]),
       );
@@ -827,13 +861,13 @@ describe("DotBotSimulation", () => {
           const snapshot = simulation.getSnapshot();
           milestones.movement ||= snapshot.bots.some((bot) => {
             const spawn = spawnById.get(bot.id);
-            return bot.team !== "player" && spawn !== undefined && Math.hypot(bot.position.x - spawn.position.x, bot.position.y - spawn.position.y) > 48;
+            return spawn !== undefined && spawn.controller !== "human" && Math.hypot(bot.position.x - spawn.position.x, bot.position.y - spawn.position.y) > 48;
           });
           milestones.capture ||= snapshot.debug.activeDots < initialActiveDots;
           milestones.combat ||= snapshot.bots.some((bot) => bot.shields < bot.maxShields || bot.state !== "alive");
           milestones.floorChange ||= snapshot.bots.some((bot) => {
             const spawn = spawnById.get(bot.id);
-            return bot.team !== "player" && spawn !== undefined && bot.floorId !== spawn.floorId;
+            return spawn !== undefined && spawn.controller !== "human" && bot.floorId !== spawn.floorId;
           });
           milestones.rivalExtraction ||= snapshot.rivalBankedDots > 0;
         }

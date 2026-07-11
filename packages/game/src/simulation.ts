@@ -25,7 +25,6 @@ import { hasLineOfSight } from "./visibility";
 import type {
   BotSpawn,
   BotState,
-  BotTeam,
   Building,
   Controller,
   CoverageKind,
@@ -102,8 +101,6 @@ type SimulationOptions = {
   config?: Partial<GameConfig>;
 };
 
-const FRIENDLY_TEAMS = new Set<BotTeam>(["player", "ally"]);
-
 export class DotBotSimulation {
   readonly config: GameConfig;
   readonly map: MapDocument;
@@ -113,6 +110,7 @@ export class DotBotSimulation {
   private readonly bots = new Map<string, InternalBot>();
   private readonly controllers = new Map<string, Controller>();
   private readonly inputs = new Map<string, InputCommand>();
+  private readonly primarySquadId: string;
   private readonly dots = new Map<string, InternalDot>();
   private readonly coverages = new Map<string, ActiveCoverage>();
   /** Physics layer index per floor id (GROUND floors resolve to the outdoor layer). */
@@ -145,8 +143,11 @@ export class DotBotSimulation {
     this.collectStairs();
 
     for (const spawn of map.botSpawns) {
-      this.spawnBot(spawn, spawn.team === "player" ? "human" : "ai");
+      this.spawnBot(spawn, spawn.controller ?? "ai");
     }
+
+    const primaryBot = [...this.bots.values()].find((bot) => this.controllers.get(bot.id) === "human") ?? this.bots.values().next().value;
+    this.primarySquadId = primaryBot?.squadId ?? "";
 
     this.spawnDots();
   }
@@ -276,7 +277,8 @@ export class DotBotSimulation {
     const bot: InternalBot = {
       id: spawn.id,
       name: spawn.name,
-      team: spawn.team,
+      squadId: spawn.squadId,
+      isAmbient: spawn.isAmbient ?? false,
       color: spawn.color,
       position: { ...spawn.position },
       radius: this.config.botRadius,
@@ -644,13 +646,19 @@ export class DotBotSimulation {
       return makeAiTarget(heard.position, heard.floorId, 34, bot.radius * 5, "investigate", heard.id);
     }
 
-    // Idle allies keep the player in view, including climbing after them.
-    if (bot.team === "ally") {
-      const player = this.bots.get("player");
+    // Idle AI squadmates keep the first living human controller in view,
+    // including climbing after them.
+    const squadHuman = [...this.bots.values()]
+      .filter(
+        (target) =>
+          target.squadId === bot.squadId &&
+          target.state === "alive" &&
+          this.controllers.get(target.id) === "human",
+      )
+      .sort((a, b) => a.id.localeCompare(b.id))[0];
 
-      if (player && player.state === "alive" && available(player)) {
-        return makeAiTarget(player.position, player.floorId, bot.radius * 3, bot.radius * 7, "escort", player.id);
-      }
+    if (squadHuman && available(squadHuman)) {
+      return makeAiTarget(squadHuman.position, squadHuman.floorId, bot.radius * 3, bot.radius * 7, "escort", squadHuman.id);
     }
 
     if (bot.aiRetargetMs <= 0 || distance(bot.position, bot.aiWanderTarget) < 48) {
@@ -985,7 +993,12 @@ export class DotBotSimulation {
         continue;
       }
 
-      const speed = bot.dashActiveMs > 0 ? this.config.dashSpeed : bot.team === "player" ? this.config.playerSpeed : this.config.botSpeed;
+      const speed =
+        bot.dashActiveMs > 0
+          ? this.config.dashSpeed
+          : this.controllers.get(bot.id) === "human"
+            ? this.config.playerSpeed
+            : this.config.botSpeed;
       const direction = bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
       bot.body.setLinvel(scale(direction, speed), true);
 
@@ -1300,10 +1313,10 @@ export class DotBotSimulation {
 
       if (progressMs >= this.config.extractionDurationMs) {
         const count = bot.inventoryDots;
-        if (bot.team === "enemy") {
-          this.rivalBankedDots += count;
-        } else {
+        if (bot.squadId === this.primarySquadId) {
           this.bankedDots += count;
+        } else {
+          this.rivalBankedDots += count;
         }
         this.events.push({ type: "dotsBanked", botId: bot.id, count });
         bot.inventoryDots = 0;
@@ -1369,7 +1382,7 @@ export class DotBotSimulation {
       bot.state = "alive";
       bot.shieldSegments = platesForCount(bot.maxShields, bot.maxShields);
       bot.shields = plateSum(bot.shieldSegments);
-      bot.inventoryDots = bot.team === "player" || bot.team === "ally" ? 1 : 0;
+      bot.inventoryDots = bot.isAmbient ? 0 : 1;
       bot.dashActiveMs = 0;
       bot.dashCooldownMs = 0;
       bot.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
@@ -1417,15 +1430,16 @@ export class DotBotSimulation {
   }
 }
 
-function areFriendly(a: Pick<DotBotEntity, "team">, b: Pick<DotBotEntity, "team">): boolean {
-  return FRIENDLY_TEAMS.has(a.team) && FRIENDLY_TEAMS.has(b.team);
+function areFriendly(a: Pick<DotBotEntity, "squadId">, b: Pick<DotBotEntity, "squadId">): boolean {
+  return a.squadId === b.squadId;
 }
 
 function toBotSnapshot(bot: InternalBot): DotBotEntity {
   return {
     id: bot.id,
     name: bot.name,
-    team: bot.team,
+    squadId: bot.squadId,
+    isAmbient: bot.isAmbient,
     color: bot.color,
     position: { ...bot.position },
     radius: bot.radius,

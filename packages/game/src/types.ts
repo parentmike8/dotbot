@@ -10,8 +10,6 @@ export type Rect = {
   h: number;
 };
 
-export type BotTeam = "player" | "ally" | "enemy";
-
 export type BotState = "alive" | "downed" | "consumed";
 
 export type Controller = "human" | "ai" | "frozen";
@@ -198,7 +196,9 @@ export type OutdoorPlan = {
 export type BotSpawn = {
   id: string;
   name: string;
-  team: BotTeam;
+  squadId: string;
+  isAmbient?: boolean;
+  controller?: Controller;
   color: string;
   position: Vec2;
   floorId?: string;
@@ -231,7 +231,8 @@ export type GameEntity = {
 
 export type DotBotEntity = GameEntity & {
   name: string;
-  team: BotTeam;
+  squadId: string;
+  isAmbient: boolean;
   color: string;
   state: BotState;
   floorId: string;
