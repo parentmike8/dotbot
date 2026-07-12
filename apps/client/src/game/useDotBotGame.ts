@@ -49,6 +49,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const keysRef = useRef(new Set<string>());
   const joystickRef = useRef<JoystickState>(emptyJoystick);
   const dashQueuedRef = useRef(false);
+  const spectateCycleQueuedRef = useRef(false);
+  const spectatedBotIdRef = useRef<string | null>(null);
   const runEndedRef = useRef(false);
   const frameRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
@@ -167,9 +169,16 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           setRunResult(result);
         }
 
-        const spectator = spectateEnabled && runState.phase === "over" && playerSquadId
-          ? nextSnapshot.bots.find((bot) => bot.id !== session.playerId && bot.squadId === playerSquadId && bot.state === "alive") ?? null
-          : null;
+        const livingSquadmates = spectateEnabled && runState.phase === "over" && playerSquadId
+          ? nextSnapshot.bots.filter((bot) => bot.id !== session.playerId && bot.squadId === playerSquadId && bot.state === "alive")
+          : [];
+        let spectator = livingSquadmates.find((bot) => bot.id === spectatedBotIdRef.current) ?? livingSquadmates[0] ?? null;
+        if (spectateCycleQueuedRef.current && livingSquadmates.length > 0) {
+          const currentIndex = livingSquadmates.findIndex((bot) => bot.id === spectator?.id);
+          spectator = livingSquadmates[(currentIndex + 1) % livingSquadmates.length];
+        }
+        spectateCycleQueuedRef.current = false;
+        spectatedBotIdRef.current = spectator?.id ?? null;
         const renderPlayerId = spectator?.id ?? session.playerId;
         renderer.render(nextSnapshot, renderPlayerId, spectateEnabled && runState.phase === "over" && spectator === null);
 
@@ -200,7 +209,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
       if (event.code === "Space") {
         event.preventDefault();
-        if (!runEndedRef.current) {
+        if (runEndedRef.current && spectateEnabled) {
+          spectateCycleQueuedRef.current = true;
+        } else if (!runEndedRef.current) {
           dashQueuedRef.current = true;
         }
         return;
@@ -270,6 +281,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       dashQueuedRef.current = true;
     }
   }, []);
+
+  const cycleSpectator = useCallback(() => {
+    if (runEndedRef.current && spectateEnabled) {
+      spectateCycleQueuedRef.current = true;
+    }
+  }, [spectateEnabled]);
 
   const updateJoystick = useCallback((clientX: number, clientY: number) => {
     const state = joystickRef.current;
@@ -357,5 +374,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     joystick: joystickView,
     joystickHandlers,
     queueDash,
+    cycleSpectator,
   };
 }

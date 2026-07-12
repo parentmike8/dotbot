@@ -10,7 +10,7 @@ type NetGameViewProps = {
 };
 
 export function NetGameView({ session, roomCode, onReturnToLobby }: NetGameViewProps) {
-  const { hostRef, snapshot, events, runResult, spectating, queueDash } = useDotBotGame({ session, spectate: true });
+  const { hostRef, snapshot, events, runResult, spectating, queueDash, cycleSpectator } = useDotBotGame({ session, spectate: true });
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
   const killCounts = useMemo(() => {
@@ -34,7 +34,11 @@ export function NetGameView({ session, roomCode, onReturnToLobby }: NetGameViewP
         <span>{player ? `${player.shields}/${player.maxShields} shields` : "Waiting for snapshots"}</span>
         <span>Run {formatRunTime(remainingRunMs)}</span>
       </aside>
-      {spectating ? <div className="spectating-chip">SPECTATING {spectating.name.toUpperCase()}</div> : null}
+      {spectating ? (
+        <button className="spectating-chip" type="button" onPointerDown={cycleSpectator}>
+          SPECTATING {spectating.name.toUpperCase()}
+        </button>
+      ) : null}
       <button className="net-dash-button" type="button" disabled={runResult !== null} onPointerDown={queueDash}>
         Dash
       </button>

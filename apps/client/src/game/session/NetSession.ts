@@ -48,6 +48,8 @@ export class NetSession implements GameSession {
   private resolveStart: (() => void) | null = null;
   private rejectStart: ((error: Error) => void) | null = null;
   private runState: RunState = { phase: "live" };
+  private endTick = Number.MAX_SAFE_INTEGER;
+  private warnedClockDrift = false;
 
   constructor(options: NetSessionOptions) {
     this.options = options;
@@ -206,6 +208,7 @@ export class NetSession implements GameSession {
         this.configValue = message.config;
         this.playerIdValue = message.yourBotId;
         this.tickHz = message.tickHz;
+        this.endTick = message.endTick;
         this.metaIndex = new Map(message.meta.map((meta) => [meta.id, meta]));
         this.runState = { phase: "live" };
         this.resolveStart?.();
@@ -216,6 +219,7 @@ export class NetSession implements GameSession {
         const snapshot = fromWireSnapshot(message, this.metaIndex);
         snapshot.timeMs = message.tick * (1000 / this.tickHz);
         snapshot.debug.tickHz = this.tickHz;
+        this.checkClockSanity(message.tick, snapshot.timeMs);
         this.reconcileOwnBot(snapshot, message.ack);
         this.snapshots.push({ tick: message.tick, snapshot });
         if (this.snapshots.length > 20) this.snapshots.splice(0, this.snapshots.length - 20);
@@ -348,6 +352,22 @@ export class NetSession implements GameSession {
     this.rejectStart?.(new Error(message));
     this.resolveStart = null;
     this.rejectStart = null;
+  }
+
+  private checkClockSanity(tick: number, snapshotTimeMs: number): void {
+    if (!import.meta.env.DEV || this.warnedClockDrift || !this.configValue) return;
+    const tickMs = 1000 / this.tickHz;
+    const snapshotRemainingMs = this.configValue.runDurationMs - snapshotTimeMs;
+    const endTickRemainingMs = (this.endTick - tick) * tickMs;
+    if (Math.abs(snapshotRemainingMs - endTickRemainingMs) > tickMs * 2) {
+      this.warnedClockDrift = true;
+      console.warn("DotBot run clock differs from authoritative endTick by more than two ticks.", {
+        snapshotRemainingMs,
+        endTickRemainingMs,
+        tick,
+        endTick: this.endTick,
+      });
+    }
   }
 }
 
