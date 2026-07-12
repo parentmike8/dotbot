@@ -288,6 +288,10 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     }
   }, [spectateEnabled]);
 
+  const giveUp = useCallback(() => {
+    sessionRef.current?.giveUp();
+  }, []);
+
   const updateJoystick = useCallback((clientX: number, clientY: number) => {
     const state = joystickRef.current;
     const raw = {
@@ -374,6 +378,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     joystick: joystickView,
     joystickHandlers,
     queueDash,
+    giveUp,
     cycleSpectator,
   };
 }

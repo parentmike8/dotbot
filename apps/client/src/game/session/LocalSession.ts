@@ -27,6 +27,7 @@ export class LocalSession implements GameSession {
   private input: InputCommand = { move: { x: 0, y: 0 }, dash: false };
   private events: SimEvent[] = [];
   private runState: RunState = { phase: "live" };
+  private lastSnapshot: GameSnapshot | null = null;
 
   constructor(options: LocalSessionOptions) {
     this.map = options.map;
@@ -68,6 +69,7 @@ export class LocalSession implements GameSession {
     }
 
     const snapshot = simulation.getSnapshot();
+    this.lastSnapshot = snapshot;
     if (this.runState.phase === "live" && snapshot.timeMs >= this.config.runDurationMs) {
       this.runState = {
         phase: "over",
@@ -89,6 +91,13 @@ export class LocalSession implements GameSession {
     return this.runState;
   }
 
+  giveUp(): void {
+    if (this.runState.phase === "over") return;
+    const player = this.lastSnapshot?.bots.find((bot) => bot.id === this.playerId);
+    if (!player || player.state !== "downed") return;
+    this.runState = { phase: "over", reason: "died", keptItems: [], lostItems: carriedItems(player) };
+  }
+
   setMeasuredFps(fps: number): void {
     this.simulation?.setMeasuredFps(fps);
   }
@@ -99,6 +108,7 @@ export class LocalSession implements GameSession {
     this.accumulator = 0;
     this.events = [];
     this.runState = { phase: "live" };
+    this.lastSnapshot = null;
   }
 
   private applyRunEvents(events: SimEvent[]): void {

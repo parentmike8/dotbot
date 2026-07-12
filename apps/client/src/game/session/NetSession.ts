@@ -105,6 +105,10 @@ export class NetSession implements GameSession {
     this.send({ type: "leaveRun" });
   }
 
+  giveUp(): void {
+    this.leaveRun();
+  }
+
   sendInput(input: InputCommand): void {
     this.predictionInput = { move: { ...input.move }, dash: false };
     this.predictionDashQueued ||= input.dash;

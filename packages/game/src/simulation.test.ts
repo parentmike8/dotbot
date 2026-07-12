@@ -175,7 +175,7 @@ describe("DotBotSimulation", () => {
   it("holds AI bots steady while they cover Dots", async () => {
     const simulation = await DotBotSimulation.create({
       map: makeMap(
-        [enemySpawn({ position: { x: 120, y: 180 } })],
+        [enemySpawn({ isAmbient: false, position: { x: 120, y: 180 } })],
         [{ id: "dot", item: healthItem, position: { x: 100, y: 180 } }],
       ),
       config: {
@@ -198,7 +198,7 @@ describe("DotBotSimulation", () => {
 
   it("blacklists multiple unreachable objectives and continues to reachable loot", async () => {
     const baseMap = makeMap(
-      [enemySpawn({ position: { x: 50, y: 300 } })],
+      [enemySpawn({ isAmbient: false, position: { x: 50, y: 300 } })],
       [
         { id: "blocked-a", item: healthItem, position: { x: 100, y: 210 } },
         { id: "blocked-b", item: healthItem, position: { x: 112, y: 210 } },
@@ -600,7 +600,7 @@ describe("DotBotSimulation", () => {
     const stairRect = { x: 250, y: 80, w: 60, h: 160 };
     const baseMap = makeMap([
       playerSpawn({ position: { x: 360, y: 180 }, floorId: "tower:F2" }),
-      enemySpawn({ position: { x: 280, y: 210 } }),
+      enemySpawn({ isAmbient: false, position: { x: 280, y: 210 } }),
     ]);
     const simulation = await DotBotSimulation.create({
       map: {
@@ -750,7 +750,7 @@ describe("DotBotSimulation", () => {
         state: "downed",
         shields: 0,
       }),
-      enemySpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ isAmbient: false, position: { x: 100, y: 180 } }),
     ]);
 
     simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
@@ -871,7 +871,7 @@ describe("DotBotSimulation", () => {
   });
 
   it(
-    "exercises movement, capture, combat, and stairs through a two-minute neighborhood soak",
+    "exercises ambient movement, combat, and stairs without looting through a two-minute neighborhood soak",
     async () => {
       const simulation = await DotBotSimulation.create({ map: downtownMap });
       const initialActiveDots = simulation.getSnapshot().debug.activeDots;
@@ -914,7 +914,7 @@ describe("DotBotSimulation", () => {
       expect(snapshot.timeMs).toBeGreaterThanOrEqual(119_000);
       expect(milestones).toEqual({
         movement: true,
-        capture: true,
+        capture: false,
         combat: true,
         floorChange: true,
       });

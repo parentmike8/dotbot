@@ -22,6 +22,8 @@ export interface GameSession {
   drainEvents(): SimEvent[];
   /** Authoritative run outcome for this session implementation. */
   getRunState(): RunState;
+  /** Opt out while downed. Local ends immediately; network leaves the run. */
+  giveUp(): void;
   /** Debug instrumentation; optional so NetSession can no-op it. */
   setMeasuredFps?(fps: number): void;
   dispose(): void;

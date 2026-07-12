@@ -330,6 +330,21 @@ button {
   background: var(--ink);
 }
 
+.give-up-button {
+  position: absolute;
+  left: 50%;
+  bottom: 112px;
+  z-index: 14;
+  transform: translateX(-50%);
+  border: 2px solid #111;
+  background: #f8f4ea;
+  color: #111;
+  padding: 10px 22px;
+  font: 800 12px/1 var(--font-mono);
+  letter-spacing: 0.16em;
+  box-shadow: 4px 4px 0 #111;
+}
+
 .quick-coach {
   position: absolute;
   z-index: 7;

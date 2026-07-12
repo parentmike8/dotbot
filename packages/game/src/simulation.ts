@@ -130,6 +130,7 @@ export class DotBotSimulation {
   private rngState = 481516234;
   private noises: NoiseEvent[] = [];
   private noiseSeq = 0;
+  private spillSeq = 0;
 
   private constructor(rapier: RapierApi, map: MapDocument, config: GameConfig) {
     this.rapier = rapier;
@@ -625,6 +626,7 @@ export class DotBotSimulation {
   }
 
   private pickBotTarget(bot: InternalBot): AiTarget {
+    if (bot.isAmbient) return this.pickAmbientTarget(bot);
     const sameBuilding = (target: { floorId: string; position: Vec2 }) => {
       const botPlan = resolvePlan(this.map, bot.floorId, bot.position);
       const targetPlan = resolvePlan(this.map, target.floorId, target.position);
@@ -740,6 +742,36 @@ export class DotBotSimulation {
       bot.aiRetargetMs = 1400 + this.nextRandom() * 1500;
     }
 
+    return makeAiTarget(bot.aiWanderTarget, bot.floorId, 48, bot.radius * 4, "wander");
+  }
+
+  private pickAmbientTarget(bot: InternalBot): AiTarget {
+    const available = (target: { id: string }) => !bot.aiAvoidTargets.has(target.id);
+    const hostile = [...this.bots.values()]
+      .filter((target) =>
+        target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && available(target) &&
+        this.sameArena(bot, target.floorId, target.position) && distance(bot.position, target.position) < 540 &&
+        hasLineOfSight(this.map, contextKey(this.map, bot.floorId, bot.position), bot.position, target.position))
+      .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
+    if (hostile) {
+      return makeAiTarget(hostile.position, hostile.floorId, bot.radius * 1.85, bot.radius * 4.5, "hunt", hostile.id);
+    }
+
+    const heard = [...this.noises].reverse().find((noise) =>
+      available(noise) && classifyNoise(this.map, bot.floorId, bot.position, noise.floorId, noise.position, noise.loudness) !== null);
+    if (heard) return makeAiTarget(heard.position, heard.floorId, 34, bot.radius * 5, "investigate", heard.id);
+
+    const strategic = [...this.bots.values()]
+      .filter((target) => target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && available(target))
+      .sort((a, b) => this.strategicDistance(bot, a) - this.strategicDistance(bot, b))[0];
+    if (strategic && this.strategicDistance(bot, strategic) < 900) {
+      return makeAiTarget(strategic.position, strategic.floorId, bot.radius * 1.85, bot.radius * 4.5, "hunt", strategic.id);
+    }
+
+    if (bot.aiRetargetMs <= 0 || distance(bot.position, bot.aiWanderTarget) < 48) {
+      bot.aiWanderTarget = this.pickWanderTarget(bot);
+      bot.aiRetargetMs = 1400 + this.nextRandom() * 1500;
+    }
     return makeAiTarget(bot.aiWanderTarget, bot.floorId, 48, bot.radius * 4, "wander");
   }
 
@@ -1246,7 +1278,7 @@ export class DotBotSimulation {
   }
 
   private resolveDotCapture(dtMs: number): void {
-    const aliveBots = [...this.bots.values()].filter((bot) => bot.state === "alive");
+    const aliveBots = [...this.bots.values()].filter((bot) => bot.state === "alive" && !bot.isAmbient);
 
     for (const dot of this.dots.values()) {
       if (!dot.active) {
@@ -1308,7 +1340,7 @@ export class DotBotSimulation {
   }
 
   private resolveDownedCoverage(dtMs: number): void {
-    const aliveBots = [...this.bots.values()].filter((bot) => bot.state === "alive");
+    const aliveBots = [...this.bots.values()].filter((bot) => bot.state === "alive" && !bot.isAmbient);
     const downedBots = [...this.bots.values()].filter((bot) => bot.state === "downed");
 
     for (const downed of downedBots) {
@@ -1457,7 +1489,20 @@ export class DotBotSimulation {
 
   private consumeBot(target: InternalBot, consumer: InternalBot): void {
     const lostItems = carriedItems(target);
-    for (const item of lostItems) insertItem(consumer, item, this.config.holdSlots);
+    const overflow = lostItems.filter((item) => !insertItem(consumer, item, this.config.holdSlots));
+    overflow.forEach((item, index) => {
+      const angle = (index * Math.PI * 2) / Math.max(1, overflow.length);
+      const id = `spill-${this.spillSeq++}`;
+      this.dots.set(id, {
+        id,
+        item: { ...item },
+        position: add(target.position, { x: Math.cos(angle) * 8, y: Math.sin(angle) * 8 }),
+        radius: this.config.dotRadius,
+        floorId: target.floorId,
+        active: true,
+        captureProgressMs: 0,
+      });
+    });
     target.state = "consumed";
     target.shieldSegments = platesForCount(target.maxShields, 0);
     target.shields = 0;

@@ -24,9 +24,10 @@ export function App() {
 }
 
 function GameSession({ onRestart }: { onRestart: () => void }) {
-  const { hostRef, snapshot, events, runResult, map, playerId, debugVisible, joystick, joystickHandlers, queueDash } = useDotBotGame();
+  const { hostRef, snapshot, events, runResult, map, playerId, debugVisible, joystick, joystickHandlers, queueDash, giveUp } = useDotBotGame();
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
+  const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === playerId) ?? false;
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / defaultGameConfig.dashCooldownMs) : 1;
   const remainingRunMs = Math.max(0, defaultGameConfig.runDurationMs - (snapshot?.timeMs ?? 0));
   const runClock = formatRunClock(remainingRunMs);
@@ -193,6 +194,10 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
         <div className="coverage-meter" aria-label="Coverage progress">
           <span style={{ width: `${clamp01(playerCoverage.progressMs / playerCoverage.durationMs) * 100}%` }} />
         </div>
+      ) : null}
+
+      {player?.state === "downed" && !reviveInProgress && !runResult ? (
+        <button type="button" className="give-up-button" onClick={giveUp}>GIVE UP</button>
       ) : null}
 
       {coachPhase !== null ? (
