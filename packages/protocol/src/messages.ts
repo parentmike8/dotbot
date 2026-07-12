@@ -1,4 +1,4 @@
-import type { GameConfig, Item, MapDocument, SimEvent } from "@dotbot/game/types";
+import type { GameConfig, Item, MapDocument, RadarPing, SimEvent } from "@dotbot/game/types";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
 
@@ -30,6 +30,9 @@ export type WireBot = {
   h: Item[];
   d?: [number, number];
   iv?: number;
+  r?: [number, RadarPing[]];
+  o?: number;
+  ic?: number;
 };
 
 export type WireSnapshot = {
@@ -45,7 +48,14 @@ export type ClientMessage =
   | { type: "hello"; token: string; name: string; roomCode: string }
   | { type: "startMatch" }
   | { type: "leaveRun" }
-  | { type: "input"; seq: number; move: [number, number]; dash: boolean }
+  | {
+      type: "input";
+      seq: number;
+      move: [number, number];
+      dash: boolean;
+      useBay?: 0 | 1 | 2 | 3;
+      swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
+    }
   | { type: "ping"; cts: number };
 
 export type ServerMessage =

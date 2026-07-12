@@ -102,6 +102,17 @@ export function reseatPlates(segments: number[]): void {
   segments.sort((a, b) => b - a);
 }
 
+/** Restore one plate's worth of protection without exceeding capacity. */
+export function restoreShieldPlate(segments: number[]): void {
+  let remaining = 1;
+  for (let index = 0; index < segments.length && remaining > 0; index += 1) {
+    const restored = Math.min(1 - segments[index], remaining);
+    segments[index] += restored;
+    remaining -= restored;
+  }
+  reseatPlates(segments);
+}
+
 /**
  * Apply one qualifying hit to a plate array, mutating it. The surviving
  * plating re-seats best-first afterward. Returns what happened so callers

@@ -20,6 +20,8 @@ export type Item =
   | { kind: "powerup"; type: PowerupType }
   | { kind: "blueprint"; blueprintId: string };
 
+export type RadarPing = Vec2 & { ageMs: number };
+
 export type SimEvent =
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "consumed"; botId: string; byBotId: string; lostItems: Item[] }
@@ -252,6 +254,10 @@ export type DotBotEntity = GameEntity & {
   shieldSegments: number[];
   bays: (Item | null)[];
   hold: Item[];
+  radarActiveMs: number;
+  radarPings: RadarPing[];
+  dashOverchargeCharges: number;
+  incognitoMs: number;
   dashCooldownMs: number;
   dashActiveMs: number;
   invulnerabilityMs: number;
@@ -268,9 +274,11 @@ export type DotEntity = GameEntity & {
 export type InputCommand = {
   move: Vec2;
   dash: boolean;
+  useBay?: 0 | 1 | 2 | 3;
+  swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
 };
 
-export type CoverageKind = "capture" | "consume" | "revive" | "extract";
+export type CoverageKind = "capture" | "consume" | "revive" | "extract" | "swap";
 
 export type NoiseKind = "dash" | "impact" | "stairs" | "channel";
 
@@ -302,6 +310,14 @@ export type GameConfig = {
   maxShields: number;
   baySlots: number;
   holdSlots: number;
+  radarDurationMs: number;
+  radarPingIntervalMs: number;
+  radarRadius: number;
+  radarPingTtlMs: number;
+  dashOverchargeUses: number;
+  incognitoDurationMs: number;
+  powerupNoiseLoudness: number;
+  swapDurationMs: number;
   playerSpeed: number;
   botSpeed: number;
   dashSpeed: number;

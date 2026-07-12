@@ -45,6 +45,9 @@ function toWireBot(bot: DotBotEntity): WireBot {
   if (bot.invulnerabilityMs !== 0) {
     wire.iv = bot.invulnerabilityMs;
   }
+  if (bot.radarActiveMs !== 0 || bot.radarPings.length > 0) wire.r = [bot.radarActiveMs, bot.radarPings];
+  if (bot.dashOverchargeCharges !== 0) wire.o = bot.dashOverchargeCharges;
+  if (bot.incognitoMs !== 0) wire.ic = bot.incognitoMs;
   return wire;
 }
 
@@ -90,5 +93,9 @@ function fromWireBot(bot: WireBot, metaIndex: ReadonlyMap<string, EntityMeta>): 
     dashCooldownMs: bot.d?.[0] ?? 0,
     dashActiveMs: bot.d?.[1] ?? 0,
     invulnerabilityMs: bot.iv ?? 0,
+    radarActiveMs: bot.r?.[0] ?? 0,
+    radarPings: bot.r?.[1]?.map((ping) => ({ ...ping })) ?? [],
+    dashOverchargeCharges: bot.o ?? 0,
+    incognitoMs: bot.ic ?? 0,
   };
 }

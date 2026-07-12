@@ -180,7 +180,12 @@ export class Room {
       case "input":
         if (this.phase !== "live" || !member.inRun || message.seq <= member.latestSeq) return;
         member.latestSeq = message.seq;
-        member.latestInput = { move: { x: message.move[0], y: message.move[1] }, dash: message.dash };
+        member.latestInput = {
+          move: { x: message.move[0], y: message.move[1] },
+          dash: message.dash,
+          useBay: message.useBay,
+          swapBay: message.swapBay,
+        };
         return;
       case "ping":
         member.peer?.send({ type: "pong", cts: message.cts, sts: this.now() });

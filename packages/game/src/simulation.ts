@@ -20,7 +20,7 @@ import {
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, insertItem } from "./inventory";
-import { applyShieldHit, platesForCount, plateSum } from "./shields";
+import { applyShieldHit, platesForCount, plateSum, restoreShieldPlate } from "./shields";
 import { loadRapier } from "./rapier";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import { hasLineOfSight } from "./visibility";
@@ -80,6 +80,8 @@ type InternalBot = DotBotEntity & {
   aiPathProjected: boolean;
   aiAvoidTargets: Map<string, number>;
   consumedRespawnMs: number;
+  radarPingElapsedMs: number;
+  activeSwap?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number; progressMs: number };
 };
 
 type InternalDot = DotEntity;
@@ -286,6 +288,11 @@ export class DotBotSimulation {
       shieldSegments,
       bays: normalizedBays(spawn, this.config),
       hold: spawn.isAmbient ? [] : (spawn.hold ?? []).slice(0, this.config.holdSlots),
+      radarActiveMs: 0,
+      radarPings: [],
+      radarPingElapsedMs: 0,
+      dashOverchargeCharges: 0,
+      incognitoMs: 0,
       dashCooldownMs: 0,
       dashActiveMs: 0,
       invulnerabilityMs: 0,
@@ -327,6 +334,8 @@ export class DotBotSimulation {
     this.inputs.set(botId, {
       move: normalizeInputVector(input.move),
       dash: (current?.dash ?? false) || input.dash,
+      useBay: current?.useBay ?? input.useBay,
+      swapBay: current?.swapBay ?? input.swapBay,
     });
   }
 
@@ -410,6 +419,7 @@ export class DotBotSimulation {
     this.resolveDotCapture(dtMs);
     this.resolveDownedCoverage(dtMs);
     this.resolveExtraction(dtMs);
+    this.resolveSwaps(dtMs);
     this.respawnConsumedBots(dtMs);
   }
 
@@ -451,7 +461,8 @@ export class DotBotSimulation {
   // Per-tick systems
   // ---------------------------------------------------------------------------
 
-  private emitNoise(kind: NoiseKind, position: Vec2, floorId: string, loudness: number): void {
+  private emitNoise(kind: NoiseKind, position: Vec2, floorId: string, loudness: number, source?: InternalBot): void {
+    if (source && source.incognitoMs > 0) return;
     this.noises.push({
       id: `n${this.noiseSeq++}`,
       kind,
@@ -481,6 +492,23 @@ export class DotBotSimulation {
       bot.dashCooldownMs = Math.max(0, bot.dashCooldownMs - dtMs);
       bot.dashActiveMs = Math.max(0, bot.dashActiveMs - dtMs);
       bot.invulnerabilityMs = Math.max(0, bot.invulnerabilityMs - dtMs);
+      bot.incognitoMs = Math.max(0, bot.incognitoMs - dtMs);
+      const previousRadarMs = bot.radarActiveMs;
+      bot.radarActiveMs = Math.max(0, bot.radarActiveMs - dtMs);
+      bot.radarPings = bot.radarPings
+        .map((ping) => ({ ...ping, ageMs: ping.ageMs + dtMs }))
+        .filter((ping) => ping.ageMs < this.config.radarPingTtlMs);
+      if (previousRadarMs > 0) {
+        bot.radarPingElapsedMs += dtMs;
+        while (bot.radarPingElapsedMs >= this.config.radarPingIntervalMs) {
+          bot.radarPingElapsedMs -= this.config.radarPingIntervalMs;
+          for (const target of this.bots.values()) {
+            if (target.id !== bot.id && target.state !== "consumed" && target.floorId === bot.floorId && distance(bot.position, target.position) <= this.config.radarRadius) {
+              bot.radarPings.push({ ...target.position, ageMs: 0 });
+            }
+          }
+        }
+      }
       bot.aiRetargetMs = Math.max(0, bot.aiRetargetMs - dtMs);
       bot.aiRepathMs = Math.max(0, bot.aiRepathMs - dtMs);
 
@@ -502,29 +530,75 @@ export class DotBotSimulation {
         bot.desiredMove = zeroVec();
         continue;
       }
-      if (controller !== "human" || bot.state !== "alive") {
+      if (controller !== "human") {
+        continue;
+      }
+
+      if (bot.state !== "alive") {
+        const input = this.inputs.get(bot.id);
+        if (input?.dash || input?.useBay !== undefined || input?.swapBay) {
+          this.inputs.set(bot.id, { move: zeroVec(), dash: false });
+        }
         continue;
       }
 
       const input = this.inputs.get(bot.id) ?? { move: zeroVec(), dash: false };
-      bot.desiredMove = input.move;
+      bot.desiredMove = bot.activeSwap ? zeroVec() : input.move;
 
       if (length(input.move) > 0.05) {
         bot.lastAim = input.move;
       }
 
-      if (input.dash) {
-        if (bot.dashCooldownMs <= 0 && bot.dashActiveMs <= 0) {
+      if (input.useBay !== undefined) {
+        this.fireBay(bot, input.useBay);
+      }
+      if (input.swapBay && !bot.activeSwap) {
+        const { bayIndex, holdIndex } = input.swapBay;
+        if (bayIndex < bot.bays.length && holdIndex >= 0 && holdIndex < bot.hold.length) {
+          bot.activeSwap = { bayIndex, holdIndex, progressMs: 0 };
+          bot.desiredMove = zeroVec();
+        }
+      }
+
+      if (input.dash && !bot.activeSwap) {
+        const overcharged = bot.dashOverchargeCharges > 0;
+        if ((overcharged || bot.dashCooldownMs <= 0) && bot.dashActiveMs <= 0) {
           bot.dashActiveMs = this.config.dashDurationMs;
-          bot.dashCooldownMs = this.config.dashCooldownMs;
-          this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash);
+          if (overcharged) bot.dashOverchargeCharges -= 1;
+          else bot.dashCooldownMs = this.config.dashCooldownMs;
+          this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
         }
 
         // A press is consumed on the tick it is considered, fired or not.
         // Pressing during cooldown must never bank a dash for later.
-        this.inputs.set(bot.id, { ...input, dash: false });
+      }
+      if (input.dash || input.useBay !== undefined || input.swapBay) {
+        this.inputs.set(bot.id, { ...input, dash: false, useBay: undefined, swapBay: undefined });
       }
     }
+  }
+
+  private fireBay(bot: InternalBot, bayIndex: 0 | 1 | 2 | 3): void {
+    const item = bot.bays[bayIndex];
+    if (!item || item.kind !== "powerup") return;
+    bot.bays[bayIndex] = null;
+    switch (item.type) {
+      case "health":
+        restoreShieldPlate(bot.shieldSegments);
+        bot.shields = plateSum(bot.shieldSegments);
+        break;
+      case "radar":
+        bot.radarActiveMs = this.config.radarDurationMs;
+        bot.radarPingElapsedMs = 0;
+        break;
+      case "dashOvercharge":
+        bot.dashOverchargeCharges += this.config.dashOverchargeUses;
+        break;
+      case "incognito":
+        bot.incognitoMs = this.config.incognitoDurationMs;
+        break;
+    }
+    this.emitNoise("channel", bot.position, bot.floorId, this.config.powerupNoiseLoudness, bot);
   }
 
   private updateBotAi(): void {
@@ -957,7 +1031,7 @@ export class DotBotSimulation {
     bot.lastAim = normalize(desired);
     bot.dashActiveMs = this.config.dashDurationMs;
     bot.dashCooldownMs = this.config.dashCooldownMs + 250 + this.nextRandom() * 450;
-    this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash);
+    this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
   }
 
   /** Indoor bots wander their building footprint; outdoor bots wander the map. */
@@ -988,7 +1062,7 @@ export class DotBotSimulation {
         continue;
       }
 
-      if (this.controllers.get(bot.id) === "frozen") {
+      if (this.controllers.get(bot.id) === "frozen" || bot.activeSwap) {
         bot.body.setLinvel(zeroVec(), true);
         continue;
       }
@@ -1094,8 +1168,8 @@ export class DotBotSimulation {
         bot.aiPathProjected = false;
 
         // Stairs announce themselves on both connected floors.
-        this.emitNoise("stairs", bot.position, sourceFloor, NOISE_LOUDNESS.stairs);
-        this.emitNoise("stairs", bot.position, targetFloor, NOISE_LOUDNESS.stairs);
+        this.emitNoise("stairs", bot.position, sourceFloor, NOISE_LOUDNESS.stairs, bot);
+        this.emitNoise("stairs", bot.position, targetFloor, NOISE_LOUDNESS.stairs, bot);
         break;
       }
     }
@@ -1182,7 +1256,6 @@ export class DotBotSimulation {
       const coveringBot = aliveBots.find(
         (bot) =>
           bot.floorId === dot.floorId &&
-          carriedCount(bot) < this.config.baySlots + this.config.holdSlots &&
           distance(bot.position, dot.position) + dot.radius <= bot.radius - 2,
       );
 
@@ -1200,7 +1273,7 @@ export class DotBotSimulation {
       dot.captureProgressMs += dtMs;
 
       if (this.channelPingDue(dot.captureProgressMs, dtMs)) {
-        this.emitNoise("channel", dot.position, dot.floorId, NOISE_LOUDNESS.captureChannel);
+        this.emitNoise("channel", dot.position, dot.floorId, NOISE_LOUDNESS.captureChannel, coveringBot);
       }
 
       this.coverages.set(`capture:${dot.id}`, {
@@ -1212,9 +1285,14 @@ export class DotBotSimulation {
       });
 
       if (dot.captureProgressMs >= this.config.dotCaptureDurationMs) {
-        dot.active = false;
-        insertItem(coveringBot, { ...dot.item }, this.config.holdSlots);
-        this.events.push({ type: "dotCaptured", botId: coveringBot.id, dotId: dot.id });
+        const inserted = insertItem(coveringBot, { ...dot.item }, this.config.holdSlots);
+        if (inserted) {
+          dot.active = false;
+          this.events.push({ type: "dotCaptured", botId: coveringBot.id, dotId: dot.id });
+        } else {
+          dot.captureProgressMs = 0;
+          dot.capturedBy = undefined;
+        }
         this.coverages.delete(`capture:${dot.id}`);
       }
     }
@@ -1253,7 +1331,7 @@ export class DotBotSimulation {
       const progressMs = existing?.actorId === coveringBot.id && existing.kind === kind ? existing.progressMs + dtMs : dtMs;
 
       if (this.channelPingDue(progressMs, dtMs)) {
-        this.emitNoise("channel", downed.position, downed.floorId, NOISE_LOUDNESS.coverChannel);
+        this.emitNoise("channel", downed.position, downed.floorId, NOISE_LOUDNESS.coverChannel, coveringBot);
       }
 
       this.coverages.set(coverageKey, {
@@ -1295,7 +1373,7 @@ export class DotBotSimulation {
       const progressMs = existing?.targetId === point.id ? existing.progressMs + dtMs : dtMs;
 
       if (this.channelPingDue(progressMs, dtMs)) {
-        this.emitNoise("channel", bot.position, bot.floorId, NOISE_LOUDNESS.extractChannel);
+        this.emitNoise("channel", bot.position, bot.floorId, NOISE_LOUDNESS.extractChannel, bot);
       }
 
       this.coverages.set(coverageKey, {
@@ -1314,6 +1392,42 @@ export class DotBotSimulation {
 
     for (const [key, coverage] of this.coverages) {
       if (coverage.kind === "extract" && !activeKeys.has(key)) {
+        this.coverages.delete(key);
+      }
+    }
+  }
+
+  private resolveSwaps(dtMs: number): void {
+    for (const bot of this.bots.values()) {
+      const swap = bot.activeSwap;
+      const key = `swap:${bot.id}`;
+      if (!swap || bot.state !== "alive") {
+        this.coverages.delete(key);
+        bot.activeSwap = undefined;
+        continue;
+      }
+      swap.progressMs += dtMs;
+      bot.desiredMove = zeroVec();
+      bot.body.setLinvel(zeroVec(), true);
+      if (this.channelPingDue(swap.progressMs, dtMs)) {
+        this.emitNoise("channel", bot.position, bot.floorId, NOISE_LOUDNESS.coverChannel, bot);
+      }
+      this.coverages.set(key, {
+        kind: "swap",
+        actorId: bot.id,
+        targetId: String(swap.holdIndex),
+        progressMs: swap.progressMs,
+        durationMs: this.config.swapDurationMs,
+      });
+      if (swap.progressMs >= this.config.swapDurationMs) {
+        const held = bot.hold[swap.holdIndex];
+        if (held) {
+          const bayItem = bot.bays[swap.bayIndex];
+          bot.bays[swap.bayIndex] = held;
+          if (bayItem) bot.hold[swap.holdIndex] = bayItem;
+          else bot.hold.splice(swap.holdIndex, 1);
+        }
+        bot.activeSwap = undefined;
         this.coverages.delete(key);
       }
     }
@@ -1376,6 +1490,12 @@ export class DotBotSimulation {
       bot.dashActiveMs = 0;
       bot.dashCooldownMs = 0;
       bot.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
+      bot.radarActiveMs = 0;
+      bot.radarPingElapsedMs = 0;
+      bot.radarPings = [];
+      bot.dashOverchargeCharges = 0;
+      bot.incognitoMs = 0;
+      bot.activeSwap = undefined;
       bot.floorId = bot.spawnFloorId;
       bot.position = { ...bot.spawn };
       bot.prevPosition = { ...bot.spawn };
@@ -1441,6 +1561,10 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     shieldSegments: [...bot.shieldSegments],
     bays: bot.bays.map((item) => item && { ...item }),
     hold: bot.hold.map((item) => ({ ...item })),
+    radarActiveMs: bot.radarActiveMs,
+    radarPings: bot.radarPings.map((ping) => ({ ...ping })),
+    dashOverchargeCharges: bot.dashOverchargeCharges,
+    incognitoMs: bot.incognitoMs,
     dashCooldownMs: bot.dashCooldownMs,
     dashActiveMs: bot.dashActiveMs,
     invulnerabilityMs: bot.invulnerabilityMs,

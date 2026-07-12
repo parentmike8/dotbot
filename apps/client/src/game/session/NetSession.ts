@@ -111,6 +111,8 @@ export class NetSession implements GameSession {
     this.pendingInput = {
       move: { ...input.move },
       dash: this.pendingInput.dash || input.dash,
+      useBay: this.pendingInput.useBay ?? input.useBay,
+      swapBay: this.pendingInput.swapBay ?? input.swapBay,
     };
     this.sendFrame = !this.sendFrame;
     if (!this.sendFrame || !this.mapValue) return;
@@ -118,12 +120,16 @@ export class NetSession implements GameSession {
     const sentInput = {
       move: { ...this.pendingInput.move },
       dash: this.pendingInput.dash,
+      useBay: this.pendingInput.useBay,
+      swapBay: this.pendingInput.swapBay,
     };
     this.send({
       type: "input",
       seq: this.seq,
       move: [sentInput.move.x, sentInput.move.y],
       dash: sentInput.dash,
+      useBay: sentInput.useBay,
+      swapBay: sentInput.swapBay,
     });
     this.pendingInputs.push({ seq: this.seq, input: sentInput });
     this.pendingInput = { move: this.pendingInput.move, dash: false };
