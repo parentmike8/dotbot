@@ -15,6 +15,7 @@ export const defaultGameConfig: GameConfig = {
   incognitoDurationMs: 10_000,
   powerupNoiseLoudness: 0.3,
   swapDurationMs: 2000,
+  blueprintLearningThreshold: 3,
   playerSpeed: 230,
   botSpeed: 168,
   dashSpeed: 640,

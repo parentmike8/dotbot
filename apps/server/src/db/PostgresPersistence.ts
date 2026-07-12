@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
+import type { WireItemCode } from "@dotbot/protocol";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import type {
@@ -9,7 +10,7 @@ import type {
   RegisteredPlayer,
   RunManifest,
 } from "./Persistence";
-import { matchParticipants, matchResults, players, stashItems } from "./schema";
+import { learnedBlueprints, matchParticipants, matchResults, players, stashItems } from "./schema";
 
 export class PostgresPersistence implements Persistence {
   readonly live = true;
@@ -53,9 +54,13 @@ export class PostgresPersistence implements Persistence {
   async getProfile(token: string): Promise<PlayerProfile | null> {
     const identity = await this.helloPlayer(token);
     if (!identity) return null;
-    const [stash] = await this.db.select({ total: sql<number>`coalesce(sum(${stashItems.qty}), 0)` })
+    const stash = await this.db.select({ itemType: stashItems.itemType, qty: sql<number>`sum(${stashItems.qty})::int` })
       .from(stashItems)
-      .where(and(eq(stashItems.playerId, identity.playerId), eq(stashItems.itemType, "dot")));
+      .where(eq(stashItems.playerId, identity.playerId))
+      .groupBy(stashItems.itemType);
+    const learned = await this.db.select({ blueprintId: learnedBlueprints.blueprintId })
+      .from(learnedBlueprints)
+      .where(eq(learnedBlueprints.playerId, identity.playerId));
     const rows = await this.db.select({
       roomCode: matchResults.roomCode,
       outcome: matchParticipants.outcome,
@@ -68,14 +73,16 @@ export class PostgresPersistence implements Persistence {
       .limit(10);
     return {
       name: identity.name,
-      stashDots: Number(stash?.total ?? 0),
+      stash: stash.map((row) => ({ itemType: row.itemType as WireItemCode, qty: Number(row.qty) })),
+      learnedBlueprints: learned.map((row) => row.blueprintId),
       recentManifests: rows.map((row) => {
         const manifest = isRunManifest(row.manifest) ? row.manifest : null;
         return {
           roomCode: row.roomCode,
           outcome: row.outcome,
-          keptDots: manifest?.keptDots ?? 0,
-          lostDots: manifest?.lostDots ?? 0,
+          keptItems: manifest?.keptItems ?? [],
+          lostItems: manifest?.lostItems ?? [],
+          learnedBlueprints: manifest?.learnedBlueprints ?? [],
           endedAt: row.endedAt?.toISOString() ?? null,
         };
       }),
@@ -91,23 +98,56 @@ export class PostgresPersistence implements Persistence {
     });
   }
 
-  async recordExtraction(input: { matchId: string; playerId: string; manifest: RunManifest }): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      await tx.insert(stashItems).values({
-        playerId: input.playerId,
-        itemType: "dot",
-        qty: input.manifest.keptDots,
-        acquiredMatchId: input.matchId,
-      });
+  async recordExtraction(input: {
+    matchId: string;
+    playerId: string;
+    manifest: RunManifest;
+    blueprintLearningThreshold: number;
+  }): Promise<{ learnedBlueprints: string[] }> {
+    return this.db.transaction(async (tx) => {
+      if (input.manifest.keptItems.length > 0) {
+        await tx.insert(stashItems).values(input.manifest.keptItems.map((itemType) => ({
+          playerId: input.playerId,
+          itemType,
+          qty: 1,
+          acquiredMatchId: input.matchId,
+        })));
+      }
+
+      const newlyLearned: string[] = [];
+      const extractedBlueprints = new Set(input.manifest.keptItems
+        .filter((code): code is `b:${string}` => code.startsWith("b:"))
+        .map((code) => code.slice(2)));
+      for (const blueprintId of extractedBlueprints) {
+        const code = `b:${blueprintId}`;
+        const [existing] = await tx.select({ blueprintId: learnedBlueprints.blueprintId })
+          .from(learnedBlueprints)
+          .where(and(eq(learnedBlueprints.playerId, input.playerId), eq(learnedBlueprints.blueprintId, blueprintId)))
+          .limit(1);
+        const [count] = await tx.select({ total: sql<number>`coalesce(sum(${stashItems.qty}), 0)::int` })
+          .from(stashItems)
+          .where(and(eq(stashItems.playerId, input.playerId), eq(stashItems.itemType, code)));
+        if (existing || Number(count?.total ?? 0) >= input.blueprintLearningThreshold) {
+          if (!existing) {
+            await tx.insert(learnedBlueprints).values({ playerId: input.playerId, blueprintId });
+            newlyLearned.push(blueprintId);
+          }
+          await tx.delete(stashItems)
+            .where(and(eq(stashItems.playerId, input.playerId), eq(stashItems.itemType, code)));
+        }
+      }
+
+      const manifest = { ...input.manifest, learnedBlueprints: newlyLearned };
       await tx.insert(matchParticipants).values({
         matchId: input.matchId,
         playerId: input.playerId,
         outcome: "extracted",
-        extractedManifest: input.manifest,
+        extractedManifest: manifest,
       }).onConflictDoUpdate({
         target: [matchParticipants.matchId, matchParticipants.playerId],
-        set: { outcome: "extracted", extractedManifest: input.manifest },
+        set: { outcome: "extracted", extractedManifest: manifest },
       });
+      return { learnedBlueprints: newlyLearned };
     });
   }
 
@@ -145,5 +185,5 @@ function hashToken(token: string): string {
 function isRunManifest(value: unknown): value is RunManifest {
   if (!value || typeof value !== "object") return false;
   const manifest = value as Partial<RunManifest>;
-  return typeof manifest.keptDots === "number" && typeof manifest.lostDots === "number";
+  return Array.isArray(manifest.keptItems) && Array.isArray(manifest.lostItems) && Array.isArray(manifest.learnedBlueprints);
 }

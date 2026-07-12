@@ -320,6 +320,7 @@ export type GameConfig = {
   incognitoDurationMs: number;
   powerupNoiseLoudness: number;
   swapDurationMs: number;
+  blueprintLearningThreshold: number;
   playerSpeed: number;
   botSpeed: number;
   dashSpeed: number;

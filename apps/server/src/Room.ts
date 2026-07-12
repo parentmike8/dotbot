@@ -492,7 +492,10 @@ export class Room {
     member.latestInput = { move: { x: 0, y: 0 }, dash: false };
     member.runOver = message;
     this.matchOutcomes.set(member.playerId, message.reason);
-    const persistenceWrite = this.persistRunOutcome(member, message);
+    const persistenceWrite = this.persistRunOutcome(member, message).then((learnedBlueprints) => {
+      message.learnedBlueprints = learnedBlueprints;
+      member.runOver = message;
+    });
     this.trackPersistence(persistenceWrite, () => member.peer?.send(message));
   }
 
@@ -525,12 +528,24 @@ export class Room {
     this.completeIfNoActiveMembers();
   }
 
-  private async persistRunOutcome(member: Member, message: Extract<ServerMessage, { type: "runOver" }>): Promise<void> {
-    if (!this.matchId || !member.persistenceEligible) return;
+  private async persistRunOutcome(member: Member, message: Extract<ServerMessage, { type: "runOver" }>): Promise<string[]> {
+    if (!this.matchId || !member.persistenceEligible) return [];
     try {
       if (message.reason === "extracted") {
-        const manifest: RunManifest = { reason: message.reason, keptDots: message.keptItems.length, lostDots: message.lostItems.length };
-        await this.persistence.recordExtraction({ matchId: this.matchId, playerId: member.playerId, manifest });
+        const manifest: RunManifest = {
+          reason: message.reason,
+          keptItems: message.keptItems,
+          lostItems: message.lostItems,
+          learnedBlueprints: [],
+        };
+        const result = await this.persistence.recordExtraction({
+          matchId: this.matchId,
+          playerId: member.playerId,
+          manifest,
+          blueprintLearningThreshold: this.config.blueprintLearningThreshold,
+        });
+        member.persistedOutcome = message.reason;
+        return result.learnedBlueprints;
       } else {
         await this.persistence.recordOutcome({ matchId: this.matchId, playerId: member.playerId, outcome: message.reason });
       }
@@ -538,6 +553,7 @@ export class Room {
     } catch (error) {
       console.warn(`[persistence] failed to record ${message.reason} for ${member.playerId}; run continued. ${errorMessage(error)}`);
     }
+    return [];
   }
 
   private recordDisconnected(member: Member): void {

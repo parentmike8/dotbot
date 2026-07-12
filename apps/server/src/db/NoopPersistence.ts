@@ -18,11 +18,11 @@ export class NoopPersistence implements Persistence {
   }
 
   async getProfile(_token: string): Promise<PlayerProfile> {
-    return { name: "Player", stashDots: 0, recentManifests: [] };
+    return { name: "Player", stash: [], learnedBlueprints: [], recentManifests: [] };
   }
 
   async startMatch(): Promise<void> {}
-  async recordExtraction(): Promise<void> {}
+  async recordExtraction(): Promise<{ learnedBlueprints: string[] }> { return { learnedBlueprints: [] }; }
   async recordOutcome(): Promise<void> {}
   async finishMatch(): Promise<void> {}
   async close(): Promise<void> {}

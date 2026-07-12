@@ -116,10 +116,16 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
 
     const profileResponse = await fetch(`${baseUrl}/api/profile`, { headers: { "x-device-token": account.token } });
     expect(profileResponse.status).toBe(200);
-    const profile = await profileResponse.json() as { name: string; stashDots: number; recentManifests: Array<{ outcome: string; keptDots: number }> };
+    const profile = await profileResponse.json() as {
+      name: string;
+      stash: Array<{ itemType: string; qty: number }>;
+      learnedBlueprints: string[];
+      recentManifests: Array<{ outcome: string; keptItems: string[] }>;
+    };
     expect(profile.name).toBe("Persist Alice");
-    expect(profile.stashDots).toBe(2);
-    expect(profile.recentManifests.filter((manifest) => manifest.outcome === "extracted" && manifest.keptDots === 1)).toHaveLength(2);
+    expect(profile.stash).toContainEqual({ itemType: "h", qty: 2 });
+    expect(profile.learnedBlueprints).toEqual([]);
+    expect(profile.recentManifests.filter((manifest) => manifest.outcome === "extracted" && manifest.keptItems.join() === "h")).toHaveLength(2);
 
     const diedAccount = await persistence.registerPlayer("Died Player");
     const diedMatchId = crypto.randomUUID();
