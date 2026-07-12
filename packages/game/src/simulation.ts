@@ -227,7 +227,7 @@ export class DotBotSimulation {
           id: spawn.id,
           position: { ...spawn.position },
           radius: spawn.radius ?? this.config.dotRadius,
-          color: spawn.color,
+          item: { ...spawn.item },
           floorId,
           active: true,
           captureProgressMs: 0,
@@ -1213,7 +1213,7 @@ export class DotBotSimulation {
 
       if (dot.captureProgressMs >= this.config.dotCaptureDurationMs) {
         dot.active = false;
-        insertItem(coveringBot, { kind: "powerup", type: "health" }, this.config.holdSlots);
+        insertItem(coveringBot, { ...dot.item }, this.config.holdSlots);
         this.events.push({ type: "dotCaptured", botId: coveringBot.id, dotId: dot.id });
         this.coverages.delete(`capture:${dot.id}`);
       }

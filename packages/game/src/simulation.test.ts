@@ -160,7 +160,7 @@ describe("DotBotSimulation", () => {
   it("captures a covered Dot and adds it to inventory", async () => {
     const simulation = await makeSimulation(
       [playerSpawn({ position: { x: 100, y: 100 } })],
-      [{ id: "dot", color: "#f2c94c", position: { x: 100, y: 100 } }],
+      [{ id: "dot", item: healthItem, position: { x: 100, y: 100 } }],
     );
 
     simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
@@ -176,7 +176,7 @@ describe("DotBotSimulation", () => {
     const simulation = await DotBotSimulation.create({
       map: makeMap(
         [enemySpawn({ position: { x: 120, y: 180 } })],
-        [{ id: "dot", color: "#f2c94c", position: { x: 100, y: 180 } }],
+        [{ id: "dot", item: healthItem, position: { x: 100, y: 180 } }],
       ),
       config: {
         ...testConfig,
@@ -200,9 +200,9 @@ describe("DotBotSimulation", () => {
     const baseMap = makeMap(
       [enemySpawn({ position: { x: 50, y: 300 } })],
       [
-        { id: "blocked-a", color: "#f2c94c", position: { x: 100, y: 210 } },
-        { id: "blocked-b", color: "#27ae60", position: { x: 112, y: 210 } },
-        { id: "reachable", color: "#2f80ed", position: { x: 400, y: 300 } },
+        { id: "blocked-a", item: healthItem, position: { x: 100, y: 210 } },
+        { id: "blocked-b", item: healthItem, position: { x: 112, y: 210 } },
+        { id: "reachable", item: healthItem, position: { x: 400, y: 300 } },
       ],
     );
     const simulation = await DotBotSimulation.create({
@@ -681,7 +681,7 @@ describe("DotBotSimulation", () => {
     const simulation = await DotBotSimulation.create({
       map: makeMap(
         [playerSpawn({ position: { x: 100, y: 100 } })],
-        [{ id: "dot", color: "#f2c94c", position: { x: 100, y: 100 } }],
+        [{ id: "dot", item: healthItem, position: { x: 100, y: 100 } }],
       ),
       config: { ...testConfig, dotCaptureDurationMs: 3000 },
     });
@@ -787,7 +787,7 @@ describe("DotBotSimulation", () => {
   it("removes a bot mid-run and clears its active references", async () => {
     const simulation = await makeSimulation(
       [playerSpawn({ position: { x: 100, y: 100 } })],
-      [{ id: "claimed-dot", color: "#f2c94c", position: { x: 100, y: 100 } }],
+      [{ id: "claimed-dot", item: healthItem, position: { x: 100, y: 100 } }],
     );
 
     simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });

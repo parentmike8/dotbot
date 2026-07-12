@@ -258,9 +258,10 @@ export class GameRenderer {
         continue;
       }
 
-      this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).fill({ color: colorToNumber(dot.color) });
+      const color = dot.item.kind === "blueprint" ? "#2f80ed" : "#f2994a";
+      this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).fill({ color: colorToNumber(color) });
       this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).stroke({ color: 0x111111, width: 2 });
-      this.drawDotMark(this.maskedGfx, dot.color, dot.position, dot.radius);
+      this.drawDotMark(this.maskedGfx, color, dot.position, dot.radius);
 
       const coverage = snapshot.coverages.find((item) => item.kind === "capture" && item.targetId === dot.id);
       if (coverage) {

@@ -29,7 +29,7 @@ const snapshot: GameSnapshot = {
   timeMs: 200,
   bots: [bot],
   dots: [{
-    id: "dot-a", color: "#fff", position: { x: 4, y: 5 }, radius: 10,
+    id: "dot-a", item: { kind: "powerup", type: "radar" }, position: { x: 4, y: 5 }, radius: 10,
     floorId: "outdoor", active: true, captureProgressMs: 0,
   }],
   coverages: [],

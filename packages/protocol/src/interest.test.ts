@@ -20,8 +20,8 @@ const bots: WireBot[] = [
   bot("upper-enemy", "mercy:F1", 400, 250),
 ];
 const dots: DotEntity[] = [
-  { id: "ground-dot", position: { x: 600, y: 500 }, radius: 10, color: "#fff", floorId: "outdoor", active: true, captureProgressMs: 0 },
-  { id: "upper-dot", position: { x: 400, y: 250 }, radius: 10, color: "#fff", floorId: "mercy:F1", active: true, captureProgressMs: 0 },
+  { id: "ground-dot", position: { x: 600, y: 500 }, radius: 10, item: { kind: "powerup", type: "health" }, floorId: "outdoor", active: true, captureProgressMs: 0 },
+  { id: "upper-dot", position: { x: 400, y: 250 }, radius: 10, item: { kind: "blueprint", blueprintId: "desk" }, floorId: "mercy:F1", active: true, captureProgressMs: 0 },
 ];
 const coverages: CoverageSnapshot[] = [
   { kind: "revive", actorId: "mate", targetId: "upper-enemy", progressMs: 10, durationMs: 100 },

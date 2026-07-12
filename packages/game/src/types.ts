@@ -147,7 +147,7 @@ export type StairLink = {
 
 export type DotSpawn = {
   id: string;
-  color: string;
+  item: Item;
   position: Vec2;
   radius?: number;
 };
@@ -258,7 +258,7 @@ export type DotBotEntity = GameEntity & {
 };
 
 export type DotEntity = GameEntity & {
-  color: string;
+  item: Item;
   floorId: string;
   active: boolean;
   capturedBy?: string;

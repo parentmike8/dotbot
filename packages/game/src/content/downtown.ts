@@ -1,4 +1,5 @@
 import { OUTDOOR_FLOOR_ID } from "../types";
+import { addBlueprintSpawns } from "../blueprints";
 import type {
   BotSpawn,
   Building,
@@ -161,20 +162,19 @@ function winV(x: number, cy: number, len = 44): WindowBand {
   return { id: `win${winSeq++}`, x, y: cy, length: len, dir: "v" };
 }
 
-function dot(color: string, x: number, y: number): DotSpawn {
-  return { id: `dot-${dotSeq++}`, color, position: { x, y } };
+function dot(item: DotSpawn["item"], x: number, y: number): DotSpawn {
+  return { id: `dot-${dotSeq++}`, item, position: { x, y } };
 }
 
-// Dot palette: color implies type later; for now it is identity only.
 const DOT = {
-  regen: "#27ae60",
-  shield: "#2f80ed",
-  dash: "#56ccf2",
-  scanner: "#f2c94c",
-  decoy: "#f2994a",
-  damage: "#eb5757",
-  rare: "#9b51e0",
-};
+  regen: { kind: "powerup", type: "health" },
+  shield: { kind: "powerup", type: "health" },
+  dash: { kind: "powerup", type: "dashOvercharge" },
+  scanner: { kind: "powerup", type: "radar" },
+  decoy: { kind: "powerup", type: "incognito" },
+  damage: { kind: "powerup", type: "dashOvercharge" },
+  rare: { kind: "powerup", type: "incognito" },
+} as const satisfies Record<string, DotSpawn["item"]>;
 
 // ---------------------------------------------------------------------------
 // Mercy Clinic — hospital, NW quadrant. Footprint 200,140 620x440.
@@ -1007,9 +1007,9 @@ function beaconHouse(): Building {
     ],
     objects: [
       // Mail room: lockers and a parcel counter.
-      obj("locker", 1584, 1042, 26, 42, { scannable: true }),
+      obj("locker", 1584, 1042, 26, 42),
       obj("locker", 1614, 1042, 26, 42),
-      obj("locker", 1644, 1042, 26, 42),
+      obj("locker", 1644, 1042, 26, 42, { scannable: true }),
       obj("counter", 1584, 1120, 22, 60),
       obj("crateStack", 1716, 1096, 30, 30),
       // Kitchen: worktop run, stove, fridge, breakfast table.
@@ -1296,7 +1296,7 @@ const botSpawns: BotSpawn[] = [
   { id: "enemy-10", name: "Rose", squadId: "rival-10", isAmbient: true, color: "#c75b7a", position: { x: 1750, y: 1120 }, floorId: "beacon:ROOF" },
 ];
 
-export const downtownMap: MapDocument = {
+const authoredDowntownMap: MapDocument = {
   id: "downtown",
   name: "Downtown",
   width: MAP_W,
@@ -1310,3 +1310,6 @@ export const downtownMap: MapDocument = {
   ],
   botSpawns,
 };
+
+/** Blueprint dots are inserted before every exported map consumer runs. */
+export const downtownMap = addBlueprintSpawns(authoredDowntownMap, 24);
