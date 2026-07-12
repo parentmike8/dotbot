@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { physicsFloorId } from "@dotbot/game/mapModel";
@@ -5,6 +6,7 @@ import { DotBotSimulation } from "@dotbot/game/simulation";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, SimEvent } from "@dotbot/game/types";
 import { filterEventsForViewer, filterForViewer, toEntityMeta, toWireSnapshot } from "@dotbot/protocol";
 import type { ClientMessage, LobbyMember, RoomPhase, ServerMessage } from "@dotbot/protocol";
+import { NoopPersistence, type Persistence, type RunManifest } from "./db";
 
 export interface RoomPeer {
   readonly id: string;
@@ -21,6 +23,8 @@ type Member = LobbyMember & {
   inRun: boolean;
   streaming: boolean;
   runOver: Extract<ServerMessage, { type: "runOver" }> | null;
+  persistenceEligible: boolean;
+  persistedOutcome: string | null;
 };
 
 export type RoomBandwidthHealth = {
@@ -33,6 +37,7 @@ type RoomOptions = {
   countdownMs?: number;
   config?: Partial<GameConfig>;
   now?: () => number;
+  persistence?: Persistence;
 };
 
 const squads = ["alpha", "bravo", "crew-3"] as const;
@@ -55,6 +60,7 @@ export class Room {
   private readonly countdownMs: number;
   private readonly config: GameConfig;
   private readonly now: () => number;
+  private readonly persistence: Persistence;
   private simulation: DotBotSimulation | null = null;
   private hostId = "";
   private accumulatorMs = 0;
@@ -65,12 +71,16 @@ export class Room {
   private bandwidthWindowBytes = 0;
   private bandwidthWindowStartedAt: number;
   private lastBytesPerSecond = 0;
+  private matchId: string | null = null;
+  private readonly pendingPersistence = new Set<Promise<void>>();
+  private readonly matchOutcomes = new Map<string, string>();
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
     this.countdownMs = options.countdownMs ?? 3000;
     this.config = { ...defaultGameConfig, ...options.config };
     this.now = options.now ?? Date.now;
+    this.persistence = options.persistence ?? new NoopPersistence();
     this.createdAt = this.now();
     this.lastTickAt = this.createdAt;
     this.bandwidthWindowStartedAt = this.createdAt;
@@ -135,6 +145,8 @@ export class Room {
       inRun: false,
       streaming: true,
       runOver: null,
+      persistenceEligible: true,
+      persistedOutcome: null,
     };
     this.members.set(member.playerId, member);
     this.memberByToken.set(token, member);
@@ -197,6 +209,7 @@ export class Room {
         member.handoffTimer = null;
         if (!member.peer && member.botId && this.phase === "live") {
           this.simulation?.setController(member.botId, "ai");
+          this.recordDisconnected(member);
         }
       }, 15_000);
 
@@ -289,6 +302,8 @@ export class Room {
       member.inRun = true;
       member.streaming = true;
       member.runOver = null;
+      member.persistenceEligible = true;
+      member.persistedOutcome = null;
       squadCounts.set(member.squadId, count + 1);
     }
 
@@ -305,6 +320,19 @@ export class Room {
     }
 
     this.simulation = simulation;
+    this.matchId = randomUUID();
+    this.matchOutcomes.clear();
+    try {
+      await this.persistence.startMatch({
+        matchId: this.matchId,
+        roomCode: this.code,
+        mapId: downtownMap.id,
+        startedAt: new Date(this.now()),
+      });
+    } catch (error) {
+      console.warn(`[persistence] failed to start match ${this.matchId}; continuing statelessly. ${errorMessage(error)}`);
+      this.matchId = null;
+    }
     this.tickDurationMs = 1000 / simulation.config.tickHz;
     this.endTick = Math.ceil(simulation.config.runDurationMs / this.tickDurationMs);
     this.accumulatorMs = 0;
@@ -355,9 +383,30 @@ export class Room {
 
   private end(reason: string): void {
     if (this.phase === "ended") return;
+    if (reason === "all_humans_disconnected") {
+      for (const member of this.members.values()) {
+        if (member.inRun && !member.peer) this.recordDisconnected(member);
+      }
+    }
     this.phase = "ended";
     this.endedAt = this.now();
-    this.broadcast({ type: "matchEnd", reason });
+    const pending = [...this.pendingPersistence];
+    void Promise.allSettled(pending).then(async () => {
+      this.broadcast({ type: "matchEnd", reason });
+      if (!this.matchId) return;
+      try {
+        await this.persistence.finishMatch({
+          matchId: this.matchId,
+          endedAt: new Date(this.endedAt ?? this.now()),
+          summary: {
+            reason,
+            participants: [...this.matchOutcomes].map(([playerId, outcome]) => ({ playerId, outcome })),
+          },
+        });
+      } catch (error) {
+        console.warn(`[persistence] failed to finish match ${this.matchId}; teardown continued. ${errorMessage(error)}`);
+      }
+    });
   }
 
   private broadcast(message: ServerMessage): void {
@@ -437,7 +486,9 @@ export class Room {
     member.inRun = false;
     member.latestInput = { move: { x: 0, y: 0 }, dash: false };
     member.runOver = message;
-    member.peer?.send(message);
+    this.matchOutcomes.set(member.playerId, message.reason);
+    const persistenceWrite = this.persistRunOutcome(member, message);
+    this.trackPersistence(persistenceWrite, () => member.peer?.send(message));
   }
 
   private timeoutRun(bots: ReturnType<DotBotSimulation["getSnapshot"]>["bots"]): void {
@@ -457,6 +508,7 @@ export class Room {
 
   private leaveRun(member: Member): void {
     if (member.inRun && member.botId) {
+      this.recordDisconnected(member);
       this.simulation?.removeBot(member.botId);
       member.inRun = false;
     }
@@ -465,6 +517,45 @@ export class Room {
     this.members.delete(member.playerId);
     this.memberByToken.delete(member.token);
     this.completeIfNoActiveMembers();
+  }
+
+  private async persistRunOutcome(member: Member, message: Extract<ServerMessage, { type: "runOver" }>): Promise<void> {
+    if (!this.matchId || !member.persistenceEligible) return;
+    try {
+      if (message.reason === "extracted") {
+        const manifest: RunManifest = message;
+        await this.persistence.recordExtraction({ matchId: this.matchId, playerId: member.playerId, manifest });
+      } else {
+        await this.persistence.recordOutcome({ matchId: this.matchId, playerId: member.playerId, outcome: message.reason });
+      }
+      member.persistedOutcome = message.reason;
+    } catch (error) {
+      console.warn(`[persistence] failed to record ${message.reason} for ${member.playerId}; run continued. ${errorMessage(error)}`);
+    }
+  }
+
+  private recordDisconnected(member: Member): void {
+    if (!this.matchId || !member.persistenceEligible || member.persistedOutcome || member.runOver) return;
+    member.persistenceEligible = false;
+    this.matchOutcomes.set(member.playerId, "disconnected");
+    const write = this.persistence.recordOutcome({
+      matchId: this.matchId,
+      playerId: member.playerId,
+      outcome: "disconnected",
+    }).then(() => {
+      member.persistedOutcome = "disconnected";
+    }).catch((error) => {
+      console.warn(`[persistence] failed to record disconnect for ${member.playerId}; run continued. ${errorMessage(error)}`);
+    });
+    this.trackPersistence(write);
+  }
+
+  private trackPersistence(write: Promise<void>, after?: () => void): void {
+    this.pendingPersistence.add(write);
+    void write.finally(() => {
+      this.pendingPersistence.delete(write);
+      after?.();
+    });
   }
 }
 
@@ -481,4 +572,8 @@ function makeSpawn(id: string, name: string, squadId: string, color: string, anc
 
 function sanitizeName(name: string): string {
   return name.trim().replace(/\s+/g, " ").slice(0, 24) || "Player";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
