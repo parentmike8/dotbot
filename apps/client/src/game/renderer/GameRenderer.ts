@@ -10,7 +10,7 @@ import {
 } from "@dotbot/game/mapModel";
 import { hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
-import type { DotBotEntity, GameSnapshot, MapDocument, Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, GameSnapshot, Item, MapDocument, Vec2 } from "@dotbot/game/types";
 import { shieldArcSpan } from "@dotbot/game/shields";
 import { buildMapArt, drawStairExitHalf, type MapArt } from "./mapArt";
 import { INK } from "./style";
@@ -115,6 +115,7 @@ export class GameRenderer {
     this.drawExtractionPulse(snapshot, player?.squadId);
     this.drawDots(snapshot, player?.squadId, playerContext);
     this.drawBots(snapshot, playerId, playerContext);
+    if (currentPlayer) this.drawRadarPings(currentPlayer);
 
     if (player) {
       this.drawNoises(snapshot, player);
@@ -258,10 +259,10 @@ export class GameRenderer {
         continue;
       }
 
-      const color = dot.item.kind === "blueprint" ? "#2f80ed" : "#f2994a";
+      const color = dot.item.kind === "blueprint" ? "#1971c2" : "#e8590c";
       this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).fill({ color: colorToNumber(color) });
       this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).stroke({ color: 0x111111, width: 2 });
-      this.drawDotMark(this.maskedGfx, color, dot.position, dot.radius);
+      this.drawDotMark(this.maskedGfx, dot.item, dot.position, dot.radius);
 
       const coverage = snapshot.coverages.find((item) => item.kind === "capture" && item.targetId === dot.id);
       if (coverage) {
@@ -272,70 +273,44 @@ export class GameRenderer {
     }
   }
 
-  /** Dots remain colored, but their compact black mark makes type readable
-   * without color and survives the map's deliberately restrained palette. */
-  private drawDotMark(g: Graphics, color: string, center: Vec2, radius: number): void {
-    const key = color.trim().toLowerCase();
+  private drawDotMark(g: Graphics, item: Item, center: Vec2, radius: number): void {
     const size = Math.max(3.5, radius * 0.42);
     const line = { color: INK.structure, width: Math.max(1.25, radius * 0.14) };
     const { x, y } = center;
 
-    if (key === "#27ae60") {
-      // Regen: plus.
+    if (item.kind === "blueprint") {
+      g.moveTo(x - size, y - size * 0.55).lineTo(x + size, y - size * 0.55)
+        .moveTo(x - size, y).lineTo(x + size * 0.45, y)
+        .moveTo(x - size, y + size * 0.55).lineTo(x + size, y + size * 0.55).stroke(line);
+      return;
+    }
+    if (item.type === "health") {
       g.moveTo(x - size, y).lineTo(x + size, y).moveTo(x, y - size).lineTo(x, y + size).stroke(line);
       return;
     }
-
-    if (key === "#2f80ed") {
-      // Shield: hollow core.
-      g.circle(x, y, size * 0.7).stroke(line);
+    if (item.type === "radar") {
+      g.arc(x, y, size * 0.5, -Math.PI * 0.75, Math.PI * 0.75).stroke(line);
+      g.arc(x, y, size, -Math.PI * 0.75, Math.PI * 0.75).stroke(line);
       return;
     }
-
-    if (key === "#56ccf2") {
-      // Dash: forward chevron.
+    if (item.type === "dashOvercharge") {
       g.moveTo(x - size * 0.65, y - size)
         .lineTo(x + size * 0.45, y)
         .lineTo(x - size * 0.65, y + size)
         .stroke(line);
       return;
     }
-
-    if (key === "#f2c94c") {
-      // Scanner: target.
-      g.circle(x, y, size * 0.78).stroke(line);
-      g.circle(x, y, Math.max(1.2, radius * 0.13)).fill({ color: INK.structure });
-      return;
+    for (let index = 0; index < 8; index += 2) {
+      g.arc(x, y, size, (index * Math.PI) / 4, ((index + 1) * Math.PI) / 4).stroke(line);
     }
+  }
 
-    if (key === "#f2994a") {
-      // Decoy: cross.
-      g.moveTo(x - size, y - size).lineTo(x + size, y + size).moveTo(x + size, y - size).lineTo(x - size, y + size).stroke(line);
-      return;
+  private drawRadarPings(player: DotBotEntity): void {
+    for (const ping of player.radarPings) {
+      const alpha = clamp01(1 - ping.ageMs / 2000);
+      const radius = 5 + (1 - alpha) * 8;
+      this.dynamicGfx.circle(ping.x, ping.y, radius).stroke({ color: 0xe8590c, width: 2, alpha });
     }
-
-    if (key === "#eb5757") {
-      // Damage: diamond.
-      g.poly([x, y - size, x + size, y, x, y + size, x - size, y], true).stroke(line);
-      return;
-    }
-
-    if (key === "#9b51e0") {
-      // Rare: four-point sparkle with shorter diagonal rays.
-      const short = size * 0.62;
-      g.moveTo(x - size, y)
-        .lineTo(x + size, y)
-        .moveTo(x, y - size)
-        .lineTo(x, y + size)
-        .moveTo(x - short, y - short)
-        .lineTo(x + short, y + short)
-        .moveTo(x + short, y - short)
-        .lineTo(x - short, y + short)
-        .stroke(line);
-      return;
-    }
-
-    g.circle(x, y, Math.max(1.4, radius * 0.15)).fill({ color: INK.structure });
   }
 
   private drawBots(snapshot: GameSnapshot, playerId: string, playerContext: string): void {

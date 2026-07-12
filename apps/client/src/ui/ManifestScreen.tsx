@@ -1,4 +1,5 @@
 import type { RunResult } from "../game/useDotBotGame";
+import type { Item } from "@dotbot/game/types";
 
 type ManifestScreenProps = {
   result: RunResult;
@@ -15,6 +16,24 @@ const outcomeLabels: Record<RunResult["outcome"], string> = {
   timeout: "RUN EXPIRED",
 };
 
+function manifestName(item: Item): string {
+  if (item.kind === "blueprint") return `Blueprint / ${item.blueprintId}`;
+  return ({ health: "Health", radar: "Radar", dashOvercharge: "Dash overcharge", incognito: "Incognito" } as const)[item.type];
+}
+
+function ItemList({ items }: { items: Item[] }) {
+  const counts = new Map<string, { item: Item; count: number }>();
+  for (const item of items) {
+    const key = item.kind === "blueprint" ? `blueprint:${item.blueprintId}` : `powerup:${item.type}`;
+    const current = counts.get(key);
+    counts.set(key, { item, count: (current?.count ?? 0) + 1 });
+  }
+  if (counts.size === 0) return <span className="manifest-empty">None</span>;
+  return <ul className="manifest-items">{[...counts.values()].map(({ item, count }) => (
+    <li key={manifestName(item)}><span>{item.kind === "blueprint" ? "⌑" : item.type === "health" ? "+" : item.type === "radar" ? "◎" : item.type === "dashOvercharge" ? "›" : "◌"}</span>{manifestName(item)} <b>×{count}</b></li>
+  ))}</ul>;
+}
+
 export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun, actionLabel = "↻ NEW RUN" }: ManifestScreenProps) {
   return (
     <section className="manifest-overlay" aria-label="Run manifest">
@@ -30,11 +49,11 @@ export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun
           </div>
           <div>
             <dt>Kept</dt>
-            <dd>{result.keptItems.length}</dd>
+            <dd><ItemList items={result.keptItems} /></dd>
           </div>
           <div>
             <dt>Lost</dt>
-            <dd>{result.lostItems.length}</dd>
+            <dd><ItemList items={result.lostItems} /></dd>
           </div>
           <div>
             <dt>Kills</dt>

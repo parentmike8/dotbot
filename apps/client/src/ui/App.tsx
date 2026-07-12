@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
+import type { Item } from "@dotbot/game/types";
 import { defaultGameConfig } from "@dotbot/game";
 import { floorHeight, locationLabel, resolvePlan } from "@dotbot/game/mapModel";
 import { clamp01 } from "@dotbot/game/math";
-import { carriedCount } from "@dotbot/game/inventory";
 import { useDotBotGame } from "../game/useDotBotGame";
 import { ManifestScreen } from "./ManifestScreen";
 
@@ -16,6 +16,17 @@ function formatRunClock(timeMs: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function itemLabel(item: Item): string {
+  if (item.kind === "blueprint") return `Blueprint: ${item.blueprintId}`;
+  return ({ health: "Health", radar: "Radar", dashOvercharge: "Dash overcharge", incognito: "Incognito" } as const)[item.type];
+}
+
+function itemGlyph(item: Item | null): string {
+  if (!item) return "·";
+  if (item.kind === "blueprint") return "⌑";
+  return ({ health: "+", radar: "◎", dashOvercharge: "›", incognito: "◌" } as const)[item.type];
+}
+
 export function App() {
   // Remounting the session tears down and rebuilds the simulation and
   // renderer — a full fresh run without reloading the page.
@@ -24,7 +35,11 @@ export function App() {
 }
 
 function GameSession({ onRestart }: { onRestart: () => void }) {
-  const { hostRef, snapshot, events, runResult, map, playerId, debugVisible, joystick, joystickHandlers, queueDash, giveUp } = useDotBotGame();
+  const {
+    hostRef, snapshot, events, runResult, map, playerId, debugVisible, legendVisible, toggleLegend,
+    joystick, joystickHandlers, queueDash, useBay, swapBayItem, giveUp,
+  } = useDotBotGame();
+  const [swapBay, setSwapBay] = useState<0 | 1 | 2 | 3 | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
   const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === playerId) ?? false;
@@ -104,6 +119,8 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
       return playerCoverage.actorId === player.id ? "Reviving" : "Being revived";
     }
 
+    if (playerCoverage?.kind === "swap") return "Swapping";
+
     return "Explore";
   }, [player, playerCoverage, snapshot]);
 
@@ -163,15 +180,65 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
 
       <section className="hud hud-top-right" aria-label="Inventory">
         <div className="inventory-readout">
-          <div className="dot-count" aria-label={`${player ? carriedCount(player) : 0} carried items`}>
-            <span className="dot-count-mark" />
-            <span className="inventory-value">
-              <span className="hud-caption">Carry</span>
-              <strong>{player ? carriedCount(player) : 0}</strong>
-            </span>
+          <div className="inventory-heading">
+            <span className="hud-caption">Bays</span>
+            <button type="button" onClick={toggleLegend}>L / Key</button>
+          </div>
+          <div className="bay-strip">
+            {(player?.bays ?? [null, null, null, null]).map((item, index) => (
+              <div className="bay-slot" key={index}>
+                <button
+                  type="button"
+                  className={`bay-button ${item?.kind ?? "empty"}`}
+                  onClick={() => useBay(index as 0 | 1 | 2 | 3)}
+                  disabled={!item || player?.state !== "alive"}
+                  aria-label={`Bay ${index + 1}${item ? `: ${itemLabel(item)}` : ": empty"}`}
+                >
+                  <small>{index + 1}</small><strong>{itemGlyph(item)}</strong>
+                </button>
+                <button
+                  type="button"
+                  className="swap-control"
+                  onClick={() => setSwapBay(index as 0 | 1 | 2 | 3)}
+                  disabled={!player?.hold.length || player.state !== "alive"}
+                >SWAP</button>
+              </div>
+            ))}
+          </div>
+          <div className="hold-chip" aria-label={`${player?.hold.length ?? 0} items in hold`}>
+            HOLD <strong>{player?.hold.length ?? 0}</strong> / {defaultGameConfig.holdSlots}
           </div>
         </div>
       </section>
+
+      {swapBay !== null ? (
+        <aside className="hold-picker" aria-label={`Choose a hold item for bay ${swapBay + 1}`}>
+          <header><strong>HOLD → BAY {swapBay + 1}</strong><button type="button" onClick={() => setSwapBay(null)}>×</button></header>
+          <p>2 second stationary, noisy swap</p>
+          <div>
+            {player?.hold.map((item, index) => (
+              <button type="button" key={`${itemLabel(item)}-${index}`} onClick={() => {
+                swapBayItem(swapBay, index);
+                setSwapBay(null);
+              }}><span>{itemGlyph(item)}</span>{itemLabel(item)}</button>
+            ))}
+          </div>
+        </aside>
+      ) : null}
+
+      {legendVisible ? (
+        <aside className="item-legend" aria-label="Item legend">
+          <header><strong>DOTBOT / ITEM KEY</strong><button type="button" onClick={toggleLegend}>×</button></header>
+          <dl>
+            <div><dt className="powerup-mark">+</dt><dd>Health</dd></div>
+            <div><dt className="powerup-mark">◎</dt><dd>Radar</dd></div>
+            <div><dt className="powerup-mark">›</dt><dd>Dash overcharge</dd></div>
+            <div><dt className="powerup-mark">◌</dt><dd>Incognito</dd></div>
+            <div><dt className="blueprint-mark">⌑</dt><dd>Blueprint</dd></div>
+          </dl>
+          <small>Press L to close</small>
+        </aside>
+      ) : null}
 
       {floorContext ? (
         <aside className="hud floor-rail" aria-label={`${floorContext.building.name} floor guide`}>
@@ -241,7 +308,7 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
             queueDash();
           }}
           style={{ "--dash-progress": dashProgress } as React.CSSProperties}
-          disabled={runResult !== null || !player || player.state !== "alive" || player.dashCooldownMs > 0}
+          disabled={runResult !== null || !player || player.state !== "alive" || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)}
           aria-label="Dash"
         >
           Dash

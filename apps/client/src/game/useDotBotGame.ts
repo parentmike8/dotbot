@@ -49,6 +49,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const keysRef = useRef(new Set<string>());
   const joystickRef = useRef<JoystickState>(emptyJoystick);
   const dashQueuedRef = useRef(false);
+  const useBayQueuedRef = useRef<0 | 1 | 2 | 3 | undefined>(undefined);
+  const swapQueuedRef = useRef<{ bayIndex: 0 | 1 | 2 | 3; holdIndex: number } | undefined>(undefined);
   const spectateCycleQueuedRef = useRef(false);
   const spectatedBotIdRef = useRef<string | null>(null);
   const runEndedRef = useRef(false);
@@ -58,6 +60,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [spectating, setSpectating] = useState<DotBotEntity | null>(null);
   const [debugVisible, setDebugVisible] = useState(false);
+  const [legendVisible, setLegendVisible] = useState(false);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
 
   const resetJoystick = useCallback(() => {
@@ -135,9 +138,13 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           session.sendInput({
             move: mergeMoveVectors(keyboardMove, joystickMove),
             dash: dashQueuedRef.current,
+            useBay: useBayQueuedRef.current,
+            swapBay: swapQueuedRef.current,
           });
         }
         dashQueuedRef.current = false;
+        useBayQueuedRef.current = undefined;
+        swapQueuedRef.current = undefined;
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
         const frameEvents = session.drainEvents();
@@ -204,6 +211,18 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       if (event.code === "F3") {
         event.preventDefault();
         setDebugVisible((visible) => !visible);
+        return;
+      }
+
+      if (event.code === "KeyL") {
+        event.preventDefault();
+        setLegendVisible((visible) => !visible);
+        return;
+      }
+
+      if (["Digit1", "Digit2", "Digit3", "Digit4"].includes(event.code)) {
+        event.preventDefault();
+        if (!runEndedRef.current && !event.repeat) useBayQueuedRef.current = Number(event.code.slice(-1)) - 1 as 0 | 1 | 2 | 3;
         return;
       }
 
@@ -280,6 +299,14 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     if (!runEndedRef.current) {
       dashQueuedRef.current = true;
     }
+  }, []);
+
+  const useBay = useCallback((bayIndex: 0 | 1 | 2 | 3) => {
+    if (!runEndedRef.current) useBayQueuedRef.current = bayIndex;
+  }, []);
+
+  const swapBayItem = useCallback((bayIndex: 0 | 1 | 2 | 3, holdIndex: number) => {
+    if (!runEndedRef.current) swapQueuedRef.current = { bayIndex, holdIndex };
   }, []);
 
   const cycleSpectator = useCallback(() => {
@@ -375,9 +402,13 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     playerId: providedSession?.playerId ?? "player",
     spectating,
     debugVisible,
+    legendVisible,
+    toggleLegend: () => setLegendVisible((visible) => !visible),
     joystick: joystickView,
     joystickHandlers,
     queueDash,
+    useBay,
+    swapBayItem,
     giveUp,
     cycleSpectator,
   };
