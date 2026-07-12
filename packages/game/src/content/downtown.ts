@@ -1281,9 +1281,9 @@ function outdoorPlan() {
 // ---------------------------------------------------------------------------
 
 const botSpawns: BotSpawn[] = [
-  { id: "player", name: "You", squadId: "alpha", controller: "human", color: "#ff3b6b", position: { x: 300, y: 920 }, inventoryDots: 1 },
-  { id: "ally-1", name: "Indigo", squadId: "alpha", color: "#2f80ed", position: { x: 380, y: 920 }, inventoryDots: 1 },
-  { id: "ally-2", name: "Sky", squadId: "alpha", color: "#56ccf2", position: { x: 240, y: 890 }, inventoryDots: 1 },
+  { id: "player", name: "You", squadId: "alpha", controller: "human", color: "#ff3b6b", position: { x: 300, y: 920 } },
+  { id: "ally-1", name: "Indigo", squadId: "alpha", color: "#2f80ed", position: { x: 380, y: 920 } },
+  { id: "ally-2", name: "Sky", squadId: "alpha", color: "#56ccf2", position: { x: 240, y: 890 } },
   { id: "enemy-1", name: "Ochre", squadId: "rival-1", isAmbient: true, color: "#f2994a", position: { x: 2280, y: 650 } },
   { id: "enemy-2", name: "Mint", squadId: "rival-2", isAmbient: true, color: "#27ae60", position: { x: 900, y: 1520 } },
   { id: "enemy-3", name: "Violet", squadId: "rival-3", isAmbient: true, color: "#9b51e0", position: { x: 1620, y: 800 } },

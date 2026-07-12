@@ -477,8 +477,8 @@ export class Room {
       const member = [...this.members.values()].find((candidate) => candidate.botId === event.botId);
       if (!member?.inRun) continue;
       this.sendRunOver(member, event.type === "extracted"
-        ? { type: "runOver", reason: "extracted", keptDots: event.inventoryDots, lostDots: 0 }
-        : { type: "runOver", reason: "died", keptDots: 0, lostDots: event.lostDots });
+        ? { type: "runOver", reason: "extracted", keptItems: event.items, lostItems: [] }
+        : { type: "runOver", reason: "died", keptItems: [], lostItems: event.lostItems });
     }
   }
 
@@ -494,8 +494,9 @@ export class Room {
   private timeoutRun(bots: ReturnType<DotBotSimulation["getSnapshot"]>["bots"]): void {
     for (const member of this.members.values()) {
       if (!member.inRun) continue;
-      const inventory = bots.find((bot) => bot.id === member.botId)?.inventoryDots ?? 0;
-      this.sendRunOver(member, { type: "runOver", reason: "timeout", keptDots: 0, lostDots: inventory });
+      const bot = bots.find((candidate) => candidate.id === member.botId);
+      const lostItems = bot ? [...bot.bays.filter((item): item is NonNullable<typeof item> => item !== null), ...bot.hold] : [];
+      this.sendRunOver(member, { type: "runOver", reason: "timeout", keptItems: [], lostItems });
     }
     this.end("timeout");
   }
@@ -523,7 +524,7 @@ export class Room {
     if (!this.matchId || !member.persistenceEligible) return;
     try {
       if (message.reason === "extracted") {
-        const manifest: RunManifest = message;
+        const manifest: RunManifest = { reason: message.reason, keptDots: message.keptItems.length, lostDots: message.lostItems.length };
         await this.persistence.recordExtraction({ matchId: this.matchId, playerId: member.playerId, manifest });
       } else {
         await this.persistence.recordOutcome({ matchId: this.matchId, playerId: member.playerId, outcome: message.reason });
@@ -566,7 +567,8 @@ function makeSpawn(id: string, name: string, squadId: string, color: string, anc
     squadId,
     color,
     position: { x: anchor.x + (offset % 2) * 70, y: anchor.y + Math.floor(offset / 2) * 70 },
-    inventoryDots: 1,
+    bays: [{ kind: "powerup", type: "health" }, null, null, null],
+    hold: [],
   };
 }
 

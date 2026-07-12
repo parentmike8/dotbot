@@ -236,8 +236,8 @@ export class NetSession implements GameSession {
         this.runState = {
           phase: "over",
           reason: message.reason,
-          keptDots: message.keptDots,
-          lostDots: message.lostDots,
+          keptItems: message.keptItems,
+          lostItems: message.lostItems,
         };
         return;
       case "matchEnd":

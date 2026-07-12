@@ -35,7 +35,8 @@ function toWireBot(bot: DotBotEntity): WireBot {
     fl: bot.floorId,
     s: bot.state,
     sh: bot.shieldSegments,
-    n: bot.inventoryDots,
+    b: bot.bays,
+    h: bot.hold,
   };
 
   if (bot.dashCooldownMs !== 0 || bot.dashActiveMs !== 0) {
@@ -84,7 +85,8 @@ function fromWireBot(bot: WireBot, metaIndex: ReadonlyMap<string, EntityMeta>): 
     state: bot.s,
     shieldSegments,
     shields: shieldSegments.reduce((sum, segment) => sum + segment, 0),
-    inventoryDots: bot.n,
+    bays: bot.b.map((item) => item && { ...item }),
+    hold: bot.h.map((item) => ({ ...item })),
     dashCooldownMs: bot.d?.[0] ?? 0,
     dashActiveMs: bot.d?.[1] ?? 0,
     invulnerabilityMs: bot.iv ?? 0,

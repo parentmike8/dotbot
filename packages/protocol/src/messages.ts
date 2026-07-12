@@ -1,4 +1,4 @@
-import type { GameConfig, MapDocument, SimEvent } from "@dotbot/game/types";
+import type { GameConfig, Item, MapDocument, SimEvent } from "@dotbot/game/types";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
 
@@ -26,7 +26,8 @@ export type WireBot = {
   fl: string;
   s: "alive" | "downed" | "consumed";
   sh: number[];
-  n: number;
+  b: (Item | null)[];
+  h: Item[];
   d?: [number, number];
   iv?: number;
 };
@@ -69,7 +70,7 @@ export type ServerMessage =
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }
   | { type: "ev"; events: SimEvent[] }
-  | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptDots: number; lostDots: number }
+  | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptItems: Item[]; lostItems: Item[] }
   | { type: "matchEnd"; reason: string }
   | { type: "pong"; cts: number; sts: number }
   | { type: "err"; code: string; msg: string };

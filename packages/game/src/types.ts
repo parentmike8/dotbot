@@ -14,12 +14,18 @@ export type BotState = "alive" | "downed" | "consumed";
 
 export type Controller = "human" | "ai" | "frozen";
 
+export type PowerupType = "health" | "radar" | "dashOvercharge" | "incognito";
+
+export type Item =
+  | { kind: "powerup"; type: PowerupType }
+  | { kind: "blueprint"; blueprintId: string };
+
 export type SimEvent =
   | { type: "downed"; botId: string; byBotId?: string }
-  | { type: "consumed"; botId: string; byBotId: string; lostDots: number }
+  | { type: "consumed"; botId: string; byBotId: string; lostItems: Item[] }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
-  | { type: "extracted"; botId: string; squadId: string; inventoryDots: number };
+  | { type: "extracted"; botId: string; squadId: string; items: Item[] };
 
 // ---------------------------------------------------------------------------
 // Map document model
@@ -205,7 +211,8 @@ export type BotSpawn = {
   state?: BotState;
   maxShields?: number;
   shields?: number;
-  inventoryDots?: number;
+  bays?: (Item | null)[];
+  hold?: Item[];
 };
 
 export type MapDocument = {
@@ -243,7 +250,8 @@ export type DotBotEntity = GameEntity & {
   shields: number;
   /** Per-plate state: 1 intact, 0.5 cracked, 0 broken. Plate 0 faces forward. */
   shieldSegments: number[];
-  inventoryDots: number;
+  bays: (Item | null)[];
+  hold: Item[];
   dashCooldownMs: number;
   dashActiveMs: number;
   invulnerabilityMs: number;
@@ -292,7 +300,8 @@ export type GameConfig = {
   botRadius: number;
   dotRadius: number;
   maxShields: number;
-  maxInventoryDots: number;
+  baySlots: number;
+  holdSlots: number;
   playerSpeed: number;
   botSpeed: number;
   dashSpeed: number;

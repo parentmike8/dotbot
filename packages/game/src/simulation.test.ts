@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import { classifyNoise, physicsFloorId } from "./mapModel";
+import { carriedCount } from "./inventory";
 import { DotBotSimulation } from "./simulation";
 import { hasLineOfSight } from "./visibility";
 import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, MapDocument, WallSegment } from "./types";
+
+const healthItem = { kind: "powerup", type: "health" } as const;
+const testBays = (count: number) => Array.from({ length: 4 }, (_, index) => index < count ? healthItem : null);
 
 const testConfig: Partial<GameConfig> = {
   dotCaptureDurationMs: 120,
@@ -58,7 +62,8 @@ function playerSpawn(overrides: Partial<BotSpawn> = {}): BotSpawn {
     controller: "human",
     color: "#ff3b6b",
     position: { x: 100, y: 180 },
-    inventoryDots: 0,
+    bays: testBays(0),
+    hold: [],
     ...overrides,
   };
 }
@@ -71,7 +76,8 @@ function enemySpawn(overrides: Partial<BotSpawn> = {}): BotSpawn {
     isAmbient: true,
     color: "#f2994a",
     position: { x: 220, y: 180 },
-    inventoryDots: 0,
+    bays: testBays(0),
+    hold: [],
     ...overrides,
   };
 }
@@ -83,7 +89,8 @@ function allySpawn(overrides: Partial<BotSpawn> = {}): BotSpawn {
     squadId: "alpha",
     color: "#2f80ed",
     position: { x: 100, y: 180 },
-    inventoryDots: 0,
+    bays: testBays(0),
+    hold: [],
     ...overrides,
   };
 }
@@ -106,7 +113,7 @@ function snapshotDigest(snapshot: GameSnapshot): string {
         floorId: bot.floorId,
         state: bot.state,
         shields: bot.shields,
-        inventoryDots: bot.inventoryDots,
+        carriedCount: carriedCount(bot),
       })),
     activeDots: snapshot.dots.filter((dot) => dot.active).map((dot) => dot.id).sort(),
   });
@@ -161,7 +168,7 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.dots.find((dot) => dot.id === "dot")?.active).toBe(false);
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(1);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
     simulation.dispose();
   });
 
@@ -273,7 +280,7 @@ describe("DotBotSimulation", () => {
   });
 
   it("never lets ambient AI acquire an extraction channel", async () => {
-    const baseMap = makeMap([enemySpawn({ position: { x: 100, y: 100 }, inventoryDots: 3 })]);
+    const baseMap = makeMap([enemySpawn({ position: { x: 100, y: 100 }, bays: testBays(3), hold: [] })]);
     const simulation = await DotBotSimulation.create({
       map: {
         ...baseMap,
@@ -290,7 +297,7 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(sawExtraction).toBe(false);
-    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.inventoryDots).toBe(3);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.bays.filter(Boolean).length).toBe(0);
     simulation.dispose();
   });
 
@@ -381,10 +388,11 @@ describe("DotBotSimulation", () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
       enemySpawn({
+        isAmbient: false,
         position: { x: 100, y: 180 },
         state: "downed",
         shields: 0,
-        inventoryDots: 2,
+        bays: testBays(2), hold: [],
       }),
     ]);
 
@@ -393,7 +401,7 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("consumed");
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(2);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(2);
     simulation.dispose();
   });
 
@@ -401,10 +409,11 @@ describe("DotBotSimulation", () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 122, y: 180 } }),
       enemySpawn({
+        isAmbient: false,
         position: { x: 100, y: 180 },
         state: "downed",
         shields: 0,
-        inventoryDots: 1,
+        bays: testBays(1), hold: [],
       }),
     ]);
 
@@ -413,7 +422,7 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("consumed");
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(1);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
     simulation.dispose();
   });
 
@@ -421,10 +430,11 @@ describe("DotBotSimulation", () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 135, y: 180 } }),
       enemySpawn({
+        isAmbient: false,
         position: { x: 100, y: 180 },
         state: "downed",
         shields: 0,
-        inventoryDots: 1,
+        bays: testBays(1), hold: [],
       }),
     ]);
 
@@ -433,7 +443,7 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("consumed");
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(1);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
     simulation.dispose();
   });
 
@@ -444,7 +454,7 @@ describe("DotBotSimulation", () => {
         position: { x: 100, y: 180 },
         state: "downed",
         shields: 0,
-        inventoryDots: 1,
+        bays: testBays(1), hold: [],
       }),
     ]);
 
@@ -453,7 +463,7 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(0);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(0);
     simulation.dispose();
   });
 
@@ -464,7 +474,7 @@ describe("DotBotSimulation", () => {
         position: { x: 128, y: 180 },
         state: "downed",
         shields: 0,
-        inventoryDots: 0,
+        bays: testBays(0), hold: [],
       }),
     ]);
 
@@ -478,7 +488,7 @@ describe("DotBotSimulation", () => {
 
   it("revives a downed friendly bot for free with one cracked plate", async () => {
     const simulation = await makeSimulation([
-      playerSpawn({ position: { x: 100, y: 180 }, inventoryDots: 0 }),
+      playerSpawn({ position: { x: 100, y: 180 }, bays: testBays(0), hold: [] }),
       allySpawn({
         position: { x: 100, y: 180 },
         state: "downed",
@@ -493,13 +503,13 @@ describe("DotBotSimulation", () => {
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.state).toBe("alive");
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(0.5);
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.shieldSegments).toEqual([0.5, 0, 0]);
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(0);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(0);
     simulation.dispose();
   });
 
   it("revives a downed friendly bot when standing over its footprint", async () => {
     const simulation = await makeSimulation([
-      playerSpawn({ position: { x: 122, y: 180 }, inventoryDots: 1 }),
+      playerSpawn({ position: { x: 122, y: 180 }, bays: testBays(1), hold: [] }),
       allySpawn({
         position: { x: 100, y: 180 },
         state: "downed",
@@ -513,7 +523,7 @@ describe("DotBotSimulation", () => {
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.state).toBe("alive");
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(0.5);
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.inventoryDots).toBe(1);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
     simulation.dispose();
   });
 
@@ -634,7 +644,7 @@ describe("DotBotSimulation", () => {
   });
 
   it("emits extracted and removes the bot after an extraction channel", async () => {
-    const baseMap = makeMap([playerSpawn({ position: { x: 100, y: 100 }, inventoryDots: 2 })]);
+    const baseMap = makeMap([playerSpawn({ position: { x: 100, y: 100 }, bays: testBays(2), hold: [] })]);
     const simulation = await DotBotSimulation.create({
       map: {
         ...baseMap,
@@ -652,7 +662,7 @@ describe("DotBotSimulation", () => {
     runTicks(simulation, 10);
     snapshot = simulation.getSnapshot();
     expect(snapshot.bots.some((bot) => bot.id === "player")).toBe(false);
-    expect(simulation.drainEvents()).toContainEqual({ type: "extracted", botId: "player", squadId: "alpha", inventoryDots: 2 });
+    expect(simulation.drainEvents()).toContainEqual({ type: "extracted", botId: "player", squadId: "alpha", items: [healthItem, healthItem] });
     simulation.dispose();
   });
 
@@ -749,7 +759,7 @@ describe("DotBotSimulation", () => {
     const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
     expect(player?.state).toBe("consumed");
     expect(player?.shields).toBe(0);
-    expect(player?.inventoryDots).toBe(0);
+    expect(player?.bays.filter(Boolean).length).toBe(0);
     simulation.dispose();
   });
 
@@ -826,8 +836,8 @@ describe("DotBotSimulation", () => {
 
   it("drains downed, revived, and consumed events from a scripted fight", async () => {
     const simulation = await makeSimulation([
-      playerSpawn({ position: { x: 100, y: 180 }, inventoryDots: 1 }),
-      enemySpawn({ position: { x: 156, y: 180 }, maxShields: 1, shields: 1, inventoryDots: 2 }),
+      playerSpawn({ position: { x: 100, y: 180 }, bays: testBays(1), hold: [] }),
+      enemySpawn({ position: { x: 156, y: 180 }, maxShields: 1, shields: 1, bays: testBays(2), hold: [] }),
     ]);
     simulation.setController("enemy", "frozen");
 
@@ -842,7 +852,7 @@ describe("DotBotSimulation", () => {
     simulation.setController("player", "frozen");
     const playerPosition = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position;
     simulation.spawnBot(
-      enemySpawn({ id: "consumable", position: playerPosition, state: "downed", shields: 0, inventoryDots: 2 }),
+      enemySpawn({ id: "consumable", isAmbient: false, position: playerPosition, state: "downed", shields: 0, bays: testBays(2), hold: [] }),
       "frozen",
     );
     runTicks(simulation, 12);
@@ -852,7 +862,7 @@ describe("DotBotSimulation", () => {
     expect(simulation.drainEvents()).toEqual(
       expect.arrayContaining([
         { type: "downed", botId: "enemy", byBotId: "player" },
-        { type: "consumed", botId: "consumable", byBotId: "player", lostDots: 2 },
+        { type: "consumed", botId: "consumable", byBotId: "player", lostItems: [healthItem, healthItem] },
         { type: "revived", botId: "downed-ally", byBotId: "player" },
       ]),
     );

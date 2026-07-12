@@ -30,11 +30,11 @@ export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun
           </div>
           <div>
             <dt>Kept</dt>
-            <dd>{result.outcome === "extracted" ? result.keptDots : 0}</dd>
+            <dd>{result.keptItems.length}</dd>
           </div>
           <div>
             <dt>Lost</dt>
-            <dd>{result.lostDots}</dd>
+            <dd>{result.lostItems.length}</dd>
           </div>
           <div>
             <dt>Kills</dt>

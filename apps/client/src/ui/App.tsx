@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { defaultGameConfig } from "@dotbot/game";
 import { floorHeight, locationLabel, resolvePlan } from "@dotbot/game/mapModel";
 import { clamp01 } from "@dotbot/game/math";
+import { carriedCount } from "@dotbot/game/inventory";
 import { useDotBotGame } from "../game/useDotBotGame";
 import { ManifestScreen } from "./ManifestScreen";
 
@@ -161,11 +162,11 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
 
       <section className="hud hud-top-right" aria-label="Inventory">
         <div className="inventory-readout">
-          <div className="dot-count" aria-label={`${player?.inventoryDots ?? 0} carried dots`}>
+          <div className="dot-count" aria-label={`${player ? carriedCount(player) : 0} carried items`}>
             <span className="dot-count-mark" />
             <span className="inventory-value">
               <span className="hud-caption">Carry</span>
-              <strong>{player?.inventoryDots ?? 0}</strong>
+              <strong>{player ? carriedCount(player) : 0}</strong>
             </span>
           </div>
         </div>

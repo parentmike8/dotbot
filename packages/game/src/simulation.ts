@@ -19,6 +19,7 @@ import {
 } from "./mapModel";
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
+import { carriedCount, carriedItems, insertItem } from "./inventory";
 import { applyShieldHit, platesForCount, plateSum } from "./shields";
 import { loadRapier } from "./rapier";
 import { OUTDOOR_FLOOR_ID } from "./types";
@@ -283,7 +284,8 @@ export class DotBotSimulation {
       maxShields,
       shields: plateSum(shieldSegments),
       shieldSegments,
-      inventoryDots: spawn.inventoryDots ?? 0,
+      bays: normalizedBays(spawn, this.config),
+      hold: spawn.isAmbient ? [] : (spawn.hold ?? []).slice(0, this.config.holdSlots),
       dashCooldownMs: 0,
       dashActiveMs: 0,
       invulnerabilityMs: 0,
@@ -569,8 +571,8 @@ export class DotBotSimulation {
       return makeAiTarget(friendlyDowned.position, friendlyDowned.floorId, bot.radius * 0.42, bot.radius * 3, "revive", friendlyDowned.id);
     }
 
-    const shouldFlee = bot.inventoryDots > 0 && bot.shields <= 1;
-    const inventoryFull = bot.inventoryDots >= this.config.maxInventoryDots;
+    const shouldFlee = carriedCount(bot) > 0 && bot.shields <= 1;
+    const inventoryFull = carriedCount(bot) >= this.config.baySlots + this.config.holdSlots;
 
     if (!bot.isAmbient && (shouldFlee || inventoryFull)) {
       const extraction = this.nearestExtractionTarget(bot);
@@ -608,7 +610,7 @@ export class DotBotSimulation {
 
     const dot = rank(
       [...this.dots.values()].filter(
-        (candidate) => candidate.active && bot.inventoryDots < this.config.maxInventoryDots && localOrVertical(candidate) && available(candidate),
+        (candidate) => candidate.active && carriedCount(bot) < this.config.baySlots + this.config.holdSlots && localOrVertical(candidate) && available(candidate),
       ),
     );
 
@@ -616,7 +618,7 @@ export class DotBotSimulation {
       return makeAiTarget(dot.position, dot.floorId, Math.max(2, bot.radius - dot.radius - 4), bot.radius * 3.2, "loot", dot.id);
     }
 
-    if (!bot.isAmbient && bot.inventoryDots >= Math.max(2, this.config.maxInventoryDots - 2)) {
+    if (!bot.isAmbient && carriedCount(bot) >= Math.max(2, this.config.baySlots + this.config.holdSlots - 2)) {
       const extraction = this.nearestExtractionTarget(bot);
       if (extraction) {
         return extraction;
@@ -1180,7 +1182,7 @@ export class DotBotSimulation {
       const coveringBot = aliveBots.find(
         (bot) =>
           bot.floorId === dot.floorId &&
-          bot.inventoryDots < this.config.maxInventoryDots &&
+          carriedCount(bot) < this.config.baySlots + this.config.holdSlots &&
           distance(bot.position, dot.position) + dot.radius <= bot.radius - 2,
       );
 
@@ -1211,7 +1213,7 @@ export class DotBotSimulation {
 
       if (dot.captureProgressMs >= this.config.dotCaptureDurationMs) {
         dot.active = false;
-        coveringBot.inventoryDots = Math.min(this.config.maxInventoryDots, coveringBot.inventoryDots + 1);
+        insertItem(coveringBot, { kind: "powerup", type: "health" }, this.config.holdSlots);
         this.events.push({ type: "dotCaptured", botId: coveringBot.id, dotId: dot.id });
         this.coverages.delete(`capture:${dot.id}`);
       }
@@ -1278,7 +1280,7 @@ export class DotBotSimulation {
     const activeKeys = new Set<string>();
 
     for (const bot of this.bots.values()) {
-      if (bot.isAmbient || bot.state !== "alive" || bot.floorId !== OUTDOOR_FLOOR_ID || bot.inventoryDots <= 0) {
+      if (bot.isAmbient || bot.state !== "alive" || bot.floorId !== OUTDOOR_FLOOR_ID || carriedCount(bot) <= 0) {
         continue;
       }
 
@@ -1305,7 +1307,7 @@ export class DotBotSimulation {
       });
 
       if (progressMs >= this.config.extractionDurationMs) {
-        this.events.push({ type: "extracted", botId: bot.id, squadId: bot.squadId, inventoryDots: bot.inventoryDots });
+        this.events.push({ type: "extracted", botId: bot.id, squadId: bot.squadId, items: carriedItems(bot) });
         this.removeBot(bot.id);
       }
     }
@@ -1340,16 +1342,16 @@ export class DotBotSimulation {
   }
 
   private consumeBot(target: InternalBot, consumer: InternalBot): void {
-    const lostDots = target.inventoryDots;
-    const loot = Math.min(this.config.maxInventoryDots - consumer.inventoryDots, target.inventoryDots);
-    consumer.inventoryDots += Math.max(0, loot);
+    const lostItems = carriedItems(target);
+    for (const item of lostItems) insertItem(consumer, item, this.config.holdSlots);
     target.state = "consumed";
     target.shieldSegments = platesForCount(target.maxShields, 0);
     target.shields = 0;
-    target.inventoryDots = 0;
+    target.bays = Array.from({ length: this.config.baySlots }, () => null);
+    target.hold = [];
     target.consumedRespawnMs = this.config.respawnDelayMs;
     this.setBotPhysicsState(target, "consumed");
-    this.events.push({ type: "consumed", botId: target.id, byBotId: consumer.id, lostDots });
+    this.events.push({ type: "consumed", botId: target.id, byBotId: consumer.id, lostItems });
   }
 
   private respawnConsumedBots(dtMs: number): void {
@@ -1367,7 +1369,10 @@ export class DotBotSimulation {
       bot.state = "alive";
       bot.shieldSegments = platesForCount(bot.maxShields, bot.maxShields);
       bot.shields = plateSum(bot.shieldSegments);
-      bot.inventoryDots = bot.isAmbient ? 0 : 1;
+      bot.bays = bot.isAmbient
+        ? Array.from({ length: this.config.baySlots }, () => null)
+        : [{ kind: "powerup", type: "health" }, ...Array.from({ length: this.config.baySlots - 1 }, () => null)];
+      bot.hold = [];
       bot.dashActiveMs = 0;
       bot.dashCooldownMs = 0;
       bot.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
@@ -1434,11 +1439,18 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     maxShields: bot.maxShields,
     shields: bot.shields,
     shieldSegments: [...bot.shieldSegments],
-    inventoryDots: bot.inventoryDots,
+    bays: bot.bays.map((item) => item && { ...item }),
+    hold: bot.hold.map((item) => ({ ...item })),
     dashCooldownMs: bot.dashCooldownMs,
     dashActiveMs: bot.dashActiveMs,
     invulnerabilityMs: bot.invulnerabilityMs,
   };
+}
+
+function normalizedBays(spawn: BotSpawn, config: GameConfig): (import("./types").Item | null)[] {
+  if (spawn.isAmbient) return Array.from({ length: config.baySlots }, () => null);
+  const provided = spawn.bays?.slice(0, config.baySlots) ?? [{ kind: "powerup", type: "health" } as const];
+  return [...provided, ...Array.from({ length: config.baySlots - provided.length }, () => null)];
 }
 
 function rectContainsPoint(rect: Rect, point: Vec2): boolean {

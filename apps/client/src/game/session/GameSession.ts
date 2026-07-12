@@ -1,8 +1,8 @@
-import type { GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
+import type { GameSnapshot, InputCommand, Item, MapDocument, SimEvent } from "@dotbot/game/types";
 
 export type RunState =
   | { phase: "live" }
-  | { phase: "over"; reason: "extracted" | "died" | "timeout"; keptDots: number; lostDots: number };
+  | { phase: "over"; reason: "extracted" | "died" | "timeout"; keptItems: Item[]; lostItems: Item[] };
 
 export interface GameSession {
   readonly map: MapDocument;

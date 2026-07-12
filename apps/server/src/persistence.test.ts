@@ -49,7 +49,8 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
         coverDurationMs: 100,
         damageSpeed: 99_999,
         extractionDurationMs: 100,
-        maxInventoryDots: 1,
+        baySlots: 1,
+        holdSlots: 0,
         maxShields: 30,
         playerSpeed: 1000,
         runDurationMs: 2500,
@@ -86,7 +87,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
       alice.send({ type: "input", seq: 3, move: [0, 0], dash: false });
 
       const extracted = await alice.waitFor("runOver", 5000);
-      expect(extracted).toEqual({ type: "runOver", reason: "extracted", keptDots: 1, lostDots: 0 });
+      expect(extracted).toEqual({ type: "runOver", reason: "extracted", keptItems: [{ kind: "powerup", type: "health" }], lostItems: [] });
       expect(rooms.join(welcome.roomCode)?.phase).toBe("live");
       expect(alice.messages.some((message) => message.type === "matchEnd")).toBe(false);
 

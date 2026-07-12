@@ -5,7 +5,7 @@ import type { EntityMeta, WireBot, WireSnapshot } from "./messages";
 import { filterEventsForViewer, filterForViewer } from "./interest";
 
 const bot = (i: string, fl: string, x: number, y: number): WireBot => ({
-  i, fl, p: [x, y], f: 0, s: "alive", sh: [1, 1, 1], n: 0,
+  i, fl, p: [x, y], f: 0, s: "alive", sh: [1, 1, 1], b: [null, null, null, null], h: [],
 });
 const meta: EntityMeta[] = [
   { id: "viewer", name: "Viewer", squadId: "a", isAmbient: false, maxShields: 3, radius: 24 },
@@ -72,7 +72,7 @@ describe("filterForViewer", () => {
   it("includes events tied to an included bot or the viewer squad", () => {
     const events = filterEventsForViewer([
       { type: "downed", botId: "street-enemy", byBotId: "viewer" },
-      { type: "consumed", botId: "upper-enemy", byBotId: "street-enemy", lostDots: 0 },
+      { type: "consumed", botId: "upper-enemy", byBotId: "street-enemy", lostItems: [] },
       { type: "revived", botId: "mate", byBotId: "mate" },
     ], meta, new Set(["viewer", "mate"]), "a");
     expect(events.map((event) => event.type)).toEqual(["downed", "revived"]);

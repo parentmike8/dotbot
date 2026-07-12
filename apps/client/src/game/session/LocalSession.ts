@@ -1,4 +1,5 @@
 import { DotBotSimulation } from "@dotbot/game/simulation";
+import { carriedItems } from "@dotbot/game/inventory";
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import type { GameSession } from "./GameSession";
 import type { RunState } from "./GameSession";
@@ -71,8 +72,10 @@ export class LocalSession implements GameSession {
       this.runState = {
         phase: "over",
         reason: "timeout",
-        keptDots: 0,
-        lostDots: snapshot.bots.find((bot) => bot.id === this.playerId)?.inventoryDots ?? 0,
+        keptItems: [],
+        lostItems: snapshot.bots.find((bot) => bot.id === this.playerId)
+          ? carriedItems(snapshot.bots.find((bot) => bot.id === this.playerId)!)
+          : [],
       };
     }
     return snapshot;
@@ -103,11 +106,11 @@ export class LocalSession implements GameSession {
     for (const event of events) {
       if (event.botId !== this.playerId) continue;
       if (event.type === "extracted") {
-        this.runState = { phase: "over", reason: "extracted", keptDots: event.inventoryDots, lostDots: 0 };
+        this.runState = { phase: "over", reason: "extracted", keptItems: event.items, lostItems: [] };
         return;
       }
       if (event.type === "consumed") {
-        this.runState = { phase: "over", reason: "died", keptDots: 0, lostDots: event.lostDots };
+        this.runState = { phase: "over", reason: "died", keptItems: [], lostItems: event.lostItems };
         return;
       }
     }

@@ -27,7 +27,8 @@ describe("multiplayer server", () => {
         coverDurationMs: 100,
         damageSpeed: 99_999,
         extractionDurationMs: 100,
-        maxInventoryDots: 1,
+        baySlots: 1,
+        holdSlots: 0,
         maxShields: 30,
         playerSpeed: 1000,
         runDurationMs: 2500,
@@ -55,7 +56,7 @@ describe("multiplayer server", () => {
     expect(startA.endTick).toBe(150);
 
     const firstA = await a.waitFor("snap");
-    expect(firstA.bots.find((bot) => bot.i === startA.yourBotId)?.n).toBe(1);
+    expect(firstA.bots.find((bot) => bot.i === startA.yourBotId)?.b.filter(Boolean)).toHaveLength(1);
 
     // Alpha starts at (300, 920). Move east beyond the depot wall, then south
     // into the 960..1070 x 1150..1260 extraction rectangle.
@@ -66,7 +67,7 @@ describe("multiplayer server", () => {
     a.send({ type: "input", seq: 3, move: [0, 0], dash: false });
 
     const runOverA = await a.waitFor("runOver", 5000);
-    expect(runOverA).toEqual({ type: "runOver", reason: "extracted", keptDots: 1, lostDots: 0 });
+    expect(runOverA).toEqual({ type: "runOver", reason: "extracted", keptItems: [{ kind: "powerup", type: "health" }], lostItems: [] });
 
     const bSnapshotsAtExtraction = b.messages.filter((message) => message.type === "snap").length;
     await delay(250);
@@ -74,7 +75,7 @@ describe("multiplayer server", () => {
     expect(a.messages.filter((message) => message.type === "snap").length).toBeGreaterThan(1);
 
     const runOverB = await b.waitFor("runOver", 7000);
-    expect(runOverB).toMatchObject({ type: "runOver", reason: "timeout", keptDots: 0 });
+    expect(runOverB).toMatchObject({ type: "runOver", reason: "timeout", keptItems: [] });
     const [endA, endB] = await Promise.all([a.waitFor("matchEnd"), b.waitFor("matchEnd")]);
     expect(endA.reason).toBe("timeout");
     expect(endB.reason).toBe("timeout");

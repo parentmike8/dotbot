@@ -5,29 +5,30 @@ import type { GameSnapshot, SimEvent } from "@dotbot/game/types";
 import { LocalSession, type LocalSimulation } from "./LocalSession";
 
 describe("LocalSession run-state ownership", () => {
+  const health = { kind: "powerup", type: "health" } as const;
   it("derives extracted state from the local simulation event", async () => {
     const { session } = scriptedSession({
-      events: [{ type: "extracted", botId: "player", squadId: "alpha", inventoryDots: 3 }],
+      events: [{ type: "extracted", botId: "player", squadId: "alpha", items: [health, health, health] }],
       snapshot: snapshot(50, []),
     });
 
     await session.start();
     session.update(100);
 
-    expect(session.getRunState()).toEqual({ phase: "over", reason: "extracted", keptDots: 3, lostDots: 0 });
-    expect(session.drainEvents()).toEqual([{ type: "extracted", botId: "player", squadId: "alpha", inventoryDots: 3 }]);
+    expect(session.getRunState()).toEqual({ phase: "over", reason: "extracted", keptItems: [health, health, health], lostItems: [] });
+    expect(session.drainEvents()).toEqual([{ type: "extracted", botId: "player", squadId: "alpha", items: [health, health, health] }]);
   });
 
   it("derives died state and loss from the consumed event payload", async () => {
     const { session } = scriptedSession({
-      events: [{ type: "consumed", botId: "player", byBotId: "enemy", lostDots: 2 }],
+      events: [{ type: "consumed", botId: "player", byBotId: "enemy", lostItems: [health, health] }],
       snapshot: snapshot(50, []),
     });
 
     await session.start();
     session.update(100);
 
-    expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptDots: 0, lostDots: 2 });
+    expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptItems: [], lostItems: [health, health] });
   });
 
   it("derives timeout state from local time and current inventory", async () => {
@@ -49,7 +50,8 @@ describe("LocalSession run-state ownership", () => {
         maxShields: 3,
         shields: 3,
         shieldSegments: [1, 1, 1],
-        inventoryDots: 4,
+        bays: [health, health, health, health],
+        hold: [],
         dashCooldownMs: 0,
         dashActiveMs: 0,
         invulnerabilityMs: 0,
@@ -59,7 +61,7 @@ describe("LocalSession run-state ownership", () => {
     await session.start();
     session.update(100);
 
-    expect(session.getRunState()).toEqual({ phase: "over", reason: "timeout", keptDots: 0, lostDots: 4 });
+    expect(session.getRunState()).toEqual({ phase: "over", reason: "timeout", keptItems: [], lostItems: [health, health, health, health] });
   });
 });
 

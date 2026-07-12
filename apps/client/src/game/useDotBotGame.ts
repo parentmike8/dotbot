@@ -6,14 +6,14 @@ import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer } from "./renderer/GameRenderer";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
-import type { DotBotEntity, GameSnapshot, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, GameSnapshot, Item, SimEvent, Vec2 } from "@dotbot/game/types";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
 
 export type RunResult = {
   outcome: RunOutcome;
-  keptDots: number;
-  lostDots: number;
+  keptItems: Item[];
+  lostItems: Item[];
   runTimeMs: number;
 };
 
@@ -158,8 +158,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         if (!runEndedRef.current && runState.phase === "over") {
           const result: RunResult = {
             outcome: runState.reason,
-            keptDots: runState.keptDots,
-            lostDots: runState.lostDots,
+            keptItems: runState.keptItems,
+            lostItems: runState.lostItems,
             runTimeMs: nextSnapshot.timeMs,
           };
           runEndedRef.current = true;
