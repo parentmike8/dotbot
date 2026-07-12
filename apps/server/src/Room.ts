@@ -38,6 +38,8 @@ type RoomOptions = {
   config?: Partial<GameConfig>;
   now?: () => number;
   persistence?: Persistence;
+  /** Test hook: disable AI squad backfill so scripted bots have no rivals for dots. */
+  aiWingmates?: boolean;
 };
 
 const squads = ["alpha", "bravo", "crew-3"] as const;
@@ -74,6 +76,7 @@ export class Room {
   private matchId: string | null = null;
   private readonly pendingPersistence = new Set<Promise<void>>();
   private readonly matchOutcomes = new Map<string, string>();
+  private readonly aiWingmates: boolean;
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
@@ -81,6 +84,7 @@ export class Room {
     this.config = { ...defaultGameConfig, ...options.config };
     this.now = options.now ?? Date.now;
     this.persistence = options.persistence ?? new NoopPersistence();
+    this.aiWingmates = options.aiWingmates ?? true;
     this.createdAt = this.now();
     this.lastTickAt = this.createdAt;
     this.bandwidthWindowStartedAt = this.createdAt;
@@ -313,7 +317,7 @@ export class Room {
     }
 
     for (const [squadId, count] of squadCounts) {
-      if (count >= 2) continue;
+      if (!this.aiWingmates || count >= 2) continue;
       const squadIndex = squads.indexOf(squadId as (typeof squads)[number]);
       simulation.spawnBot(
         makeSpawn(`ai-${squadId}`, `${squadId} wing`, squadId, squadColors[squadIndex], squadAnchors[squadIndex], count),

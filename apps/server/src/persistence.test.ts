@@ -43,6 +43,8 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     const { app, rooms, persistence } = await createServer({
       databaseUrl,
       countdownMs: 0,
+      // Scripted pickups must have no AI rivals contesting map dots.
+      aiWingmates: false,
       config: {
         botSpeed: 4000,
         coverDurationMs: 100,
@@ -93,8 +95,11 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
       await moveUntil([1, 0], ([x]) => x >= 340);
       await moveUntil([0, 1], ([, y]) => y >= 1080);
       await moveUntil([0.2, 0], ([x]) => x >= 438);
-      seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 440, y: 1270 }, seq);
-      await waitForInventory(alice, aliceStart.yourBotId, (bays) => bays.includes("b:shelf"));
+      seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 440, y: 1270 }, seq, (bays) => bays.includes("b:shelf"));
+      // The health dot sits at (452, 1270), 12px from the fragment; the
+      // fragment steer never reliably covers both (capture range is
+      // botRadius - dotRadius - 2 = 12), so capture it explicitly.
+      seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 452, y: 1270 }, seq, (bays) => bays.includes("h"));
 
       await moveUntil([0, -1], ([, y]) => y <= 1080);
       await moveUntil([-1, 0], ([x]) => x <= 340);
@@ -231,22 +236,30 @@ async function steerBotTo(
   botId: string,
   target: { x: number; y: number },
   initialSeq: number,
+  doneWhen?: (bays: NonNullable<Extract<ServerMessage, { type: "snap" }>["bots"][number]["b"]>) => boolean,
 ): Promise<number> {
   let seq = initialSeq;
   let settledAt: number | null = null;
   const started = Date.now();
-  while (Date.now() - started < 3000) {
+  while (Date.now() - started < 5000) {
     const latest = inbox.messages
       .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
       .at(-1);
-    const position = latest?.bots.find((bot) => bot.i === botId)?.p;
+    const bot = latest?.bots.find((candidate) => candidate.i === botId);
+    // Capture (12px range, short channel) is the real goal; positional settle
+    // is only the fallback. A doneWhen hit ends the steer even mid-approach.
+    if (doneWhen && bot?.b && doneWhen(bot.b)) {
+      inbox.send({ type: "input", seq: ++seq, move: [0, 0], dash: false });
+      return seq;
+    }
+    const position = bot?.p;
     if (position) {
       const dx = target.x - position[0];
       const dy = target.y - position[1];
       if (Math.hypot(dx, dy) <= 8) {
         inbox.send({ type: "input", seq: ++seq, move: [0, 0], dash: false });
         settledAt ??= Date.now();
-        if (Date.now() - settledAt >= 300) return seq;
+        if (!doneWhen && Date.now() - settledAt >= 300) return seq;
       } else {
         settledAt = null;
         inbox.send({
@@ -259,7 +272,14 @@ async function steerBotTo(
     }
     await delay(30);
   }
-  throw new Error(`Timed out steering ${botId} to ${JSON.stringify(target)}`);
+  const latest = inbox.messages
+    .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
+    .at(-1);
+  const bot = latest?.bots.find((candidate) => candidate.i === botId);
+  const otherEvents = inbox.messages.filter((message) => message.type !== "snap").map((message) => message.type);
+  throw new Error(
+    `Timed out steering ${botId} to ${JSON.stringify(target)}; bot=${JSON.stringify(bot)} events=${otherEvents.join(",")}`,
+  );
 }
 
 async function waitForDatabase(predicate: () => Promise<boolean>): Promise<void> {

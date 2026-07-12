@@ -10,6 +10,8 @@ export type RoomManagerOptions = {
   config?: Partial<GameConfig>;
   now?: () => number;
   persistence?: Persistence;
+  /** Test hook: disable AI squad backfill (see Room). */
+  aiWingmates?: boolean;
 };
 
 export class RoomManager {
