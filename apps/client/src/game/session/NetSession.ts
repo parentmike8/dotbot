@@ -1,6 +1,14 @@
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { assertNever, fromWireSnapshot } from "@dotbot/protocol";
 import type { EntityMeta, LobbyMember, ServerMessage } from "@dotbot/protocol";
+import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
+import {
+  blendOffset,
+  classifyCorrection,
+  dropAcknowledgedInputs,
+  replayPendingInputs,
+  type PendingInput,
+} from "../prediction/reconciliation";
 import type { GameSession, RunState } from "./GameSession";
 
 export type NetSessionOptions = {
@@ -26,6 +34,14 @@ export class NetSession implements GameSession {
   private seq = 0;
   private sendFrame = false;
   private pendingInput: InputCommand = { move: { x: 0, y: 0 }, dash: false };
+  private pendingInputs: PendingInput[] = [];
+  private predictionInput: InputCommand = { move: { x: 0, y: 0 }, dash: false };
+  private predictionDashQueued = false;
+  private predictor: LitePredictor | null = null;
+  private predictionAccumulatorMs = 0;
+  private predictionEnabled = false;
+  private correctionOffset = { x: 0, y: 0 };
+  private correctionElapsedMs = 100;
   private tickHz = 60;
   private roomCode = "";
   private startPromise: Promise<void> | null = null;
@@ -88,6 +104,8 @@ export class NetSession implements GameSession {
   }
 
   sendInput(input: InputCommand): void {
+    this.predictionInput = { move: { ...input.move }, dash: false };
+    this.predictionDashQueued ||= input.dash;
     this.pendingInput = {
       move: { ...input.move },
       dash: this.pendingInput.dash || input.dash,
@@ -95,17 +113,23 @@ export class NetSession implements GameSession {
     this.sendFrame = !this.sendFrame;
     if (!this.sendFrame || !this.mapValue) return;
     this.seq += 1;
+    const sentInput = {
+      move: { ...this.pendingInput.move },
+      dash: this.pendingInput.dash,
+    };
     this.send({
       type: "input",
       seq: this.seq,
-      move: [this.pendingInput.move.x, this.pendingInput.move.y],
-      dash: this.pendingInput.dash,
+      move: [sentInput.move.x, sentInput.move.y],
+      dash: sentInput.dash,
     });
+    this.pendingInputs.push({ seq: this.seq, input: sentInput });
     this.pendingInput = { move: this.pendingInput.move, dash: false };
   }
 
-  update(_elapsedMs: number): GameSnapshot | null {
+  update(elapsedMs: number): GameSnapshot | null {
     if (this.snapshots.length === 0) return null;
+    this.advancePrediction(elapsedMs);
     const newest = this.snapshots[this.snapshots.length - 1];
     const renderTick = newest.tick - this.tickHz * 0.1;
     let older = this.snapshots[0];
@@ -119,10 +143,10 @@ export class NetSession implements GameSession {
         break;
       }
     }
-    if (older.tick === newer.tick) return older.snapshot;
+    if (older.tick === newer.tick) return this.withPredictedOwnBot(older.snapshot);
     const alpha = Math.max(0, Math.min(1, (renderTick - older.tick) / (newer.tick - older.tick)));
     const newerBots = new Map(newer.snapshot.bots.map((bot) => [bot.id, bot]));
-    return {
+    return this.withPredictedOwnBot({
       ...older.snapshot,
       timeMs: lerp(older.snapshot.timeMs, newer.snapshot.timeMs, alpha),
       bots: older.snapshot.bots.map((bot) => {
@@ -137,7 +161,7 @@ export class NetSession implements GameSession {
           facing: lerpAngle(bot.facing, next.facing, alpha),
         };
       }),
-    };
+    });
   }
 
   drainEvents(): SimEvent[] {
@@ -153,6 +177,8 @@ export class NetSession implements GameSession {
     this.socket = null;
     this.snapshots = [];
     this.events = [];
+    this.pendingInputs = [];
+    this.predictor = null;
   }
 
   private receive(message: ServerMessage): void {
@@ -190,6 +216,7 @@ export class NetSession implements GameSession {
         const snapshot = fromWireSnapshot(message, this.metaIndex);
         snapshot.timeMs = message.tick * (1000 / this.tickHz);
         snapshot.debug.tickHz = this.tickHz;
+        this.reconcileOwnBot(snapshot, message.ack);
         this.snapshots.push({ tick: message.tick, snapshot });
         if (this.snapshots.length > 20) this.snapshots.splice(0, this.snapshots.length - 20);
         return;
@@ -223,6 +250,97 @@ export class NetSession implements GameSession {
 
   private send(message: import("@dotbot/protocol").ClientMessage): void {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message));
+  }
+
+  private advancePrediction(elapsedMs: number): void {
+    if (!this.predictor || !this.predictionEnabled) {
+      this.predictionDashQueued = false;
+      return;
+    }
+
+    this.predictionAccumulatorMs += Math.min(elapsedMs, 250);
+    while (this.predictionAccumulatorMs >= this.predictor.tickMs) {
+      this.predictor.step({ ...this.predictionInput, dash: this.predictionDashQueued });
+      this.predictionDashQueued = false;
+      this.predictionAccumulatorMs -= this.predictor.tickMs;
+    }
+    this.correctionElapsedMs += elapsedMs;
+  }
+
+  private reconcileOwnBot(snapshot: GameSnapshot, ack: number): void {
+    const authoritative = snapshot.bots.find((bot) => bot.id === this.playerIdValue);
+    this.pendingInputs = dropAcknowledgedInputs(this.pendingInputs, ack);
+    if (!authoritative || !this.mapValue || !this.configValue) {
+      this.predictor = null;
+      this.predictionEnabled = false;
+      return;
+    }
+
+    this.predictionEnabled = authoritative.state === "alive";
+    if (!this.predictor) {
+      this.predictor = new LitePredictor(this.mapValue, this.configValue, authoritative);
+      this.predictionAccumulatorMs = 0;
+      return;
+    }
+
+    const predictedBefore = this.predictor.current;
+    if (authoritative.floorId !== predictedBefore.floorId || !this.predictionEnabled) {
+      this.predictor.reset(authoritative);
+      this.predictionAccumulatorMs = 0;
+      this.correctionOffset = { x: 0, y: 0 };
+      this.correctionElapsedMs = 100;
+      return;
+    }
+
+    const replay = replayPendingInputs(this.predictor, authoritative, this.pendingInputs, ack);
+    this.pendingInputs = replay.pending;
+    const error = Math.hypot(
+      replay.corrected.position.x - predictedBefore.position.x,
+      replay.corrected.position.y - predictedBefore.position.y,
+    );
+    const kind = classifyCorrection(error, authoritative.radius);
+    if (kind === "blend") {
+      this.correctionOffset = {
+        x: predictedBefore.position.x - replay.corrected.position.x,
+        y: predictedBefore.position.y - replay.corrected.position.y,
+      };
+      this.correctionElapsedMs = 0;
+    } else {
+      this.correctionOffset = { x: 0, y: 0 };
+      this.correctionElapsedMs = 100;
+    }
+  }
+
+  private withPredictedOwnBot(snapshot: GameSnapshot): GameSnapshot {
+    if (!this.predictor) return snapshot;
+    const predicted = this.predictor.current;
+    const offset = blendOffset(this.correctionOffset, this.correctionElapsedMs);
+    return {
+      ...snapshot,
+      bots: snapshot.bots.map((bot) =>
+        bot.id === this.playerIdValue
+          ? this.mergePredictedBot(bot, predicted, offset)
+          : bot,
+      ),
+    };
+  }
+
+  private mergePredictedBot(
+    authoritative: GameSnapshot["bots"][number],
+    predicted: PredictedOwnBot,
+    offset: { x: number; y: number },
+  ): GameSnapshot["bots"][number] {
+    return {
+      ...authoritative,
+      position: {
+        x: predicted.position.x + offset.x,
+        y: predicted.position.y + offset.y,
+      },
+      facing: predicted.facing,
+      floorId: predicted.floorId,
+      dashCooldownMs: predicted.dashCooldownMs,
+      dashActiveMs: predicted.dashActiveMs,
+    };
   }
 
   private failStart(message: string): void {
