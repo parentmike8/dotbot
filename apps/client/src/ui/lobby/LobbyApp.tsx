@@ -13,7 +13,7 @@ type LobbyState = {
 
 type Profile = {
   name: string;
-  holdDots: number;
+  stashDots: number;
   recentManifests: Array<{
     roomCode: string;
     outcome: string;
@@ -206,8 +206,8 @@ async function ensureAccountToken(name: string): Promise<string> {
 
 function ProfileSummary({ profile }: { profile: Profile }) {
   return (
-    <section className="lobby-profile" aria-label="Player hold and recent runs">
-      <strong>Hold: {profile.holdDots} dots</strong>
+    <section className="lobby-profile" aria-label="Player stash and recent runs">
+      <strong>STASH: {profile.stashDots} dots</strong>
       <small>Extracted dots bank here for later. Withdrawals arrive in M4.</small>
       <h2>Recent runs</h2>
       {profile.recentManifests.length > 0 ? (

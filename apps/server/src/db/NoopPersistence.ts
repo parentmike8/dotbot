@@ -18,7 +18,7 @@ export class NoopPersistence implements Persistence {
   }
 
   async getProfile(_token: string): Promise<PlayerProfile> {
-    return { name: "Player", holdDots: 0, recentManifests: [] };
+    return { name: "Player", stashDots: 0, recentManifests: [] };
   }
 
   async startMatch(): Promise<void> {}

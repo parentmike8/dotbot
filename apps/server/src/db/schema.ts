@@ -17,7 +17,8 @@ export const matchResults = pgTable("match_results", {
   summary: jsonb("summary"),
 });
 
-export const holdItems = pgTable("hold_items", {
+/** Persistent STASH items. The physical M3 table remains `hold_items`; HOLD now means only the in-run backpack. */
+export const stashItems = pgTable("hold_items", {
   id: uuid("id").primaryKey().defaultRandom(),
   playerId: uuid("player_id").notNull().references(() => players.id, { onDelete: "cascade" }),
   itemType: text("item_type").notNull(),

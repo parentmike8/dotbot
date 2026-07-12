@@ -23,7 +23,7 @@ export type RecentManifest = {
 
 export type PlayerProfile = {
   name: string;
-  holdDots: number;
+  stashDots: number;
   recentManifests: RecentManifest[];
 };
 

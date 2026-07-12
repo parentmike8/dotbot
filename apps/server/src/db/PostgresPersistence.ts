@@ -9,7 +9,7 @@ import type {
   RegisteredPlayer,
   RunManifest,
 } from "./Persistence";
-import { holdItems, matchParticipants, matchResults, players } from "./schema";
+import { matchParticipants, matchResults, players, stashItems } from "./schema";
 
 export class PostgresPersistence implements Persistence {
   readonly live = true;
@@ -53,9 +53,9 @@ export class PostgresPersistence implements Persistence {
   async getProfile(token: string): Promise<PlayerProfile | null> {
     const identity = await this.helloPlayer(token);
     if (!identity) return null;
-    const [hold] = await this.db.select({ total: sql<number>`coalesce(sum(${holdItems.qty}), 0)` })
-      .from(holdItems)
-      .where(and(eq(holdItems.playerId, identity.playerId), eq(holdItems.itemType, "dot")));
+    const [stash] = await this.db.select({ total: sql<number>`coalesce(sum(${stashItems.qty}), 0)` })
+      .from(stashItems)
+      .where(and(eq(stashItems.playerId, identity.playerId), eq(stashItems.itemType, "dot")));
     const rows = await this.db.select({
       roomCode: matchResults.roomCode,
       outcome: matchParticipants.outcome,
@@ -68,7 +68,7 @@ export class PostgresPersistence implements Persistence {
       .limit(10);
     return {
       name: identity.name,
-      holdDots: Number(hold?.total ?? 0),
+      stashDots: Number(stash?.total ?? 0),
       recentManifests: rows.map((row) => {
         const manifest = isRunManifest(row.manifest) ? row.manifest : null;
         return {
@@ -93,7 +93,7 @@ export class PostgresPersistence implements Persistence {
 
   async recordExtraction(input: { matchId: string; playerId: string; manifest: RunManifest }): Promise<void> {
     await this.db.transaction(async (tx) => {
-      await tx.insert(holdItems).values({
+      await tx.insert(stashItems).values({
         playerId: input.playerId,
         itemType: "dot",
         qty: input.manifest.keptDots,

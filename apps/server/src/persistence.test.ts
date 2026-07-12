@@ -38,7 +38,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     await sql?.end({ timeout: 1 });
   });
 
-  it("resolves accounts, commits extraction before run end, records outcomes, and accumulates profile hold", async () => {
+  it("resolves accounts, commits extraction before run end, records outcomes, and accumulates profile stash", async () => {
     process.env.NODE_ENV = "test";
     const { app, rooms, persistence } = await createServer({
       databaseUrl,
@@ -91,14 +91,14 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
       expect(rooms.join(welcome.roomCode)?.phase).toBe("live");
       expect(alice.messages.some((message) => message.type === "matchEnd")).toBe(false);
 
-      const [stored] = await sql!<Array<{ holds: number; participants: number }>>`
+      const [stored] = await sql!<Array<{ stashRows: number; participants: number }>>`
         select
           (select count(*)::int from hold_items hi join match_results mr on mr.id = hi.acquired_match_id
-            where hi.player_id = ${account.playerId} and mr.room_code = ${welcome.roomCode}) as holds,
+            where hi.player_id = ${account.playerId} and mr.room_code = ${welcome.roomCode}) as "stashRows",
           (select count(*)::int from match_participants mp join match_results mr on mr.id = mp.match_id
             where mp.player_id = ${account.playerId} and mp.outcome = 'extracted' and mr.room_code = ${welcome.roomCode}) as participants
       `;
-      expect(stored).toEqual({ holds: 1, participants: 1 });
+      expect(stored).toEqual({ stashRows: 1, participants: 1 });
 
       const bobResult = await bob.waitFor("runOver", 7000);
       expect(bobResult.reason).toBe("timeout");
@@ -116,9 +116,9 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
 
     const profileResponse = await fetch(`${baseUrl}/api/profile`, { headers: { "x-device-token": account.token } });
     expect(profileResponse.status).toBe(200);
-    const profile = await profileResponse.json() as { name: string; holdDots: number; recentManifests: Array<{ outcome: string; keptDots: number }> };
+    const profile = await profileResponse.json() as { name: string; stashDots: number; recentManifests: Array<{ outcome: string; keptDots: number }> };
     expect(profile.name).toBe("Persist Alice");
-    expect(profile.holdDots).toBe(2);
+    expect(profile.stashDots).toBe(2);
     expect(profile.recentManifests.filter((manifest) => manifest.outcome === "extracted" && manifest.keptDots === 1)).toHaveLength(2);
 
     const diedAccount = await persistence.registerPlayer("Died Player");
