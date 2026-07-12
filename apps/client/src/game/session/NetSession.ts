@@ -1,7 +1,7 @@
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { assertNever, fromWireSnapshot } from "@dotbot/protocol";
 import type { EntityMeta, LobbyMember, ServerMessage } from "@dotbot/protocol";
-import type { GameSession } from "./GameSession";
+import type { GameSession, RunState } from "./GameSession";
 
 export type NetSessionOptions = {
   url: string;
@@ -31,6 +31,7 @@ export class NetSession implements GameSession {
   private startPromise: Promise<void> | null = null;
   private resolveStart: (() => void) | null = null;
   private rejectStart: ((error: Error) => void) | null = null;
+  private runState: RunState = { phase: "live" };
 
   constructor(options: NetSessionOptions) {
     this.options = options;
@@ -48,6 +49,10 @@ export class NetSession implements GameSession {
 
   get playerId(): string {
     return this.playerIdValue;
+  }
+
+  getEntityMeta(id: string): EntityMeta | undefined {
+    return this.metaIndex.get(id);
   }
 
   start(): Promise<void> {
@@ -76,6 +81,10 @@ export class NetSession implements GameSession {
 
   requestStartMatch(): void {
     this.send({ type: "startMatch" });
+  }
+
+  leaveRun(): void {
+    this.send({ type: "leaveRun" });
   }
 
   sendInput(input: InputCommand): void {
@@ -135,6 +144,10 @@ export class NetSession implements GameSession {
     return this.events.splice(0);
   }
 
+  getRunState(): RunState {
+    return this.runState;
+  }
+
   dispose(): void {
     this.socket?.close();
     this.socket = null;
@@ -168,6 +181,7 @@ export class NetSession implements GameSession {
         this.playerIdValue = message.yourBotId;
         this.tickHz = message.tickHz;
         this.metaIndex = new Map(message.meta.map((meta) => [meta.id, meta]));
+        this.runState = { phase: "live" };
         this.resolveStart?.();
         this.resolveStart = null;
         this.rejectStart = null;
@@ -188,9 +202,14 @@ export class NetSession implements GameSession {
         this.events.push(...message.events);
         return;
       case "runOver":
+        this.runState = {
+          phase: "over",
+          reason: message.reason,
+          keptDots: message.keptDots,
+          lostDots: message.lostDots,
+        };
         return;
       case "matchEnd":
-        this.options.onError?.(`Match ended: ${message.reason}`);
         return;
       case "pong":
         return;

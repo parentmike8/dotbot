@@ -44,6 +44,7 @@ export class GameRenderer {
   private map: MapDocument;
   private viewport = { width: 1, height: 1 };
   private destroyed = false;
+  private lastViewer: DotBotEntity | null = null;
 
   private constructor(app: Application, map: MapDocument) {
     this.app = app;
@@ -95,8 +96,10 @@ export class GameRenderer {
     }
   }
 
-  render(snapshot: GameSnapshot, playerId: string): void {
-    const player = snapshot.bots.find((bot) => bot.id === playerId) ?? snapshot.bots[0];
+  render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false): void {
+    const currentPlayer = snapshot.bots.find((bot) => bot.id === playerId);
+    const player = currentPlayer ?? (preserveMissingViewer ? this.lastViewer ?? undefined : snapshot.bots[0]);
+    if (currentPlayer) this.lastViewer = currentPlayer;
     const center = player?.position ?? { x: this.map.width / 2, y: this.map.height / 2 };
     const camera = this.getCamera(center);
 

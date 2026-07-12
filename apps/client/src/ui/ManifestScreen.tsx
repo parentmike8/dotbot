@@ -6,6 +6,7 @@ type ManifestScreenProps = {
   playerKills: number;
   runTime: string;
   onNewRun: () => void;
+  actionLabel?: string;
 };
 
 const outcomeLabels: Record<RunResult["outcome"], string> = {
@@ -14,7 +15,7 @@ const outcomeLabels: Record<RunResult["outcome"], string> = {
   timeout: "RUN EXPIRED",
 };
 
-export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun }: ManifestScreenProps) {
+export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun, actionLabel = "↻ NEW RUN" }: ManifestScreenProps) {
   return (
     <section className="manifest-overlay" aria-label="Run manifest">
       <div className="manifest-panel">
@@ -48,7 +49,7 @@ export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun
           </div>
         </dl>
         <button type="button" className="manifest-new-run" onClick={onNewRun}>
-          ↻ NEW RUN
+          {actionLabel}
         </button>
       </div>
     </section>

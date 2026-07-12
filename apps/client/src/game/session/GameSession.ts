@@ -1,5 +1,9 @@
 import type { GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 
+export type RunState =
+  | { phase: "live" }
+  | { phase: "over"; reason: "extracted" | "died" | "timeout"; keptDots: number; lostDots: number };
+
 export interface GameSession {
   readonly map: MapDocument;
   readonly playerId: string;
@@ -16,6 +20,8 @@ export interface GameSession {
   update(elapsedMs: number): GameSnapshot | null;
   /** Events since last drain (manifest/UI consumption lands in M1). */
   drainEvents(): SimEvent[];
+  /** Authoritative run outcome for this session implementation. */
+  getRunState(): RunState;
   /** Debug instrumentation; optional so NetSession can no-op it. */
   setMeasuredFps?(fps: number): void;
   dispose(): void;

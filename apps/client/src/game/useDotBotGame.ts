@@ -6,7 +6,7 @@ import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer } from "./renderer/GameRenderer";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
-import type { GameSnapshot, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, GameSnapshot, SimEvent, Vec2 } from "@dotbot/game/types";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
 
@@ -35,7 +35,14 @@ const emptyJoystick: JoystickState = {
   move: { x: 0, y: 0 },
 };
 
-export function useDotBotGame() {
+type UseDotBotGameOptions = {
+  session?: GameSession;
+  spectate?: boolean;
+};
+
+export function useDotBotGame(options: UseDotBotGameOptions = {}) {
+  const providedSession = options.session;
+  const spectateEnabled = options.spectate ?? false;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<GameSession | null>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
@@ -47,6 +54,7 @@ export function useDotBotGame() {
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
   const [events, setEvents] = useState<SimEvent[]>([]);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
+  const [spectating, setSpectating] = useState<DotBotEntity | null>(null);
   const [debugVisible, setDebugVisible] = useState(false);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
 
@@ -67,7 +75,7 @@ export function useDotBotGame() {
     let frameCounter = 0;
     let fpsWindowStart = lastFrame;
     let fps = 0;
-    let latestSnapshot: GameSnapshot | null = null;
+    let playerSquadId: string | null = null;
     let resizeObserver: ResizeObserver | undefined;
 
     async function start() {
@@ -77,7 +85,7 @@ export function useDotBotGame() {
         return;
       }
 
-      const session = createSession("local", {
+      const session = providedSession ?? createSession("local", {
         map: downtownMap,
         config: defaultGameConfig,
         playerId: "player",
@@ -93,8 +101,9 @@ export function useDotBotGame() {
 
       sessionRef.current = session;
       rendererRef.current = renderer;
-      latestSnapshot = session.update(0);
-      setSnapshot(latestSnapshot);
+      const initialSnapshot = session.update(0);
+      setSnapshot(initialSnapshot);
+      playerSquadId = initialSnapshot?.bots.find((bot) => bot.id === session.playerId)?.squadId ?? null;
 
       resizeObserver = new ResizeObserver(([entry]) => {
         renderer.resize(entry.contentRect.width, entry.contentRect.height);
@@ -140,50 +149,33 @@ export function useDotBotGame() {
           return;
         }
 
-        if (!runEndedRef.current) {
-          const extracted = frameEvents.find((event) => event.type === "extracted" && event.botId === session.playerId);
-          const consumed = frameEvents.find((event) => event.type === "consumed" && event.botId === session.playerId);
-          const previousPlayer = latestSnapshot?.bots.find((bot) => bot.id === session.playerId);
-          const currentPlayer = nextSnapshot.bots.find((bot) => bot.id === session.playerId);
-          let result: RunResult | null = null;
+        const currentPlayer = nextSnapshot.bots.find((bot) => bot.id === session.playerId);
+        if (currentPlayer) playerSquadId = currentPlayer.squadId;
+        const runState = session.getRunState();
 
-          if (extracted?.type === "extracted") {
-            result = {
-              outcome: "extracted",
-              keptDots: extracted.inventoryDots,
-              lostDots: 0,
-              runTimeMs: nextSnapshot.timeMs,
-            };
-          } else if (consumed) {
-            result = {
-              outcome: "died",
-              keptDots: 0,
-              lostDots: previousPlayer?.inventoryDots ?? 0,
-              runTimeMs: nextSnapshot.timeMs,
-            };
-          } else if (nextSnapshot.timeMs >= defaultGameConfig.runDurationMs) {
-            result = {
-              outcome: "timeout",
-              keptDots: 0,
-              lostDots: currentPlayer?.inventoryDots ?? 0,
-              runTimeMs: defaultGameConfig.runDurationMs,
-            };
-          }
-
-          if (result) {
-            runEndedRef.current = true;
-            keysRef.current.clear();
-            joystickRef.current = emptyJoystick;
-            setJoystickView(emptyJoystick);
-            setRunResult(result);
-          }
+        if (!runEndedRef.current && runState.phase === "over") {
+          const result: RunResult = {
+            outcome: runState.reason,
+            keptDots: runState.keptDots,
+            lostDots: runState.lostDots,
+            runTimeMs: nextSnapshot.timeMs,
+          };
+          runEndedRef.current = true;
+          keysRef.current.clear();
+          joystickRef.current = emptyJoystick;
+          setJoystickView(emptyJoystick);
+          setRunResult(result);
         }
 
-        latestSnapshot = nextSnapshot;
-        renderer.render(nextSnapshot, session.playerId);
+        const spectator = spectateEnabled && runState.phase === "over" && playerSquadId
+          ? nextSnapshot.bots.find((bot) => bot.id !== session.playerId && bot.squadId === playerSquadId && bot.state === "alive") ?? null
+          : null;
+        const renderPlayerId = spectator?.id ?? session.playerId;
+        renderer.render(nextSnapshot, renderPlayerId, spectateEnabled && runState.phase === "over" && spectator === null);
 
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);
+          setSpectating(spectator);
           lastHudUpdate = now;
 
           if (import.meta.env.DEV) {
@@ -271,7 +263,7 @@ export function useDotBotGame() {
       rendererRef.current = null;
       sessionRef.current = null;
     };
-  }, [clearMovementInput, resetJoystick]);
+  }, [clearMovementInput, providedSession, resetJoystick, spectateEnabled]);
 
   const queueDash = useCallback(() => {
     if (!runEndedRef.current) {
@@ -358,8 +350,9 @@ export function useDotBotGame() {
     snapshot,
     events,
     runResult,
-    map: downtownMap,
-    playerId: "player",
+    map: providedSession?.map ?? downtownMap,
+    playerId: providedSession?.playerId ?? "player",
+    spectating,
     debugVisible,
     joystick: joystickView,
     joystickHandlers,

@@ -1,11 +1,18 @@
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import type { GameSession } from "./GameSession";
+import type { RunState } from "./GameSession";
+
+export type LocalSimulation = Pick<
+  DotBotSimulation,
+  "applyInput" | "dispose" | "drainEvents" | "getSnapshot" | "setMeasuredFps" | "step"
+>;
 
 export type LocalSessionOptions = {
   map: MapDocument;
   config: GameConfig;
   playerId: string;
+  createSimulation?: () => Promise<LocalSimulation>;
 };
 
 export class LocalSession implements GameSession {
@@ -13,21 +20,22 @@ export class LocalSession implements GameSession {
   readonly playerId: string;
 
   private readonly config: GameConfig;
-  private simulation: DotBotSimulation | null = null;
+  private readonly createSimulation: () => Promise<LocalSimulation>;
+  private simulation: LocalSimulation | null = null;
   private accumulator = 0;
   private input: InputCommand = { move: { x: 0, y: 0 }, dash: false };
+  private events: SimEvent[] = [];
+  private runState: RunState = { phase: "live" };
 
   constructor(options: LocalSessionOptions) {
     this.map = options.map;
     this.config = options.config;
     this.playerId = options.playerId;
+    this.createSimulation = options.createSimulation ?? (() => DotBotSimulation.create({ map: this.map, config: this.config }));
   }
 
   async start(): Promise<void> {
-    this.simulation = await DotBotSimulation.create({
-      map: this.map,
-      config: this.config,
-    });
+    this.simulation = await this.createSimulation();
   }
 
   sendInput(input: InputCommand): void {
@@ -52,14 +60,30 @@ export class LocalSession implements GameSession {
     while (this.accumulator >= tickSeconds) {
       simulation.applyInput(this.playerId, this.input);
       simulation.step();
+      const frameEvents = simulation.drainEvents();
+      this.events.push(...frameEvents);
+      this.applyRunEvents(frameEvents);
       this.accumulator -= tickSeconds;
     }
 
-    return simulation.getSnapshot();
+    const snapshot = simulation.getSnapshot();
+    if (this.runState.phase === "live" && snapshot.timeMs >= this.config.runDurationMs) {
+      this.runState = {
+        phase: "over",
+        reason: "timeout",
+        keptDots: 0,
+        lostDots: snapshot.bots.find((bot) => bot.id === this.playerId)?.inventoryDots ?? 0,
+      };
+    }
+    return snapshot;
   }
 
   drainEvents(): SimEvent[] {
-    return this.simulation?.drainEvents() ?? [];
+    return this.events.splice(0);
+  }
+
+  getRunState(): RunState {
+    return this.runState;
   }
 
   setMeasuredFps(fps: number): void {
@@ -70,5 +94,22 @@ export class LocalSession implements GameSession {
     this.simulation?.dispose();
     this.simulation = null;
     this.accumulator = 0;
+    this.events = [];
+    this.runState = { phase: "live" };
+  }
+
+  private applyRunEvents(events: SimEvent[]): void {
+    if (this.runState.phase === "over") return;
+    for (const event of events) {
+      if (event.botId !== this.playerId) continue;
+      if (event.type === "extracted") {
+        this.runState = { phase: "over", reason: "extracted", keptDots: event.inventoryDots, lostDots: 0 };
+        return;
+      }
+      if (event.type === "consumed") {
+        this.runState = { phase: "over", reason: "died", keptDots: 0, lostDots: event.lostDots };
+        return;
+      }
+    }
   }
 }

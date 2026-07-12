@@ -57,7 +57,18 @@ export function LobbyApp() {
   }, []);
 
   if (playing && session && lobby) {
-    return <NetGameView session={session} roomCode={lobby.roomCode} />;
+    return (
+      <NetGameView
+        session={session}
+        roomCode={lobby.roomCode}
+        onReturnToLobby={() => {
+          setPlaying(false);
+          setSession(null);
+          setLobby(null);
+          window.history.replaceState(null, "", "/#/lobby");
+        }}
+      />
+    );
   }
 
   const submitJoin = (event: FormEvent) => {
