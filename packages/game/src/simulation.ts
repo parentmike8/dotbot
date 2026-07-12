@@ -510,11 +510,16 @@ export class DotBotSimulation {
         bot.lastAim = input.move;
       }
 
-      if (input.dash && bot.dashCooldownMs <= 0 && bot.dashActiveMs <= 0) {
-        bot.dashActiveMs = this.config.dashDurationMs;
-        bot.dashCooldownMs = this.config.dashCooldownMs;
+      if (input.dash) {
+        if (bot.dashCooldownMs <= 0 && bot.dashActiveMs <= 0) {
+          bot.dashActiveMs = this.config.dashDurationMs;
+          bot.dashCooldownMs = this.config.dashCooldownMs;
+          this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash);
+        }
+
+        // A press is consumed on the tick it is considered, fired or not.
+        // Pressing during cooldown must never bank a dash for later.
         this.inputs.set(bot.id, { ...input, dash: false });
-        this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash);
       }
     }
   }

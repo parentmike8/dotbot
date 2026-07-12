@@ -244,6 +244,34 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("drops a dash pressed during cooldown instead of banking it", async () => {
+    const simulation = await makeSimulation([playerSpawn({ position: { x: 100, y: 180 } })]);
+
+    // First dash fires normally.
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.step();
+    expect(simulation.getSnapshot().bots[0]?.dashActiveMs).toBeGreaterThan(0);
+
+    // Press again mid-cooldown: the press must be consumed and discarded,
+    // never banked to auto-fire when the cooldown expires.
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.step();
+
+    // Ride out the first dash (~9 ticks), then watch well past cooldown
+    // expiry (testConfig cooldown = 300ms = 18 ticks): no second dash.
+    let redashed = false;
+    for (let tick = 0; tick < 40; tick += 1) {
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+      simulation.step();
+      if (tick > 10 && (simulation.getSnapshot().bots[0]?.dashActiveMs ?? 0) > 0) {
+        redashed = true;
+      }
+    }
+
+    expect(redashed).toBe(false);
+    simulation.dispose();
+  });
+
   it("never lets ambient AI acquire an extraction channel", async () => {
     const baseMap = makeMap([enemySpawn({ position: { x: 100, y: 100 }, inventoryDots: 3 })]);
     const simulation = await DotBotSimulation.create({
