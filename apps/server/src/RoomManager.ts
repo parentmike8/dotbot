@@ -1,5 +1,6 @@
 import type { GameConfig } from "@dotbot/game/types";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
+import { NoopPersistence, type Persistence } from "./db";
 import { Room, type RoomBandwidthHealth, type RoomPeer } from "./Room";
 
 const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -8,6 +9,7 @@ export type RoomManagerOptions = {
   countdownMs?: number;
   config?: Partial<GameConfig>;
   now?: () => number;
+  persistence?: Persistence;
 };
 
 export class RoomManager {
@@ -15,10 +17,12 @@ export class RoomManager {
   private readonly peerRooms = new Map<string, { room: Room; playerId: string }>();
   private readonly tickSamples: number[] = [];
   private readonly options: RoomManagerOptions;
+  private readonly persistence: Persistence;
   private interval: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: RoomManagerOptions = {}) {
     this.options = options;
+    this.persistence = options.persistence ?? new NoopPersistence();
   }
 
   get rooms(): number {
@@ -62,13 +66,20 @@ export class RoomManager {
     return this.roomMap.get(code.trim().toUpperCase());
   }
 
-  handleHello(peer: RoomPeer, message: Extract<ClientMessage, { type: "hello" }>): void {
+  async handleHello(peer: RoomPeer, message: Extract<ClientMessage, { type: "hello" }>): Promise<void> {
+    let identity;
+    try {
+      identity = await this.persistence.resolveOrRegisterPlayer(message.token, message.name);
+    } catch (error) {
+      console.warn(`[persistence] identity lookup failed; accepting stateless WebSocket identity. ${errorMessage(error)}`);
+      identity = await new NoopPersistence().resolveOrRegisterPlayer(message.token, message.name);
+    }
     const room = message.roomCode ? this.join(message.roomCode) : this.createRoom();
     if (!room) {
       peer.send({ type: "err", code: "room_not_found", msg: "That room does not exist." });
       return;
     }
-    const member = room.join(peer, message.token, message.name);
+    const member = room.join(peer, message.token, identity.name, identity.playerId);
     if (!member) {
       peer.send({ type: "err", code: "room_unavailable", msg: "That room cannot be joined." });
       return;
@@ -76,9 +87,9 @@ export class RoomManager {
     this.peerRooms.set(peer.id, { room, playerId: member.playerId });
   }
 
-  handleMessage(peer: RoomPeer, message: ClientMessage): void {
+  async handleMessage(peer: RoomPeer, message: ClientMessage): Promise<void> {
     if (message.type === "hello") {
-      this.handleHello(peer, message);
+      await this.handleHello(peer, message);
       return;
     }
     const binding = this.peerRooms.get(peer.id);
@@ -109,4 +120,8 @@ export class RoomManager {
       }
     }
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

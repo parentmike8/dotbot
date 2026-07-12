@@ -5,7 +5,7 @@ import { connectPostgres } from "./PostgresPersistence";
 export type { Persistence, PlayerIdentity, PlayerProfile, RecentManifest, RegisteredPlayer, RunManifest } from "./Persistence";
 export { NoopPersistence } from "./NoopPersistence";
 
-export async function createPersistence(databaseUrl = process.env.DATABASE_URL): Promise<Persistence> {
+export async function createPersistence(databaseUrl: string | null | undefined = process.env.DATABASE_URL): Promise<Persistence> {
   if (!databaseUrl) {
     console.warn("[persistence] DATABASE_URL is unset; continuing without database persistence.");
     return new NoopPersistence();

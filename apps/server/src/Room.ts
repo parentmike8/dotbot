@@ -97,7 +97,7 @@ export class Room {
     };
   }
 
-  join(peer: RoomPeer, token: string, requestedName: string): Member | null {
+  join(peer: RoomPeer, token: string, requestedName: string, resolvedPlayerId?: string): Member | null {
     const existing = this.memberByToken.get(token);
     if (existing) {
       existing.peer = peer;
@@ -123,7 +123,7 @@ export class Room {
 
     const index = this.members.size;
     const member: Member = {
-      playerId: `p-${token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || index}`,
+      playerId: resolvedPlayerId ?? `p-${token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || index}`,
       token,
       name: sanitizeName(requestedName),
       squadId: squads[index % squads.length],

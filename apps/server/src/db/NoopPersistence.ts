@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { Persistence, PlayerIdentity, PlayerProfile, RegisteredPlayer } from "./Persistence";
 
 export class NoopPersistence implements Persistence {
@@ -29,6 +29,6 @@ export class NoopPersistence implements Persistence {
 }
 
 function fallbackIdentity(token: string, name: string): PlayerIdentity {
-  const digest = createHash("sha256").update(token).digest("hex").slice(0, 12);
-  return { playerId: `p-${digest}`, name };
+  const safeToken = token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || "anonymous";
+  return { playerId: `p-${safeToken}`, name };
 }
