@@ -914,7 +914,10 @@ describe("DotBotSimulation", () => {
       }
       simulation.dispose();
     },
-    20_000,
+    // The soak takes ~17s of pure CPU on an idle machine — a 20s ceiling
+    // false-fails under any background load (parallel agents, dev servers).
+    // Generous headroom: this test guards correctness, not wall-clock speed.
+    90_000,
   );
 
   it(
