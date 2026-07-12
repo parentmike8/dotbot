@@ -1,4 +1,5 @@
-import type { GameConfig, Item, MapDocument, RadarPing, SimEvent } from "@dotbot/game/types";
+import type { DotEntity, GameConfig, MapDocument, RadarPing } from "@dotbot/game/types";
+import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
 
@@ -26,8 +27,11 @@ export type WireBot = {
   fl: string;
   s: "alive" | "downed" | "consumed";
   sh: number[];
-  b: (Item | null)[];
-  h: Item[];
+  /** Detailed inventory is present only for the viewer's squad. */
+  b?: (WireItemCode | null)[];
+  h?: WireItemCode[];
+  /** Always present, including privacy-redacted rivals. */
+  c: number;
   d?: [number, number];
   iv?: number;
   r?: [number, RadarPing[]];
@@ -39,10 +43,17 @@ export type WireSnapshot = {
   tick: number;
   ack: number;
   bots: WireBot[];
-  dots: import("@dotbot/game/types").DotEntity[];
+  dots: Array<Omit<DotEntity, "item"> & { it: WireItemCode }>;
   coverages: import("@dotbot/game/types").CoverageSnapshot[];
   noises: import("@dotbot/game/types").NoiseEvent[];
 };
+
+export type WireSimEvent =
+  | { type: "downed"; botId: string; byBotId?: string }
+  | { type: "consumed"; botId: string; byBotId: string; lostItems: WireItemCode[] }
+  | { type: "revived"; botId: string; byBotId: string }
+  | { type: "dotCaptured"; botId: string; dotId: string }
+  | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[] };
 
 export type ClientMessage =
   | { type: "hello"; token: string; name: string; roomCode: string }
@@ -79,8 +90,8 @@ export type ServerMessage =
     }
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }
-  | { type: "ev"; events: SimEvent[] }
-  | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptItems: Item[]; lostItems: Item[] }
+  | { type: "ev"; events: WireSimEvent[] }
+  | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptItems: WireItemCode[]; lostItems: WireItemCode[]; learnedBlueprints: string[] }
   | { type: "matchEnd"; reason: string }
   | { type: "pong"; cts: number; sts: number }
   | { type: "err"; code: string; msg: string };

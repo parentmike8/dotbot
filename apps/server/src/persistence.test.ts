@@ -87,7 +87,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
       alice.send({ type: "input", seq: 3, move: [0, 0], dash: false });
 
       const extracted = await alice.waitFor("runOver", 5000);
-      expect(extracted).toEqual({ type: "runOver", reason: "extracted", keptItems: [{ kind: "powerup", type: "health" }], lostItems: [] });
+      expect(extracted).toEqual({ type: "runOver", reason: "extracted", keptItems: ["h"], lostItems: [], learnedBlueprints: [] });
       expect(rooms.join(welcome.roomCode)?.phase).toBe("live");
       expect(alice.messages.some((message) => message.type === "matchEnd")).toBe(false);
 

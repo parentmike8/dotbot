@@ -3,6 +3,7 @@ import type { DotBotEntity, GameSnapshot } from "@dotbot/game/types";
 import type { ClientMessage, ServerMessage } from "./messages";
 import { assertNever } from "./messages";
 import { fromWireSnapshot, toEntityMeta, toWireSnapshot } from "./wire";
+import { itemFromCode, itemToCode } from "./items";
 
 const bot: DotBotEntity = {
   id: "bot-a",
@@ -20,6 +21,7 @@ const bot: DotBotEntity = {
   shieldSegments: [1, 1, 0.5],
   bays: [{ kind: "powerup", type: "health" }, { kind: "powerup", type: "radar" }, null, null],
   hold: [],
+  carriedCount: 2,
   radarActiveMs: 0,
   radarPings: [],
   dashOverchargeCharges: 0,
@@ -61,6 +63,20 @@ describe("snapshot wire mapping", () => {
       dashActiveMs: bot.dashActiveMs,
       invulnerabilityMs: bot.invulnerabilityMs,
     });
+  });
+});
+
+describe("compact item codes", () => {
+  it("round-trips every powerup and a blueprint id", () => {
+    const items = [
+      { kind: "powerup", type: "health" },
+      { kind: "powerup", type: "radar" },
+      { kind: "powerup", type: "dashOvercharge" },
+      { kind: "powerup", type: "incognito" },
+      { kind: "blueprint", blueprintId: "serverRack" },
+    ] as const;
+    expect(items.map(itemToCode)).toEqual(["h", "r", "d", "i", "b:serverRack"]);
+    expect(items.map(itemToCode).map(itemFromCode)).toEqual(items);
   });
 });
 

@@ -33,7 +33,15 @@ export function filterForViewer(
   const bots = wire.bots.filter((bot) =>
     metaById.get(bot.i)?.squadId === viewerCtx.squadId
       || visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl)),
-  );
+  ).map((bot) => {
+    const squadDetail = metaById.get(bot.i)?.squadId === viewerCtx.squadId;
+    return {
+      ...bot,
+      b: squadDetail ? bot.b : undefined,
+      h: squadDetail ? bot.h : undefined,
+      r: bot.i === viewerCtx.viewerBotId ? bot.r : undefined,
+    };
+  });
   const includedBotIds = new Set(bots.map((bot) => bot.i));
   const dots = wire.dots.filter((dot) => visibleFloors.has(physicsFloorId(viewerCtx.map, dot.floorId)));
   const coverages = wire.coverages.filter((coverage) =>

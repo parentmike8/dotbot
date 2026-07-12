@@ -52,6 +52,7 @@ describe("LocalSession run-state ownership", () => {
         shieldSegments: [1, 1, 1],
         bays: [health, health, health, health],
         hold: [],
+        carriedCount: 4,
         radarActiveMs: 0,
         radarPings: [],
         dashOverchargeCharges: 0,
@@ -73,6 +74,7 @@ describe("LocalSession run-state ownership", () => {
       id: "player", name: "Player", squadId: "alpha", isAmbient: false, color: "#fff",
       position: { x: 10, y: 10 }, radius: 24, state: "downed", floorId: "outdoor", facing: 0,
       maxShields: 3, shields: 0, shieldSegments: [0, 0, 0], bays: [health, null, null, null], hold: [],
+      carriedCount: 1,
       radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0, incognitoMs: 0,
       dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
     }]);

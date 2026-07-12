@@ -254,6 +254,8 @@ export type DotBotEntity = GameEntity & {
   shieldSegments: number[];
   bays: (Item | null)[];
   hold: Item[];
+  /** Total carried items, authoritative even when a remote inventory is privacy-redacted. */
+  carriedCount: number;
   radarActiveMs: number;
   radarPings: RadarPing[];
   dashOverchargeCharges: number;

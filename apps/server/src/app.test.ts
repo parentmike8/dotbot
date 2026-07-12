@@ -56,7 +56,7 @@ describe("multiplayer server", () => {
     expect(startA.endTick).toBe(150);
 
     const firstA = await a.waitFor("snap");
-    expect(firstA.bots.find((bot) => bot.i === startA.yourBotId)?.b.filter(Boolean)).toHaveLength(1);
+    expect(firstA.bots.find((bot) => bot.i === startA.yourBotId)?.b?.filter(Boolean)).toHaveLength(1);
 
     // Alpha starts at (300, 920). Move east beyond the depot wall, then south
     // into the 960..1070 x 1150..1260 extraction rectangle.
@@ -67,7 +67,7 @@ describe("multiplayer server", () => {
     a.send({ type: "input", seq: 3, move: [0, 0], dash: false });
 
     const runOverA = await a.waitFor("runOver", 5000);
-    expect(runOverA).toEqual({ type: "runOver", reason: "extracted", keptItems: [{ kind: "powerup", type: "health" }], lostItems: [] });
+    expect(runOverA).toEqual({ type: "runOver", reason: "extracted", keptItems: ["h"], lostItems: [], learnedBlueprints: [] });
 
     const bSnapshotsAtExtraction = b.messages.filter((message) => message.type === "snap").length;
     await delay(250);

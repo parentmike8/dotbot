@@ -1,11 +1,12 @@
 import { downtownMap } from "@dotbot/game/content/downtown";
-import type { CoverageSnapshot, DotEntity, NoiseEvent } from "@dotbot/game/types";
+import type { CoverageSnapshot, NoiseEvent } from "@dotbot/game/types";
 import { describe, expect, it } from "vitest";
 import type { EntityMeta, WireBot, WireSnapshot } from "./messages";
 import { filterEventsForViewer, filterForViewer } from "./interest";
 
-const bot = (i: string, fl: string, x: number, y: number): WireBot => ({
-  i, fl, p: [x, y], f: 0, s: "alive", sh: [1, 1, 1], b: [null, null, null, null], h: [],
+const bot = (i: string, fl: string, x: number, y: number, overrides: Partial<WireBot> = {}): WireBot => ({
+  i, fl, p: [x, y], f: 0, s: "alive", sh: [1, 1, 1], b: [null, null, null, null], h: [], c: 0,
+  ...overrides,
 });
 const meta: EntityMeta[] = [
   { id: "viewer", name: "Viewer", squadId: "a", isAmbient: false, maxShields: 3, radius: 24 },
@@ -14,14 +15,14 @@ const meta: EntityMeta[] = [
   { id: "upper-enemy", name: "Upper", squadId: "b", isAmbient: false, maxShields: 3, radius: 24 },
 ];
 const bots: WireBot[] = [
-  bot("viewer", "outdoor", 500, 500),
-  bot("mate", "lot6:B1", 500, 1200),
-  bot("street-enemy", "outdoor", 1000, 660),
+  bot("viewer", "outdoor", 500, 500, { b: ["h", null, null, null], c: 1, r: [100, [{ x: 10, y: 20, ageMs: 0 }]] }),
+  bot("mate", "lot6:B1", 500, 1200, { b: ["r", null, null, null], c: 1, r: [100, [{ x: 30, y: 40, ageMs: 0 }]] }),
+  bot("street-enemy", "outdoor", 1000, 660, { b: ["d", null, null, null], h: ["b:bed"], c: 2, r: [100, [{ x: 50, y: 60, ageMs: 0 }]] }),
   bot("upper-enemy", "mercy:F1", 400, 250),
 ];
-const dots: DotEntity[] = [
-  { id: "ground-dot", position: { x: 600, y: 500 }, radius: 10, item: { kind: "powerup", type: "health" }, floorId: "outdoor", active: true, captureProgressMs: 0 },
-  { id: "upper-dot", position: { x: 400, y: 250 }, radius: 10, item: { kind: "blueprint", blueprintId: "desk" }, floorId: "mercy:F1", active: true, captureProgressMs: 0 },
+const dots: WireSnapshot["dots"] = [
+  { id: "ground-dot", position: { x: 600, y: 500 }, radius: 10, it: "h", floorId: "outdoor", active: true, captureProgressMs: 0 },
+  { id: "upper-dot", position: { x: 400, y: 250 }, radius: 10, it: "b:desk", floorId: "mercy:F1", active: true, captureProgressMs: 0 },
 ];
 const coverages: CoverageSnapshot[] = [
   { kind: "revive", actorId: "mate", targetId: "upper-enemy", progressMs: 10, durationMs: 100 },
@@ -48,6 +49,29 @@ describe("filterForViewer", () => {
       map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor", "lot6:B1"]),
     });
     expect(filtered.coverages).toEqual([coverages[0]]);
+  });
+
+  it("keeps squad inventory detail, redacts enemy composition, and always exposes carried count", () => {
+    const filtered = filterForViewer(wire, meta, {
+      map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor", "lot6:B1"]),
+    });
+    const own = filtered.bots.find((entry) => entry.i === "viewer")!;
+    const mate = filtered.bots.find((entry) => entry.i === "mate")!;
+    const enemy = filtered.bots.find((entry) => entry.i === "street-enemy")!;
+    expect(own).toMatchObject({ b: ["h", null, null, null], h: [], c: 1 });
+    expect(mate).toMatchObject({ b: ["r", null, null, null], h: [], c: 1 });
+    expect(enemy).toMatchObject({ c: 2 });
+    expect(enemy.b).toBeUndefined();
+    expect(enemy.h).toBeUndefined();
+  });
+
+  it("ships radar pings only for the viewer's own bot", () => {
+    const filtered = filterForViewer(wire, meta, {
+      map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor", "lot6:B1"]),
+    });
+    expect(filtered.bots.find((entry) => entry.i === "viewer")?.r?.[1]).toHaveLength(1);
+    expect(filtered.bots.find((entry) => entry.i === "mate")?.r).toBeUndefined();
+    expect(filtered.bots.find((entry) => entry.i === "street-enemy")?.r).toBeUndefined();
   });
 
   it("uses classifyNoise floor-leak and loudness semantics", () => {

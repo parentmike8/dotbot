@@ -19,6 +19,7 @@ const makeBot = (overrides: Partial<DotBotEntity> = {}): DotBotEntity => ({
   shieldSegments: [1, 1, 1],
   bays: [null, null, null, null],
   hold: [],
+  carriedCount: 0,
   radarActiveMs: 0,
   radarPings: [],
   dashOverchargeCharges: 0,

@@ -4,7 +4,7 @@ import { downtownMap } from "@dotbot/game/content/downtown";
 import { physicsFloorId } from "@dotbot/game/mapModel";
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, SimEvent } from "@dotbot/game/types";
-import { filterEventsForViewer, filterForViewer, toEntityMeta, toWireSnapshot } from "@dotbot/protocol";
+import { filterEventsForViewer, filterForViewer, itemToCode, toEntityMeta, toWireEvent, toWireSnapshot } from "@dotbot/protocol";
 import type { ClientMessage, LobbyMember, RoomPhase, ServerMessage } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type RunManifest } from "./db";
 
@@ -431,7 +431,7 @@ export class Room {
       const includedBotIds = this.includedBotIds(member, snapshot);
       this.sendStream(member, {
         type: "ev",
-        events: filterEventsForViewer(events, meta, includedBotIds, member.squadId),
+        events: filterEventsForViewer(events, meta, includedBotIds, member.squadId).map(toWireEvent),
       });
     }
   }
@@ -482,8 +482,8 @@ export class Room {
       const member = [...this.members.values()].find((candidate) => candidate.botId === event.botId);
       if (!member?.inRun) continue;
       this.sendRunOver(member, event.type === "extracted"
-        ? { type: "runOver", reason: "extracted", keptItems: event.items, lostItems: [] }
-        : { type: "runOver", reason: "died", keptItems: [], lostItems: event.lostItems });
+        ? { type: "runOver", reason: "extracted", keptItems: event.items.map(itemToCode), lostItems: [], learnedBlueprints: [] }
+        : { type: "runOver", reason: "died", keptItems: [], lostItems: event.lostItems.map(itemToCode), learnedBlueprints: [] });
     }
   }
 
@@ -501,7 +501,7 @@ export class Room {
       if (!member.inRun) continue;
       const bot = bots.find((candidate) => candidate.id === member.botId);
       const lostItems = bot ? [...bot.bays.filter((item): item is NonNullable<typeof item> => item !== null), ...bot.hold] : [];
-      this.sendRunOver(member, { type: "runOver", reason: "timeout", keptItems: [], lostItems });
+      this.sendRunOver(member, { type: "runOver", reason: "timeout", keptItems: [], lostItems: lostItems.map(itemToCode), learnedBlueprints: [] });
     }
     this.end("timeout");
   }

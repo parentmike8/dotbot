@@ -1,5 +1,5 @@
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
-import { assertNever, fromWireSnapshot } from "@dotbot/protocol";
+import { assertNever, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
 import type { EntityMeta, LobbyMember, ServerMessage } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
@@ -240,14 +240,14 @@ export class NetSession implements GameSession {
         for (const meta of message.add) this.metaIndex.set(meta.id, meta);
         return;
       case "ev":
-        this.events.push(...message.events);
+        this.events.push(...message.events.map(fromWireEvent));
         return;
       case "runOver":
         this.runState = {
           phase: "over",
           reason: message.reason,
-          keptItems: message.keptItems,
-          lostItems: message.lostItems,
+          keptItems: message.keptItems.map(itemFromCode),
+          lostItems: message.lostItems.map(itemFromCode),
         };
         return;
       case "matchEnd":

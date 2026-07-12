@@ -1,5 +1,8 @@
 import type { DotBotEntity, GameSnapshot } from "@dotbot/game/types";
+import type { SimEvent } from "@dotbot/game/types";
 import type { EntityMeta, WireBot, WireSnapshot } from "./messages";
+import type { WireSimEvent } from "./messages";
+import { itemFromCode, itemToCode } from "./items";
 
 const roundPosition = (value: number) => Math.round(value * 100) / 100;
 const roundFacing = (value: number) => Math.round(value * 1000) / 1000;
@@ -21,7 +24,7 @@ export function toWireSnapshot(snapshot: GameSnapshot, ack = 0): WireSnapshot {
     tick: snapshot.debug.tickCount,
     ack,
     bots: snapshot.bots.map(toWireBot),
-    dots: snapshot.dots,
+    dots: snapshot.dots.map(({ item, ...dot }) => ({ ...dot, it: itemToCode(item) })),
     coverages: snapshot.coverages,
     noises: snapshot.noises,
   };
@@ -35,8 +38,9 @@ function toWireBot(bot: DotBotEntity): WireBot {
     fl: bot.floorId,
     s: bot.state,
     sh: bot.shieldSegments,
-    b: bot.bays,
-    h: bot.hold,
+    b: bot.bays.map((item) => item ? itemToCode(item) : null),
+    h: bot.hold.map(itemToCode),
+    c: bot.carriedCount,
   };
 
   if (bot.dashCooldownMs !== 0 || bot.dashActiveMs !== 0) {
@@ -55,7 +59,7 @@ export function fromWireSnapshot(wire: WireSnapshot, metaIndex: ReadonlyMap<stri
   return {
     timeMs: wire.tick * (1000 / 60),
     bots: wire.bots.map((bot) => fromWireBot(bot, metaIndex)),
-    dots: wire.dots,
+    dots: wire.dots.map(({ it, ...dot }) => ({ ...dot, item: itemFromCode(it) })),
     coverages: wire.coverages,
     noises: wire.noises,
     debug: {
@@ -88,8 +92,9 @@ function fromWireBot(bot: WireBot, metaIndex: ReadonlyMap<string, EntityMeta>): 
     state: bot.s,
     shieldSegments,
     shields: shieldSegments.reduce((sum, segment) => sum + segment, 0),
-    bays: bot.b.map((item) => item && { ...item }),
-    hold: bot.h.map((item) => ({ ...item })),
+    bays: (bot.b ?? [null, null, null, null]).map((code) => code ? itemFromCode(code) : null),
+    hold: (bot.h ?? []).map(itemFromCode),
+    carriedCount: bot.c,
     dashCooldownMs: bot.d?.[0] ?? 0,
     dashActiveMs: bot.d?.[1] ?? 0,
     invulnerabilityMs: bot.iv ?? 0,
@@ -98,4 +103,16 @@ function fromWireBot(bot: WireBot, metaIndex: ReadonlyMap<string, EntityMeta>): 
     dashOverchargeCharges: bot.o ?? 0,
     incognitoMs: bot.ic ?? 0,
   };
+}
+
+export function toWireEvent(event: SimEvent): WireSimEvent {
+  if (event.type === "consumed") return { ...event, lostItems: event.lostItems.map(itemToCode) };
+  if (event.type === "extracted") return { ...event, items: event.items.map(itemToCode) };
+  return event;
+}
+
+export function fromWireEvent(event: WireSimEvent): SimEvent {
+  if (event.type === "consumed") return { ...event, lostItems: event.lostItems.map(itemFromCode) };
+  if (event.type === "extracted") return { ...event, items: event.items.map(itemFromCode) };
+  return event;
 }
