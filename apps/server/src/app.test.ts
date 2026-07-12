@@ -17,9 +17,22 @@ afterEach(() => {
 });
 
 describe("multiplayer server", () => {
-  it("drives two clients through join, start, input, snapshots, and events", async () => {
+  it("runs extraction, spectator streams, AI events, timeout, and match end authoritatively", async () => {
     process.env.NODE_ENV = "test";
-    const { app } = await createServer({ countdownMs: 0 });
+    const { app } = await createServer({
+      countdownMs: 0,
+      config: {
+        botRadius: 5,
+        botSpeed: 4000,
+        coverDurationMs: 100,
+        damageSpeed: 99_999,
+        extractionDurationMs: 100,
+        maxInventoryDots: 1,
+        maxShields: 30,
+        playerSpeed: 1000,
+        runDurationMs: 2500,
+      },
+    });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("Expected TCP address");
@@ -39,35 +52,40 @@ describe("multiplayer server", () => {
     const [startA, startB] = await Promise.all([a.waitFor("matchStart", 10_000), b.waitFor("matchStart", 10_000)]);
     expect(startA.yourBotId).not.toBe(startB.yourBotId);
     expect(startA.meta.some((meta) => meta.isAmbient)).toBe(true);
+    expect(startA.endTick).toBe(150);
 
     const firstA = await a.waitFor("snap");
-    const initialAX = firstA.bots.find((bot) => bot.i === startA.yourBotId)?.p[0];
-    const initialBX = firstA.bots.find((bot) => bot.i === startB.yourBotId)?.p[0];
-    expect(initialAX).toBeTypeOf("number");
-    expect(initialBX).toBeTypeOf("number");
+    expect(firstA.bots.find((bot) => bot.i === startA.yourBotId)?.n).toBe(1);
 
-    for (let seq = 1; seq <= 36; seq += 1) {
-      a.send({ type: "input", seq, move: [1, 0], dash: seq === 1 });
-      b.send({ type: "input", seq, move: [-1, 0], dash: seq === 1 });
-      await delay(17);
-    }
-    await delay(500);
+    // Alpha starts at (300, 920). Move east beyond the depot wall, then south
+    // into the 960..1070 x 1150..1260 extraction rectangle.
+    a.send({ type: "input", seq: 1, move: [1, 0], dash: false });
+    await waitForBotPosition(a, startA.yourBotId, ([x]) => x >= 1000);
+    a.send({ type: "input", seq: 2, move: [0, 1], dash: false });
+    await waitForBotPosition(a, startA.yourBotId, ([, y]) => y >= 1160);
+    a.send({ type: "input", seq: 3, move: [0, 0], dash: false });
 
-    const snapsA = a.messages.filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap");
-    const snapsB = b.messages.filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap");
-    expect(snapsA.length).toBeGreaterThan(10);
-    expect(snapsB.length).toBeGreaterThan(10);
-    const finalA = snapsA.at(-1)!;
-    const finalB = snapsB.at(-1)!;
-    expect(finalA.tick).toBe(finalB.tick);
-    expect(finalA.bots).toEqual(finalB.bots);
+    const runOverA = await a.waitFor("runOver", 5000);
+    expect(runOverA).toEqual({ type: "runOver", reason: "extracted", keptDots: 1, lostDots: 0 });
 
-    const finalAX = finalA.bots.find((bot) => bot.i === startA.yourBotId)!.p[0];
-    const finalBX = finalA.bots.find((bot) => bot.i === startB.yourBotId)!.p[0];
-    expect(finalAX).toBeGreaterThan(initialAX! + 30);
-    expect(finalBX).toBeLessThan(initialBX! - 30);
-    expect(a.messages.some((message) => message.type === "ev")).toBe(true);
-    expect(b.messages.some((message) => message.type === "ev")).toBe(true);
+    const bSnapshotsAtExtraction = b.messages.filter((message) => message.type === "snap").length;
+    await delay(250);
+    expect(b.messages.filter((message) => message.type === "snap").length).toBeGreaterThan(bSnapshotsAtExtraction);
+    expect(a.messages.filter((message) => message.type === "snap").length).toBeGreaterThan(1);
+
+    const runOverB = await b.waitFor("runOver", 7000);
+    expect(runOverB).toMatchObject({ type: "runOver", reason: "timeout", keptDots: 0 });
+    const [endA, endB] = await Promise.all([a.waitFor("matchEnd"), b.waitFor("matchEnd")]);
+    expect(endA.reason).toBe("timeout");
+    expect(endB.reason).toBe("timeout");
+
+    const events = a.messages
+      .filter((message): message is Extract<ServerMessage, { type: "ev" }> => message.type === "ev")
+      .flatMap((message) => message.events);
+    expect(events.some((event) => event.type === "extracted" && event.botId.startsWith("ai-"))).toBe(true);
+    expect(a.messages.filter((message) => message.type === "runOver")).toEqual([runOverA]);
+    const finalSnap = a.messages.filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap").at(-1)!;
+    expect(Math.abs(finalSnap.tick - startA.endTick)).toBeLessThanOrEqual(2);
 
     a.ws.close();
     b.ws.close();
@@ -103,6 +121,22 @@ async function connect(url: string): Promise<Inbox> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForBotPosition(inbox: Inbox, botId: string, predicate: (position: [number, number]) => boolean): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < 3000) {
+    const latest = inbox.messages
+      .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
+      .at(-1);
+    const position = latest?.bots.find((bot) => bot.i === botId)?.p;
+    if (position && predicate(position)) return;
+    await delay(5);
+  }
+  const latest = inbox.messages
+    .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
+    .at(-1);
+  throw new Error(`Timed out waiting for ${botId} position; last=${JSON.stringify(latest?.bots.find((bot) => bot.i === botId)?.p)}`);
 }
 
 function onceClosed(ws: WebSocket): Promise<void> {
