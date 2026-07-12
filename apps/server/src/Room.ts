@@ -1,8 +1,9 @@
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
+import { physicsFloorId } from "@dotbot/game/mapModel";
 import { DotBotSimulation } from "@dotbot/game/simulation";
-import type { BotSpawn, GameConfig, InputCommand, SimEvent } from "@dotbot/game/types";
-import { toEntityMeta, toWireSnapshot } from "@dotbot/protocol";
+import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, SimEvent } from "@dotbot/game/types";
+import { filterEventsForViewer, filterForViewer, toEntityMeta, toWireSnapshot } from "@dotbot/protocol";
 import type { ClientMessage, LobbyMember, RoomPhase, ServerMessage } from "@dotbot/protocol";
 
 export interface RoomPeer {
@@ -20,6 +21,12 @@ type Member = LobbyMember & {
   inRun: boolean;
   streaming: boolean;
   runOver: Extract<ServerMessage, { type: "runOver" }> | null;
+};
+
+export type RoomBandwidthHealth = {
+  code: string;
+  bytesPerSecond: number;
+  members: number;
 };
 
 type RoomOptions = {
@@ -55,6 +62,9 @@ export class Room {
   private lastTickAt: number;
   private matchStartPromise: Promise<void> | null = null;
   private endTick = Number.MAX_SAFE_INTEGER;
+  private bandwidthWindowBytes = 0;
+  private bandwidthWindowStartedAt: number;
+  private lastBytesPerSecond = 0;
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
@@ -63,6 +73,7 @@ export class Room {
     this.now = options.now ?? Date.now;
     this.createdAt = this.now();
     this.lastTickAt = this.createdAt;
+    this.bandwidthWindowStartedAt = this.createdAt;
   }
 
   get size(): number {
@@ -75,6 +86,15 @@ export class Room {
 
   get lobbyMembers(): LobbyMember[] {
     return [...this.members.values()].map(({ playerId, name, squadId }) => ({ playerId, name, squadId }));
+  }
+
+  get bandwidthHealth(): RoomBandwidthHealth {
+    const elapsedSeconds = Math.max(0.001, (this.now() - this.bandwidthWindowStartedAt) / 1000);
+    return {
+      code: this.code,
+      bytesPerSecond: Math.round(this.bandwidthWindowBytes > 0 ? this.bandwidthWindowBytes / elapsedSeconds : this.lastBytesPerSecond),
+      members: this.members.size,
+    };
   }
 
   join(peer: RoomPeer, token: string, requestedName: string): Member | null {
@@ -187,6 +207,7 @@ export class Room {
   }
 
   tick(now = this.now()): number[] {
+    this.rollBandwidthWindow(now);
     if (this.phase !== "live" || !this.simulation) {
       this.lastTickAt = now;
       return [];
@@ -213,7 +234,7 @@ export class Room {
       const snapshot = this.simulation.getSnapshot();
       const events = this.simulation.drainEvents();
       this.processRunEvents(events);
-      if (events.length > 0) this.broadcastToStreams({ type: "ev", events });
+      if (events.length > 0) this.broadcastEvents(events, snapshot);
 
       if (snapshot.debug.tickCount % 3 === 0) {
         this.broadcastSnapshot(snapshot);
@@ -323,8 +344,13 @@ export class Room {
   }
 
   private broadcastSnapshot(snapshot: ReturnType<DotBotSimulation["getSnapshot"]>): void {
-    const wire = toWireSnapshot(snapshot, Math.max(0, ...[...this.members.values()].map((member) => member.latestSeq)));
-    this.broadcastToStreams({ type: "snap", ...wire });
+    const wire = toWireSnapshot(snapshot);
+    const meta = snapshot.bots.map(toEntityMeta);
+    for (const member of this.members.values()) {
+      if (!member.streaming || !member.peer) continue;
+      const filtered = filterForViewer(wire, meta, this.viewerContext(member, snapshot));
+      this.sendStream(member, { type: "snap", ...filtered, ack: member.latestSeq });
+    }
   }
 
   private end(reason: string): void {
@@ -340,8 +366,60 @@ export class Room {
 
   private broadcastToStreams(message: ServerMessage): void {
     for (const member of this.members.values()) {
-      if (member.streaming) member.peer?.send(message);
+      if (member.streaming && member.peer) this.sendStream(member, message);
     }
+  }
+
+  private broadcastEvents(events: SimEvent[], snapshot: GameSnapshot): void {
+    const meta = snapshot.bots.map(toEntityMeta);
+    for (const member of this.members.values()) {
+      if (!member.streaming || !member.peer) continue;
+      const includedBotIds = this.includedBotIds(member, snapshot);
+      this.sendStream(member, {
+        type: "ev",
+        events: filterEventsForViewer(events, meta, includedBotIds, member.squadId),
+      });
+    }
+  }
+
+  private viewerContext(member: Member, snapshot: GameSnapshot) {
+    return {
+      map: downtownMap,
+      squadId: member.squadId,
+      viewerBotId: member.botId ?? undefined,
+      squadPhysicsFloorIds: this.squadPhysicsFloorIds(member, snapshot),
+    };
+  }
+
+  private squadPhysicsFloorIds(member: Member, snapshot: GameSnapshot): Set<string> {
+    return new Set(snapshot.bots
+      .filter((bot) => bot.squadId === member.squadId && bot.state === "alive")
+      .map((bot) => physicsFloorId(downtownMap, bot.floorId)));
+  }
+
+  private includedBotIds(member: Member, snapshot: GameSnapshot): Set<string> {
+    const own = snapshot.bots.find((bot) => bot.id === member.botId);
+    const spectator = !own || own.state === "consumed";
+    const floors = spectator
+      ? this.squadPhysicsFloorIds(member, snapshot)
+      : new Set([physicsFloorId(downtownMap, own.floorId)]);
+    return new Set(snapshot.bots
+      .filter((bot) => bot.squadId === member.squadId || floors.has(physicsFloorId(downtownMap, bot.floorId)))
+      .map((bot) => bot.id));
+  }
+
+  private sendStream(member: Member, message: ServerMessage): void {
+    this.bandwidthWindowBytes += Buffer.byteLength(JSON.stringify(message));
+    member.peer?.send(message);
+  }
+
+  private rollBandwidthWindow(now: number): void {
+    const elapsedMs = now - this.bandwidthWindowStartedAt;
+    if (elapsedMs < 30_000) return;
+    this.lastBytesPerSecond = Math.round(this.bandwidthWindowBytes / Math.max(0.001, elapsedMs / 1000));
+    console.info(`[room ${this.code}] ${this.lastBytesPerSecond} B/s across ${this.members.size} members`);
+    this.bandwidthWindowBytes = 0;
+    this.bandwidthWindowStartedAt = now;
   }
 
   private processRunEvents(events: SimEvent[]): void {

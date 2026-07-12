@@ -82,7 +82,16 @@ describe("multiplayer server", () => {
     const events = a.messages
       .filter((message): message is Extract<ServerMessage, { type: "ev" }> => message.type === "ev")
       .flatMap((message) => message.events);
-    expect(events.some((event) => event.type === "extracted" && event.botId.startsWith("ai-"))).toBe(true);
+    const everVisible = new Set(a.messages
+      .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
+      .flatMap((message) => message.bots.map((bot) => bot.i)));
+    const squadByBot = new Map(startA.meta.map((entry) => [entry.id, entry.squadId]));
+    expect(events.every((event) =>
+      everVisible.has(event.botId)
+        || squadByBot.get(event.botId) === "alpha"
+        || ("byBotId" in event && event.byBotId !== undefined
+          && (everVisible.has(event.byBotId) || squadByBot.get(event.byBotId) === "alpha")),
+    )).toBe(true);
     expect(a.messages.filter((message) => message.type === "runOver")).toEqual([runOverA]);
     const finalSnap = a.messages.filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap").at(-1)!;
     expect(Math.abs(finalSnap.tick - startA.endTick)).toBeLessThanOrEqual(2);

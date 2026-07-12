@@ -1,6 +1,6 @@
 import type { GameConfig } from "@dotbot/game/types";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
-import { Room, type RoomPeer } from "./Room";
+import { Room, type RoomBandwidthHealth, type RoomPeer } from "./Room";
 
 const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -29,6 +29,10 @@ export class RoomManager {
     if (this.tickSamples.length === 0) return 0;
     const sorted = [...this.tickSamples].sort((a, b) => a - b);
     return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))];
+  }
+
+  get roomHealth(): RoomBandwidthHealth[] {
+    return [...this.roomMap.values()].map((room) => room.bandwidthHealth);
   }
 
   start(): void {

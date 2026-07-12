@@ -10,7 +10,7 @@ export async function createServer(options: RoomManagerOptions = {}) {
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
   const rooms = new RoomManager(options);
 
-  app.get("/api/health", async () => ({ rooms: rooms.rooms, tickP99Ms: rooms.tickP99Ms }));
+  app.get("/api/health", async () => ({ rooms: rooms.rooms, tickP99Ms: rooms.tickP99Ms, roomHealth: rooms.roomHealth }));
 
   if (process.env.NODE_ENV === "production") {
     await app.register(fastifyStatic, {
