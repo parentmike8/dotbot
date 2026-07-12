@@ -8,6 +8,9 @@
     "dev": "pnpm --filter @dotbot/client dev",
     "dev:server": "pnpm --filter @dotbot/server dev",
     "dev:all": "concurrently -n client,server -c blue,magenta \"pnpm dev\" \"pnpm dev:server\"",
+    "db:up": "docker compose up -d postgres",
+    "db:migrate": "drizzle-kit migrate --config apps/server/drizzle.config.ts",
+    "dev:db": "pnpm db:up && pnpm db:migrate && pnpm dev:all",
     "build": "pnpm -r build",
     "build:all": "pnpm --filter @dotbot/client build && pnpm --filter @dotbot/server build:bundle",
     "test": "pnpm -r test",
@@ -15,6 +18,7 @@
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
+    "drizzle-kit": "^0.31.10",
     "esbuild": "0.28.1"
   }
 }
