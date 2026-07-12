@@ -824,7 +824,7 @@ describe("DotBotSimulation", () => {
     expect(simulation.drainEvents()).toEqual(
       expect.arrayContaining([
         { type: "downed", botId: "enemy", byBotId: "player" },
-        { type: "consumed", botId: "consumable", byBotId: "player" },
+        { type: "consumed", botId: "consumable", byBotId: "player", lostDots: 2 },
         { type: "revived", botId: "downed-ally", byBotId: "player" },
       ]),
     );

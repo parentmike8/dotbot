@@ -16,7 +16,7 @@ export type Controller = "human" | "ai" | "frozen";
 
 export type SimEvent =
   | { type: "downed"; botId: string; byBotId?: string }
-  | { type: "consumed"; botId: string; byBotId: string }
+  | { type: "consumed"; botId: string; byBotId: string; lostDots: number }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
   | { type: "extracted"; botId: string; squadId: string; inventoryDots: number };

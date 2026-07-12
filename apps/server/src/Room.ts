@@ -1,7 +1,7 @@
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { DotBotSimulation } from "@dotbot/game/simulation";
-import type { BotSpawn, InputCommand } from "@dotbot/game/types";
+import type { BotSpawn, GameConfig, InputCommand, SimEvent } from "@dotbot/game/types";
 import { toEntityMeta, toWireSnapshot } from "@dotbot/protocol";
 import type { ClientMessage, LobbyMember, RoomPhase, ServerMessage } from "@dotbot/protocol";
 
@@ -17,10 +17,14 @@ type Member = LobbyMember & {
   latestInput: InputCommand;
   latestSeq: number;
   handoffTimer: ReturnType<typeof setTimeout> | null;
+  inRun: boolean;
+  streaming: boolean;
+  runOver: Extract<ServerMessage, { type: "runOver" }> | null;
 };
 
 type RoomOptions = {
   countdownMs?: number;
+  config?: Partial<GameConfig>;
   now?: () => number;
 };
 
@@ -42,6 +46,7 @@ export class Room {
   private readonly members = new Map<string, Member>();
   private readonly memberByToken = new Map<string, Member>();
   private readonly countdownMs: number;
+  private readonly config: GameConfig;
   private readonly now: () => number;
   private simulation: DotBotSimulation | null = null;
   private hostId = "";
@@ -49,10 +54,12 @@ export class Room {
   private tickDurationMs = 1000 / defaultGameConfig.tickHz;
   private lastTickAt: number;
   private matchStartPromise: Promise<void> | null = null;
+  private endTick = Number.MAX_SAFE_INTEGER;
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
     this.countdownMs = options.countdownMs ?? 3000;
+    this.config = { ...defaultGameConfig, ...options.config };
     this.now = options.now ?? Date.now;
     this.createdAt = this.now();
     this.lastTickAt = this.createdAt;
@@ -75,11 +82,12 @@ export class Room {
     if (existing) {
       existing.peer = peer;
       existing.name = sanitizeName(requestedName);
+      existing.streaming = true;
       if (existing.handoffTimer) {
         clearTimeout(existing.handoffTimer);
         existing.handoffTimer = null;
       }
-      if (this.phase === "live" && existing.botId) {
+      if (this.phase === "live" && existing.botId && existing.inRun) {
         this.simulation?.setController(existing.botId, "human");
       }
       this.sendWelcome(existing);
@@ -104,6 +112,9 @@ export class Room {
       latestInput: { move: { x: 0, y: 0 }, dash: false },
       latestSeq: 0,
       handoffTimer: null,
+      inRun: false,
+      streaming: true,
+      runOver: null,
     };
     this.members.set(member.playerId, member);
     this.memberByToken.set(token, member);
@@ -131,8 +142,11 @@ export class Room {
         }
         this.beginCountdown();
         return;
+      case "leaveRun":
+        this.leaveRun(member);
+        return;
       case "input":
-        if (this.phase !== "live" || message.seq <= member.latestSeq) return;
+        if (this.phase !== "live" || !member.inRun || message.seq <= member.latestSeq) return;
         member.latestSeq = message.seq;
         member.latestInput = { move: { x: message.move[0], y: message.move[1] }, dash: message.dash };
         return;
@@ -157,7 +171,7 @@ export class Room {
       return;
     }
 
-    if (this.phase === "live" && member.botId) {
+    if (this.phase === "live" && member.botId && member.inRun) {
       this.simulation?.setController(member.botId, "frozen");
       member.handoffTimer = setTimeout(() => {
         member.handoffTimer = null;
@@ -196,8 +210,25 @@ export class Room {
       this.accumulatorMs -= this.tickDurationMs;
       steps += 1;
 
-      if (this.simulation.getSnapshot().debug.tickCount % 3 === 0) {
-        this.broadcastSnapshot();
+      const snapshot = this.simulation.getSnapshot();
+      const events = this.simulation.drainEvents();
+      this.processRunEvents(events);
+      if (events.length > 0) this.broadcastToStreams({ type: "ev", events });
+
+      if (snapshot.debug.tickCount % 3 === 0) {
+        this.broadcastSnapshot(snapshot);
+        if (events.length === 0) this.broadcastToStreams({ type: "ev", events: [] });
+      }
+
+      if (snapshot.debug.tickCount >= this.endTick) {
+        this.timeoutRun(snapshot.bots);
+      } else {
+        this.completeIfNoActiveMembers();
+      }
+
+      if (this.phase !== "live") {
+        this.accumulatorMs = 0;
+        break;
       }
     }
 
@@ -223,7 +254,7 @@ export class Room {
 
   private async startMatch(): Promise<void> {
     if (this.phase !== "countdown") return;
-    const simulation = await DotBotSimulation.create({ map: downtownMap, config: defaultGameConfig });
+    const simulation = await DotBotSimulation.create({ map: downtownMap, config: this.config });
     for (const spawn of downtownMap.botSpawns) simulation.removeBot(spawn.id);
 
     const squadCounts = new Map<string, number>();
@@ -234,6 +265,9 @@ export class Room {
       const botId = `human-${member.playerId}`;
       simulation.spawnBot(makeSpawn(botId, member.name, member.squadId, squadColors[squadIndex], anchor, count), "human");
       member.botId = botId;
+      member.inRun = true;
+      member.streaming = true;
+      member.runOver = null;
       squadCounts.set(member.squadId, count + 1);
     }
 
@@ -251,6 +285,7 @@ export class Room {
 
     this.simulation = simulation;
     this.tickDurationMs = 1000 / simulation.config.tickHz;
+    this.endTick = Math.ceil(simulation.config.runDurationMs / this.tickDurationMs);
     this.accumulatorMs = 0;
     this.lastTickAt = this.now();
     this.phase = "live";
@@ -282,15 +317,14 @@ export class Room {
       yourBotId: member.botId,
       meta: snapshot.bots.map(toEntityMeta),
       tickHz: this.simulation.config.tickHz,
-      endTick: Number.MAX_SAFE_INTEGER,
+      endTick: this.endTick,
     });
+    if (member.runOver) member.peer?.send(member.runOver);
   }
 
-  private broadcastSnapshot(): void {
-    if (!this.simulation) return;
-    const snapshot = toWireSnapshot(this.simulation.getSnapshot(), Math.max(0, ...[...this.members.values()].map((member) => member.latestSeq)));
-    this.broadcast({ type: "snap", ...snapshot });
-    this.broadcast({ type: "ev", events: this.simulation.drainEvents() });
+  private broadcastSnapshot(snapshot: ReturnType<DotBotSimulation["getSnapshot"]>): void {
+    const wire = toWireSnapshot(snapshot, Math.max(0, ...[...this.members.values()].map((member) => member.latestSeq)));
+    this.broadcastToStreams({ type: "snap", ...wire });
   }
 
   private end(reason: string): void {
@@ -303,6 +337,57 @@ export class Room {
   private broadcast(message: ServerMessage): void {
     for (const member of this.members.values()) member.peer?.send(message);
   }
+
+  private broadcastToStreams(message: ServerMessage): void {
+    for (const member of this.members.values()) {
+      if (member.streaming) member.peer?.send(message);
+    }
+  }
+
+  private processRunEvents(events: SimEvent[]): void {
+    for (const event of events) {
+      if (event.type !== "extracted" && event.type !== "consumed") continue;
+      const member = [...this.members.values()].find((candidate) => candidate.botId === event.botId);
+      if (!member?.inRun) continue;
+      this.sendRunOver(member, event.type === "extracted"
+        ? { type: "runOver", reason: "extracted", keptDots: event.inventoryDots, lostDots: 0 }
+        : { type: "runOver", reason: "died", keptDots: 0, lostDots: event.lostDots });
+    }
+  }
+
+  private sendRunOver(member: Member, message: Extract<ServerMessage, { type: "runOver" }>): void {
+    member.inRun = false;
+    member.latestInput = { move: { x: 0, y: 0 }, dash: false };
+    member.runOver = message;
+    member.peer?.send(message);
+  }
+
+  private timeoutRun(bots: ReturnType<DotBotSimulation["getSnapshot"]>["bots"]): void {
+    for (const member of this.members.values()) {
+      if (!member.inRun) continue;
+      const inventory = bots.find((bot) => bot.id === member.botId)?.inventoryDots ?? 0;
+      this.sendRunOver(member, { type: "runOver", reason: "timeout", keptDots: 0, lostDots: inventory });
+    }
+    this.end("timeout");
+  }
+
+  private completeIfNoActiveMembers(): void {
+    if (this.phase === "live" && [...this.members.values()].every((member) => !member.inRun)) {
+      this.end("complete");
+    }
+  }
+
+  private leaveRun(member: Member): void {
+    if (member.inRun && member.botId) {
+      this.simulation?.removeBot(member.botId);
+      member.inRun = false;
+    }
+    member.streaming = false;
+    if (member.handoffTimer) clearTimeout(member.handoffTimer);
+    this.members.delete(member.playerId);
+    this.memberByToken.delete(member.token);
+    this.completeIfNoActiveMembers();
+  }
 }
 
 function makeSpawn(id: string, name: string, squadId: string, color: string, anchor: { x: number; y: number }, offset: number): BotSpawn {
@@ -312,6 +397,7 @@ function makeSpawn(id: string, name: string, squadId: string, color: string, anc
     squadId,
     color,
     position: { x: anchor.x + (offset % 2) * 70, y: anchor.y + Math.floor(offset / 2) * 70 },
+    inventoryDots: 1,
   };
 }
 

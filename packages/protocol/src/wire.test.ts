@@ -62,6 +62,7 @@ function exhaustClient(message: ClientMessage): string {
   switch (message.type) {
     case "hello": return message.token;
     case "startMatch": return message.type;
+    case "leaveRun": return message.type;
     case "input": return String(message.seq);
     case "ping": return String(message.cts);
     default: return assertNever(message);
@@ -76,6 +77,7 @@ function exhaustServer(message: ServerMessage): string {
     case "snap": return String(message.tick);
     case "meta": return String(message.add.length);
     case "ev": return String(message.events.length);
+    case "runOver": return message.reason;
     case "matchEnd": return message.reason;
     case "pong": return String(message.sts);
     case "err": return message.code;

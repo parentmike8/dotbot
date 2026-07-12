@@ -43,6 +43,7 @@ export type WireSnapshot = {
 export type ClientMessage =
   | { type: "hello"; token: string; name: string; roomCode: string }
   | { type: "startMatch" }
+  | { type: "leaveRun" }
   | { type: "input"; seq: number; move: [number, number]; dash: boolean }
   | { type: "ping"; cts: number };
 
@@ -68,6 +69,7 @@ export type ServerMessage =
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }
   | { type: "ev"; events: SimEvent[] }
+  | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptDots: number; lostDots: number }
   | { type: "matchEnd"; reason: string }
   | { type: "pong"; cts: number; sts: number }
   | { type: "err"; code: string; msg: string };

@@ -187,6 +187,8 @@ export class NetSession implements GameSession {
       case "ev":
         this.events.push(...message.events);
         return;
+      case "runOver":
+        return;
       case "matchEnd":
         this.options.onError?.(`Match ended: ${message.reason}`);
         return;

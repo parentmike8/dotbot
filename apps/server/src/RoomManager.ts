@@ -1,3 +1,4 @@
+import type { GameConfig } from "@dotbot/game/types";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { Room, type RoomPeer } from "./Room";
 
@@ -5,6 +6,7 @@ const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 export type RoomManagerOptions = {
   countdownMs?: number;
+  config?: Partial<GameConfig>;
   now?: () => number;
 };
 

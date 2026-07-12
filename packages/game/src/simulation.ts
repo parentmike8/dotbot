@@ -1334,6 +1334,7 @@ export class DotBotSimulation {
   }
 
   private consumeBot(target: InternalBot, consumer: InternalBot): void {
+    const lostDots = target.inventoryDots;
     const loot = Math.min(this.config.maxInventoryDots - consumer.inventoryDots, target.inventoryDots);
     consumer.inventoryDots += Math.max(0, loot);
     target.state = "consumed";
@@ -1342,7 +1343,7 @@ export class DotBotSimulation {
     target.inventoryDots = 0;
     target.consumedRespawnMs = this.config.respawnDelayMs;
     this.setBotPhysicsState(target, "consumed");
-    this.events.push({ type: "consumed", botId: target.id, byBotId: consumer.id });
+    this.events.push({ type: "consumed", botId: target.id, byBotId: consumer.id, lostDots });
   }
 
   private respawnConsumedBots(dtMs: number): void {
