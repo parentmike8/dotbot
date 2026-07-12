@@ -1,4 +1,5 @@
 import type RAPIER from "@dimforge/rapier2d-compat";
+import { separateCircleFromRect } from "./collision";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import {
@@ -1442,50 +1443,6 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
 
 function rectContainsPoint(rect: Rect, point: Vec2): boolean {
   return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h;
-}
-
-function separateCircleFromRect(position: Vec2, radius: number, wall: Rect): Vec2 {
-  const closestX = clamp(position.x, wall.x, wall.x + wall.w);
-  const closestY = clamp(position.y, wall.y, wall.y + wall.h);
-  const offset = {
-    x: position.x - closestX,
-    y: position.y - closestY,
-  };
-  const distanceSquared = offset.x * offset.x + offset.y * offset.y;
-  const radiusSquared = radius * radius;
-
-  if (distanceSquared >= radiusSquared) {
-    return position;
-  }
-
-  if (distanceSquared > 0.0001) {
-    const distanceToWall = Math.sqrt(distanceSquared);
-    const push = (radius - distanceToWall) / distanceToWall;
-    return {
-      x: position.x + offset.x * push,
-      y: position.y + offset.y * push,
-    };
-  }
-
-  const left = Math.abs(position.x - wall.x);
-  const right = Math.abs(wall.x + wall.w - position.x);
-  const top = Math.abs(position.y - wall.y);
-  const bottom = Math.abs(wall.y + wall.h - position.y);
-  const nearest = Math.min(left, right, top, bottom);
-
-  if (nearest === left) {
-    return { x: wall.x - radius, y: position.y };
-  }
-
-  if (nearest === right) {
-    return { x: wall.x + wall.w + radius, y: position.y };
-  }
-
-  if (nearest === top) {
-    return { x: position.x, y: wall.y - radius };
-  }
-
-  return { x: position.x, y: wall.y + wall.h + radius };
 }
 
 function canCoverDownedBot(actor: InternalBot, target: InternalBot, minimumTolerance: number): boolean {
