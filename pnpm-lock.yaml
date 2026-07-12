@@ -11,6 +11,9 @@ importers:
       concurrently:
         specifier: ^9.2.1
         version: 9.2.4
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
 
   apps/client:
     dependencies:
