@@ -12,6 +12,9 @@
 .lobby-profile ol { margin: 0; padding: 0; list-style: none; }
 .lobby-profile li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid rgba(17,17,17,.15); font-size: 10px; }
 .lobby-profile p { margin: 0; color: var(--muted); font-size: 10px; }
+.lobby-stash-items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 14px; margin: 6px 0 0; padding: 0; list-style: none; }
+.lobby-stash-items li { border: 0; }
+.lobby-learned { color: var(--ink) !important; font-weight: 800; letter-spacing: .08em; }
 .lobby-card input, .lobby-card button { min-height: 48px; border: 1.5px solid var(--ink); border-radius: 0; background: var(--paper); color: var(--ink); font-weight: 800; }
 .lobby-card input { width: 100%; padding: 0 13px; font-size: 17px; }
 .lobby-card button { padding: 0 18px; cursor: pointer; text-transform: uppercase; }

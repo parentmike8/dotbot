@@ -78,6 +78,7 @@ export class LocalSession implements GameSession {
         lostItems: snapshot.bots.find((bot) => bot.id === this.playerId)
           ? carriedItems(snapshot.bots.find((bot) => bot.id === this.playerId)!)
           : [],
+        learnedBlueprints: [],
       };
     }
     return snapshot;
@@ -95,7 +96,7 @@ export class LocalSession implements GameSession {
     if (this.runState.phase === "over") return;
     const player = this.lastSnapshot?.bots.find((bot) => bot.id === this.playerId);
     if (!player || player.state !== "downed") return;
-    this.runState = { phase: "over", reason: "died", keptItems: [], lostItems: carriedItems(player) };
+    this.runState = { phase: "over", reason: "died", keptItems: [], lostItems: carriedItems(player), learnedBlueprints: [] };
   }
 
   setMeasuredFps(fps: number): void {
@@ -116,11 +117,11 @@ export class LocalSession implements GameSession {
     for (const event of events) {
       if (event.botId !== this.playerId) continue;
       if (event.type === "extracted") {
-        this.runState = { phase: "over", reason: "extracted", keptItems: event.items, lostItems: [] };
+        this.runState = { phase: "over", reason: "extracted", keptItems: event.items, lostItems: [], learnedBlueprints: [] };
         return;
       }
       if (event.type === "consumed") {
-        this.runState = { phase: "over", reason: "died", keptItems: [], lostItems: event.lostItems };
+        this.runState = { phase: "over", reason: "died", keptItems: [], lostItems: event.lostItems, learnedBlueprints: [] };
         return;
       }
     }

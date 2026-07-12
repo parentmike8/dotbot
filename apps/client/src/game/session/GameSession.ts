@@ -2,7 +2,7 @@ import type { GameSnapshot, InputCommand, Item, MapDocument, SimEvent } from "@d
 
 export type RunState =
   | { phase: "live" }
-  | { phase: "over"; reason: "extracted" | "died" | "timeout"; keptItems: Item[]; lostItems: Item[] };
+  | { phase: "over"; reason: "extracted" | "died" | "timeout"; keptItems: Item[]; lostItems: Item[]; learnedBlueprints: string[] };
 
 export interface GameSession {
   readonly map: MapDocument;

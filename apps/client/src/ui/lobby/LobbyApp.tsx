@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { LobbyMember } from "@dotbot/protocol";
+import type { LobbyMember, WireItemCode } from "@dotbot/protocol";
 import { NetSession } from "../../game/session/NetSession";
 import { NetGameView } from "./NetGameView";
 import "./lobby.css";
@@ -13,12 +13,14 @@ type LobbyState = {
 
 type Profile = {
   name: string;
-  stashDots: number;
+  stash: Array<{ itemType: WireItemCode; qty: number }>;
+  learnedBlueprints: string[];
   recentManifests: Array<{
     roomCode: string;
     outcome: string;
-    keptDots: number;
-    lostDots: number;
+    keptItems: WireItemCode[];
+    lostItems: WireItemCode[];
+    learnedBlueprints: string[];
     endedAt: string | null;
   }>;
 };
@@ -207,19 +209,43 @@ async function ensureAccountToken(name: string): Promise<string> {
 function ProfileSummary({ profile }: { profile: Profile }) {
   return (
     <section className="lobby-profile" aria-label="Player stash and recent runs">
-      <strong>STASH: {profile.stashDots} dots</strong>
-      <small>Extracted dots bank here for later. Withdrawals arrive in M4.</small>
+      <strong>STASH</strong>
+      {profile.stash.length > 0 ? (
+        <ul className="lobby-stash-items">
+          {profile.stash.map((entry) => <li key={entry.itemType}><span>{wireItemGlyph(entry.itemType)} {wireItemName(entry.itemType)}</span><b>×{entry.qty}</b></li>)}
+        </ul>
+      ) : <p>Empty</p>}
+      <small>Withdrawals unlock at the Base bay console.</small>
+      <h2>Learned</h2>
+      {profile.learnedBlueprints.length > 0
+        ? <p className="lobby-learned">{profile.learnedBlueprints.map((id) => `${id} blueprint`).join(" · ")}</p>
+        : <p>None yet.</p>}
       <h2>Recent runs</h2>
       {profile.recentManifests.length > 0 ? (
         <ol>
           {profile.recentManifests.map((manifest, index) => (
             <li key={`${manifest.roomCode}-${manifest.endedAt ?? "live"}-${index}`}>
               <span>{manifest.outcome}</span>
-              <b>Kept {manifest.keptDots}</b>
+              <b>Kept {manifest.keptItems.length}</b>
             </li>
           ))}
         </ol>
       ) : <p>No manifests yet.</p>}
     </section>
   );
+}
+
+function wireItemGlyph(code: WireItemCode): string {
+  return code === "h" ? "+" : code === "r" ? "◎" : code === "d" ? "›" : code === "i" ? "◌" : "⌑";
+}
+
+function wireItemName(code: WireItemCode): string {
+  if (code.startsWith("b:")) return `${code.slice(2)} fragment`;
+  switch (code) {
+    case "h": return "Health";
+    case "r": return "Radar";
+    case "d": return "Dash overcharge";
+    case "i": return "Incognito";
+    default: return code;
+  }
 }

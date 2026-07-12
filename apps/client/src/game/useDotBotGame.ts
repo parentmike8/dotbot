@@ -14,6 +14,7 @@ export type RunResult = {
   outcome: RunOutcome;
   keptItems: Item[];
   lostItems: Item[];
+  learnedBlueprints: string[];
   runTimeMs: number;
 };
 
@@ -167,6 +168,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             outcome: runState.reason,
             keptItems: runState.keptItems,
             lostItems: runState.lostItems,
+            learnedBlueprints: runState.learnedBlueprints,
             runTimeMs: nextSnapshot.timeMs,
           };
           runEndedRef.current = true;

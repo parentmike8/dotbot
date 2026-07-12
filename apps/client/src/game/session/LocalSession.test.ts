@@ -15,7 +15,7 @@ describe("LocalSession run-state ownership", () => {
     await session.start();
     session.update(100);
 
-    expect(session.getRunState()).toEqual({ phase: "over", reason: "extracted", keptItems: [health, health, health], lostItems: [] });
+    expect(session.getRunState()).toEqual({ phase: "over", reason: "extracted", keptItems: [health, health, health], lostItems: [], learnedBlueprints: [] });
     expect(session.drainEvents()).toEqual([{ type: "extracted", botId: "player", squadId: "alpha", items: [health, health, health] }]);
   });
 
@@ -28,7 +28,7 @@ describe("LocalSession run-state ownership", () => {
     await session.start();
     session.update(100);
 
-    expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptItems: [], lostItems: [health, health] });
+    expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptItems: [], lostItems: [health, health], learnedBlueprints: [] });
   });
 
   it("derives timeout state from local time and current inventory", async () => {
@@ -66,7 +66,7 @@ describe("LocalSession run-state ownership", () => {
     await session.start();
     session.update(100);
 
-    expect(session.getRunState()).toEqual({ phase: "over", reason: "timeout", keptItems: [], lostItems: [health, health, health, health] });
+    expect(session.getRunState()).toEqual({ phase: "over", reason: "timeout", keptItems: [], lostItems: [health, health, health, health], learnedBlueprints: [] });
   });
 
   it("ends a downed solo run through GIVE UP with an itemized loss", async () => {
@@ -82,7 +82,7 @@ describe("LocalSession run-state ownership", () => {
     await session.start();
     session.update(100);
     session.giveUp();
-    expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptItems: [], lostItems: [health] });
+    expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptItems: [], lostItems: [health], learnedBlueprints: [] });
   });
 });
 

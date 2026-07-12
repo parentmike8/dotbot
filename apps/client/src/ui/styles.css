@@ -1066,6 +1066,12 @@ button {
   border-right: 0;
 }
 
+.manifest-grid .manifest-learned {
+  grid-column: 1 / -1;
+  border-right: 0;
+  background: rgba(25, 113, 194, 0.08);
+}
+
 .manifest-grid dt {
   margin-bottom: 12px;
   color: var(--muted);

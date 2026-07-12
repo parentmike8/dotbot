@@ -248,6 +248,7 @@ export class NetSession implements GameSession {
           reason: message.reason,
           keptItems: message.keptItems.map(itemFromCode),
           lostItems: message.lostItems.map(itemFromCode),
+          learnedBlueprints: message.learnedBlueprints,
         };
         return;
       case "matchEnd":

@@ -66,6 +66,12 @@ export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun
             <dt>Run time</dt>
             <dd>{runTime}</dd>
           </div>
+          {result.learnedBlueprints.length > 0 ? (
+            <div className="manifest-learned">
+              <dt>Learned</dt>
+              <dd>{result.learnedBlueprints.map((blueprintId) => `${blueprintId} blueprint`).join(", ")}</dd>
+            </div>
+          ) : null}
         </dl>
         <button type="button" className="manifest-new-run" onClick={onNewRun}>
           {actionLabel}
