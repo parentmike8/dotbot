@@ -517,6 +517,20 @@ export class Room {
 
   private leaveRun(member: Member): void {
     if (member.inRun && member.botId) {
+      const bot = this.simulation?.getSnapshot().bots.find((candidate) => candidate.id === member.botId);
+      if (bot?.state === "downed") {
+        const lostItems = [...bot.bays.filter((item): item is NonNullable<typeof item> => item !== null), ...bot.hold];
+        this.simulation?.removeBot(member.botId);
+        this.sendRunOver(member, {
+          type: "runOver",
+          reason: "died",
+          keptItems: [],
+          lostItems: lostItems.map(itemToCode),
+          learnedBlueprints: [],
+        });
+        this.completeIfNoActiveMembers();
+        return;
+      }
       this.recordDisconnected(member);
       this.simulation?.removeBot(member.botId);
       member.inRun = false;
