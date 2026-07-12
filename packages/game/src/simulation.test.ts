@@ -8,6 +8,9 @@ import { hasLineOfSight } from "./visibility";
 import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, MapDocument, WallSegment } from "./types";
 
 const healthItem = { kind: "powerup", type: "health" } as const;
+const radarItem = { kind: "powerup", type: "radar" } as const;
+const overchargeItem = { kind: "powerup", type: "dashOvercharge" } as const;
+const incognitoItem = { kind: "powerup", type: "incognito" } as const;
 const testBays = (count: number) => Array.from({ length: 4 }, (_, index) => index < count ? healthItem : null);
 
 const testConfig: Partial<GameConfig> = {
@@ -172,6 +175,117 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("routes pickups through bays, hold, then refuses a full inventory", async () => {
+    const items = [healthItem, radarItem, overchargeItem];
+    const simulation = await DotBotSimulation.create({
+      map: makeMap(
+        [playerSpawn({ position: { x: 100, y: 100 }, bays: [null], hold: [] })],
+        items.map((item, index) => ({ id: `dot-${index}`, item, position: { x: 100, y: 100 } })),
+      ),
+      config: { ...testConfig, baySlots: 1, holdSlots: 1 },
+    });
+
+    runTicks(simulation, 18);
+    const snapshot = simulation.getSnapshot();
+    const player = snapshot.bots.find((bot) => bot.id === "player")!;
+    expect(player.bays).toEqual([healthItem]);
+    expect(player.hold).toEqual([radarItem]);
+    expect(snapshot.dots.find((dot) => dot.id === "dot-2")?.active).toBe(true);
+    simulation.dispose();
+  });
+
+  it("fires health with one-plate restore and caps at maximum", async () => {
+    const simulation = await makeSimulation([playerSpawn({ maxShields: 3, shields: 1, bays: [healthItem, healthItem, null, null] })]);
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    simulation.step();
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.shields).toBe(2);
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 1 });
+    simulation.step();
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.shields).toBe(3);
+    simulation.dispose();
+  });
+
+  it("records and ages through-wall radar ping marks", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ bays: [radarItem, null, null, null] }),
+        enemySpawn({ position: { x: 180, y: 180 } }),
+      ]),
+      config: { ...testConfig, radarDurationMs: 300, radarPingIntervalMs: 50, radarRadius: 200, radarPingTtlMs: 120 },
+    });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    runTicks(simulation, 5);
+    const ping = simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.radarPings[0];
+    expect(ping).toMatchObject({ x: expect.any(Number), y: expect.any(Number) });
+    expect(ping!.ageMs).toBeGreaterThan(0);
+    runTicks(simulation, 30);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.radarPings).toEqual([]);
+    simulation.dispose();
+  });
+
+  it("uses exactly three overcharged dashes through an existing cooldown", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([playerSpawn({ bays: [overchargeItem, null, null, null] })]),
+      config: { ...testConfig, dashCooldownMs: 2000 },
+    });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    runTicks(simulation, 10);
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false, useBay: 0 });
+    simulation.step();
+    for (let use = 0; use < 3; use += 1) {
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+      simulation.step();
+      expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.dashActiveMs).toBeGreaterThan(0);
+      runTicks(simulation, 10);
+    }
+    const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(player.dashOverchargeCharges).toBe(0);
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.step();
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.dashActiveMs).toBe(0);
+    simulation.dispose();
+  });
+
+  it("suppresses both firing and dash noise under incognito", async () => {
+    const simulation = await makeSimulation([playerSpawn({ bays: [incognitoItem, null, null, null] })]);
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true, useBay: 0 });
+    simulation.step();
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.incognitoMs).toBeGreaterThan(0);
+    expect(snapshot.noises).toEqual([]);
+    simulation.dispose();
+  });
+
+  it("never banks useBay when the selected bay is empty", async () => {
+    const simulation = await makeSimulation(
+      [playerSpawn({ position: { x: 100, y: 100 } })],
+      [{ id: "health", item: healthItem, position: { x: 100, y: 100 } }],
+    );
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    simulation.step();
+    runTicks(simulation, 18);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.bays[0]).toEqual(healthItem);
+    simulation.dispose();
+  });
+
+  it("runs a stationary noisy hold-to-bay swap channel", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([playerSpawn({ bays: [healthItem, null, null, null], hold: [radarItem] })]),
+      config: { ...testConfig, swapDurationMs: 800 },
+    });
+    const start = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position;
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false, swapBay: { bayIndex: 0, holdIndex: 0 } });
+    runTicks(simulation, 45);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.position).toEqual(start);
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
+    runTicks(simulation, 5);
+    const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(player.bays[0]).toEqual(radarItem);
+    expect(player.hold).toEqual([healthItem]);
+    expect(simulation.getSnapshot().noises.some((noise) => noise.kind === "channel")).toBe(true);
+    simulation.dispose();
+  });
+
   it("holds AI bots steady while they cover Dots", async () => {
     const simulation = await DotBotSimulation.create({
       map: makeMap(
@@ -301,6 +415,37 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("never lets an ambient grey capture a dot", async () => {
+    const simulation = await makeSimulation(
+      [enemySpawn({ controller: "frozen", position: { x: 100, y: 100 } })],
+      [{ id: "loot", item: radarItem, position: { x: 100, y: 100 } }],
+    );
+    runTicks(simulation, 30);
+    expect(simulation.getSnapshot().dots.find((dot) => dot.id === "loot")?.active).toBe(true);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.bays.every((item) => item === null)).toBe(true);
+    simulation.dispose();
+  });
+
+  it("never lets an ambient grey consume a downed bot", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 100 }, state: "downed", shields: 0 }),
+      enemySpawn({ controller: "frozen", position: { x: 100, y: 100 } }),
+    ]);
+    runTicks(simulation, 30);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.state).toBe("downed");
+    expect(simulation.getSnapshot().coverages.some((coverage) => coverage.kind === "consume")).toBe(false);
+    simulation.dispose();
+  });
+
+  it("keeps a downed bot indefinitely without a bleed-out timer", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ state: "downed", shields: 0, controller: "frozen" }),
+    ]);
+    runTicks(simulation, 1200);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.state).toBe("downed");
+    simulation.dispose();
+  });
+
   it("turns a bot downed after a damaging Dash collision", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
@@ -402,6 +547,33 @@ describe("DotBotSimulation", () => {
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("consumed");
     expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(2);
+    simulation.dispose();
+  });
+
+  it("spills consume overflow back onto the ground as typed dots", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ position: { x: 100, y: 180 }, bays: [healthItem], hold: [radarItem] }),
+        enemySpawn({
+          isAmbient: false,
+          position: { x: 100, y: 180 },
+          state: "downed",
+          shields: 0,
+          bays: [overchargeItem],
+          hold: [incognitoItem],
+        }),
+      ]),
+      config: { ...testConfig, baySlots: 1, holdSlots: 1 },
+    });
+    runTicks(simulation, 12);
+    const spills = simulation.getSnapshot().dots.filter((dot) => dot.id.startsWith("spill-") && dot.active);
+    expect(spills.map((dot) => dot.item)).toEqual(expect.arrayContaining([overchargeItem, incognitoItem]));
+    expect(simulation.drainEvents()).toContainEqual({
+      type: "consumed",
+      botId: "enemy",
+      byBotId: "player",
+      lostItems: [overchargeItem, incognitoItem],
+    });
     simulation.dispose();
   });
 

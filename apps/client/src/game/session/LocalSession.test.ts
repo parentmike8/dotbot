@@ -67,6 +67,21 @@ describe("LocalSession run-state ownership", () => {
 
     expect(session.getRunState()).toEqual({ phase: "over", reason: "timeout", keptItems: [], lostItems: [health, health, health, health] });
   });
+
+  it("ends a downed solo run through GIVE UP with an itemized loss", async () => {
+    const downed = snapshot(50, [{
+      id: "player", name: "Player", squadId: "alpha", isAmbient: false, color: "#fff",
+      position: { x: 10, y: 10 }, radius: 24, state: "downed", floorId: "outdoor", facing: 0,
+      maxShields: 3, shields: 0, shieldSegments: [0, 0, 0], bays: [health, null, null, null], hold: [],
+      radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0, incognitoMs: 0,
+      dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
+    }]);
+    const { session } = scriptedSession({ events: [], snapshot: downed });
+    await session.start();
+    session.update(100);
+    session.giveUp();
+    expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptItems: [], lostItems: [health] });
+  });
 });
 
 function scriptedSession(options: { config?: typeof defaultGameConfig; events: SimEvent[]; snapshot: GameSnapshot }) {

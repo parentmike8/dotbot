@@ -221,6 +221,16 @@ describe("downtown map validation", () => {
     }
   });
 
+  it("generates one registered blueprint per scannable object type per building", () => {
+    for (const building of downtownMap.buildings) {
+      const expected = new Set(building.floors.flatMap((floor) => floor.objects.filter((object) => object.scannable).map((object) => object.kind)));
+      const blueprints = building.floors.flatMap((floor) => floor.dotSpawns)
+        .filter((spawn) => spawn.item.kind === "blueprint");
+      expect(new Set(blueprints.map((spawn) => spawn.item.kind === "blueprint" ? spawn.item.blueprintId : ""))).toEqual(expected);
+      expect(blueprints).toHaveLength(expected.size);
+    }
+  });
+
   it("keeps every bot spawn on reachable ground", () => {
     for (const world of worlds) {
       const reachable = floodReachable(world);
