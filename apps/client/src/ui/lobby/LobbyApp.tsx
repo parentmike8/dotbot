@@ -11,6 +11,18 @@ type LobbyState = {
   playerId: string;
 };
 
+type Profile = {
+  name: string;
+  holdDots: number;
+  recentManifests: Array<{
+    roomCode: string;
+    outcome: string;
+    keptDots: number;
+    lostDots: number;
+    endedAt: string | null;
+  }>;
+};
+
 const nameKey = "dotbot.playerName";
 const tokenKey = "dotbot.deviceToken";
 
@@ -22,22 +34,35 @@ export function LobbyApp() {
   const [session, setSession] = useState<NetSession | null>(null);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState("");
+  const [profile, setProfile] = useState<Profile | null>(null);
   const autoJoined = useRef(false);
 
-  const connect = (code: string) => {
+  const refreshProfile = async (token = localStorage.getItem(tokenKey)) => {
+    if (!token) return;
+    try {
+      const response = await fetch("/api/profile", { headers: { "x-device-token": token } });
+      if (response.ok) setProfile(await response.json() as Profile);
+    } catch {
+      // Stateless/offline development keeps the lobby usable without profile data.
+    }
+  };
+
+  const connect = async (code: string) => {
     const cleanName = name.trim();
     if (!cleanName) {
       setError("Choose a display name first.");
       return;
     }
     localStorage.setItem(nameKey, cleanName);
+    const token = await ensureAccountToken(cleanName);
+    await refreshProfile(token);
     session?.dispose();
     setError("");
     const next = new NetSession({
       url: "/ws",
       roomCode: code,
       name: cleanName,
-      token: getOrCreateToken(),
+      token,
       onLobby: (state) => {
         setLobby(state);
         setJoinCode(state.roomCode);
@@ -50,9 +75,10 @@ export function LobbyApp() {
   };
 
   useEffect(() => {
+    void refreshProfile();
     if (routeCode && name && !autoJoined.current) {
       autoJoined.current = true;
-      connect(routeCode);
+      void connect(routeCode);
     }
   }, []);
 
@@ -66,6 +92,7 @@ export function LobbyApp() {
           setSession(null);
           setLobby(null);
           window.history.replaceState(null, "", "/#/lobby");
+          void refreshProfile();
         }}
       />
     );
@@ -89,6 +116,8 @@ export function LobbyApp() {
           <p>{lobby ? "Squads are assigned. The host starts the run." : "Create a room or join one with its field code."}</p>
         </header>
 
+        {profile ? <ProfileSummary profile={profile} /> : null}
+
         {!lobby ? (
           <>
             <label className="lobby-field">
@@ -96,7 +125,7 @@ export function LobbyApp() {
               <input value={name} maxLength={24} autoComplete="nickname" onChange={(event) => setName(event.target.value)} />
             </label>
             <div className="lobby-actions">
-              <button type="button" className="lobby-primary" onClick={() => connect("")}>Create room</button>
+              <button type="button" className="lobby-primary" onClick={() => void connect("")}>Create room</button>
               <span className="lobby-or">or</span>
               <form onSubmit={submitJoin}>
                 <input
@@ -138,11 +167,59 @@ function roomCodeFromHash(): string {
   return window.location.hash.match(/^#\/r\/([A-Z2-9]{4})$/i)?.[1]?.toUpperCase() ?? "";
 }
 
-function getOrCreateToken(): string {
+async function ensureAccountToken(name: string): Promise<string> {
   const existing = localStorage.getItem(tokenKey);
-  if (existing) return existing;
+  if (existing) {
+    try {
+      const response = await fetch("/api/auth/hello", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: existing }),
+      });
+      if (response.ok) return existing;
+      if (response.status !== 404) return existing;
+    } catch {
+      return existing;
+    }
+  }
+
+  try {
+    const response = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (response.ok) {
+      const account = await response.json() as { token: string };
+      localStorage.setItem(tokenKey, account.token);
+      return account.token;
+    }
+  } catch {
+    // Fall through to the legacy client token for stateless/offline mode.
+  }
+
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   localStorage.setItem(tokenKey, token);
   return token;
+}
+
+function ProfileSummary({ profile }: { profile: Profile }) {
+  return (
+    <section className="lobby-profile" aria-label="Player hold and recent runs">
+      <strong>Hold: {profile.holdDots} dots</strong>
+      <small>Extracted dots bank here for later. Withdrawals arrive in M4.</small>
+      <h2>Recent runs</h2>
+      {profile.recentManifests.length > 0 ? (
+        <ol>
+          {profile.recentManifests.map((manifest, index) => (
+            <li key={`${manifest.roomCode}-${manifest.endedAt ?? "live"}-${index}`}>
+              <span>{manifest.outcome}</span>
+              <b>Kept {manifest.keptDots}</b>
+            </li>
+          ))}
+        </ol>
+      ) : <p>No manifests yet.</p>}
+    </section>
+  );
 }

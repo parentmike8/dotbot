@@ -34,6 +34,14 @@ export async function createServer(options: CreateServerOptions = {}) {
     return player;
   });
 
+  app.get<{ Headers: { "x-device-token"?: string; authorization?: string } }>("/api/profile", async (request, reply) => {
+    const token = request.headers["x-device-token"] ?? bearerToken(request.headers.authorization);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const profile = await persistence.getProfile(token);
+    if (!profile) return reply.code(404).send({ error: "Unknown device token." });
+    return profile;
+  });
+
   if (process.env.NODE_ENV === "production") {
     await app.register(fastifyStatic, {
       root: fileURLToPath(new URL("../../client/dist", import.meta.url)),
@@ -86,4 +94,8 @@ export async function createServer(options: CreateServerOptions = {}) {
 
 function sanitizeName(value: unknown): string {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, 24) : "";
+}
+
+function bearerToken(value: string | undefined): string | undefined {
+  return value?.match(/^Bearer\s+(.+)$/i)?.[1];
 }
