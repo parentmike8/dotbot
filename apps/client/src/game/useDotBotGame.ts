@@ -3,7 +3,7 @@ import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
-import { GameRenderer } from "./renderer/GameRenderer";
+import { GameRenderer, type InteractionChannelVisual } from "./renderer/GameRenderer";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
 import type { DotBotEntity, GameSnapshot, Item, SimEvent, Vec2 } from "@dotbot/game/types";
@@ -55,6 +55,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const spectateCycleQueuedRef = useRef(false);
   const spectatedBotIdRef = useRef<string | null>(null);
   const runEndedRef = useRef(false);
+  const interactionChannelRef = useRef<InteractionChannelVisual | null>(null);
   const frameRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
   const [events, setEvents] = useState<SimEvent[]>([]);
@@ -189,7 +190,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         spectateCycleQueuedRef.current = false;
         spectatedBotIdRef.current = spectator?.id ?? null;
         const renderPlayerId = spectator?.id ?? session.playerId;
-        renderer.render(nextSnapshot, renderPlayerId, spectateEnabled && runState.phase === "over" && spectator === null);
+        renderer.render(nextSnapshot, renderPlayerId, spectateEnabled && runState.phase === "over" && spectator === null, interactionChannelRef.current);
 
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);
@@ -321,6 +322,10 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     sessionRef.current?.giveUp();
   }, []);
 
+  const setInteractionChannel = useCallback((visual: InteractionChannelVisual | null) => {
+    interactionChannelRef.current = visual;
+  }, []);
+
   const updateJoystick = useCallback((clientX: number, clientY: number) => {
     const state = joystickRef.current;
     const raw = {
@@ -413,5 +418,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     swapBayItem,
     giveUp,
     cycleSpectator,
+    setInteractionChannel,
   };
 }

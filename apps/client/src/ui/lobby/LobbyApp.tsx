@@ -3,6 +3,7 @@ import type { LobbyMember, WireItemCode } from "@dotbot/protocol";
 import { NetSession } from "../../game/session/NetSession";
 import { NetGameView } from "./NetGameView";
 import "./lobby.css";
+import { deviceTokenKey as tokenKey, ensureAccountToken, playerNameKey as nameKey } from "../identity";
 
 type LobbyState = {
   roomCode: string;
@@ -25,10 +26,12 @@ type Profile = {
   }>;
 };
 
-const nameKey = "dotbot.playerName";
-const tokenKey = "dotbot.deviceToken";
+type LobbyAppProps = {
+  embedded?: boolean;
+  onReturnToBase?: () => void;
+};
 
-export function LobbyApp() {
+export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {}) {
   const routeCode = roomCodeFromHash();
   const [name, setName] = useState(() => localStorage.getItem(nameKey) ?? "");
   const [joinCode, setJoinCode] = useState(routeCode);
@@ -38,6 +41,10 @@ export function LobbyApp() {
   const [error, setError] = useState("");
   const [profile, setProfile] = useState<Profile | null>(null);
   const autoJoined = useRef(false);
+  const returnToBase = () => {
+    session?.dispose();
+    onReturnToBase?.();
+  };
 
   const refreshProfile = async (token = localStorage.getItem(tokenKey)) => {
     if (!token) return;
@@ -89,7 +96,12 @@ export function LobbyApp() {
       <NetGameView
         session={session}
         roomCode={lobby.roomCode}
+        returnLabel={onReturnToBase ? "LEAVE TO BASE" : "RETURN TO LOBBY"}
         onReturnToLobby={() => {
+          if (onReturnToBase) {
+            returnToBase();
+            return;
+          }
           setPlaying(false);
           setSession(null);
           setLobby(null);
@@ -110,11 +122,12 @@ export function LobbyApp() {
   };
 
   return (
-    <main className="lobby-shell">
+    <main className={embedded ? "deployment-shell" : "lobby-shell"}>
       <section className="lobby-card" aria-label="DotBot multiplayer lobby">
+        {embedded ? <button type="button" className="deployment-close" aria-label="Close deployment" onClick={returnToBase}>×</button> : null}
         <header>
-          <span className="lobby-kicker">DotBot field office</span>
-          <h1>{lobby ? `Room ${lobby.roomCode}` : "Fight together."}</h1>
+          <span className="lobby-kicker">Deployment</span>
+          <h1>{lobby ? `Room ${lobby.roomCode}` : "Deploy."}</h1>
           <p>{lobby ? "Squads are assigned. The host starts the run." : "Create a room or join one with its field code."}</p>
         </header>
 
@@ -167,43 +180,6 @@ export function LobbyApp() {
 
 function roomCodeFromHash(): string {
   return window.location.hash.match(/^#\/r\/([A-Z2-9]{4})$/i)?.[1]?.toUpperCase() ?? "";
-}
-
-async function ensureAccountToken(name: string): Promise<string> {
-  const existing = localStorage.getItem(tokenKey);
-  if (existing) {
-    try {
-      const response = await fetch("/api/auth/hello", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token: existing }),
-      });
-      if (response.ok) return existing;
-      if (response.status !== 404) return existing;
-    } catch {
-      return existing;
-    }
-  }
-
-  try {
-    const response = await fetch("/api/auth/register", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    if (response.ok) {
-      const account = await response.json() as { token: string };
-      localStorage.setItem(tokenKey, account.token);
-      return account.token;
-    }
-  } catch {
-    // Fall through to the legacy client token for stateless/offline mode.
-  }
-
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  localStorage.setItem(tokenKey, token);
-  return token;
 }
 
 function ProfileSummary({ profile }: { profile: Profile }) {

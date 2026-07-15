@@ -7,9 +7,10 @@ type NetGameViewProps = {
   session: NetSession;
   roomCode: string;
   onReturnToLobby: () => void;
+  returnLabel?: string;
 };
 
-export function NetGameView({ session, roomCode, onReturnToLobby }: NetGameViewProps) {
+export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "RETURN TO LOBBY" }: NetGameViewProps) {
   const { hostRef, snapshot, events, runResult, spectating, queueDash, cycleSpectator } = useDotBotGame({ session, spectate: true });
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
@@ -52,7 +53,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby }: NetGameViewP
             session.leaveRun();
             onReturnToLobby();
           }}
-          actionLabel="RETURN TO LOBBY"
+          actionLabel={returnLabel}
         />
       ) : null}
     </main>

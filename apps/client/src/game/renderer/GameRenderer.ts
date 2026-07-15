@@ -19,6 +19,12 @@ const SQUAD_CYAN = 0x15aabf;
 const RIVAL_RED = 0xe03131;
 const AMBIENT_GREY = 0x868e96;
 
+export type InteractionChannelVisual = {
+  position: Vec2;
+  radius: number;
+  progress: number;
+};
+
 /**
  * The live-game renderer: static map art (from mapArt.ts, shared with Map
  * Studio) plus the gameplay overlay — bots, dots, rings, noise, fog, and the
@@ -96,7 +102,7 @@ export class GameRenderer {
     }
   }
 
-  render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false): void {
+  render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null): void {
     const currentPlayer = snapshot.bots.find((bot) => bot.id === playerId);
     const player = currentPlayer ?? (preserveMissingViewer ? this.lastViewer ?? undefined : snapshot.bots[0]);
     if (currentPlayer) this.lastViewer = currentPlayer;
@@ -115,6 +121,9 @@ export class GameRenderer {
     this.drawExtractionPulse(snapshot, player?.squadId);
     this.drawDots(snapshot, player?.squadId, playerContext);
     this.drawBots(snapshot, playerId, playerContext);
+    if (interactionChannel) {
+      this.drawProgressRing(this.dynamicGfx, interactionChannel.position, interactionChannel.radius, interactionChannel.progress, INK.opening, 3);
+    }
     if (currentPlayer) this.drawRadarPings(currentPlayer);
 
     if (player) {
