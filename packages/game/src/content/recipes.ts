@@ -6,12 +6,17 @@ export type Recipe = {
   id: string;
   output:
     | { kind: "item"; item: Item }
-    | { kind: "furniture"; objectKind: BaseObjectKind };
+    | { kind: "furniture"; objectKind: BaseObjectKind }
+    | { kind: "expansion"; upgradeId: string };
   costs: RecipeCost[];
   requiresBlueprint?: string;
   /** A placed base object can unlock options without mutating combat config. */
   requiresObject?: BaseObjectKind;
 };
+
+export const SECOND_FLOOR_RECIPE_ID = "expansion-secondFloor";
+export const SECOND_FLOOR_UPGRADE_ID = "secondFloor";
+export const SECOND_FLOOR_COST_PER_POWERUP = 6;
 
 const furnitureCost: RecipeCost[] = [
   { itemType: "r", qty: 1 },
@@ -37,6 +42,14 @@ const furnitureKinds = [
 ] as const satisfies readonly BaseObjectKind[];
 
 export const RECIPES: readonly Recipe[] = [
+  {
+    id: SECOND_FLOOR_RECIPE_ID,
+    output: { kind: "expansion", upgradeId: SECOND_FLOOR_UPGRADE_ID },
+    costs: (["h", "r", "d", "i"] as const).map((itemType) => ({
+      itemType,
+      qty: SECOND_FLOOR_COST_PER_POWERUP,
+    })),
+  },
   {
     id: "convert-health",
     output: { kind: "item", item: { kind: "powerup", type: "health" } },

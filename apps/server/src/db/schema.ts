@@ -54,6 +54,12 @@ export const baseLayouts = pgTable("base_layouts", {
   objectKind: text("object_kind").notNull(),
 }, (table) => [primaryKey({ columns: [table.playerId, table.slotId] })]);
 
+export const baseUpgrades = pgTable("base_upgrades", {
+  playerId: uuid("player_id").notNull().references(() => players.id, { onDelete: "cascade" }),
+  upgradeId: text("upgrade_id").notNull(),
+  acquiredAt: timestamp("acquired_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [primaryKey({ columns: [table.playerId, table.upgradeId] })]);
+
 export const contracts = pgTable("contracts", {
   id: text("id").primaryKey(),
   playerId: uuid("player_id").notNull().references(() => players.id, { onDelete: "cascade" }),

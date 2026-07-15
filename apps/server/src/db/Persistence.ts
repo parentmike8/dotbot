@@ -40,6 +40,7 @@ export type PlayerProfile = {
 
 export type PlayerBase = {
   shell: BaseShellId;
+  upgrades: string[];
   layout: BaseLayout;
   stash: Array<{ itemType: WireItemCode; qty: number }>;
   learnedBlueprints: string[];

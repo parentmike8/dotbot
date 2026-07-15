@@ -5,12 +5,20 @@ import { RECIPES } from "./content/recipes";
 import { defaultGameConfig } from "./config";
 
 describe("economy recipe data", () => {
-  it("has unique ids, positive costs, four powerup conversions, and only item/furniture outputs", () => {
+  it("has unique ids, positive costs, four powerup conversions, and the symmetric expansion sink", () => {
     expect(new Set(RECIPES.map((recipe) => recipe.id)).size).toBe(RECIPES.length);
     expect(RECIPES.every((recipe) => recipe.costs.length > 0 && recipe.costs.every((cost) => cost.qty > 0))).toBe(true);
     const powerups = RECIPES.flatMap((recipe) => recipe.output.kind === "item" && recipe.output.item.kind === "powerup" ? [recipe.output.item.type] : []);
     expect(new Set(powerups)).toEqual(new Set(["health", "radar", "dashOvercharge", "incognito"]));
-    expect(RECIPES.every((recipe) => recipe.output.kind === "furniture" || recipe.output.item.kind === "powerup")).toBe(true);
+    expect(RECIPES.every((recipe) => recipe.output.kind !== "item" || recipe.output.item.kind === "powerup")).toBe(true);
+    const expansion = RECIPES.find((recipe) => recipe.id === "expansion-secondFloor");
+    expect(expansion).toMatchObject({ output: { kind: "expansion", upgradeId: "secondFloor" } });
+    expect(expansion?.costs).toEqual([
+      { itemType: "h", qty: 6 },
+      { itemType: "r", qty: 6 },
+      { itemType: "d", qty: 6 },
+      { itemType: "i", qty: 6 },
+    ]);
   });
 
   it("gates furniture with real Downtown blueprint fragments and covers every output with zone data", () => {

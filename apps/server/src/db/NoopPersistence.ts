@@ -27,7 +27,7 @@ export class NoopPersistence implements Persistence {
   }
 
   async getBase(token: string) {
-    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40, presets: [], insertionPreference: null, contractOffers: generateContractOffers(downtownMap, fallbackIdentity(token, "Player").playerId, contractDayStamp()), activeContracts: [] };
+    return { shell: DEFAULT_BASE_SHELL, upgrades: [], layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40, presets: [], insertionPreference: null, contractOffers: generateContractOffers(downtownMap, fallbackIdentity(token, "Player").playerId, contractDayStamp()), activeContracts: [] };
   }
 
   async saveBaseLayout(_token: string, layout: BaseLayout): Promise<BaseLayout> { return layout; }

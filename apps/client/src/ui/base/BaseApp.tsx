@@ -775,11 +775,14 @@ function stashCount(items: BasePayload["stash"]): number {
 
 function recipeGlyph(recipe: Recipe): string {
   if (recipe.output.kind === "furniture") return recipe.output.objectKind === "repairBench" ? "✚" : "▱";
+  if (recipe.output.kind === "expansion") return "▤";
   return wireItemGlyph(itemToCode(recipe.output.item));
 }
 
 function recipeOutputLabel(recipe: Recipe): string {
-  return recipe.output.kind === "furniture" ? objectName(recipe.output.objectKind) : wireItemName(itemToCode(recipe.output.item));
+  if (recipe.output.kind === "furniture") return objectName(recipe.output.objectKind);
+  if (recipe.output.kind === "expansion") return "SECOND FLOOR";
+  return wireItemName(itemToCode(recipe.output.item));
 }
 
 function objectName(kind: BaseObjectKind): string {

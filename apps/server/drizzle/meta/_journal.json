@@ -43,6 +43,13 @@
       "when": 1784153180947,
       "tag": "0005_contracts",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784158308956,
+      "tag": "0006_lazy_franklin_storm",
+      "breakpoints": true
     }
   ]
 }

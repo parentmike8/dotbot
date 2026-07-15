@@ -61,9 +61,13 @@ export async function createServer(options: CreateServerOptions = {}) {
     const layout = parseBaseLayout(request.body?.layout);
     if (!layout) return reply.code(400).send({ error: "Layout contains an unknown slot, object kind, or zone mismatch." });
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
-    const saved = await persistence.saveBaseLayout(token, layout);
-    if (!saved) return reply.code(404).send({ error: "Unknown device token." });
-    return { layout: saved };
+    try {
+      const saved = await persistence.saveBaseLayout(token, layout);
+      if (!saved) return reply.code(404).send({ error: "Unknown device token." });
+      return { layout: saved };
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
   });
 
   app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { shell?: unknown } }>("/api/base/shell", async (request, reply) => {
@@ -270,7 +274,10 @@ function parseBaseLayout(value: unknown): BaseLayout | null {
     layout[slotId] = kind;
   }
   try {
-    validateBaseLayout(layout);
+    // Ownership is checked transactionally by persistence. Parsing accepts
+    // the complete canonical roster so an unauthorized F1 layout reaches the
+    // explicit 409 path instead of being mistaken for malformed input.
+    validateBaseLayout(layout, { expanded: true });
     return layout;
   } catch {
     return null;

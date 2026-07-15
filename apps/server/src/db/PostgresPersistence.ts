@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { BASE_SLOT_DEFS, DEFAULT_BASE_SHELL, isObjectAllowedInSlot, starterBaseLayout, validateBaseLayout } from "@dotbot/game/content/base";
-import { recipeById } from "@dotbot/game/content/recipes";
+import { recipeById, SECOND_FLOOR_UPGRADE_ID } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { CONTRACT_ACTIVE_CAP, contractDayStamp, contractSatisfied, generateContractOffers } from "@dotbot/game/contracts";
 import type { BaseLayout, BaseShellId, ContractDefinition, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
@@ -15,7 +15,7 @@ import type {
   RegisteredPlayer,
   RunManifest,
 } from "./Persistence";
-import { baseLayouts, contracts as contractRows, learnedBlueprints, matchParticipants, matchResults, players, stashItems } from "./schema";
+import { baseLayouts, baseUpgrades, contracts as contractRows, learnedBlueprints, matchParticipants, matchResults, players, stashItems } from "./schema";
 
 export class PostgresPersistence implements Persistence {
   readonly live = true;
@@ -103,9 +103,11 @@ export class PostgresPersistence implements Persistence {
     const identity = await this.helloPlayer(token);
     if (!identity) return null;
     await this.ensureBaseLayout(identity.playerId);
-    const [layout, stash, learned, player, activeContracts] = await Promise.all([
+    const [layout, upgrades, stash, learned, player, activeContracts] = await Promise.all([
       this.db.select({ slotId: baseLayouts.slotId, objectKind: baseLayouts.objectKind })
         .from(baseLayouts).where(eq(baseLayouts.playerId, identity.playerId)),
+      this.db.select({ upgradeId: baseUpgrades.upgradeId })
+        .from(baseUpgrades).where(eq(baseUpgrades.playerId, identity.playerId)),
       this.db.select({ itemType: stashItems.itemType, qty: sql<number>`sum(${stashItems.qty})::int` })
         .from(stashItems).where(eq(stashItems.playerId, identity.playerId)).groupBy(stashItems.itemType),
       this.db.select({ blueprintId: learnedBlueprints.blueprintId })
@@ -121,6 +123,7 @@ export class PostgresPersistence implements Persistence {
       .filter((offer) => !active.some((contract) => contract.id === offer.id));
     return {
       shell: player[0]?.baseShell ?? DEFAULT_BASE_SHELL,
+      upgrades: upgrades.map((row) => row.upgradeId),
       layout: Object.fromEntries(layout.map((row) => [row.slotId, row.objectKind])) as BaseLayout,
       stash: stash.map((row) => ({ itemType: row.itemType as WireItemCode, qty: Number(row.qty) })),
       learnedBlueprints: learned.map((row) => row.blueprintId),
@@ -145,6 +148,9 @@ export class PostgresPersistence implements Persistence {
     const identity = await this.helloPlayer(token);
     if (!identity) return null;
     await this.db.transaction(async (tx) => {
+      const upgrades = await tx.select({ upgradeId: baseUpgrades.upgradeId })
+        .from(baseUpgrades).where(eq(baseUpgrades.playerId, identity.playerId)).for("update");
+      validateBaseLayout(layout, { expanded: upgrades.some((row) => row.upgradeId === SECOND_FLOOR_UPGRADE_ID) });
       await tx.delete(baseLayouts).where(eq(baseLayouts.playerId, identity.playerId));
       const rows = layoutRows(identity.playerId, layout);
       if (rows.length > 0) await tx.insert(baseLayouts).values(rows);
@@ -200,6 +206,14 @@ export class PostgresPersistence implements Persistence {
       const layoutRowsLocked = await tx.select({ slotId: baseLayouts.slotId, objectKind: baseLayouts.objectKind })
         .from(baseLayouts).where(eq(baseLayouts.playerId, player.id)).for("update");
       const layout = Object.fromEntries(layoutRowsLocked.map((row) => [row.slotId, row.objectKind])) as BaseLayout;
+      const ownedUpgrades = await tx.select({ upgradeId: baseUpgrades.upgradeId })
+        .from(baseUpgrades).where(eq(baseUpgrades.playerId, player.id)).for("update");
+      const expanded = ownedUpgrades.some((row) => row.upgradeId === SECOND_FLOOR_UPGRADE_ID);
+
+      if (recipe.output.kind === "expansion") {
+        const upgradeId = recipe.output.upgradeId;
+        if (ownedUpgrades.some((row) => row.upgradeId === upgradeId)) throw new Error("EXPANSION ALREADY OWNED.");
+      }
 
       if (recipe.requiresBlueprint) {
         const [learned] = await tx.select({ blueprintId: learnedBlueprints.blueprintId })
@@ -220,7 +234,7 @@ export class PostgresPersistence implements Persistence {
           throw new Error(`${recipe.output.objectKind} CANNOT BE PLACED IN ${slot.zone.toUpperCase()} SLOT ${slot.id}.`);
         }
         if (layout[slotId]) throw new Error(`SLOT ${slotId} IS OCCUPIED.`);
-        validateBaseLayout({ ...layout, [slotId]: recipe.output.objectKind });
+        validateBaseLayout({ ...layout, [slotId]: recipe.output.objectKind }, { expanded });
       }
 
       const lockedStash = await tx.select({ id: stashItems.id, itemType: stashItems.itemType, qty: stashItems.qty })
@@ -247,10 +261,12 @@ export class PostgresPersistence implements Persistence {
 
       if (recipe.output.kind === "furniture") {
         await tx.insert(baseLayouts).values({ playerId: player.id, slotId: slotId!, objectKind: recipe.output.objectKind });
-      } else {
+      } else if (recipe.output.kind === "item") {
         const outputCode = itemToCode(recipe.output.item);
         if (outputCode.startsWith("b:")) throw new Error("Fabrication cannot output blueprint cargo.");
         await tx.insert(stashItems).values({ playerId: player.id, itemType: outputCode, qty: 1 });
+      } else {
+        await tx.insert(baseUpgrades).values({ playerId: player.id, upgradeId: recipe.output.upgradeId });
       }
       return { output: recipe.output, slotId: recipe.output.kind === "furniture" ? slotId : undefined };
     });
