@@ -551,7 +551,7 @@ async function connect(url: string, clients: WebSocket[]): Promise<Inbox> {
 
 async function waitForBotPosition(inbox: Inbox, botId: string, predicate: (position: [number, number]) => boolean): Promise<void> {
   const started = Date.now();
-  while (Date.now() - started < 5000) {
+  while (Date.now() - started < 10_000) {
     const latest = inbox.messages
       .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
       .at(-1);

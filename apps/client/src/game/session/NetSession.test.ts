@@ -26,4 +26,20 @@ describe("NetSession item edges", () => {
     expect(sent[2]).toEqual({ type: "leaveRun" });
     expect(sent[3]).toEqual({ type: "joinSquad", squadId: "bravo" });
   });
+
+  it("decodes contract payouts from the authoritative run manifest", () => {
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    (session as unknown as { receive(message: unknown): void }).receive({
+      type: "runOver",
+      reason: "extracted",
+      keptItems: ["h"],
+      lostItems: [],
+      learnedBlueprints: [],
+      contractCompletions: [{ contractId: "contract-test", title: "TEST HAUL", payout: ["r"] }],
+    });
+    expect(session.getRunState()).toMatchObject({
+      phase: "over",
+      contractCompletions: [{ contractId: "contract-test", title: "TEST HAUL", payout: [{ kind: "powerup", type: "radar" }] }],
+    });
+  });
 });

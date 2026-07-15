@@ -99,6 +99,43 @@ describe("Room GIVE UP", () => {
   });
 });
 
+describe("Room contract manifest", () => {
+  it("forwards transaction-time contract completions on runOver", async () => {
+    class ContractPersistence extends NoopPersistence {
+      override async recordExtraction(input: Parameters<NoopPersistence["recordExtraction"]>[0]) {
+        return {
+          manifest: {
+            ...input.manifest,
+            contractCompletions: [{ contractId: "contract-test", title: "TEST HAUL", payout: ["r" as const] }],
+          },
+        };
+      }
+    }
+    const room = new Room("DONE", {
+      countdownMs: 0,
+      persistence: new ContractPersistence(),
+      aiWingmates: false,
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000099",
+    });
+    const peer = collectingPeer("contract-peer");
+    room.join(peer.peer, "contract-token", "Contractor", "contract-player", "alpha");
+    room.receive("contract-player", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+    const internals = room as unknown as {
+      members: Map<string, { botId: string }>;
+      processRunEvents(events: Array<{ type: "extracted"; botId: string; squadId: string; items: Array<{ kind: "powerup"; type: "health" }> }>): void;
+    };
+    const botId = internals.members.get("contract-player")!.botId;
+    internals.processRunEvents([{ type: "extracted", botId, squadId: "alpha", items: [{ kind: "powerup", type: "health" }] }]);
+    await waitFor(() => peer.messages.some((message) => message.type === "runOver"));
+    expect(peer.messages.find((message) => message.type === "runOver")).toMatchObject({
+      reason: "extracted",
+      contractCompletions: [{ contractId: "contract-test", title: "TEST HAUL", payout: ["r"] }],
+    });
+    room.dispose();
+  });
+});
+
 function collectingPeer(id: string): { peer: RoomPeer; messages: ServerMessage[] } {
   const messages: ServerMessage[] = [];
   return { peer: { id, send: (message) => messages.push(message) }, messages };
