@@ -315,6 +315,18 @@ function lockerGlyph(g: Graphics, o: MapObject): void {
   }
 }
 
+function bayConsoleGlyph(g: Graphics, o: MapObject): void {
+  body(g, o.x, o.y, o.w, o.h, T3, 2);
+  const inset = Math.max(4, Math.min(o.w, o.h) * 0.14);
+  g.roundRect(o.x + inset, o.y + inset, o.w - inset * 2, o.h - inset * 2, 2).stroke(T4);
+  const horizontal = o.w >= o.h;
+  if (horizontal) {
+    line(g, o.x + o.w * 0.25, o.y + o.h / 2, o.x + o.w * 0.75, o.y + o.h / 2, T5);
+  } else {
+    line(g, o.x + o.w / 2, o.y + o.h * 0.25, o.x + o.w / 2, o.y + o.h * 0.75, T5);
+  }
+}
+
 function toolCabinetGlyph(g: Graphics, o: MapObject): void {
   body(g, o.x, o.y, o.w, o.h, T4);
   line(g, o.x + 1, o.y + o.h / 2, o.x + o.w - 1, o.y + o.h / 2, T5);
@@ -503,6 +515,27 @@ function workbenchGlyph(g: Graphics, o: MapObject): void {
     g.rect(o.x + o.w / 2 - 5, o.y + o.h - 10, 10, 8).stroke(T4);
     line(g, o.x + 5, o.y + 4, o.x + 5, o.y + o.h - 14, T5);
   }
+}
+
+function fabricatorGlyph(g: Graphics, o: MapObject): void {
+  body(g, o.x, o.y, o.w, o.h, T3, 2);
+  const cx = o.x + o.w / 2;
+  const cy = o.y + o.h / 2;
+  const r = Math.min(o.w, o.h) * 0.28;
+  g.circle(cx, cy, r).stroke(T4);
+  for (let index = 0; index < 6; index += 1) {
+    const angle = (index * Math.PI) / 3;
+    line(g, cx + Math.cos(angle) * r * 0.35, cy + Math.sin(angle) * r * 0.35, cx + Math.cos(angle) * r, cy + Math.sin(angle) * r, T5);
+  }
+  g.circle(cx, cy, r * 0.22).stroke(T5);
+}
+
+function planningTableGlyph(g: Graphics, o: MapObject): void {
+  body(g, o.x, o.y, o.w, o.h, T3, 5);
+  g.rect(o.x + 7, o.y + 7, o.w - 14, o.h - 14).stroke(T5);
+  line(g, o.x + o.w * 0.25, o.y + 7, o.x + o.w * 0.25, o.y + o.h - 7, T5);
+  line(g, o.x + o.w * 0.62, o.y + 7, o.x + o.w * 0.62, o.y + o.h - 7, T5);
+  line(g, o.x + 7, o.y + o.h * 0.48, o.x + o.w - 7, o.y + o.h * 0.48, T5);
 }
 
 function forkliftGlyph(g: Graphics, o: MapObject): void {
@@ -777,6 +810,9 @@ export const glyphs: Record<ObjectKind, GlyphFn> = {
   stove: stoveGlyph,
   column: columnGlyph,
   rug: rugGlyph,
+  fabricator: fabricatorGlyph,
+  bayConsole: bayConsoleGlyph,
+  planningTable: planningTableGlyph,
 };
 
 export function drawObject(g: Graphics, object: MapObject): void {

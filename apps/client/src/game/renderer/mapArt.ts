@@ -6,6 +6,7 @@ import type {
   FloorPlan,
   MapDocument,
   Rect,
+  PlacementSlot,
   StairLink,
   Vec2,
   WallSegment,
@@ -78,7 +79,7 @@ export function buildMapArt(map: MapDocument): MapArt {
   drawGround(ground, map);
   drawOutdoorObjects(outdoorDetail, outdoorObjects, map);
 
-  const buildings = map.buildings.map((building) => buildBuildingArt(building, buildingsLayer, labels));
+  const buildings = map.buildings.map((building) => buildBuildingArt(building, buildingsLayer, labels, map.placementSlots));
 
   drawStreetNames(labels, map);
   drawExtractionLabels(labels, map);
@@ -557,11 +558,11 @@ function drawExtractionLabels(layer: Container, map: MapDocument): void {
 // Buildings
 // ---------------------------------------------------------------------------
 
-function buildBuildingArt(building: Building, buildingsLayer: Container, labels: Container): BuildingArt {
+function buildBuildingArt(building: Building, buildingsLayer: Container, labels: Container, placementSlots?: PlacementSlot[]): BuildingArt {
   const floors: FloorArt[] = [];
 
   for (const floor of building.floors) {
-    const art = buildFloorArt(building, floor);
+    const art = buildFloorArt(building, floor, floor.label === "GROUND" ? placementSlots : undefined);
     art.view.visible = false;
     buildingsLayer.addChild(art.view);
     floors.push(art);
@@ -639,7 +640,7 @@ export function drawRoofPlate(g: Graphics, fp: Rect): void {
   g.rect(fp.x + 8, fp.y + 8, fp.w - 16, fp.h - 16).stroke(strokes.hairline);
 }
 
-function buildFloorArt(building: Building, floor: FloorPlan): FloorArt {
+function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: PlacementSlot[]): FloorArt {
   const view = new Container();
   const architecture = new Graphics();
   const furniture = new Graphics();
@@ -660,6 +661,11 @@ function buildFloorArt(building: Building, floor: FloorPlan): FloorArt {
   // Furniture below structure so wall poché always wins overlaps.
   for (const object of floor.objects) {
     drawObject(furniture, object);
+  }
+  const occupiedSlots = new Set(floor.objects.map((object) => object.slotId).filter(Boolean));
+  for (const slot of placementSlots ?? []) {
+    if (occupiedSlots.has(slot.id)) continue;
+    drawPlacementSlot(furniture, slot);
   }
 
   // Stairs.
@@ -687,6 +693,21 @@ function buildFloorArt(building: Building, floor: FloorPlan): FloorArt {
 
   view.addChild(architecture, furniture, annotation);
   return { floor, view, architecture, furniture, annotation, annotationGfx };
+}
+
+function drawPlacementSlot(g: Graphics, slot: PlacementSlot): void {
+  const { x, y, w, h } = slot.rect;
+  const tick = 8;
+  const style = { color: INK.hairline, width: WEIGHT.hairline, alpha: 0.72 };
+  for (const [cx, cy, dx, dy] of [
+    [x, y, 1, 1],
+    [x + w, y, -1, 1],
+    [x, y + h, 1, -1],
+    [x + w, y + h, -1, -1],
+  ] as Array<[number, number, number, number]>) {
+    g.moveTo(cx + dx * tick, cy).lineTo(cx, cy).lineTo(cx, cy + dy * tick).stroke(style);
+  }
+  g.circle(x + w / 2, y + h / 2, 2).stroke(style);
 }
 
 // --- Windows ---------------------------------------------------------------

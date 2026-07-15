@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
+import { basePlacementSlots, createBaseMap, starterBaseLayout } from "./content/base";
 import { collisionLayers, isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Doorway, MapDocument, Rect, StairLink, Vec2 } from "./types";
@@ -26,8 +27,7 @@ type FloorWorld = {
   doorways: Doorway[];
 };
 
-function collectFloors(): FloorWorld[] {
-  const map = downtownMap;
+function collectFloors(map: MapDocument = downtownMap): FloorWorld[] {
   const floors = new Map<string, FloorWorld>();
   const floor = (floorId: string): FloorWorld => {
     let world = floors.get(floorId);
@@ -90,9 +90,9 @@ function circleClearsRects(center: Vec2, radius: number, rects: Rect[]): boolean
   return true;
 }
 
-function floodReachable(world: FloorWorld): Set<number> {
-  const cols = Math.ceil(downtownMap.width / CELL);
-  const rows = Math.ceil(downtownMap.height / CELL);
+function floodReachable(world: FloorWorld, map: MapDocument = downtownMap): Set<number> {
+  const cols = Math.ceil(map.width / CELL);
+  const rows = Math.ceil(map.height / CELL);
   const cellCenter = (index: number): Vec2 => ({
     x: (index % cols) * CELL + CELL / 2,
     y: Math.floor(index / cols) * CELL + CELL / 2,
@@ -103,8 +103,8 @@ function floodReachable(world: FloorWorld): Set<number> {
     if (
       center.x < BOT_RADIUS ||
       center.y < BOT_RADIUS ||
-      center.x > downtownMap.width - BOT_RADIUS ||
-      center.y > downtownMap.height - BOT_RADIUS
+      center.x > map.width - BOT_RADIUS ||
+      center.y > map.height - BOT_RADIUS
     ) {
       return false;
     }
@@ -139,8 +139,8 @@ function floodReachable(world: FloorWorld): Set<number> {
   return reachable;
 }
 
-function nearestReachableDistance(target: Vec2, reachable: Set<number>, range: number): number {
-  const cols = Math.ceil(downtownMap.width / CELL);
+function nearestReachableDistance(target: Vec2, reachable: Set<number>, range: number, map: MapDocument = downtownMap): number {
+  const cols = Math.ceil(map.width / CELL);
   let best = Number.POSITIVE_INFINITY;
   const span = Math.ceil((range + CELL) / CELL);
   const baseCol = Math.floor(target.x / CELL);
@@ -282,5 +282,44 @@ describe("downtown map validation", () => {
         }
       }
     }
+  });
+});
+
+describe("base map validation", () => {
+  const map = createBaseMap(starterBaseLayout);
+  const [world] = collectFloors(map);
+
+  it("is deterministic and contains only the player with empty bays", () => {
+    expect(createBaseMap(starterBaseLayout)).toEqual(createBaseMap({ ...starterBaseLayout }));
+    expect(map.outdoor.dotSpawns).toEqual([]);
+    expect(map.buildings.flatMap((building) => building.floors.flatMap((floor) => floor.dotSpawns))).toEqual([]);
+    expect(map.botSpawns).toEqual([
+      expect.objectContaining({ id: "player", controller: "human", bays: [null, null, null, null], hold: [] }),
+    ]);
+  });
+
+  it("keeps the shell spawn, every slot, and the deployment threshold reachable", () => {
+    const reachable = floodReachable(world, map);
+    const spawn = map.botSpawns[0];
+    expect(nearestReachableDistance(spawn.position, reachable, BOT_RADIUS, map)).toBeLessThanOrEqual(BOT_RADIUS);
+
+    for (const slot of basePlacementSlots) {
+      const center = { x: slot.rect.x + slot.rect.w / 2, y: slot.rect.y + slot.rect.h / 2 };
+      const interactionReach = Math.hypot(slot.rect.w, slot.rect.h) / 2 + 48;
+      expect(
+        nearestReachableDistance(center, reachable, interactionReach, map),
+        `base slot ${slot.id} cannot be approached`,
+      ).toBeLessThanOrEqual(interactionReach);
+    }
+
+    const threshold = map.extractionPoints[0].rect;
+    const center = { x: threshold.x + threshold.w / 2, y: threshold.y + threshold.h / 2 };
+    expect(nearestReachableDistance(center, reachable, BOT_RADIUS, map)).toBeLessThanOrEqual(BOT_RADIUS);
+  });
+
+  it("rejects unknown slots, object kinds, and zone mismatches", () => {
+    expect(() => createBaseMap({ mystery: "locker" })).toThrow(/Unknown base placement slot/);
+    expect(() => createBaseMap({ "wall-n": "not-real" } as never)).toThrow(/Unknown base object kind/);
+    expect(() => createBaseMap({ "floor-center": "fabricator" })).toThrow(/cannot be placed in floor slot/);
   });
 });

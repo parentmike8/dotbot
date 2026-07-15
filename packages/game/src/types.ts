@@ -117,7 +117,22 @@ export type ObjectKind =
   | "sink"
   | "stove"
   | "column"
-  | "rug";
+  | "rug"
+  | "fabricator"
+  | "bayConsole"
+  | "planningTable";
+
+/** Furniture that can be installed in the persistent player base. */
+export type BaseObjectKind = "fabricator" | "locker" | "bayConsole" | "planningTable";
+
+export type PlacementSlot = {
+  id: string;
+  rect: Rect;
+  zone: "wall" | "floor";
+};
+
+/** Sparse by design: omitted slot ids render as empty placement markers. */
+export type BaseLayout = Record<string, BaseObjectKind>;
 
 export type Facing = "N" | "S" | "E" | "W";
 
@@ -134,6 +149,8 @@ export type MapObject = {
   solid?: boolean;
   /** Scannable objects can later be scanned for Base unlocks. Data-only for now. */
   scannable?: boolean;
+  /** Persistent base placement slot that materialized this object. */
+  slotId?: string;
 };
 
 export type StairLink = {
@@ -226,6 +243,8 @@ export type MapDocument = {
   buildings: Building[];
   extractionPoints: ExtractionPoint[];
   botSpawns: BotSpawn[];
+  /** Present only on maps that support slot-based furniture placement. */
+  placementSlots?: PlacementSlot[];
 };
 
 // ---------------------------------------------------------------------------
