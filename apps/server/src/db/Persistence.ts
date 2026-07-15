@@ -42,6 +42,7 @@ export type PlayerBase = {
   loadout: WireItemCode[];
   stashCapacity: number;
   presets: LoadoutPreset[];
+  insertionPreference: string | null;
 };
 
 export type FabricationResult = {
@@ -68,6 +69,8 @@ export interface Persistence {
   fabricate(token: string, recipeId: string, slotId?: string): Promise<FabricationResult | null>;
   savePresets(token: string, presets: LoadoutPreset[]): Promise<PlayerBase | null>;
   applyPreset(token: string, presetIndex: number): Promise<PresetApplyResult | null>;
+  setInsertionPreference(token: string, insertionPointId: string | null): Promise<string | null>;
+  getInsertionPreference(playerId: string): Promise<string | null>;
   consumeLoadout(playerId: string): Promise<WireItemCode[]>;
   startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void>;
   recordExtraction(input: {

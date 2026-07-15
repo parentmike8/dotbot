@@ -26,6 +26,41 @@ describe("Room lobby squads", () => {
     await waitFor(() => room.phase === "live");
     room.dispose();
   });
+
+  it("loads squad preferences, enforces insertion spacing, and names each matchStart insertion", async () => {
+    class PreferencePersistence extends NoopPersistence {
+      override async getInsertionPreference(playerId: string) {
+        return playerId === "s1" ? "nw-corner" : "west-gate";
+      }
+    }
+    const room = new Room("LAND", {
+      countdownMs: 0,
+      persistence: new PreferencePersistence(),
+      aiWingmates: false,
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000016",
+    });
+    const alpha = collectingPeer("landing-alpha");
+    const bravo = collectingPeer("landing-bravo");
+    room.join(alpha.peer, "landing-token-a", "Alpha", "s1", "alpha");
+    room.join(bravo.peer, "landing-token-b", "Bravo", "s2", "bravo");
+    room.receive("s1", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+
+    const alphaStart = alpha.messages.find((message) => message.type === "matchStart");
+    const bravoStart = bravo.messages.find((message) => message.type === "matchStart");
+    expect(alphaStart?.insertionName).toBeTruthy();
+    expect(bravoStart?.insertionName).toBeTruthy();
+    expect([alphaStart?.insertionName, bravoStart?.insertionName]).not.toEqual(["NW CORNER", "WEST GATE"]);
+    const internals = room as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: { getSnapshot(): { bots: Array<{ id: string; position: { x: number; y: number } }> } };
+    };
+    const snapshot = internals.simulation.getSnapshot();
+    const a = snapshot.bots.find((bot) => bot.id === internals.members.get("s1")!.botId)!;
+    const b = snapshot.bots.find((bot) => bot.id === internals.members.get("s2")!.botId)!;
+    expect(Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y)).toBeGreaterThanOrEqual(900);
+    room.dispose();
+  });
 });
 
 describe("Room GIVE UP", () => {

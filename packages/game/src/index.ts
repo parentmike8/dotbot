@@ -1,5 +1,7 @@
 export { DotBotSimulation } from "./simulation";
 export { defaultGameConfig } from "./config";
+export { assignSquadInsertions, squadPreference, squadSpawnPosition, validateInsertionMap } from "./insertion";
+export type { InsertionAssignment, InsertionMemberPreference, InsertionSquad } from "./insertion";
 export { downtownMap } from "./content/downtown";
 export {
   BASE_OBJECT_KINDS,

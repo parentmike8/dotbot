@@ -29,6 +29,7 @@ export const defaultGameConfig: GameConfig = {
   reviveCleanDurationMs: 2500,
   lootThenReviveDurationMs: 4500,
   pleaCooldownMs: 10_000,
+  minInsertionSpacing: 900,
   respawnDelayMs: 1200,
   coverCenterTolerance: 12,
   extractionDurationMs: 4000,

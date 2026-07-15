@@ -50,6 +50,7 @@ function makeMap(botSpawns: BotSpawn[], dotSpawns: DotSpawn[] = []): MapDocument
     },
     buildings: [],
     extractionPoints: [],
+    insertionPoints: [],
     botSpawns,
   };
 }

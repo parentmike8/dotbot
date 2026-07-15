@@ -28,6 +28,7 @@ describe("persistence graceful degradation", () => {
     expect((await app.inject({ method: "POST", url: "/api/base/shell", headers: { "x-device-token": account.token }, payload: { shell: "hangar" } })).statusCode).toBe(503);
     expect((await app.inject({ method: "POST", url: "/api/base/fabricate", headers: { "x-device-token": account.token }, payload: { recipeId: "convert-radar" } })).statusCode).toBe(503);
     expect((await app.inject({ method: "POST", url: "/api/base/presets", headers: { "x-device-token": account.token }, payload: { presets: [] } })).statusCode).toBe(503);
+    expect((await app.inject({ method: "POST", url: "/api/base/insertion", headers: { "x-device-token": account.token }, payload: { insertionPointId: "ne-park" } })).statusCode).toBe(503);
 
     await app.close();
     warning.mockRestore();

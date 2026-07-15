@@ -24,6 +24,7 @@ function makeMap(overrides: Partial<MapDocument> = {}): MapDocument {
     },
     buildings: [],
     extractionPoints: [],
+    insertionPoints: [],
     botSpawns: [],
     ...overrides,
   };

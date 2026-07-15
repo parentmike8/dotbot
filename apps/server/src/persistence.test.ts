@@ -43,11 +43,16 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
 
   it("banks itemized extractions atomically and learns a blueprint on the third fragment", async () => {
     process.env.NODE_ENV = "test";
+    const deterministicMatchIds = [
+      "00000000-0000-4000-8000-000000000016",
+      "00000000-0000-4000-8000-000000000021",
+    ];
     const { app, rooms, persistence } = await createServer({
       databaseUrl,
       countdownMs: 0,
       // Scripted pickups must have no AI rivals contesting map dots.
       aiWingmates: false,
+      matchIdFactory: () => deterministicMatchIds.shift() ?? crypto.randomUUID(),
       config: {
         botSpeed: 4000,
         coverDurationMs: 100,
@@ -91,20 +96,27 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
       const [aliceStart] = await Promise.all([alice.waitFor("matchStart", 10_000), bob.waitFor("matchStart", 10_000)]);
       await alice.waitFor("snap");
       let seq = 0;
-      alice.send({ type: "input", seq: ++seq, move: [0, 0], dash: false, useBay: 0 });
-      await waitForInventory(alice, aliceStart.yourBotId, (bays) => bays.every((item) => item === null));
       const moveUntil = async (move: [number, number], predicate: (position: [number, number]) => boolean) => {
         alice.send({ type: "input", seq: ++seq, move, dash: false });
         await waitForBotPosition(alice, aliceStart.yourBotId, predicate);
       };
+      // Deterministic seeds put Alpha at WEST GATE; enter Main St before the
+      // established depot fragment route.
+      await moveUntil([0, 1], ([, y]) => y >= 920);
       await moveUntil([1, 0], ([x]) => x >= 340);
-      await moveUntil([0, 1], ([, y]) => y >= 1080);
+      // Settle in the clear strip between the top wall and the first column;
+      // a coarse south predicate can overshoot into the column's radius.
+      seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 340, y: 1080 }, seq);
       await moveUntil([0.2, 0], ([x]) => x >= 438);
-      seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 440, y: 1270 }, seq, (bays) => bays.includes("b:shelf"));
-      // The health dot sits at (452, 1270), 12px from the fragment; the
-      // fragment steer never reliably covers both (capture range is
-      // botRadius - dotRadius - 2 = 12), so capture it explicitly.
-      seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 452, y: 1270 }, seq, (bays) => bays.includes("h"));
+      // The health dot overlaps the blueprint approach. If health resolves
+      // first, consume the original health to make room, then hold the same
+      // settled position for the shelf fragment.
+      seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 440, y: 1270 }, seq, (bays) => bays.filter(Boolean).length === 2);
+      if (!latestBays(alice, aliceStart.yourBotId)?.includes("b:shelf")) {
+        alice.send({ type: "input", seq: ++seq, move: [0, 0], dash: false, useBay: 0 });
+        await waitForBays(alice, aliceStart.yourBotId, (bays) => bays.filter(Boolean).length === 1);
+        seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 440, y: 1270 }, seq, (bays) => bays.includes("b:shelf"));
+      }
 
       await moveUntil([0, -1], ([, y]) => y <= 1080);
       await moveUntil([-1, 0], ([x]) => x <= 340);
@@ -195,6 +207,14 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(initial.json<{ storageLinked: boolean; layout: BaseLayout }>().storageLinked).toBe(true);
     expect(initial.json<{ layout: BaseLayout }>().layout).toEqual(starterBaseLayout);
     expect(initial.json<{ shell: string }>().shell).toBe("workshop");
+    expect(initial.json<{ insertionPreference: string | null }>().insertionPreference).toBeNull();
+    const preferredInsertion = await app.inject({ method: "POST", url: "/api/base/insertion", headers, payload: { insertionPointId: "ne-park" } });
+    expect(preferredInsertion.statusCode).toBe(200);
+    expect(preferredInsertion.json<{ insertionPreference: string | null }>().insertionPreference).toBe("ne-park");
+    expect((await app.inject({ method: "GET", url: "/api/base", headers })).json<{ insertionPreference: string | null }>().insertionPreference).toBe("ne-park");
+    expect((await app.inject({ method: "POST", url: "/api/base/insertion", headers, payload: { insertionPointId: "nowhere" } })).statusCode).toBe(400);
+    const clearedInsertion = await app.inject({ method: "POST", url: "/api/base/insertion", headers, payload: { insertionPointId: null } });
+    expect(clearedInsertion.json<{ insertionPreference: string | null }>().insertionPreference).toBeNull();
 
     // Shell choice is cosmetic: it round-trips per player and never touches
     // the layout (identical slot roster across shells).
@@ -460,26 +480,25 @@ async function waitForBotPosition(inbox: Inbox, botId: string, predicate: (posit
   throw new Error(`Timed out waiting for ${botId}`);
 }
 
-async function waitForInventory(
+async function waitForBays(
   inbox: Inbox,
   botId: string,
   predicate: (bays: NonNullable<Extract<ServerMessage, { type: "snap" }>["bots"][number]["b"]>) => boolean,
 ): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < 5000) {
-    const latest = inbox.messages
-      .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
-      .at(-1);
+    const latest = inbox.messages.filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap").at(-1);
     const bays = latest?.bots.find((bot) => bot.i === botId)?.b;
     if (bays && predicate(bays)) return;
     await delay(5);
   }
-  const latest = inbox.messages
+  throw new Error(`Timed out waiting for ${botId} bays`);
+}
+
+function latestBays(inbox: Inbox, botId: string) {
+  return inbox.messages
     .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
-    .at(-1);
-  const bot = latest?.bots.find((candidate) => candidate.i === botId);
-  const nearbyDots = bot ? latest?.dots.filter((dot) => Math.hypot(dot.position.x - bot.p[0], dot.position.y - bot.p[1]) < 80) : [];
-  throw new Error(`Timed out waiting for ${botId} inventory; bot=${JSON.stringify(bot)} dots=${JSON.stringify(nearbyDots)}`);
+    .at(-1)?.bots.find((bot) => bot.i === botId)?.b;
 }
 
 async function steerBotTo(
@@ -516,7 +535,10 @@ async function steerBotTo(
         inbox.send({
           type: "input",
           seq: ++seq,
-          move: [Math.max(-0.15, Math.min(0.15, dx / 100)), Math.max(-0.15, Math.min(0.15, dy / 100))],
+          // Keep the final approach below one capture radius per snapshot;
+          // faster steering can oscillate across adjacent 12px dots under
+          // full-workspace load without ever holding either channel.
+          move: [Math.max(-0.1, Math.min(0.1, dx / 160)), Math.max(-0.1, Math.min(0.1, dy / 160))],
           dash: false,
         });
       }

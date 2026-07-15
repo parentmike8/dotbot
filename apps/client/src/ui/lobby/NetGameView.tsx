@@ -40,6 +40,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         <strong>{player?.name ?? "Connecting"}</strong>
         <span>{player ? `${player.shields}/${player.maxShields} shields` : "Waiting for snapshots"}</span>
         <span>Run {formatRunTime(remainingRunMs)}</span>
+        {snapshot && snapshot.timeMs < 5_000 ? <b className="insertion-banner">INSERTED: {session.insertionName}</b> : null}
       </aside>
       <aside className="net-game-bays" aria-label="In-run bays">
         <span>BAYS</span>

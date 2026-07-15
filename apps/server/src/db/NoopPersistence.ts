@@ -25,7 +25,7 @@ export class NoopPersistence implements Persistence {
   }
 
   async getBase() {
-    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40, presets: [] };
+    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40, presets: [], insertionPreference: null };
   }
 
   async saveBaseLayout(_token: string, layout: BaseLayout): Promise<BaseLayout> { return layout; }
@@ -34,6 +34,8 @@ export class NoopPersistence implements Persistence {
   async fabricate(): Promise<null> { return null; }
   async savePresets(): Promise<null> { return null; }
   async applyPreset(): Promise<null> { return null; }
+  async setInsertionPreference(_token: string, _insertionPointId: string | null): Promise<string | null> { return null; }
+  async getInsertionPreference(_playerId: string): Promise<string | null> { return null; }
   async consumeLoadout(): Promise<WireItemCode[]> { return []; }
 
   async startMatch(): Promise<void> {}

@@ -108,7 +108,7 @@ export class PostgresPersistence implements Persistence {
         .from(stashItems).where(eq(stashItems.playerId, identity.playerId)).groupBy(stashItems.itemType),
       this.db.select({ blueprintId: learnedBlueprints.blueprintId })
         .from(learnedBlueprints).where(eq(learnedBlueprints.playerId, identity.playerId)),
-      this.db.select({ loadout: players.loadout, baseShell: players.baseShell, presets: players.presets })
+      this.db.select({ loadout: players.loadout, baseShell: players.baseShell, presets: players.presets, insertionPreference: players.insertionPreference })
         .from(players).where(eq(players.id, identity.playerId)).limit(1),
     ]);
     return {
@@ -119,6 +119,7 @@ export class PostgresPersistence implements Persistence {
       loadout: player[0]?.loadout ?? [],
       stashCapacity: layout.filter((row) => row.objectKind === "locker").length * 20,
       presets: player[0]?.presets ?? [],
+      insertionPreference: player[0]?.insertionPreference ?? null,
     };
   }
 
@@ -287,6 +288,19 @@ export class PostgresPersistence implements Persistence {
     if (!missing) return null;
     const base = await this.getBase(token);
     return base ? { base, missing } : null;
+  }
+
+  async setInsertionPreference(token: string, insertionPointId: string | null): Promise<string | null> {
+    const updated = await this.db.update(players).set({ insertionPreference: insertionPointId })
+      .where(eq(players.deviceTokenHash, hashToken(token))).returning({ insertionPreference: players.insertionPreference });
+    if (updated.length === 0) throw new Error("Unknown device token.");
+    return updated[0].insertionPreference;
+  }
+
+  async getInsertionPreference(playerId: string): Promise<string | null> {
+    const [player] = await this.db.select({ insertionPreference: players.insertionPreference })
+      .from(players).where(eq(players.id, playerId)).limit(1);
+    return player?.insertionPreference ?? null;
   }
 
   async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void> {

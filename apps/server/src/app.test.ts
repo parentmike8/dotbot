@@ -33,6 +33,7 @@ describe("multiplayer server", () => {
         playerSpeed: 1000,
         runDurationMs: 2500,
       },
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000016",
     });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const address = app.server.address();
@@ -58,13 +59,16 @@ describe("multiplayer server", () => {
     const firstA = await a.waitFor("snap");
     expect(firstA.bots.find((bot) => bot.i === startA.yourBotId)?.b?.filter(Boolean)).toHaveLength(1);
 
-    // Alpha starts at (300, 920). Move east beyond the depot wall, then south
-    // into the 960..1070 x 1150..1260 extraction rectangle.
-    a.send({ type: "input", seq: 1, move: [1, 0], dash: false });
+    // The deterministic insertion test seed puts Alpha at WEST GATE. Enter
+    // the Main St corridor, move east beyond the depot wall, then south into
+    // the 960..1070 x 1150..1260 extraction rectangle.
+    a.send({ type: "input", seq: 1, move: [0, 1], dash: false });
+    await waitForBotPosition(a, startA.yourBotId, ([, y]) => y >= 920);
+    a.send({ type: "input", seq: 2, move: [1, 0], dash: false });
     await waitForBotPosition(a, startA.yourBotId, ([x]) => x >= 1000);
-    a.send({ type: "input", seq: 2, move: [0, 1], dash: false });
+    a.send({ type: "input", seq: 3, move: [0, 1], dash: false });
     await waitForBotPosition(a, startA.yourBotId, ([, y]) => y >= 1160);
-    a.send({ type: "input", seq: 3, move: [0, 0], dash: false });
+    a.send({ type: "input", seq: 4, move: [0, 0], dash: false });
 
     const runOverA = await a.waitFor("runOver", 5000);
     expect(runOverA).toEqual({ type: "runOver", reason: "extracted", keptItems: ["h"], lostItems: [], learnedBlueprints: [] });

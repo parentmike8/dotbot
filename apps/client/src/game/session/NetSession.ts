@@ -50,6 +50,7 @@ export class NetSession implements GameSession {
   private rejectStart: ((error: Error) => void) | null = null;
   private runState: RunState = { phase: "live" };
   private endTick = Number.MAX_SAFE_INTEGER;
+  private insertionNameValue = "";
   private warnedClockDrift = false;
 
   constructor(options: NetSessionOptions) {
@@ -68,6 +69,10 @@ export class NetSession implements GameSession {
 
   get playerId(): string {
     return this.playerIdValue;
+  }
+
+  get insertionName(): string {
+    return this.insertionNameValue;
   }
 
   getEntityMeta(id: string): EntityMeta | undefined {
@@ -233,6 +238,7 @@ export class NetSession implements GameSession {
         this.playerIdValue = message.yourBotId;
         this.tickHz = message.tickHz;
         this.endTick = message.endTick;
+        this.insertionNameValue = message.insertionName;
         this.metaIndex = new Map(message.meta.map((meta) => [meta.id, meta]));
         this.runState = { phase: "live" };
         this.resolveStart?.();

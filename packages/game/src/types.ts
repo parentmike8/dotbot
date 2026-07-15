@@ -248,6 +248,14 @@ export type ExtractionPoint = {
   rect: Rect;
 };
 
+export type InsertionPoint = {
+  id: string;
+  name: string;
+  position: Vec2;
+  /** Defaults to the shared outdoor physics floor. */
+  floorId?: string;
+};
+
 export type OutdoorPlan = {
   roads: Road[];
   parks: ParkArea[];
@@ -281,6 +289,7 @@ export type MapDocument = {
   outdoor: OutdoorPlan;
   buildings: Building[];
   extractionPoints: ExtractionPoint[];
+  insertionPoints: InsertionPoint[];
   botSpawns: BotSpawn[];
   /** Present only on maps that support slot-based furniture placement. */
   placementSlots?: PlacementSlot[];
@@ -394,6 +403,7 @@ export type GameConfig = {
   reviveCleanDurationMs: number;
   lootThenReviveDurationMs: number;
   pleaCooldownMs: number;
+  minInsertionSpacing: number;
   respawnDelayMs: number;
   coverCenterTolerance: number;
   extractionDurationMs: number;

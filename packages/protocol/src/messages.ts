@@ -95,6 +95,7 @@ export type ServerMessage =
       meta: EntityMeta[];
       tickHz: number;
       endTick: number;
+      insertionName: string;
     }
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }

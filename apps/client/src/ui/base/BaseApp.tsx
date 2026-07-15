@@ -13,6 +13,7 @@ import {
   validateBaseLayout,
 } from "@dotbot/game/content/base";
 import { RECIPES, recipeById, type Recipe } from "@dotbot/game/content/recipes";
+import { downtownMap } from "@dotbot/game/content/downtown";
 import type { BaseLayout, BaseObjectKind, BaseShellId, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
 import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { useDotBotGame } from "../../game/useDotBotGame";
@@ -36,6 +37,7 @@ export type BasePayload = {
   loadout: WireItemCode[];
   stashCapacity: number;
   presets: LoadoutPreset[];
+  insertionPreference: string | null;
 };
 
 type Panel =
@@ -55,6 +57,7 @@ const offlinePayload: BasePayload = {
   loadout: [],
   stashCapacity: 40,
   presets: [],
+  insertionPreference: null,
 };
 
 export function BaseApp() {
@@ -242,6 +245,26 @@ export function BaseApp() {
     }
   }, [base.storageLinked]);
 
+  const updateInsertionPreference = useCallback(async (insertionPointId: string | null) => {
+    if (!base.storageLinked) return;
+    const token = localStorage.getItem(deviceTokenKey);
+    if (!token) return;
+    try {
+      const response = await fetch("/api/base/insertion", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-device-token": token },
+        body: JSON.stringify({ insertionPointId }),
+      });
+      const body = await response.json() as { insertionPreference?: string | null; error?: string };
+      if (!response.ok) throw new Error(body.error ?? `Insertion preference failed (${response.status})`);
+      setBase((current) => ({ ...current, insertionPreference: body.insertionPreference ?? null }));
+      const point = downtownMap.insertionPoints.find((candidate) => candidate.id === body.insertionPreference);
+      setNotice(point ? `INSERTION PREFERENCE: ${point.name}` : "INSERTION PREFERENCE CLEARED");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message.toUpperCase() : "INSERTION PREFERENCE FAILED");
+    }
+  }, [base.storageLinked]);
+
   if (deployment) {
     return <LobbyApp embedded onReturnToBase={() => {
       setDeployment(false);
@@ -277,6 +300,7 @@ export function BaseApp() {
       fabricate={fabricate}
       savePresets={savePresets}
       applyPreset={applyPreset}
+      updateInsertionPreference={updateInsertionPreference}
     />
   );
 }
@@ -299,6 +323,7 @@ type BaseSessionProps = {
   fabricate: (recipeId: string, slotId?: string) => Promise<void>;
   savePresets: (presets: LoadoutPreset[]) => Promise<void>;
   applyPreset: (presetIndex: number) => Promise<void>;
+  updateInsertionPreference: (insertionPointId: string | null) => Promise<void>;
 };
 
 function BaseSession(props: BaseSessionProps) {
@@ -406,13 +431,14 @@ function BaseSession(props: BaseSessionProps) {
           fabricate={props.fabricate}
           savePresets={props.savePresets}
           applyPreset={props.applyPreset}
+          updateInsertionPreference={props.updateInsertionPreference}
         />
       ) : null}
     </main>
   );
 }
 
-function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, updateShell, notice, fabricate, savePresets, applyPreset }: {
+function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, updateShell, notice, fabricate, savePresets, applyPreset, updateInsertionPreference }: {
   panel: Exclude<Panel, null>;
   base: BasePayload;
   close: () => void;
@@ -424,6 +450,7 @@ function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, update
   fabricate: (recipeId: string, slotId?: string) => Promise<void>;
   savePresets: (presets: LoadoutPreset[]) => Promise<void>;
   applyPreset: (presetIndex: number) => Promise<void>;
+  updateInsertionPreference: (insertionPointId: string | null) => Promise<void>;
 }) {
   if (panel.type === "move") {
     return <MovePanel panel={panel} layout={base.layout} close={close} move={move} />;
@@ -441,7 +468,7 @@ function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, update
   return (
     <section className="base-panel" aria-label={`${title} panel`}>
       <header><span>HOME BAY / OBJECT</span><strong>{title}</strong><button type="button" onClick={close}>×</button></header>
-      {!base.storageLinked && (panel.type === "locker" || panel.type === "bayConsole" || panel.type === "fabricator") ? <p className="offline-hint">OFFLINE — NO STORAGE LINK</p> : null}
+      {!base.storageLinked && (panel.type === "locker" || panel.type === "bayConsole" || panel.type === "fabricator" || panel.type === "planningTable") ? <p className="offline-hint">OFFLINE — NO STORAGE LINK</p> : null}
       {panel.type === "locker" ? <>
         <h2>STASH {stashCount(base.stash)}/{base.stashCapacity}</h2><ItemCounts items={base.stash} />
         <h2>LEARNED BLUEPRINTS</h2><p>{base.learnedBlueprints.length ? base.learnedBlueprints.join(" · ") : "NONE YET"}</p>
@@ -451,10 +478,42 @@ function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, update
         if (recipe.output.kind === "furniture") chooseMove({ type: "fabricateSlot", recipeId: recipe.id });
         else void fabricate(recipe.id);
       }} /> : null}
-      {panel.type === "planningTable" ? <p className="stub-message">CONTRACTS — NOT YET COMMISSIONED</p> : null}
+      {panel.type === "planningTable" ? <PlanningTablePanel base={base} updateInsertionPreference={updateInsertionPreference} /> : null}
       <footer><button type="button" onClick={() => chooseMove({ type: "move", fromSlotId: panel.slotId })}>MOVE</button></footer>
     </section>
   );
+}
+
+function PlanningTablePanel({ base, updateInsertionPreference }: {
+  base: BasePayload;
+  updateInsertionPreference: (insertionPointId: string | null) => Promise<void>;
+}) {
+  const selected = downtownMap.insertionPoints.find((point) => point.id === base.insertionPreference);
+  return <>
+    <h2>INSERTION: {selected?.name ?? "NO PREFERENCE"}</h2>
+    <svg className="insertion-map" viewBox={`0 0 ${downtownMap.width} ${downtownMap.height}`} role="img" aria-label="Downtown insertion preference map">
+      <rect x={0} y={0} width={downtownMap.width} height={downtownMap.height} fill="none" stroke="currentColor" strokeWidth={24} />
+      {downtownMap.outdoor.roads.map((road) => <rect key={road.id} x={road.x} y={road.y} width={road.w} height={road.h} fill="currentColor" opacity={0.08} />)}
+      {downtownMap.buildings.map((building) => <rect key={building.id} x={building.footprint.x} y={building.footprint.y} width={building.footprint.w} height={building.footprint.h} fill="currentColor" opacity={0.18} />)}
+      {downtownMap.insertionPoints.map((point) => <g key={point.id} className={point.id === base.insertionPreference ? "is-selected" : ""}>
+        <circle cx={point.position.x} cy={point.position.y} r={46} fill="white" stroke="currentColor" strokeWidth={18} />
+        <circle cx={point.position.x} cy={point.position.y} r={point.id === base.insertionPreference ? 22 : 12} fill="currentColor" />
+      </g>)}
+    </svg>
+    <div className="insertion-choices">
+      {downtownMap.insertionPoints.map((point) => <button
+        type="button"
+        key={point.id}
+        className={point.id === base.insertionPreference ? "is-selected" : ""}
+        disabled={!base.storageLinked}
+        aria-pressed={point.id === base.insertionPreference}
+        onClick={() => void updateInsertionPreference(point.id === base.insertionPreference ? null : point.id)}
+      >{point.name}</button>)}
+    </div>
+    <p>PREFERENCE, NOT PICK · SQUAD SPACING OVERRIDES EVERY VOTE</p>
+    <h2>CONTRACTS</h2>
+    <p className="stub-message">CONTRACT LINK AWAITING COMMISSION</p>
+  </>;
 }
 
 function FabricatorPanel({ base, notice, chooseRecipe }: {

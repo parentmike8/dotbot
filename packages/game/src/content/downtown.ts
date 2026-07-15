@@ -1308,6 +1308,14 @@ const authoredDowntownMap: MapDocument = {
     { id: "extract-depot", name: "DEPOT PAD", rect: { x: 960, y: 1150, w: 110, h: 110 } },
     { id: "extract-park", name: "PARK PAD", rect: { x: 2210, y: 1160, w: 110, h: 110 } },
   ],
+  insertionPoints: [
+    { id: "nw-corner", name: "NW CORNER", position: { x: 100, y: 100 } },
+    { id: "ne-park", name: "NE PARK", position: { x: 2250, y: 100 } },
+    { id: "west-gate", name: "WEST GATE", position: { x: 100, y: 760 } },
+    { id: "east-gate", name: "EAST GATE", position: { x: 2200, y: 760 } },
+    { id: "sw-yard", name: "SW YARD", position: { x: 50, y: 1350 } },
+    { id: "se-court", name: "SE COURT", position: { x: 2200, y: 1400 } },
+  ],
   botSpawns,
 };
 

@@ -26,6 +26,12 @@
 .base-panel footer button, .slot-choices button, .identity-panel button { min-height: 40px; border: 1.5px solid var(--ink); background: var(--paper); padding: 0 14px; font-size: 9px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
 .offline-hint { padding: 8px; border: 1px dashed var(--ink); color: var(--ink) !important; }
 .stub-message { margin: 28px 0; color: var(--ink) !important; font-size: 13px !important; }
+.insertion-map { display: block; width: 100%; margin: 8px 0; border: 1px solid var(--hairline); color: var(--ink); background: var(--paper); }
+.insertion-map .is-selected { color: #e03131; }
+.insertion-choices { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
+.insertion-choices button { min-height: 34px; border: 1px solid var(--hairline); background: var(--paper); font: 850 8px/1 ui-monospace, monospace; letter-spacing: .08em; cursor: pointer; }
+.insertion-choices button.is-selected { border-color: var(--ink); box-shadow: 2px 2px 0 var(--ink); }
+.insertion-choices button:disabled { color: var(--muted); cursor: default; }
 .base-stash { margin: 0; padding: 0; list-style: none; }
 .base-stash li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--hairline); font: 800 10px/1 ui-monospace, monospace; text-transform: uppercase; }
 .loadout-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 7px; }

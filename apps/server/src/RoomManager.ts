@@ -12,6 +12,8 @@ export type RoomManagerOptions = {
   persistence?: Persistence;
   /** Test hook: disable AI squad backfill (see Room). */
   aiWingmates?: boolean;
+  /** Test/replay hook; production uses random UUID match seeds. */
+  matchIdFactory?: () => string;
 };
 
 export class RoomManager {

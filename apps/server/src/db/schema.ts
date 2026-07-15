@@ -12,6 +12,7 @@ export const players = pgTable("players", {
   /** Cosmetic floor-plan choice; every shell has identical slots. */
   baseShell: text("base_shell").$type<BaseShellId>().notNull().default("workshop"),
   presets: jsonb("presets").$type<LoadoutPreset[]>().notNull().default([]),
+  insertionPreference: text("insertion_pref"),
 }, (table) => [uniqueIndex("players_device_token_hash_unique").on(table.deviceTokenHash)]);
 
 export const matchResults = pgTable("match_results", {

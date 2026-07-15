@@ -401,6 +401,7 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
     },
     buildings: [base],
     extractionPoints: [{ id: "base-deployment", name: "DEPLOYMENT", rect: { ...shell.deployment } }],
+    insertionPoints: [],
     botSpawns: [{
       id: "player",
       name: "You",

@@ -7,6 +7,7 @@ import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById } from "@dotbot/game/content/recipes";
+import { downtownMap } from "@dotbot/game/content/downtown";
 import type { BaseLayout, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
 import { createPersistence, type Persistence } from "./db";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
@@ -134,6 +135,22 @@ export async function createServer(options: CreateServerOptions = {}) {
       return { storageLinked: true, ...result.base, missing: result.missing };
     } catch (error) {
       return reply.code(409).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { insertionPointId?: unknown } }>("/api/base/insertion", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const insertionPointId = request.body?.insertionPointId;
+    if (insertionPointId !== null && (typeof insertionPointId !== "string" || !downtownMap.insertionPoints.some((point) => point.id === insertionPointId))) {
+      return reply.code(400).send({ error: "Unknown insertion point." });
+    }
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
+    try {
+      const saved = await persistence.setInsertionPreference(token, insertionPointId as string | null);
+      return { insertionPreference: saved };
+    } catch (error) {
+      return reply.code(404).send({ error: errorMessage(error) });
     }
   });
 
