@@ -1,4 +1,4 @@
-import type { DotEntity, GameConfig, MapDocument, RadarPing } from "@dotbot/game/types";
+import type { DotEntity, DownedHostileVerb, GameConfig, MapDocument, RadarPing } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
@@ -55,6 +55,7 @@ export type WireSimEvent =
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "consumed"; botId: string; byBotId: string; lostItems: WireItemCode[] }
   | { type: "revived"; botId: string; byBotId: string }
+  | { type: "plea"; botId: string; squadId: string; position: { x: number; y: number }; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
   | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[] };
 
@@ -70,6 +71,8 @@ export type ClientMessage =
       dash: boolean;
       useBay?: 0 | 1 | 2 | 3;
       swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
+      downedVerb?: DownedHostileVerb;
+      plea?: boolean;
     }
   | { type: "ping"; cts: number };
 

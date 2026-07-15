@@ -123,6 +123,8 @@ export class NetSession implements GameSession {
       dash: this.pendingInput.dash || input.dash,
       useBay: this.pendingInput.useBay ?? input.useBay,
       swapBay: this.pendingInput.swapBay ?? input.swapBay,
+      downedVerb: input.downedVerb,
+      plea: this.pendingInput.plea || input.plea,
     };
     this.sendFrame = !this.sendFrame;
     if (!this.sendFrame || !this.mapValue) return;
@@ -132,6 +134,8 @@ export class NetSession implements GameSession {
       dash: this.pendingInput.dash,
       useBay: this.pendingInput.useBay,
       swapBay: this.pendingInput.swapBay,
+      downedVerb: this.pendingInput.downedVerb,
+      plea: this.pendingInput.plea,
     };
     this.send({
       type: "input",
@@ -140,9 +144,11 @@ export class NetSession implements GameSession {
       dash: sentInput.dash,
       useBay: sentInput.useBay,
       swapBay: sentInput.swapBay,
+      downedVerb: sentInput.downedVerb,
+      plea: sentInput.plea,
     });
     this.pendingInputs.push({ seq: this.seq, input: sentInput });
-    this.pendingInput = { move: this.pendingInput.move, dash: false };
+    this.pendingInput = { move: this.pendingInput.move, dash: false, downedVerb: this.pendingInput.downedVerb, plea: false };
   }
 
   update(elapsedMs: number): GameSnapshot | null {

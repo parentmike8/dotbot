@@ -36,6 +36,7 @@ import type {
   GameConfig,
   GameSnapshot,
   InputCommand,
+  Item,
   MapDocument,
   NoiseEvent,
   NoiseKind,
@@ -80,6 +81,7 @@ type InternalBot = DotBotEntity & {
   aiPathProjected: boolean;
   aiAvoidTargets: Map<string, number>;
   consumedRespawnMs: number;
+  pleaCooldownMs: number;
   radarPingElapsedMs: number;
   activeSwap?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number; progressMs: number };
 };
@@ -314,6 +316,7 @@ export class DotBotSimulation {
       aiPathProjected: false,
       aiAvoidTargets: new Map(),
       consumedRespawnMs: 0,
+      pleaCooldownMs: 0,
     };
 
     this.setBotPhysicsState(bot, state);
@@ -338,6 +341,8 @@ export class DotBotSimulation {
       dash: (current?.dash ?? false) || input.dash,
       useBay: current?.useBay ?? input.useBay,
       swapBay: current?.swapBay ?? input.swapBay,
+      downedVerb: input.downedVerb,
+      plea: (current?.plea ?? false) || input.plea,
     });
   }
 
@@ -494,6 +499,7 @@ export class DotBotSimulation {
       bot.dashCooldownMs = Math.max(0, bot.dashCooldownMs - dtMs);
       bot.dashActiveMs = Math.max(0, bot.dashActiveMs - dtMs);
       bot.invulnerabilityMs = Math.max(0, bot.invulnerabilityMs - dtMs);
+      bot.pleaCooldownMs = Math.max(0, bot.pleaCooldownMs - dtMs);
       bot.incognitoMs = Math.max(0, bot.incognitoMs - dtMs);
       const previousRadarMs = bot.radarActiveMs;
       bot.radarActiveMs = Math.max(0, bot.radarActiveMs - dtMs);
@@ -538,8 +544,12 @@ export class DotBotSimulation {
 
       if (bot.state !== "alive") {
         const input = this.inputs.get(bot.id);
-        if (input?.dash || input?.useBay !== undefined || input?.swapBay) {
-          this.inputs.set(bot.id, { move: zeroVec(), dash: false });
+        if (bot.state === "downed" && input?.plea && !bot.isAmbient && bot.pleaCooldownMs <= 0) {
+          bot.pleaCooldownMs = this.config.pleaCooldownMs;
+          this.events.push({ type: "plea", botId: bot.id, squadId: bot.squadId, position: { ...bot.position }, floorId: bot.floorId });
+        }
+        if (input?.dash || input?.useBay !== undefined || input?.swapBay || input?.plea) {
+          this.inputs.set(bot.id, { move: zeroVec(), dash: false, plea: false });
         }
         continue;
       }
@@ -574,8 +584,8 @@ export class DotBotSimulation {
         // A press is consumed on the tick it is considered, fired or not.
         // Pressing during cooldown must never bank a dash for later.
       }
-      if (input.dash || input.useBay !== undefined || input.swapBay) {
-        this.inputs.set(bot.id, { ...input, dash: false, useBay: undefined, swapBay: undefined });
+      if (input.dash || input.useBay !== undefined || input.swapBay || input.plea) {
+        this.inputs.set(bot.id, { ...input, dash: false, useBay: undefined, swapBay: undefined, plea: false });
       }
     }
   }
@@ -1106,7 +1116,10 @@ export class DotBotSimulation {
           : this.controllers.get(bot.id) === "human"
             ? this.config.playerSpeed
             : this.config.botSpeed;
-      const direction = bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
+      const stationaryChannel = [...this.coverages.values()].some((coverage) =>
+        coverage.actorId === bot.id && ["consume", "revive", "reviveClean", "lootThenRevive"].includes(coverage.kind),
+      );
+      const direction = stationaryChannel ? zeroVec() : bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
       bot.body.setLinvel(scale(direction, speed), true);
 
       // Shield plates follow the direction of travel.
@@ -1358,7 +1371,25 @@ export class DotBotSimulation {
         continue;
       }
 
-      const kind: CoverageKind = areFriendly(coveringBot, downed) ? "revive" : "consume";
+      let kind: CoverageKind;
+      let durationMs: number;
+      if (areFriendly(coveringBot, downed)) {
+        kind = "revive";
+        durationMs = this.config.coverDurationMs;
+      } else {
+        const controller = this.controllers.get(coveringBot.id);
+        const verb = controller === "human" ? this.inputs.get(coveringBot.id)?.downedVerb : "consume";
+        if (!verb) {
+          this.coverages.delete(coverageKey);
+          continue;
+        }
+        kind = verb;
+        durationMs = verb === "consume"
+          ? this.config.consumeDurationMs
+          : verb === "reviveClean"
+            ? this.config.reviveCleanDurationMs
+            : this.config.lootThenReviveDurationMs;
+      }
 
       const existing = this.coverages.get(coverageKey);
       const progressMs = existing?.actorId === coveringBot.id && existing.kind === kind ? existing.progressMs + dtMs : dtMs;
@@ -1372,14 +1403,19 @@ export class DotBotSimulation {
         actorId: coveringBot.id,
         targetId: downed.id,
         progressMs,
-        durationMs: this.config.coverDurationMs,
+        durationMs,
       });
 
-      if (progressMs >= this.config.coverDurationMs) {
+      if (progressMs >= durationMs) {
         if (kind === "revive") {
           this.reviveBot(downed, coveringBot);
-        } else {
+        } else if (kind === "consume") {
           this.consumeBot(downed, coveringBot);
+        } else if (kind === "reviveClean") {
+          this.reviveBot(downed, coveringBot);
+        } else {
+          this.lootBot(downed, coveringBot);
+          this.reviveBot(downed, coveringBot);
         }
 
         this.coverages.delete(coverageKey);
@@ -1489,6 +1525,16 @@ export class DotBotSimulation {
   }
 
   private consumeBot(target: InternalBot, consumer: InternalBot): void {
+    const lostItems = this.lootBot(target, consumer);
+    target.state = "consumed";
+    target.shieldSegments = platesForCount(target.maxShields, 0);
+    target.shields = 0;
+    target.consumedRespawnMs = this.config.respawnDelayMs;
+    this.setBotPhysicsState(target, "consumed");
+    this.events.push({ type: "consumed", botId: target.id, byBotId: consumer.id, lostItems });
+  }
+
+  private lootBot(target: InternalBot, consumer: InternalBot): Item[] {
     const lostItems = carriedItems(target);
     const overflow = lostItems.filter((item) => !insertItem(consumer, item, this.config.holdSlots));
     overflow.forEach((item, index) => {
@@ -1504,14 +1550,9 @@ export class DotBotSimulation {
         captureProgressMs: 0,
       });
     });
-    target.state = "consumed";
-    target.shieldSegments = platesForCount(target.maxShields, 0);
-    target.shields = 0;
     target.bays = Array.from({ length: this.config.baySlots }, () => null);
     target.hold = [];
-    target.consumedRespawnMs = this.config.respawnDelayMs;
-    this.setBotPhysicsState(target, "consumed");
-    this.events.push({ type: "consumed", botId: target.id, byBotId: consumer.id, lostItems });
+    return lostItems;
   }
 
   private respawnConsumedBots(dtMs: number): void {

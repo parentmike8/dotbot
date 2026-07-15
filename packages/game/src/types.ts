@@ -15,6 +15,7 @@ export type BotState = "alive" | "downed" | "consumed";
 export type Controller = "human" | "ai" | "frozen";
 
 export type PowerupType = "health" | "radar" | "dashOvercharge" | "incognito";
+export type DownedHostileVerb = "consume" | "reviveClean" | "lootThenRevive";
 
 /** Compact persistence/wire codes for powerups. Blueprint cargo is excluded. */
 export type WirePowerupCode = "h" | "r" | "d" | "i";
@@ -34,6 +35,7 @@ export type SimEvent =
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "consumed"; botId: string; byBotId: string; lostItems: Item[] }
   | { type: "revived"; botId: string; byBotId: string }
+  | { type: "plea"; botId: string; squadId: string; position: Vec2; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
   | { type: "extracted"; botId: string; squadId: string; items: Item[] };
 
@@ -334,9 +336,11 @@ export type InputCommand = {
   dash: boolean;
   useBay?: 0 | 1 | 2 | 3;
   swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
+  downedVerb?: DownedHostileVerb;
+  plea?: boolean;
 };
 
-export type CoverageKind = "capture" | "consume" | "revive" | "extract" | "swap";
+export type CoverageKind = "capture" | "consume" | "revive" | "reviveClean" | "lootThenRevive" | "extract" | "swap";
 
 export type NoiseKind = "dash" | "impact" | "stairs" | "channel";
 
@@ -386,6 +390,10 @@ export type GameConfig = {
   shieldInvulnerabilityMs: number;
   dotCaptureDurationMs: number;
   coverDurationMs: number;
+  consumeDurationMs: number;
+  reviveCleanDurationMs: number;
+  lootThenReviveDurationMs: number;
+  pleaCooldownMs: number;
   respawnDelayMs: number;
   coverCenterTolerance: number;
   extractionDurationMs: number;

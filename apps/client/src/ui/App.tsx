@@ -37,12 +37,19 @@ export function App() {
 function GameSession({ onRestart }: { onRestart: () => void }) {
   const {
     hostRef, snapshot, events, runResult, map, playerId, debugVisible, legendVisible, toggleLegend,
-    joystick, joystickHandlers, queueDash, useBay, swapBayItem, giveUp,
+    joystick, joystickHandlers, queueDash, useBay, swapBayItem, giveUp, selectDownedVerb, plea,
   } = useDotBotGame();
   const [swapBay, setSwapBay] = useState<0 | 1 | 2 | 3 | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
   const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === playerId) ?? false;
+  const hostileDowned = player?.state === "alive" ? snapshot?.bots.find((bot) =>
+    bot.state === "downed" && !bot.isAmbient && bot.squadId !== player.squadId && bot.floorId === player.floorId
+      && Math.hypot(bot.position.x - player.position.x, bot.position.y - player.position.y) <= player.radius * 2.2,
+  ) : undefined;
+  const hostileChannel = hostileDowned
+    ? snapshot?.coverages.find((coverage) => coverage.actorId === player?.id && coverage.targetId === hostileDowned.id)
+    : undefined;
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / defaultGameConfig.dashCooldownMs) : 1;
   const remainingRunMs = Math.max(0, defaultGameConfig.runDurationMs - (snapshot?.timeMs ?? 0));
   const runClock = formatRunClock(remainingRunMs);
@@ -264,7 +271,19 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
       ) : null}
 
       {player?.state === "downed" && !reviveInProgress && !runResult ? (
-        <button type="button" className="give-up-button" onClick={giveUp}>GIVE UP</button>
+        <div className="downed-actions">
+          <button type="button" className="plea-button" onClick={plea}>PLEA · P</button>
+          <button type="button" className="give-up-button" onClick={giveUp}>GIVE UP</button>
+        </div>
+      ) : null}
+
+      {hostileDowned && !runResult ? (
+        <div className="hostile-verb-strip" aria-label="Downed hostile actions">
+          <strong>{hostileChannel?.kind === "consume" ? "CONSUMING" : hostileChannel?.kind === "reviveClean" ? "REVIVING CLEAN" : hostileChannel?.kind === "lootThenRevive" ? "LOOTING + REVIVING" : "DOWNED HOSTILE"}</strong>
+          <button type="button" onClick={() => selectDownedVerb("consume")}>C · CONSUME</button>
+          <button type="button" onClick={() => selectDownedVerb("reviveClean")}>R · REVIVE CLEAN</button>
+          <button type="button" onClick={() => selectDownedVerb("lootThenRevive")}>F · LOOT + REVIVE</button>
+        </div>
       ) : null}
 
       {coachPhase !== null ? (

@@ -41,7 +41,7 @@ export class LocalSession implements GameSession {
   }
 
   sendInput(input: InputCommand): void {
-    this.input = { move: input.move, dash: false };
+    this.input = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
     // Hand the intent to the sim immediately so its own sticky Dash queue
     // retains a press even when this render frame does not produce a tick.
     // Subsequent ticks reapply movement with Dash false, matching the old

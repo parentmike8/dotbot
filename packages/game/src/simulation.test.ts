@@ -16,6 +16,10 @@ const testBays = (count: number) => Array.from({ length: 4 }, (_, index) => inde
 const testConfig: Partial<GameConfig> = {
   dotCaptureDurationMs: 120,
   coverDurationMs: 150,
+  consumeDurationMs: 150,
+  reviveCleanDurationMs: 120,
+  lootThenReviveDurationMs: 210,
+  pleaCooldownMs: 150,
   respawnDelayMs: 120,
   dashCooldownMs: 300,
   shieldInvulnerabilityMs: 120,
@@ -541,7 +545,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
@@ -565,6 +569,7 @@ describe("DotBotSimulation", () => {
       ]),
       config: { ...testConfig, baySlots: 1, holdSlots: 1 },
     });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
     runTicks(simulation, 12);
     const spills = simulation.getSnapshot().dots.filter((dot) => dot.id.startsWith("spill-") && dot.active);
     expect(spills.map((dot) => dot.item)).toEqual(expect.arrayContaining([overchargeItem, incognitoItem]));
@@ -574,6 +579,82 @@ describe("DotBotSimulation", () => {
       byBotId: "player",
       lostItems: [overchargeItem, incognitoItem],
     });
+    simulation.dispose();
+  });
+
+  it("uses the configured hostile channel durations and applies each verb outcome", async () => {
+    const cases = [
+      { verb: "consume" as const, durationMs: testConfig.consumeDurationMs, finalState: "consumed" as const },
+      { verb: "reviveClean" as const, durationMs: testConfig.reviveCleanDurationMs, finalState: "alive" as const },
+      { verb: "lootThenRevive" as const, durationMs: testConfig.lootThenReviveDurationMs, finalState: "alive" as const },
+    ];
+
+    for (const { verb, durationMs, finalState } of cases) {
+      const simulation = await makeSimulation([
+        playerSpawn({ position: { x: 100, y: 180 } }),
+        enemySpawn({
+          isAmbient: false,
+          controller: "frozen",
+          position: { x: 100, y: 180 },
+          state: "downed",
+          shields: 0,
+          bays: [healthItem, radarItem, null, null],
+          hold: [],
+        }),
+      ]);
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: verb });
+      simulation.step();
+      expect(simulation.getSnapshot().coverages).toContainEqual(expect.objectContaining({
+        kind: verb,
+        actorId: "player",
+        targetId: "enemy",
+        durationMs,
+      }));
+      runTicks(simulation, Math.ceil((durationMs ?? 0) / (1000 / defaultGameConfig.tickHz)) + 1);
+
+      const snapshot = simulation.getSnapshot();
+      const actor = snapshot.bots.find((bot) => bot.id === "player")!;
+      const target = snapshot.bots.find((bot) => bot.id === "enemy")!;
+      expect(target.state).toBe(finalState);
+      if (verb === "reviveClean") {
+        expect(target.shieldSegments).toEqual([0.5, 0, 0]);
+        expect(target.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
+        expect(actor.bays.filter(Boolean)).toEqual([]);
+      } else if (verb === "lootThenRevive") {
+        expect(target.shieldSegments).toEqual([0.5, 0, 0]);
+        expect(target.bays.filter(Boolean)).toEqual([]);
+        expect(target.hold).toEqual([]);
+        expect(actor.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
+      } else {
+        expect(actor.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
+      }
+      simulation.dispose();
+    }
+  });
+
+  it("rate-limits player pleas and never lets an ambient grey plea", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ state: "downed", shields: 0 }),
+      playerSpawn({ id: "grey", squadId: "grey", isAmbient: true, state: "downed", shields: 0 }),
+    ]);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, plea: true });
+    simulation.applyInput("grey", { move: { x: 0, y: 0 }, dash: false, plea: true });
+    simulation.step();
+    expect(simulation.drainEvents()).toEqual([
+      expect.objectContaining({ type: "plea", botId: "player", squadId: "alpha" }),
+    ]);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, plea: true });
+    simulation.step();
+    expect(simulation.drainEvents()).toEqual([]);
+
+    runTicks(simulation, 10);
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, plea: true });
+    simulation.step();
+    expect(simulation.drainEvents()).toEqual([
+      expect.objectContaining({ type: "plea", botId: "player" }),
+    ]);
     simulation.dispose();
   });
 
@@ -589,7 +670,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
@@ -610,7 +691,7 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();

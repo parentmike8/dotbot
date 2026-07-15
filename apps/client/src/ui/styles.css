@@ -440,6 +440,52 @@ button {
   box-shadow: 4px 4px 0 #111;
 }
 
+.downed-actions {
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: 112px;
+  display: flex;
+  gap: 8px;
+  transform: translateX(-50%);
+}
+
+.downed-actions .give-up-button {
+  position: static;
+  transform: none;
+}
+
+.plea-button,
+.hostile-verb-strip button {
+  min-height: 36px;
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  font: 850 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.hostile-verb-strip {
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: 106px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px;
+  border: 2px solid var(--ink);
+  background: var(--paper-glass);
+  box-shadow: 4px 4px 0 var(--ink);
+  transform: translateX(-50%);
+}
+
+.hostile-verb-strip strong {
+  padding: 0 6px;
+  font: 850 9px/1.2 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
 .quick-coach {
   position: absolute;
   z-index: 7;

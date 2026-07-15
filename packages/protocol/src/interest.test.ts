@@ -101,4 +101,19 @@ describe("filterForViewer", () => {
     ], meta, new Set(["viewer", "mate"]), "a");
     expect(events.map((event) => event.type)).toEqual(["downed", "revived"]);
   });
+
+  it("broadcasts pleas across squad and floor interest boundaries", () => {
+    const events = filterEventsForViewer([
+      {
+        type: "plea",
+        botId: "upper-enemy",
+        squadId: "b",
+        position: { x: 400, y: 250 },
+        floorId: "mercy:F1",
+      },
+    ], meta, new Set(["viewer", "mate"]), "a");
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "plea", botId: "upper-enemy", squadId: "b" });
+  });
 });

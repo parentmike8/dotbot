@@ -48,4 +48,9 @@
 .net-game-bays b { display: grid; height: 32px; place-items: center; border: 1px solid var(--ink); background: var(--paper); font: 900 17px/1 ui-monospace,monospace; }
 .spectating-chip { position: absolute; z-index: 21; top: 14px; left: 50%; padding: 8px 12px; border: 1px solid var(--ink); background: var(--paper-glass); color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 850; letter-spacing: 1.4px; transform: translateX(-50%); }
 .net-dash-button { position: absolute; z-index: 8; right: 24px; bottom: 24px; width: 74px; height: 74px; border: 2px solid var(--ink); border-radius: 50%; background: var(--paper-glass); font-weight: 900; text-transform: uppercase; }
+.hostile-verb-strip { position: absolute; z-index: 20; left: 50%; bottom: 22px; display: flex; align-items: center; gap: 5px; padding: 6px; border: 1.5px solid var(--ink); background: var(--paper-glass); transform: translateX(-50%); }
+.hostile-verb-strip strong { padding: 0 6px; font-size: 9px; letter-spacing: .08em; }
+.hostile-verb-strip button, .plea-button { min-height: 34px; border: 1px solid var(--ink); background: var(--paper); font-size: 9px; font-weight: 850; }
+.downed-actions { position: absolute; z-index: 20; left: 50%; bottom: 22px; display: flex; gap: 8px; transform: translateX(-50%); }
+.downed-actions .give-up-button { position: static; transform: none; }
 @media (max-width: 620px) { .lobby-actions, .lobby-squads { grid-template-columns: 1fr; } .lobby-or { text-align: center; } }

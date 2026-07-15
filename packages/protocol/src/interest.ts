@@ -76,7 +76,7 @@ export function filterEventsForViewer(
   const visibleBot = (id: string | undefined) => Boolean(
     id && (includedBotIds.has(id) || metaById.get(id)?.squadId === squadId),
   );
-  return events.filter((event) => visibleBot(event.botId) || ("byBotId" in event && visibleBot(event.byBotId)));
+  return events.filter((event) => event.type === "plea" || visibleBot(event.botId) || ("byBotId" in event && visibleBot(event.byBotId)));
 }
 
 function wirePosition(bot: WireBot): Vec2 {

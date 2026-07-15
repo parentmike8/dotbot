@@ -209,6 +209,8 @@ export class Room {
           dash: message.dash,
           useBay: message.useBay,
           swapBay: message.swapBay,
+          downedVerb: message.downedVerb,
+          plea: message.plea,
         };
         return;
       case "ping":
@@ -266,7 +268,7 @@ export class Room {
       for (const member of this.members.values()) {
         if (!member.botId) continue;
         this.simulation.applyInput(member.botId, member.latestInput);
-        member.latestInput = { move: member.latestInput.move, dash: false };
+        member.latestInput = { move: member.latestInput.move, dash: false, downedVerb: member.latestInput.downedVerb, plea: false };
       }
       this.simulation.step();
       durations.push(performance.now() - started);

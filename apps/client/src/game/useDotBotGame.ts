@@ -6,7 +6,7 @@ import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer, type InteractionChannelVisual } from "./renderer/GameRenderer";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
-import type { DotBotEntity, GameSnapshot, Item, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, DownedHostileVerb, GameSnapshot, Item, SimEvent, Vec2 } from "@dotbot/game/types";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
 
@@ -52,6 +52,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const dashQueuedRef = useRef(false);
   const useBayQueuedRef = useRef<0 | 1 | 2 | 3 | undefined>(undefined);
   const swapQueuedRef = useRef<{ bayIndex: 0 | 1 | 2 | 3; holdIndex: number } | undefined>(undefined);
+  const downedVerbRef = useRef<DownedHostileVerb | undefined>(undefined);
+  const pleaQueuedRef = useRef(false);
   const spectateCycleQueuedRef = useRef(false);
   const spectatedBotIdRef = useRef<string | null>(null);
   const runEndedRef = useRef(false);
@@ -144,16 +146,20 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             dash: dashQueuedRef.current,
             useBay: useBayQueuedRef.current,
             swapBay: swapQueuedRef.current,
+            downedVerb: downedVerbRef.current,
+            plea: pleaQueuedRef.current,
           });
         }
         dashQueuedRef.current = false;
         useBayQueuedRef.current = undefined;
         swapQueuedRef.current = undefined;
+        pleaQueuedRef.current = false;
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
         const frameEvents = session.drainEvents();
 
         if (frameEvents.length > 0) {
+          for (const event of frameEvents) if (event.type === "plea") renderer.queuePlea(event);
           setEvents((current) => [...current, ...frameEvents]);
         }
 
@@ -222,6 +228,22 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       if (event.code === "KeyL") {
         event.preventDefault();
         setLegendVisible((visible) => !visible);
+        return;
+      }
+
+      const verbByCode: Partial<Record<string, DownedHostileVerb>> = {
+        KeyC: "consume",
+        KeyR: "reviveClean",
+        KeyF: "lootThenRevive",
+      };
+      if (verbByCode[event.code]) {
+        event.preventDefault();
+        if (!runEndedRef.current) downedVerbRef.current = verbByCode[event.code];
+        return;
+      }
+      if (event.code === "KeyP") {
+        event.preventDefault();
+        if (!runEndedRef.current && !event.repeat) pleaQueuedRef.current = true;
         return;
       }
 
@@ -322,6 +344,14 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
   const giveUp = useCallback(() => {
     sessionRef.current?.giveUp();
+  }, []);
+
+  const selectDownedVerb = useCallback((verb: DownedHostileVerb) => {
+    if (!runEndedRef.current) downedVerbRef.current = verb;
+  }, []);
+
+  const plea = useCallback(() => {
+    if (!runEndedRef.current) pleaQueuedRef.current = true;
   }, []);
 
   const setInteractionChannel = useCallback((visual: InteractionChannelVisual | null) => {
@@ -428,6 +458,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     useBay,
     swapBayItem,
     giveUp,
+    selectDownedVerb,
+    plea,
     cycleSpectator,
     setInteractionChannel,
     draftObjects,

@@ -10,7 +10,7 @@ import {
 } from "@dotbot/game/mapModel";
 import { hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
-import type { DotBotEntity, GameSnapshot, Item, MapDocument, Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import { shieldArcSpan } from "@dotbot/game/shields";
 import { buildMapArt, drawStairExitHalf, type MapArt } from "./mapArt";
 import { drawObjectDraftLayers } from "./glyphs";
@@ -56,6 +56,8 @@ export class GameRenderer {
   private readonly visionMaskGfx = new Graphics();
   /** Always-visible layer: player, squad, noise rings, extraction pulse. */
   private readonly dynamicGfx = new Graphics();
+  /** Viewport-space markers that must remain legible beyond the camera. */
+  private readonly screenGfx = new Graphics();
   /** Far half of each stair run on the active floor, drawn over the bots so
    * they slide under the break line while changing floors. */
   private readonly stairOverlayGfx = new Graphics();
@@ -64,13 +66,15 @@ export class GameRenderer {
   private viewport = { width: 1, height: 1 };
   private destroyed = false;
   private lastViewer: DotBotEntity | null = null;
+  private lastTimeMs = 0;
+  private readonly pleaSignals = new Map<string, { event: Extract<SimEvent, { type: "plea" }>; startedAt: number }>();
   private readonly draftAnimations = new Map<string, DraftAnimation>();
 
   private constructor(app: Application, map: MapDocument) {
     this.app = app;
     this.map = map;
     this.art = buildMapArt(map);
-    this.app.stage.addChild(this.worldLayer);
+    this.app.stage.addChild(this.worldLayer, this.screenGfx);
     this.maskedLayer.addChild(this.maskedGfx, this.visionMaskGfx);
     this.maskedLayer.mask = this.visionMaskGfx;
     this.worldLayer.addChild(this.art.root, this.fogGfx, this.maskedLayer, this.dynamicGfx, this.stairOverlayGfx);
@@ -148,7 +152,12 @@ export class GameRenderer {
     return true;
   }
 
+  queuePlea(event: Extract<SimEvent, { type: "plea" }>): void {
+    this.pleaSignals.set(event.botId, { event, startedAt: this.lastTimeMs });
+  }
+
   render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null): void {
+    this.lastTimeMs = snapshot.timeMs;
     this.updateDraftAnimations(performance.now());
     const currentPlayer = snapshot.bots.find((bot) => bot.id === playerId);
     const player = currentPlayer ?? (preserveMissingViewer ? this.lastViewer ?? undefined : snapshot.bots[0]);
@@ -165,6 +174,7 @@ export class GameRenderer {
 
     this.maskedGfx.clear();
     this.dynamicGfx.clear();
+    this.screenGfx.clear();
     this.drawExtractionPulse(snapshot, player?.squadId);
     this.drawDots(snapshot, player?.squadId, playerContext);
     this.drawBots(snapshot, playerId, playerContext);
@@ -175,9 +185,63 @@ export class GameRenderer {
 
     if (player) {
       this.drawNoises(snapshot, player);
+      this.drawPleaSignals(player);
+      this.drawDownedSquadmateArrow(snapshot, player);
     }
 
     this.drawStairOverlay(player ?? null);
+  }
+
+  private drawPleaSignals(player: DotBotEntity): void {
+    const ttlMs = 3_000;
+    for (const [botId, signal] of this.pleaSignals) {
+      const { event: plea, startedAt } = signal;
+      const ageMs = this.lastTimeMs - startedAt;
+      if (ageMs > ttlMs) {
+        this.pleaSignals.delete(botId);
+        continue;
+      }
+      const progress = clamp01(ageMs / ttlMs);
+      const radius = 20 + progress * 70;
+      const color = plea.squadId === player.squadId ? SQUAD_CYAN : RIVAL_RED;
+      this.dynamicGfx.circle(plea.position.x, plea.position.y, radius).stroke({
+        color,
+        width: 3,
+        alpha: (1 - progress) * 0.85,
+      });
+    }
+  }
+
+  private drawDownedSquadmateArrow(snapshot: GameSnapshot, player: DotBotEntity): void {
+    const squadmate = snapshot.bots.find((bot) =>
+      bot.id !== player.id && bot.squadId === player.squadId && bot.state === "downed",
+    );
+    if (!squadmate) return;
+
+    const dx = squadmate.position.x - player.position.x;
+    const dy = squadmate.position.y - player.position.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    const ux = dx / distance;
+    const uy = dy / distance;
+    const center = { x: this.viewport.width / 2, y: this.viewport.height / 2 };
+    const halfWidth = Math.max(18, center.x - 32);
+    const halfHeight = Math.max(18, center.y - 32);
+    const edgeScale = Math.min(
+      Math.abs(ux) > 0.001 ? halfWidth / Math.abs(ux) : Number.POSITIVE_INFINITY,
+      Math.abs(uy) > 0.001 ? halfHeight / Math.abs(uy) : Number.POSITIVE_INFINITY,
+    );
+    const tip = { x: center.x + ux * edgeScale, y: center.y + uy * edgeScale };
+    const sideX = -uy;
+    const sideY = ux;
+    const base = { x: tip.x - ux * 18, y: tip.y - uy * 18 };
+    this.screenGfx
+      .poly([
+        tip.x, tip.y,
+        base.x + sideX * 8, base.y + sideY * 8,
+        base.x - sideX * 8, base.y - sideY * 8,
+      ])
+      .fill({ color: SQUAD_CYAN, alpha: 0.95 })
+      .stroke({ color: INK.structure, width: 2 });
   }
 
   private updateDraftAnimations(now: number): void {
