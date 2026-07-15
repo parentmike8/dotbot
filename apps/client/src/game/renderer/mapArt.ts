@@ -33,6 +33,8 @@ export type FloorArt = {
   furniture: Container;
   /** Individually addressable so fabrication can temporarily replace one glyph. */
   objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
+  /** Addressable stair fixtures reuse the fabrication draw-on hook when an expansion commissions. */
+  stairViews: Map<string, { stair: StairLink; view: Graphics }>;
   /** Door swings, stair tags, and other plan notation. */
   annotation: Container;
   annotationGfx: Graphics;
@@ -564,7 +566,7 @@ function buildBuildingArt(building: Building, buildingsLayer: Container, labels:
   const floors: FloorArt[] = [];
 
   for (const floor of building.floors) {
-    const art = buildFloorArt(building, floor, floor.label === "GROUND" ? placementSlots : undefined);
+    const art = buildFloorArt(building, floor, placementSlots?.filter((slot) => slot.floor === floor.label));
     art.view.visible = false;
     buildingsLayer.addChild(art.view);
     floors.push(art);
@@ -647,6 +649,8 @@ function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: Pl
   const architecture = new Graphics();
   const furniture = new Container();
   const objectViews = new Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>();
+  const stairFixtures = new Container();
+  const stairViews = new Map<string, { stair: StairLink; view: Graphics }>();
   const slotMarkers = new Graphics();
   const annotationGfx = new Graphics();
   const annotation = new Container();
@@ -678,7 +682,10 @@ function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: Pl
 
   // Stairs.
   for (const stair of floor.stairs) {
-    drawStair(architecture, stair);
+    const stairView = new Graphics();
+    drawStair(stairView, stair);
+    stairFixtures.addChild(stairView);
+    stairViews.set(stair.id, { stair, view: stairView });
     const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", 10, 2, INK.fixture, "700");
     placeStairTag(tag, stair);
     annotation.addChild(tag);
@@ -699,8 +706,8 @@ function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: Pl
     drawDoorway(architecture, annotationGfx, doorway, doorwayMode(doorway, floor, fp));
   }
 
-  view.addChild(architecture, furniture, annotation);
-  return { floor, view, architecture, furniture, objectViews, annotation, annotationGfx };
+  view.addChild(architecture, stairFixtures, furniture, annotation);
+  return { floor, view, architecture, furniture, objectViews, stairViews, annotation, annotationGfx };
 }
 
 function drawPlacementSlot(g: Graphics, slot: PlacementSlot): void {
@@ -833,7 +840,7 @@ export function drawStairExitHalf(g: Graphics, stair: StairLink): void {
   }
 }
 
-function drawStair(g: Graphics, stair: StairLink): void {
+export function drawStair(g: Graphics, stair: StairLink): void {
   const { x, y, w, h } = stair.rect;
   const { entry, vertical } = stairHalves(stair);
 

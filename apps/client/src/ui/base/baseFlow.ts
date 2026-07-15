@@ -1,4 +1,6 @@
 import type { MapDocument, MapObject, PlacementSlot, Rect, Vec2 } from "@dotbot/game/types";
+import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
+import { physicsFloorId } from "@dotbot/game/mapModel";
 
 export type BaseTarget =
   | { id: string; type: "deployment"; center: Vec2; rect: Rect }
@@ -12,17 +14,19 @@ export type BaseChannelState = {
   completedId: string | null;
 };
 
-export function findBaseTarget(map: MapDocument, position: Vec2, interactionReach = 46): BaseTarget | null {
+export function findBaseTarget(map: MapDocument, position: Vec2, floorId = OUTDOOR_FLOOR_ID, interactionReach = 46): BaseTarget | null {
   const deployment = map.extractionPoints[0];
-  if (deployment && contains(deployment.rect, position)) {
+  if (floorId === OUTDOOR_FLOOR_ID && deployment && contains(deployment.rect, position)) {
     return { id: deployment.id, type: "deployment", center: center(deployment.rect), rect: deployment.rect };
   }
-  const floor = map.buildings[0]?.floors[0];
+  const floor = map.buildings[0]?.floors.find((candidate) => physicsFloorId(map, candidate.id) === floorId);
   // Only slot-backed furniture is interactive; architectural decor is not.
   const object = floor?.objects.find((candidate) => candidate.slotId && distanceToRect(position, candidate) <= interactionReach);
   if (object) return { id: object.id, type: "object", center: center(object), object, rect: object };
   const occupied = new Set(floor?.objects.map((candidate) => candidate.slotId));
-  const slot = map.placementSlots?.find((candidate) => !occupied.has(candidate.id) && distanceToRect(position, candidate.rect) <= interactionReach);
+  const slot = map.placementSlots?.find((candidate) =>
+    candidate.floor === floor?.label && !occupied.has(candidate.id) && distanceToRect(position, candidate.rect) <= interactionReach,
+  );
   return slot ? { id: `empty-${slot.id}`, type: "emptySlot", center: center(slot.rect), slot, rect: slot.rect } : null;
 }
 

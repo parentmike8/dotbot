@@ -12,7 +12,7 @@ import {
   starterBaseLayout,
   validateBaseLayout,
 } from "@dotbot/game/content/base";
-import { RECIPES, recipeById, type Recipe } from "@dotbot/game/content/recipes";
+import { RECIPES, SECOND_FLOOR_UPGRADE_ID, recipeById, type Recipe } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { contractDayStamp, contractObjectiveLabel, generateContractOffers } from "@dotbot/game/contracts";
 import type { BaseLayout, BaseObjectKind, BaseShellId, ContractDefinition, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
@@ -32,6 +32,7 @@ const channelDurationMs = 1000;
 export type BasePayload = {
   storageLinked: boolean;
   shell: BaseShellId;
+  upgrades: string[];
   layout: BaseLayout;
   stash: Array<{ itemType: WireItemCode; qty: number }>;
   learnedBlueprints: string[];
@@ -54,6 +55,7 @@ type Panel =
 const offlinePayload: BasePayload = {
   storageLinked: false,
   shell: DEFAULT_BASE_SHELL,
+  upgrades: [],
   layout: starterBaseLayout,
   stash: [],
   learnedBlueprints: [],
@@ -85,6 +87,7 @@ export function BaseApp() {
       const payload = await response.json() as BasePayload;
       const next = {
         ...payload,
+        upgrades: Array.isArray(payload.upgrades) ? payload.upgrades : [],
         layout: payload.storageLinked ? { ...payload.layout } : readLocalLayout(),
         // Never trust the wire for the shell id — a bad value would sink the
         // whole base session at render time.
@@ -199,6 +202,12 @@ export function BaseApp() {
         setDraftObjectIds([`base-object-${body.fabricated.slotId}`]);
         setPanel(null);
         setNotice(`FABRICATED ${objectName(body.fabricated.output.objectKind)} · ${body.fabricated.slotId}`);
+      } else if (body.fabricated.output.kind === "expansion") {
+        localStorage.setItem(localLayoutKey, JSON.stringify(body.layout));
+        setBase(body);
+        setDraftObjectIds([baseShellDef(body.shell).upper.stairs.ground.id]);
+        setPanel(null);
+        setNotice("FLOOR 1 COMMISSIONED");
       } else {
         setBase((current) => ({ ...body, layout: current.layout }));
         const outputCode = body.fabricated.output.kind === "item" ? itemToCode(body.fabricated.output.item) : null;
@@ -353,7 +362,11 @@ type BaseSessionProps = {
 };
 
 function BaseSession(props: BaseSessionProps) {
-  const map = useMemo(() => createBaseMap(props.base.layout, props.base.shell), [props.base.layout, props.base.shell]);
+  const expanded = ownsSecondFloor(props.base);
+  const map = useMemo(
+    () => createBaseMap(props.base.layout, props.base.shell, { expanded }),
+    [expanded, props.base.layout, props.base.shell],
+  );
   const session = useMemo(() => createSession("local", {
     map,
     config: { ...defaultGameConfig, runDurationMs: Number.MAX_SAFE_INTEGER },
@@ -391,7 +404,7 @@ function BaseSession(props: BaseSessionProps) {
       setInteractionChannel(null);
       return;
     }
-    const target = findBaseTarget(map, player.position);
+    const target = findBaseTarget(map, player.position, player.floorId);
     const advanced = advanceBaseChannel(channelRef.current, target, player.position, snapshot.timeMs, channelDurationMs);
     channelRef.current = advanced.state;
     setInteractionChannel(target && advanced.progress !== null
@@ -405,8 +418,10 @@ function BaseSession(props: BaseSessionProps) {
     (window as unknown as { __dotbotBase?: unknown }).__dotbotBase = {
       storageLinked: props.base.storageLinked,
       layout: props.base.layout,
+      upgrades: props.base.upgrades,
       panel: props.panel?.type ?? null,
       playerPosition: player?.position ?? null,
+      playerFloorId: player?.floorId ?? null,
     };
   }, [player, props.base, props.panel]);
 
@@ -417,6 +432,7 @@ function BaseSession(props: BaseSessionProps) {
       data-storage-linked={props.base.storageLinked}
       data-player-x={player ? Math.round(player.position.x) : undefined}
       data-player-y={player ? Math.round(player.position.y) : undefined}
+      data-player-floor={player?.floorId}
       data-panel={props.panel?.type ?? "none"}
     >
       <div ref={hostRef} className="game-canvas" />
@@ -481,10 +497,10 @@ function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, update
   updateContracts: (action: "accept" | "reroll" | "abandon", contractId?: string) => Promise<void>;
 }) {
   if (panel.type === "move") {
-    return <MovePanel panel={panel} layout={base.layout} close={close} move={move} />;
+    return <MovePanel panel={panel} base={base} close={close} move={move} />;
   }
   if (panel.type === "settings") {
-    return <ShellPanel current={base.shell} storageLinked={base.storageLinked} close={close} updateShell={updateShell} />;
+    return <ShellPanel current={base.shell} expanded={ownsSecondFloor(base)} storageLinked={base.storageLinked} close={close} updateShell={updateShell} />;
   }
   if (panel.type === "fabricateSlot") {
     return <FabricationSlotPanel panel={panel} base={base} close={close} fabricate={fabricate} />;
@@ -573,15 +589,20 @@ function FabricatorPanel({ base, notice, chooseRecipe }: {
     {notice.startsWith("FABRICATED") ? <p className="fabrication-confirmation">{notice}</p> : null}
     <div className="recipe-list">
       {RECIPES.map((recipe) => {
+        const owned = recipe.output.kind === "expansion" && base.upgrades.includes(recipe.output.upgradeId);
         const learned = !recipe.requiresBlueprint || base.learnedBlueprints.includes(recipe.requiresBlueprint);
         const objectReady = !recipe.requiresObject || Object.values(base.layout).includes(recipe.requiresObject);
         const missingCosts = recipe.costs
           .map((cost) => ({ ...cost, missing: Math.max(0, cost.qty - (stock.get(cost.itemType) ?? 0)) }))
           .filter((cost) => cost.missing > 0);
         const furnitureKind = recipe.output.kind === "furniture" ? recipe.output.objectKind : null;
-        const hasSlot = !furnitureKind || BASE_SLOT_DEFS.some((slot) => !base.layout[slot.id] && isObjectAllowedInSlot(furnitureKind, slot));
-        const enabled = base.storageLinked && learned && objectReady && missingCosts.length === 0 && hasSlot;
-        const gate = !learned
+        const hasSlot = !furnitureKind || availableBaseSlots(base).some((slot) => !base.layout[slot.id] && isObjectAllowedInSlot(furnitureKind, slot));
+        const enabled = base.storageLinked && !owned && learned && objectReady && missingCosts.length === 0 && hasSlot;
+        const gate = owned
+          ? "OWNED"
+          : !base.storageLinked
+            ? "OFFLINE — NO STORAGE LINK"
+            : !learned
           ? `REQUIRES BLUEPRINT: ${recipe.requiresBlueprint}`
           : !objectReady
             ? `REQUIRES: ${objectName(recipe.requiresObject!)}`
@@ -611,13 +632,13 @@ function FabricationSlotPanel({ panel, base, close, fabricate }: {
   const recipe = recipeById(panel.recipeId);
   const furnitureKind = recipe?.output.kind === "furniture" ? recipe.output.objectKind : null;
   const choices = furnitureKind
-    ? BASE_SLOT_DEFS.filter((slot) => !base.layout[slot.id] && isObjectAllowedInSlot(furnitureKind, slot))
+    ? availableBaseSlots(base).filter((slot) => !base.layout[slot.id] && isObjectAllowedInSlot(furnitureKind, slot))
     : [];
   return <section className="base-panel" aria-label="Fabrication placement slot picker">
     <header><span>HOME BAY / FABRICATION</span><strong>PLACE {recipe ? recipeOutputLabel(recipe) : "OBJECT"}</strong><button type="button" onClick={close}>×</button></header>
     <p>SELECT ONE COMPATIBLE EMPTY DECLARED SLOT. FABRICATION IS ATOMIC.</p>
     <div className="slot-choices">
-      {choices.map((slot) => <button type="button" key={slot.id} onClick={() => void fabricate(panel.recipeId, slot.id)}>{slot.id} / {slot.zone}</button>)}
+      {choices.map((slot) => <button type="button" key={slot.id} onClick={() => void fabricate(panel.recipeId, slot.id)}>{slot.floor} / {slot.id} / {slot.zone}</button>)}
       {choices.length === 0 ? <span>NO COMPATIBLE EMPTY SLOTS</span> : null}
     </div>
   </section>;
@@ -672,16 +693,18 @@ function ObjectPanel({ panel, close, chooseMove }: {
   </section>;
 }
 
-function MovePanel({ panel, layout, close, move }: {
+function MovePanel({ panel, base, close, move }: {
   panel: Extract<Exclude<Panel, null>, { type: "move" }>;
-  layout: BaseLayout;
+  base: BasePayload;
   close: () => void;
   move: (from: string, to: string) => void;
 }) {
-  const slotIndex = new Map<string, { id: string; zone: "wall" | "floor" }>(BASE_SLOT_DEFS.map((slot) => [slot.id, slot]));
+  const layout = base.layout;
+  const slots = availableBaseSlots(base);
+  const slotIndex = new Map<string, { id: string; zone: "wall" | "floor"; floor: "GROUND" | "F1" }>(slots.map((slot) => [slot.id, slot]));
   const choices = panel.fromSlotId
-    ? BASE_SLOT_DEFS.filter((slot) => !layout[slot.id] && isObjectAllowedInSlot(layout[panel.fromSlotId!]!, slot)).map((slot) => ({ slotId: slot.id, label: slot.id }))
-    : Object.entries(layout).filter(([from, kind]) => panel.toSlotId && isObjectAllowedInSlot(kind, slotIndex.get(panel.toSlotId)!)).map(([slotId, kind]) => ({ slotId, label: `${kind} / ${slotId}` }));
+    ? slots.filter((slot) => !layout[slot.id] && isObjectAllowedInSlot(layout[panel.fromSlotId!]!, slot)).map((slot) => ({ slotId: slot.id, label: `${slot.floor} / ${slot.id}` }))
+    : Object.entries(layout).filter(([from, kind]) => panel.toSlotId && slotIndex.has(from) && isObjectAllowedInSlot(kind, slotIndex.get(panel.toSlotId)!)).map(([slotId, kind]) => ({ slotId, label: `${kind} / ${slotIndex.get(slotId)!.floor} / ${slotId}` }));
   return (
     <section className="base-panel" aria-label="Placement slot picker">
       <header><span>HOME BAY / PLACEMENT</span><strong>SELECT SLOT</strong><button type="button" onClick={close}>×</button></header>
@@ -697,8 +720,9 @@ function MovePanel({ panel, layout, close, move }: {
   );
 }
 
-function ShellPanel({ current, storageLinked, close, updateShell }: {
+function ShellPanel({ current, expanded, storageLinked, close, updateShell }: {
   current: BaseShellId;
+  expanded: boolean;
   storageLinked: boolean;
   close: () => void;
   updateShell: (shell: BaseShellId) => Promise<void>;
@@ -718,7 +742,7 @@ function ShellPanel({ current, storageLinked, close, updateShell }: {
               aria-pressed={shellId === current}
               onClick={() => void updateShell(shellId)}
             >
-              <ShellPreview shell={shellId} />
+              <ShellPreview shell={shellId} expanded={expanded} />
               <strong>{def.name}</strong>
               <small>{def.blurb}</small>
             </button>
@@ -731,7 +755,7 @@ function ShellPanel({ current, storageLinked, close, updateShell }: {
 }
 
 /** Miniature plan-view of a shell, drawn from the same wall data as the map. */
-function ShellPreview({ shell }: { shell: BaseShellId }) {
+function ShellPreview({ shell, expanded }: { shell: BaseShellId; expanded: boolean }) {
   const def = baseShellDef(shell);
   return (
     <svg viewBox="0 0 1000 760" role="img" aria-label={`${def.name} floor plan`}>
@@ -761,6 +785,7 @@ function ShellPreview({ shell }: { shell: BaseShellId }) {
           opacity={0.55}
         />
       ))}
+      {expanded ? <text x="500" y="730" textAnchor="middle" fontSize="52" fontWeight="800" fill="currentColor">+ FLOOR 1</text> : null}
     </svg>
   );
 }
@@ -783,6 +808,15 @@ function recipeOutputLabel(recipe: Recipe): string {
   if (recipe.output.kind === "furniture") return objectName(recipe.output.objectKind);
   if (recipe.output.kind === "expansion") return "SECOND FLOOR";
   return wireItemName(itemToCode(recipe.output.item));
+}
+
+function ownsSecondFloor(base: Pick<BasePayload, "upgrades">): boolean {
+  return base.upgrades.includes(SECOND_FLOOR_UPGRADE_ID);
+}
+
+function availableBaseSlots(base: Pick<BasePayload, "upgrades">) {
+  const expanded = ownsSecondFloor(base);
+  return BASE_SLOT_DEFS.filter((slot) => slot.floor === "GROUND" || expanded);
 }
 
 function objectName(kind: BaseObjectKind): string {

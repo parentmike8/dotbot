@@ -12,7 +12,7 @@ import { hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/v
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import { shieldArcSpan } from "@dotbot/game/shields";
-import { buildMapArt, drawStairExitHalf, type MapArt } from "./mapArt";
+import { buildMapArt, drawStair, drawStairExitHalf, type MapArt } from "./mapArt";
 import { drawObjectDraftLayers } from "./glyphs";
 import { INK, WEIGHT } from "./style";
 
@@ -122,10 +122,14 @@ export class GameRenderer {
 
   /** Reusable fabrication hook: M5 placement and M6 output call this API. */
   draftObject(objectId: string, durationMs = 1200): boolean {
-    const floor = this.art.buildings.flatMap((building) => building.floors)
+    const floors = this.art.buildings.flatMap((building) => building.floors);
+    const floor = floors
       .find((candidate) => candidate.objectViews.has(objectId));
     const entry = floor?.objectViews.get(objectId);
-    if (!floor || !entry) return false;
+    const stairFloor = entry ? undefined : floors.find((candidate) => candidate.stairViews.has(objectId));
+    const stairEntry = stairFloor?.stairViews.get(objectId);
+    const targetFloor = floor ?? stairFloor;
+    if (!targetFloor || (!entry && !stairEntry)) return false;
     this.finishDraft(objectId);
 
     const outline = new Graphics();
@@ -133,14 +137,27 @@ export class GameRenderer {
     const outlineMask = new Graphics();
     const detailMask = new Graphics();
     const pencil = new Graphics();
-    drawObjectDraftLayers(outline, detail, entry.object);
+    const object = entry?.object ?? {
+      id: objectId,
+      kind: "rug" as const,
+      ...stairEntry!.stair.rect,
+      solid: false,
+    };
+    if (entry) {
+      drawObjectDraftLayers(outline, detail, object);
+    } else {
+      const { x, y, w, h } = stairEntry!.stair.rect;
+      outline.rect(x, y, w, h).stroke({ color: INK.opening, width: WEIGHT.opening });
+      drawStair(detail, stairEntry!.stair);
+    }
     outline.mask = outlineMask;
     detail.mask = detailMask;
-    entry.view.visible = false;
-    floor.furniture.addChild(outline, detail, pencil, outlineMask, detailMask);
+    const staticView = entry?.view ?? stairEntry!.view;
+    staticView.visible = false;
+    targetFloor.furniture.addChild(outline, detail, pencil, outlineMask, detailMask);
     this.draftAnimations.set(objectId, {
-      object: entry.object,
-      staticView: entry.view,
+      object,
+      staticView,
       outline,
       detail,
       outlineMask,
