@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { LobbyMember, WireItemCode } from "@dotbot/protocol";
+import { LOBBY_SQUADS } from "@dotbot/protocol";
+import type { LobbyMember, LobbySquadId, WireItemCode } from "@dotbot/protocol";
 import { NetSession } from "../../game/session/NetSession";
 import { NetGameView } from "./NetGameView";
 import "./lobby.css";
 import { deviceTokenKey as tokenKey, ensureAccountToken, playerNameKey as nameKey } from "../identity";
+import { inviteUrl, lobbyRouteFromHash } from "./lobbyRoute";
 
 type LobbyState = {
   roomCode: string;
   members: LobbyMember[];
   hostId: string;
   playerId: string;
+  locked: boolean;
 };
 
 type Profile = {
@@ -32,7 +35,8 @@ type LobbyAppProps = {
 };
 
 export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {}) {
-  const routeCode = roomCodeFromHash();
+  const route = lobbyRouteFromHash(window.location.hash);
+  const routeCode = route.roomCode;
   const [name, setName] = useState(() => localStorage.getItem(nameKey) ?? "");
   const [joinCode, setJoinCode] = useState(routeCode);
   const [lobby, setLobby] = useState<LobbyState | null>(null);
@@ -56,7 +60,7 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
     }
   };
 
-  const connect = async (code: string) => {
+  const connect = async (code: string, preferredSquad?: LobbySquadId) => {
     const cleanName = name.trim();
     if (!cleanName) {
       setError("Choose a display name first.");
@@ -72,6 +76,7 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
       roomCode: code,
       name: cleanName,
       token,
+      preferredSquad,
       onLobby: (state) => {
         setLobby(state);
         setJoinCode(state.roomCode);
@@ -87,7 +92,7 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
     void refreshProfile();
     if (routeCode && name && !autoJoined.current) {
       autoJoined.current = true;
-      void connect(routeCode);
+      void connect(routeCode, route.preferredSquad);
     }
   }, []);
 
@@ -128,7 +133,7 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
         <header>
           <span className="lobby-kicker">Deployment</span>
           <h1>{lobby ? `Room ${lobby.roomCode}` : "Deploy."}</h1>
-          <p>{lobby ? "Squads are assigned. The host starts the run." : "Create a room or join one with its field code."}</p>
+          <p>{lobby ? "Choose a squad before the host locks deployment." : "Create a room or join one with its field code."}</p>
         </header>
 
         {profile ? <ProfileSummary profile={profile} /> : null}
@@ -156,18 +161,36 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
           </>
         ) : (
           <>
-            <ol className="lobby-members">
-              {lobby.members.map((member) => (
-                <li key={member.playerId}>
-                  <span>{member.name}</span>
-                  <small>{member.squadId}</small>
-                  {member.playerId === lobby.hostId ? <em>Host</em> : null}
-                </li>
-              ))}
-            </ol>
+            <div className="lobby-squads" aria-label="Squad formation">
+              {LOBBY_SQUADS.map((squadId) => {
+                const members = lobby.members.filter((member) => member.squadId === squadId);
+                const isCurrent = members.some((member) => member.playerId === lobby.playerId);
+                return (
+                  <section key={squadId} className={isCurrent ? "lobby-squad is-current" : "lobby-squad"}>
+                    <header>
+                      <strong>{squadName(squadId)}</strong>
+                      <span>{members.length}/3</span>
+                    </header>
+                    <ol>
+                      {members.map((member) => (
+                        <li key={member.playerId}>
+                          <span>{member.name}</span>
+                          {member.playerId === lobby.hostId ? <em>Host</em> : null}
+                        </li>
+                      ))}
+                      {members.length === 1 ? <li className="lobby-ai"><span>AI WINGMATE AT START</span></li> : null}
+                    </ol>
+                    <button type="button" disabled={lobby.locked || isCurrent || members.length >= 3} onClick={() => session?.requestSquad(squadId)}>
+                      {isCurrent ? "CURRENT SQUAD" : members.length >= 3 ? "SQUAD FULL" : "JOIN SQUAD"}
+                    </button>
+                    <button type="button" disabled={lobby.locked} onClick={() => void copyInvite(lobby.roomCode, squadId, setError)}>COPY INVITE</button>
+                  </section>
+                );
+              })}
+            </div>
             {lobby.playerId === lobby.hostId ? (
-              <button type="button" className="lobby-primary lobby-start" onClick={() => session?.requestStartMatch()}>
-                Start
+              <button type="button" className="lobby-primary lobby-start" disabled={lobby.locked} onClick={() => session?.requestStartMatch()}>
+                {lobby.locked ? "SQUADS LOCKED" : "Start"}
               </button>
             ) : <p className="lobby-waiting">Waiting for the host…</p>}
           </>
@@ -178,8 +201,17 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
   );
 }
 
-function roomCodeFromHash(): string {
-  return window.location.hash.match(/^#\/r\/([A-Z2-9]{4})$/i)?.[1]?.toUpperCase() ?? "";
+function squadName(squadId: LobbySquadId): string {
+  return squadId === "crew-3" ? "CREW 3" : squadId.toUpperCase();
+}
+
+async function copyInvite(roomCode: string, squadId: LobbySquadId, setError: (message: string) => void): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(inviteUrl(window.location.origin, roomCode, squadId));
+    setError(`INVITE COPIED · ${squadName(squadId)}`);
+  } catch {
+    setError("COPY FAILED — SHARE THE ROOM CODE.");
+  }
 }
 
 function ProfileSummary({ profile }: { profile: Profile }) {

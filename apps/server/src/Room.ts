@@ -5,7 +5,8 @@ import { physicsFloorId } from "@dotbot/game/mapModel";
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, SimEvent } from "@dotbot/game/types";
 import { filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toWireEvent, toWireSnapshot } from "@dotbot/protocol";
-import type { ClientMessage, LobbyMember, RoomPhase, ServerMessage } from "@dotbot/protocol";
+import { LOBBY_SQUADS } from "@dotbot/protocol";
+import type { ClientMessage, LobbyMember, LobbySquadId, RoomPhase, ServerMessage } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type RunManifest } from "./db";
 
@@ -43,7 +44,7 @@ type RoomOptions = {
   aiWingmates?: boolean;
 };
 
-const squads = ["alpha", "bravo", "crew-3"] as const;
+const squads = LOBBY_SQUADS;
 const squadColors = ["#ff3b6b", "#2f80ed", "#9b51e0"] as const;
 const squadAnchors = [
   { x: 300, y: 920 },
@@ -112,7 +113,7 @@ export class Room {
     };
   }
 
-  join(peer: RoomPeer, token: string, requestedName: string, resolvedPlayerId?: string): Member | null {
+  join(peer: RoomPeer, token: string, requestedName: string, resolvedPlayerId?: string, preferredSquad?: LobbySquadId): Member | null {
     const existing = this.memberByToken.get(token);
     if (existing) {
       existing.peer = peer;
@@ -132,7 +133,7 @@ export class Room {
       return existing;
     }
 
-    if (this.phase !== "lobby" || this.members.size >= squads.length * 4) {
+    if (this.phase !== "lobby" || this.members.size >= squads.length * 3) {
       return null;
     }
 
@@ -141,7 +142,7 @@ export class Room {
       playerId: resolvedPlayerId ?? `p-${token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || index}`,
       token,
       name: sanitizeName(requestedName),
-      squadId: squads[index % squads.length],
+      squadId: this.availableSquad(preferredSquad),
       peer,
       botId: null,
       latestInput: { move: { x: 0, y: 0 }, dash: false },
@@ -179,6 +180,24 @@ export class Room {
         }
         this.beginCountdown();
         return;
+      case "joinSquad": {
+        if (this.phase !== "lobby") {
+          member.peer?.send({ type: "err", code: "bad_phase", msg: "Squads lock when the host starts the match." });
+          return;
+        }
+        if (!squads.includes(message.squadId)) {
+          member.peer?.send({ type: "err", code: "bad_squad", msg: "Unknown squad." });
+          return;
+        }
+        if (member.squadId === message.squadId) return;
+        if (this.squadSize(message.squadId) >= 3) {
+          member.peer?.send({ type: "err", code: "squad_full", msg: "That squad already has three players." });
+          return;
+        }
+        member.squadId = message.squadId;
+        this.broadcastLobby();
+        return;
+      }
       case "leaveRun":
         this.leaveRun(member);
         return;
@@ -293,6 +312,7 @@ export class Room {
 
   private beginCountdown(): void {
     this.phase = "countdown";
+    this.broadcastLobby();
     this.matchStartPromise = new Promise((resolve) => setTimeout(resolve, this.countdownMs)).then(() => this.startMatch());
   }
 
@@ -369,11 +389,21 @@ export class Room {
       phase: this.phase,
       members: this.lobbyMembers,
       hostId: this.hostId,
+      locked: this.phase !== "lobby",
     });
   }
 
   private broadcastLobby(): void {
-    this.broadcast({ type: "lobby", members: this.lobbyMembers, hostId: this.hostId });
+    this.broadcast({ type: "lobby", members: this.lobbyMembers, hostId: this.hostId, locked: this.phase !== "lobby" });
+  }
+
+  private squadSize(squadId: LobbySquadId): number {
+    return [...this.members.values()].filter((member) => member.squadId === squadId).length;
+  }
+
+  private availableSquad(preferred?: LobbySquadId): LobbySquadId {
+    if (preferred && squads.includes(preferred) && this.squadSize(preferred) < 3) return preferred;
+    return [...squads].sort((left, right) => this.squadSize(left) - this.squadSize(right) || squads.indexOf(left) - squads.indexOf(right))[0];
   }
 
   private sendMatchStart(member: Member): void {

@@ -81,7 +81,7 @@ export class RoomManager {
       peer.send({ type: "err", code: "room_not_found", msg: "That room does not exist." });
       return;
     }
-    const member = room.join(peer, message.token, identity.name, identity.playerId);
+    const member = room.join(peer, message.token, identity.name, identity.playerId, message.preferredSquad);
     if (!member) {
       peer.send({ type: "err", code: "room_unavailable", msg: "That room cannot be joined." });
       return;

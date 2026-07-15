@@ -83,6 +83,7 @@ describe("compact item codes", () => {
 function exhaustClient(message: ClientMessage): string {
   switch (message.type) {
     case "hello": return message.token;
+    case "joinSquad": return message.squadId;
     case "startMatch": return message.type;
     case "leaveRun": return message.type;
     case "input": return String(message.seq);

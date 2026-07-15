@@ -3,10 +3,13 @@ import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
 
+export const LOBBY_SQUADS = ["alpha", "bravo", "crew-3"] as const;
+export type LobbySquadId = (typeof LOBBY_SQUADS)[number];
+
 export type LobbyMember = {
   playerId: string;
   name: string;
-  squadId: string;
+  squadId: LobbySquadId;
 };
 
 export type EntityMeta = {
@@ -56,7 +59,8 @@ export type WireSimEvent =
   | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[] };
 
 export type ClientMessage =
-  | { type: "hello"; token: string; name: string; roomCode: string }
+  | { type: "hello"; token: string; name: string; roomCode: string; preferredSquad?: LobbySquadId }
+  | { type: "joinSquad"; squadId: LobbySquadId }
   | { type: "startMatch" }
   | { type: "leaveRun" }
   | {
@@ -77,8 +81,9 @@ export type ServerMessage =
       phase: RoomPhase;
       members: LobbyMember[];
       hostId: string;
+      locked: boolean;
     }
-  | { type: "lobby"; members: LobbyMember[]; hostId: string }
+  | { type: "lobby"; members: LobbyMember[]; hostId: string; locked: boolean }
   | {
       type: "matchStart";
       map: MapDocument;

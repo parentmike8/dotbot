@@ -1,6 +1,6 @@
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { assertNever, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
-import type { EntityMeta, LobbyMember, ServerMessage } from "@dotbot/protocol";
+import type { EntityMeta, LobbyMember, LobbySquadId, ServerMessage } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
   blendOffset,
@@ -16,7 +16,8 @@ export type NetSessionOptions = {
   roomCode: string;
   name: string;
   token: string;
-  onLobby?: (state: { roomCode: string; members: LobbyMember[]; hostId: string; playerId: string }) => void;
+  preferredSquad?: LobbySquadId;
+  onLobby?: (state: { roomCode: string; members: LobbyMember[]; hostId: string; playerId: string; locked: boolean }) => void;
   onError?: (message: string) => void;
 };
 
@@ -86,6 +87,7 @@ export class NetSession implements GameSession {
           token: this.options.token,
           name: this.options.name,
           roomCode: this.options.roomCode.trim().toUpperCase(),
+          preferredSquad: this.options.preferredSquad,
         }));
       });
       socket.addEventListener("message", (event) => this.receive(JSON.parse(String(event.data)) as ServerMessage));
@@ -99,6 +101,10 @@ export class NetSession implements GameSession {
 
   requestStartMatch(): void {
     this.send({ type: "startMatch" });
+  }
+
+  requestSquad(squadId: LobbySquadId): void {
+    this.send({ type: "joinSquad", squadId });
   }
 
   leaveRun(): void {
@@ -203,6 +209,7 @@ export class NetSession implements GameSession {
           members: message.members,
           hostId: message.hostId,
           playerId: message.playerId,
+          locked: message.locked,
         });
         return;
       case "lobby":
@@ -211,6 +218,7 @@ export class NetSession implements GameSession {
           members: message.members,
           hostId: message.hostId,
           playerId: this.playerIdValue,
+          locked: message.locked,
         });
         return;
       case "matchStart":

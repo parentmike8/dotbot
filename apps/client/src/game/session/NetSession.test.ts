@@ -18,10 +18,12 @@ describe("NetSession item edges", () => {
     session.sendInput({ move: { x: 0, y: 0 }, dash: false });
     session.sendInput({ move: { x: 0, y: 0 }, dash: false });
     session.giveUp();
+    session.requestSquad("bravo");
 
     expect(sent[0]).toMatchObject({ type: "input", seq: 1, useBay: 2 });
     expect(sent[1]).toMatchObject({ type: "input", seq: 2 });
     expect(sent[1]).not.toHaveProperty("useBay");
     expect(sent[2]).toEqual({ type: "leaveRun" });
+    expect(sent[3]).toEqual({ type: "joinSquad", squadId: "bravo" });
   });
 });

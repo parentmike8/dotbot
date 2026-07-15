@@ -62,7 +62,7 @@ export function BaseApp() {
   const [identityReady, setIdentityReady] = useState(() => Boolean(localStorage.getItem(playerNameKey)));
   const [base, setBase] = useState<BasePayload>(() => ({ ...offlinePayload, layout: readLocalLayout(), shell: readLocalShell() }));
   const [panel, setPanel] = useState<Panel>(null);
-  const [deployment, setDeployment] = useState(() => /^#\/r\/[A-Z2-9]{4}$/i.test(window.location.hash) || window.location.hash === "#/lobby");
+  const [deployment, setDeployment] = useState(() => /^#\/r\/[A-Z2-9]{4}(?:\?squad=[a-z0-9-]+)?$/i.test(window.location.hash) || window.location.hash === "#/lobby");
   const [notice, setNotice] = useState("");
   const [draftObjectIds, setDraftObjectIds] = useState<string[]>(() => localStorage.getItem(seedDraftedKey)
     ? []
