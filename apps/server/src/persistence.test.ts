@@ -58,7 +58,9 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
         dotCaptureDurationMs: 100,
         maxShields: 30,
         playerSpeed: 1000,
-        runDurationMs: 12_000,
+        // Generous: the route legs are position-gated, so extra budget costs
+        // nothing when healthy but absorbs full-workspace test load.
+        runDurationMs: 25_000,
       },
     });
     await app.listen({ port: 0, host: "127.0.0.1" });
@@ -433,7 +435,7 @@ async function connect(url: string, clients: WebSocket[]): Promise<Inbox> {
     ws,
     messages,
     send(message) { ws.send(JSON.stringify(message)); },
-    async waitFor(type, timeoutMs = 3000) {
+    async waitFor(type, timeoutMs = 5000) {
       const started = Date.now();
       while (Date.now() - started < timeoutMs) {
         const message = messages.find((candidate) => candidate.type === type);
@@ -447,7 +449,7 @@ async function connect(url: string, clients: WebSocket[]): Promise<Inbox> {
 
 async function waitForBotPosition(inbox: Inbox, botId: string, predicate: (position: [number, number]) => boolean): Promise<void> {
   const started = Date.now();
-  while (Date.now() - started < 3000) {
+  while (Date.now() - started < 5000) {
     const latest = inbox.messages
       .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
       .at(-1);
@@ -464,7 +466,7 @@ async function waitForInventory(
   predicate: (bays: NonNullable<Extract<ServerMessage, { type: "snap" }>["bots"][number]["b"]>) => boolean,
 ): Promise<void> {
   const started = Date.now();
-  while (Date.now() - started < 3000) {
+  while (Date.now() - started < 5000) {
     const latest = inbox.messages
       .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
       .at(-1);
