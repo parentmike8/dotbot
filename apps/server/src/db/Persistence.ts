@@ -40,6 +40,7 @@ export type PlayerBase = {
   stash: Array<{ itemType: WireItemCode; qty: number }>;
   learnedBlueprints: string[];
   loadout: WireItemCode[];
+  stashCapacity: number;
 };
 
 export type FabricationResult = {
@@ -66,7 +67,7 @@ export interface Persistence {
     playerId: string;
     manifest: RunManifest;
     blueprintLearningThreshold: number;
-  }): Promise<{ learnedBlueprints: string[] }>;
+  }): Promise<{ manifest: RunManifest }>;
   recordOutcome(input: { matchId: string; playerId: string; outcome: "died" | "timeout" | "disconnected" }): Promise<void>;
   finishMatch(input: { matchId: string; endedAt: Date; summary: unknown }): Promise<void>;
   close(): Promise<void>;

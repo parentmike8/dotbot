@@ -507,8 +507,10 @@ export class Room {
     member.latestInput = { move: { x: 0, y: 0 }, dash: false };
     member.runOver = message;
     this.matchOutcomes.set(member.playerId, message.reason);
-    const persistenceWrite = this.persistRunOutcome(member, message).then((learnedBlueprints) => {
-      message.learnedBlueprints = learnedBlueprints;
+    const persistenceWrite = this.persistRunOutcome(member, message).then((manifest) => {
+      message.keptItems = manifest.keptItems;
+      message.lostItems = manifest.lostItems;
+      message.learnedBlueprints = manifest.learnedBlueprints;
       member.runOver = message;
     });
     this.trackPersistence(persistenceWrite, () => member.peer?.send(message));
@@ -557,8 +559,14 @@ export class Room {
     this.completeIfNoActiveMembers();
   }
 
-  private async persistRunOutcome(member: Member, message: Extract<ServerMessage, { type: "runOver" }>): Promise<string[]> {
-    if (!this.matchId || !member.persistenceEligible) return [];
+  private async persistRunOutcome(member: Member, message: Extract<ServerMessage, { type: "runOver" }>): Promise<RunManifest> {
+    const unchanged: RunManifest = {
+      reason: message.reason,
+      keptItems: message.keptItems,
+      lostItems: message.lostItems,
+      learnedBlueprints: message.learnedBlueprints,
+    };
+    if (!this.matchId || !member.persistenceEligible) return unchanged;
     try {
       if (message.reason === "extracted") {
         const manifest: RunManifest = {
@@ -574,7 +582,7 @@ export class Room {
           blueprintLearningThreshold: this.config.blueprintLearningThreshold,
         });
         member.persistedOutcome = message.reason;
-        return result.learnedBlueprints;
+        return result.manifest;
       } else {
         await this.persistence.recordOutcome({ matchId: this.matchId, playerId: member.playerId, outcome: message.reason });
       }
@@ -582,7 +590,7 @@ export class Room {
     } catch (error) {
       console.warn(`[persistence] failed to record ${message.reason} for ${member.playerId}; run continued. ${errorMessage(error)}`);
     }
-    return [];
+    return unchanged;
   }
 
   private recordDisconnected(member: Member): void {

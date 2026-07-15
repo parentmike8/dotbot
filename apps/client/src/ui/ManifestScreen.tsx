@@ -55,6 +55,12 @@ export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun
             <dt>Lost</dt>
             <dd><ItemList items={result.lostItems} /></dd>
           </div>
+          {result.outcome === "extracted" && result.lostItems.length > 0 ? (
+            <div className="manifest-stash-full">
+              <dt>Capacity</dt>
+              <dd>STASH FULL — LOST: {result.lostItems.length}</dd>
+            </div>
+          ) : null}
           <div>
             <dt>Kills</dt>
             <dd className="manifest-kills">

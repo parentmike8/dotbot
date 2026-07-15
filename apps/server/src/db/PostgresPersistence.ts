@@ -117,6 +117,7 @@ export class PostgresPersistence implements Persistence {
       stash: stash.map((row) => ({ itemType: row.itemType as WireItemCode, qty: Number(row.qty) })),
       learnedBlueprints: learned.map((row) => row.blueprintId),
       loadout: player[0]?.loadout ?? [],
+      stashCapacity: layout.filter((row) => row.objectKind === "locker").length * 20,
     };
   }
 
@@ -260,41 +261,55 @@ export class PostgresPersistence implements Persistence {
     playerId: string;
     manifest: RunManifest;
     blueprintLearningThreshold: number;
-  }): Promise<{ learnedBlueprints: string[] }> {
+  }): Promise<{ manifest: RunManifest }> {
     return this.db.transaction(async (tx) => {
-      if (input.manifest.keptItems.length > 0) {
-        await tx.insert(stashItems).values(input.manifest.keptItems.map((itemType) => ({
-          playerId: input.playerId,
-          itemType,
-          qty: 1,
-          acquiredMatchId: input.matchId,
-        })));
-      }
-
       const newlyLearned: string[] = [];
-      const extractedBlueprints = new Set(input.manifest.keptItems
-        .filter((code): code is `b:${string}` => code.startsWith("b:"))
-        .map((code) => code.slice(2)));
-      for (const blueprintId of extractedBlueprints) {
-        const code = `b:${blueprintId}`;
+      const layout = await tx.select({ objectKind: baseLayouts.objectKind })
+        .from(baseLayouts).where(eq(baseLayouts.playerId, input.playerId)).for("update");
+      const capacity = layout.filter((row) => row.objectKind === "locker").length * 20;
+      const lockedStash = await tx.select({ qty: stashItems.qty })
+        .from(stashItems).where(eq(stashItems.playerId, input.playerId)).for("update");
+      let stashCount = lockedStash.reduce((total, row) => total + row.qty, 0);
+      const bankOrder = [...input.manifest.keptItems].sort((left, right) => Number(right.startsWith("b:")) - Number(left.startsWith("b:")));
+      const keptItems: WireItemCode[] = [];
+      const overflow: WireItemCode[] = [];
+
+      for (const itemType of bankOrder) {
+        if (stashCount >= capacity) {
+          overflow.push(itemType);
+          continue;
+        }
+        await tx.insert(stashItems).values({ playerId: input.playerId, itemType, qty: 1, acquiredMatchId: input.matchId });
+        stashCount += 1;
+        keptItems.push(itemType);
+
+        if (!itemType.startsWith("b:")) continue;
+        const blueprintId = itemType.slice(2);
         const [existing] = await tx.select({ blueprintId: learnedBlueprints.blueprintId })
           .from(learnedBlueprints)
           .where(and(eq(learnedBlueprints.playerId, input.playerId), eq(learnedBlueprints.blueprintId, blueprintId)))
           .limit(1);
         const [count] = await tx.select({ total: sql<number>`coalesce(sum(${stashItems.qty}), 0)::int` })
           .from(stashItems)
-          .where(and(eq(stashItems.playerId, input.playerId), eq(stashItems.itemType, code)));
-        if (existing || Number(count?.total ?? 0) >= input.blueprintLearningThreshold) {
+          .where(and(eq(stashItems.playerId, input.playerId), eq(stashItems.itemType, itemType)));
+        const fragmentCount = Number(count?.total ?? 0);
+        if (existing || fragmentCount >= input.blueprintLearningThreshold) {
           if (!existing) {
             await tx.insert(learnedBlueprints).values({ playerId: input.playerId, blueprintId });
             newlyLearned.push(blueprintId);
           }
           await tx.delete(stashItems)
-            .where(and(eq(stashItems.playerId, input.playerId), eq(stashItems.itemType, code)));
+            .where(and(eq(stashItems.playerId, input.playerId), eq(stashItems.itemType, itemType)));
+          stashCount -= fragmentCount;
         }
       }
 
-      const manifest = { ...input.manifest, learnedBlueprints: newlyLearned };
+      const manifest: RunManifest = {
+        ...input.manifest,
+        keptItems,
+        lostItems: [...input.manifest.lostItems, ...overflow],
+        learnedBlueprints: newlyLearned,
+      };
       await tx.insert(matchParticipants).values({
         matchId: input.matchId,
         playerId: input.playerId,
@@ -304,7 +319,7 @@ export class PostgresPersistence implements Persistence {
         target: [matchParticipants.matchId, matchParticipants.playerId],
         set: { outcome: "extracted", extractedManifest: manifest },
       });
-      return { learnedBlueprints: newlyLearned };
+      return { manifest };
     });
   }
 

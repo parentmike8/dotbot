@@ -25,7 +25,7 @@ export class NoopPersistence implements Persistence {
   }
 
   async getBase() {
-    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [] };
+    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40 };
   }
 
   async saveBaseLayout(_token: string, layout: BaseLayout): Promise<BaseLayout> { return layout; }
@@ -35,7 +35,9 @@ export class NoopPersistence implements Persistence {
   async consumeLoadout(): Promise<WireItemCode[]> { return []; }
 
   async startMatch(): Promise<void> {}
-  async recordExtraction(): Promise<{ learnedBlueprints: string[] }> { return { learnedBlueprints: [] }; }
+  async recordExtraction(input: Parameters<Persistence["recordExtraction"]>[0]): Promise<{ manifest: import("./Persistence").RunManifest }> {
+    return { manifest: input.manifest };
+  }
   async recordOutcome(): Promise<void> {}
   async finishMatch(): Promise<void> {}
   async close(): Promise<void> {}
