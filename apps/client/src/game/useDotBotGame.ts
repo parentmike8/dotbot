@@ -56,6 +56,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const spectatedBotIdRef = useRef<string | null>(null);
   const runEndedRef = useRef(false);
   const interactionChannelRef = useRef<InteractionChannelVisual | null>(null);
+  const pendingDraftsRef = useRef<string[]>([]);
   const frameRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
   const [events, setEvents] = useState<SimEvent[]>([]);
@@ -108,6 +109,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
       sessionRef.current = session;
       rendererRef.current = renderer;
+      for (const objectId of pendingDraftsRef.current.splice(0)) renderer.draftObject(objectId);
       const initialSnapshot = session.update(0);
       setSnapshot(initialSnapshot);
       playerSquadId = initialSnapshot?.bots.find((bot) => bot.id === session.playerId)?.squadId ?? null;
@@ -326,6 +328,15 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     interactionChannelRef.current = visual;
   }, []);
 
+  const draftObjects = useCallback((objectIds: string[]) => {
+    const renderer = rendererRef.current;
+    if (renderer) {
+      for (const objectId of objectIds) renderer.draftObject(objectId);
+    } else {
+      pendingDraftsRef.current.push(...objectIds);
+    }
+  }, []);
+
   const updateJoystick = useCallback((clientX: number, clientY: number) => {
     const state = joystickRef.current;
     const raw = {
@@ -419,5 +430,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     giveUp,
     cycleSpectator,
     setInteractionChannel,
+    draftObjects,
   };
 }

@@ -30,7 +30,9 @@ export type FloorArt = {
   /** Plate, walls, doorway structure, windows, stairs. */
   architecture: Graphics;
   /** All furniture and fixtures. */
-  furniture: Graphics;
+  furniture: Container;
+  /** Individually addressable so fabrication can temporarily replace one glyph. */
+  objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
   /** Door swings, stair tags, and other plan notation. */
   annotation: Container;
   annotationGfx: Graphics;
@@ -643,7 +645,9 @@ export function drawRoofPlate(g: Graphics, fp: Rect): void {
 function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: PlacementSlot[]): FloorArt {
   const view = new Container();
   const architecture = new Graphics();
-  const furniture = new Graphics();
+  const furniture = new Container();
+  const objectViews = new Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>();
+  const slotMarkers = new Graphics();
   const annotationGfx = new Graphics();
   const annotation = new Container();
   annotation.addChild(annotationGfx);
@@ -660,13 +664,17 @@ function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: Pl
 
   // Furniture below structure so wall poché always wins overlaps.
   for (const object of floor.objects) {
-    drawObject(furniture, object);
+    const view = new Graphics();
+    drawObject(view, object);
+    furniture.addChild(view);
+    objectViews.set(object.id, { object, view });
   }
   const occupiedSlots = new Set(floor.objects.map((object) => object.slotId).filter(Boolean));
   for (const slot of placementSlots ?? []) {
     if (occupiedSlots.has(slot.id)) continue;
-    drawPlacementSlot(furniture, slot);
+    drawPlacementSlot(slotMarkers, slot);
   }
+  furniture.addChildAt(slotMarkers, 0);
 
   // Stairs.
   for (const stair of floor.stairs) {
@@ -692,7 +700,7 @@ function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: Pl
   }
 
   view.addChild(architecture, furniture, annotation);
-  return { floor, view, architecture, furniture, annotation, annotationGfx };
+  return { floor, view, architecture, furniture, objectViews, annotation, annotationGfx };
 }
 
 function drawPlacementSlot(g: Graphics, slot: PlacementSlot): void {

@@ -13,7 +13,8 @@ import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, Item, MapDocument, Vec2 } from "@dotbot/game/types";
 import { shieldArcSpan } from "@dotbot/game/shields";
 import { buildMapArt, drawStairExitHalf, type MapArt } from "./mapArt";
-import { INK } from "./style";
+import { drawObjectDraftLayers } from "./glyphs";
+import { INK, WEIGHT } from "./style";
 
 const SQUAD_CYAN = 0x15aabf;
 const RIVAL_RED = 0xe03131;
@@ -23,6 +24,18 @@ export type InteractionChannelVisual = {
   position: Vec2;
   radius: number;
   progress: number;
+};
+
+type DraftAnimation = {
+  object: import("@dotbot/game/types").MapObject;
+  staticView: Graphics;
+  outline: Graphics;
+  detail: Graphics;
+  outlineMask: Graphics;
+  detailMask: Graphics;
+  pencil: Graphics;
+  startedAt: number;
+  durationMs: number;
 };
 
 /**
@@ -51,6 +64,7 @@ export class GameRenderer {
   private viewport = { width: 1, height: 1 };
   private destroyed = false;
   private lastViewer: DotBotEntity | null = null;
+  private readonly draftAnimations = new Map<string, DraftAnimation>();
 
   private constructor(app: Application, map: MapDocument) {
     this.app = app;
@@ -102,7 +116,40 @@ export class GameRenderer {
     }
   }
 
+  /** Reusable fabrication hook: M5 placement and M6 output call this API. */
+  draftObject(objectId: string, durationMs = 1200): boolean {
+    const floor = this.art.buildings.flatMap((building) => building.floors)
+      .find((candidate) => candidate.objectViews.has(objectId));
+    const entry = floor?.objectViews.get(objectId);
+    if (!floor || !entry) return false;
+    this.finishDraft(objectId);
+
+    const outline = new Graphics();
+    const detail = new Graphics();
+    const outlineMask = new Graphics();
+    const detailMask = new Graphics();
+    const pencil = new Graphics();
+    drawObjectDraftLayers(outline, detail, entry.object);
+    outline.mask = outlineMask;
+    detail.mask = detailMask;
+    entry.view.visible = false;
+    floor.furniture.addChild(outline, detail, pencil, outlineMask, detailMask);
+    this.draftAnimations.set(objectId, {
+      object: entry.object,
+      staticView: entry.view,
+      outline,
+      detail,
+      outlineMask,
+      detailMask,
+      pencil,
+      startedAt: performance.now(),
+      durationMs,
+    });
+    return true;
+  }
+
   render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null): void {
+    this.updateDraftAnimations(performance.now());
     const currentPlayer = snapshot.bots.find((bot) => bot.id === playerId);
     const player = currentPlayer ?? (preserveMissingViewer ? this.lastViewer ?? undefined : snapshot.bots[0]);
     if (currentPlayer) this.lastViewer = currentPlayer;
@@ -131,6 +178,52 @@ export class GameRenderer {
     }
 
     this.drawStairOverlay(player ?? null);
+  }
+
+  private updateDraftAnimations(now: number): void {
+    for (const [objectId, animation] of this.draftAnimations) {
+      const progress = clamp01((now - animation.startedAt) / animation.durationMs);
+      const outlineProgress = clamp01(progress / 0.55);
+      const detailProgress = clamp01((progress - 0.55) / 0.45);
+      this.drawDraftMask(animation.outlineMask, animation.object, outlineProgress);
+      this.drawDraftMask(animation.detailMask, animation.object, detailProgress);
+      this.drawPencilTick(animation.pencil, animation.object, progress < 0.55 ? outlineProgress : detailProgress);
+      if (progress >= 1) this.finishDraft(objectId);
+    }
+  }
+
+  private drawDraftMask(mask: Graphics, object: import("@dotbot/game/types").MapObject, progress: number): void {
+    mask.clear();
+    const pad = 4;
+    if (object.w >= object.h) {
+      mask.rect(object.x - pad, object.y - pad, (object.w + pad * 2) * progress, object.h + pad * 2).fill({ color: 0xffffff });
+    } else {
+      mask.rect(object.x - pad, object.y - pad, object.w + pad * 2, (object.h + pad * 2) * progress).fill({ color: 0xffffff });
+    }
+  }
+
+  private drawPencilTick(pencil: Graphics, object: import("@dotbot/game/types").MapObject, progress: number): void {
+    pencil.clear();
+    if (progress >= 1) return;
+    if (object.w >= object.h) {
+      const x = object.x + object.w * progress;
+      pencil.moveTo(x, object.y - 5).lineTo(x + 4, object.y + 3).stroke({ color: INK.hairline, width: WEIGHT.hairline });
+    } else {
+      const y = object.y + object.h * progress;
+      pencil.moveTo(object.x - 5, y).lineTo(object.x + 3, y + 4).stroke({ color: INK.hairline, width: WEIGHT.hairline });
+    }
+  }
+
+  private finishDraft(objectId: string): void {
+    const animation = this.draftAnimations.get(objectId);
+    if (!animation) return;
+    animation.staticView.visible = true;
+    animation.outline.destroy();
+    animation.detail.destroy();
+    animation.outlineMask.destroy();
+    animation.detailMask.destroy();
+    animation.pencil.destroy();
+    this.draftAnimations.delete(objectId);
   }
 
   /** Redraw the far half of the active floor's stairs above the bot layer. */

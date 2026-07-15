@@ -818,3 +818,50 @@ export const glyphs: Record<ObjectKind, GlyphFn> = {
 export function drawObject(g: Graphics, object: MapObject): void {
   glyphs[object.kind](g, object);
 }
+
+/**
+ * Two deterministic fabrication passes. The complete static glyph replaces
+ * these temporary layers when the draw-on finishes; M6 can reuse this helper
+ * for any newly fabricated base object.
+ */
+export function drawObjectDraftLayers(outline: Graphics, detail: Graphics, object: MapObject): void {
+  body(outline, object.x, object.y, object.w, object.h, T3, object.kind === "planningTable" || object.kind === "fabricator" ? 3 : 1);
+  const { x, y, w, h } = object;
+  if (object.kind === "locker") {
+    if (h >= w) {
+      line(detail, x + 3, y + 6, x + w - 3, y + 6, T5);
+      line(detail, x + 3, y + 11, x + w - 3, y + 11, T5);
+    } else {
+      line(detail, x + 6, y + 3, x + 6, y + h - 3, T5);
+      line(detail, x + 11, y + 3, x + 11, y + h - 3, T5);
+    }
+    return;
+  }
+  if (object.kind === "fabricator") {
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const r = Math.min(w, h) * 0.28;
+    detail.circle(cx, cy, r).stroke(T4);
+    detail.circle(cx, cy, r * 0.22).stroke(T5);
+    for (let index = 0; index < 6; index += 1) {
+      const angle = (index * Math.PI) / 3;
+      line(detail, cx + Math.cos(angle) * r * 0.35, cy + Math.sin(angle) * r * 0.35, cx + Math.cos(angle) * r, cy + Math.sin(angle) * r, T5);
+    }
+    return;
+  }
+  if (object.kind === "bayConsole") {
+    const inset = Math.max(4, Math.min(w, h) * 0.14);
+    detail.roundRect(x + inset, y + inset, w - inset * 2, h - inset * 2, 2).stroke(T4);
+    if (w >= h) line(detail, x + w * 0.25, y + h / 2, x + w * 0.75, y + h / 2, T5);
+    else line(detail, x + w / 2, y + h * 0.25, x + w / 2, y + h * 0.75, T5);
+    return;
+  }
+  if (object.kind === "planningTable") {
+    detail.rect(x + 7, y + 7, w - 14, h - 14).stroke(T5);
+    line(detail, x + w * 0.25, y + 7, x + w * 0.25, y + h - 7, T5);
+    line(detail, x + w * 0.62, y + 7, x + w * 0.62, y + h - 7, T5);
+    line(detail, x + 7, y + h * 0.48, x + w - 7, y + h * 0.48, T5);
+    return;
+  }
+  drawObject(detail, object);
+}

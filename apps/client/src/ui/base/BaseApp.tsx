@@ -16,6 +16,7 @@ import { deviceTokenKey, ensureAccountToken, playerNameKey } from "../identity";
 import "./base.css";
 
 const localLayoutKey = "dotbot.baseLayout";
+const seedDraftedKey = "dotbot.baseSeedDrafted";
 const channelDurationMs = 1000;
 const interactionReach = 46;
 
@@ -52,6 +53,9 @@ export function BaseApp() {
   const [panel, setPanel] = useState<Panel>(null);
   const [deployment, setDeployment] = useState(() => /^#\/r\/[A-Z2-9]{4}$/i.test(window.location.hash) || window.location.hash === "#/lobby");
   const [notice, setNotice] = useState("");
+  const [draftObjectIds, setDraftObjectIds] = useState<string[]>(() => localStorage.getItem(seedDraftedKey)
+    ? []
+    : Object.keys(readLocalLayout()).map((slotId) => `base-object-${slotId}`));
 
   const refreshBase = useCallback(async () => {
     const token = localStorage.getItem(deviceTokenKey);
@@ -85,9 +89,10 @@ export function BaseApp() {
     setIdentityReady(true);
   };
 
-  const updateLayout = useCallback(async (nextLayout: BaseLayout) => {
+  const updateLayout = useCallback(async (nextLayout: BaseLayout, draftObjectId?: string) => {
     localStorage.setItem(localLayoutKey, JSON.stringify(nextLayout));
     setBase((current) => ({ ...current, layout: nextLayout }));
+    if (draftObjectId) setDraftObjectIds([draftObjectId]);
     setPanel(null);
     const token = localStorage.getItem(deviceTokenKey);
     if (!token) return;
@@ -132,6 +137,11 @@ export function BaseApp() {
         window.history.replaceState(null, "", "/#/lobby");
       }}
       updateLayout={updateLayout}
+      draftObjectIds={draftObjectIds}
+      onDraftQueued={() => {
+        localStorage.setItem(seedDraftedKey, "1");
+        setDraftObjectIds([]);
+      }}
     />
   );
 }
@@ -146,7 +156,9 @@ type BaseSessionProps = {
   finishIdentity: (event: FormEvent) => void;
   setPanel: (panel: Panel) => void;
   openDeployment: () => void;
-  updateLayout: (layout: BaseLayout) => Promise<void>;
+  updateLayout: (layout: BaseLayout, draftObjectId?: string) => Promise<void>;
+  draftObjectIds: string[];
+  onDraftQueued: () => void;
 };
 
 function BaseSession(props: BaseSessionProps) {
@@ -156,9 +168,15 @@ function BaseSession(props: BaseSessionProps) {
     config: { ...defaultGameConfig, runDurationMs: Number.MAX_SAFE_INTEGER },
     playerId: "player",
   }), [map]);
-  const { hostRef, snapshot, playerId, setInteractionChannel } = useDotBotGame({ session });
+  const { hostRef, snapshot, playerId, setInteractionChannel, draftObjects } = useDotBotGame({ session });
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
   const channelRef = useRef<{ targetId: string; startedAt: number; lastPosition: Vec2; completedId: string | null } | null>(null);
+
+  useEffect(() => {
+    if (props.draftObjectIds.length === 0) return;
+    draftObjects(props.draftObjectIds);
+    props.onDraftQueued();
+  }, [draftObjects, props]);
 
   const openTarget = useCallback((target: BaseTarget) => {
     if (target.type === "deployment") {
@@ -239,7 +257,7 @@ function BaseSession(props: BaseSessionProps) {
           panel={props.panel}
           base={props.base}
           close={() => props.setPanel(null)}
-          move={(fromSlotId, toSlotId) => props.updateLayout(moveObject(props.base.layout, fromSlotId, toSlotId))}
+          move={(fromSlotId, toSlotId) => props.updateLayout(moveObject(props.base.layout, fromSlotId, toSlotId), `base-object-${toSlotId}`)}
           chooseMove={(next) => props.setPanel(next)}
         />
       ) : null}
