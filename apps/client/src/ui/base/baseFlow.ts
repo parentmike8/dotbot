@@ -18,7 +18,8 @@ export function findBaseTarget(map: MapDocument, position: Vec2, interactionReac
     return { id: deployment.id, type: "deployment", center: center(deployment.rect), rect: deployment.rect };
   }
   const floor = map.buildings[0]?.floors[0];
-  const object = floor?.objects.find((candidate) => distanceToRect(position, candidate) <= interactionReach);
+  // Only slot-backed furniture is interactive; architectural decor is not.
+  const object = floor?.objects.find((candidate) => candidate.slotId && distanceToRect(position, candidate) <= interactionReach);
   if (object) return { id: object.id, type: "object", center: center(object), object, rect: object };
   const occupied = new Set(floor?.objects.map((candidate) => candidate.slotId));
   const slot = map.placementSlots?.find((candidate) => !occupied.has(candidate.id) && distanceToRect(position, candidate.rect) <= interactionReach);

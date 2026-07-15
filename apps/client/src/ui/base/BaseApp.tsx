@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { defaultGameConfig } from "@dotbot/game/config";
 import {
-  basePlacementSlots,
+  BASE_SHELL_IDS,
+  BASE_SLOT_DEFS,
+  DEFAULT_BASE_SHELL,
+  baseShellDef,
   createBaseMap,
+  isBaseShellId,
   isObjectAllowedInSlot,
   starterBaseLayout,
   validateBaseLayout,
 } from "@dotbot/game/content/base";
-import type { BaseLayout } from "@dotbot/game/types";
+import type { BaseLayout, BaseShellId } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import { createSession } from "../../game/session/createSession";
@@ -17,11 +21,13 @@ import "./base.css";
 import { advanceBaseChannel, findBaseTarget, type BaseChannelState, type BaseTarget } from "./baseFlow";
 
 const localLayoutKey = "dotbot.baseLayout";
+const localShellKey = "dotbot.baseShell";
 const seedDraftedKey = "dotbot.baseSeedDrafted";
 const channelDurationMs = 1000;
 
 export type BasePayload = {
   storageLinked: boolean;
+  shell: BaseShellId;
   layout: BaseLayout;
   stash: Array<{ itemType: WireItemCode; qty: number }>;
   learnedBlueprints: string[];
@@ -31,10 +37,12 @@ export type BasePayload = {
 type Panel =
   | { type: "locker" | "bayConsole" | "fabricator" | "planningTable"; slotId: string }
   | { type: "move"; fromSlotId?: string; toSlotId?: string }
+  | { type: "settings" }
   | null;
 
 const offlinePayload: BasePayload = {
   storageLinked: false,
+  shell: DEFAULT_BASE_SHELL,
   layout: starterBaseLayout,
   stash: [],
   learnedBlueprints: [],
@@ -44,7 +52,7 @@ const offlinePayload: BasePayload = {
 export function BaseApp() {
   const [name, setName] = useState(() => localStorage.getItem(playerNameKey) ?? "");
   const [identityReady, setIdentityReady] = useState(() => Boolean(localStorage.getItem(playerNameKey)));
-  const [base, setBase] = useState<BasePayload>(() => ({ ...offlinePayload, layout: readLocalLayout() }));
+  const [base, setBase] = useState<BasePayload>(() => ({ ...offlinePayload, layout: readLocalLayout(), shell: readLocalShell() }));
   const [panel, setPanel] = useState<Panel>(null);
   const [deployment, setDeployment] = useState(() => /^#\/r\/[A-Z2-9]{4}$/i.test(window.location.hash) || window.location.hash === "#/lobby");
   const [notice, setNotice] = useState("");
@@ -59,12 +67,19 @@ export function BaseApp() {
       const response = await fetch("/api/base", { headers: { "x-device-token": token } });
       if (!response.ok) throw new Error(`Base fetch failed (${response.status})`);
       const payload = await response.json() as BasePayload;
-      const next = { ...payload, layout: payload.storageLinked ? { ...payload.layout } : readLocalLayout() };
+      const next = {
+        ...payload,
+        layout: payload.storageLinked ? { ...payload.layout } : readLocalLayout(),
+        // Never trust the wire for the shell id — a bad value would sink the
+        // whole base session at render time.
+        shell: payload.storageLinked && isBaseShellId(payload.shell) ? payload.shell : readLocalShell(),
+      };
       setBase(next);
       localStorage.setItem(localLayoutKey, JSON.stringify(next.layout));
+      localStorage.setItem(localShellKey, next.shell);
       setNotice("");
     } catch {
-      setBase((current) => ({ ...current, storageLinked: false, layout: readLocalLayout() }));
+      setBase((current) => ({ ...current, storageLinked: false, layout: readLocalLayout(), shell: readLocalShell() }));
     }
   }, []);
 
@@ -105,6 +120,31 @@ export function BaseApp() {
       setNotice("LAYOUT SAVED TO THIS DEVICE");
     }
   }, []);
+
+  const updateShell = useCallback(async (shell: BaseShellId) => {
+    localStorage.setItem(localShellKey, shell);
+    if (shell !== base.shell) {
+      // Moving shells re-drafts the whole base: every placed object queues
+      // through the same draw-on used for fabrication.
+      setDraftObjectIds(Object.keys(base.layout).map((slotId) => `base-object-${slotId}`));
+      setBase((current) => ({ ...current, shell }));
+      setPanel(null);
+    }
+    const token = localStorage.getItem(deviceTokenKey);
+    if (!token) return;
+    try {
+      const response = await fetch("/api/base/shell", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-device-token": token },
+        body: JSON.stringify({ shell }),
+      });
+      if (!response.ok) throw new Error(`Shell update failed (${response.status})`);
+      setNotice("");
+    } catch {
+      setBase((current) => ({ ...current, storageLinked: false }));
+      setNotice("SHELL SAVED TO THIS DEVICE");
+    }
+  }, [base.shell, base.layout]);
 
   const updateLoadout = useCallback(async (loadout: WireItemCode[]) => {
     if (!base.storageLinked) return;
@@ -150,6 +190,7 @@ export function BaseApp() {
         window.history.replaceState(null, "", "/#/lobby");
       }}
       updateLayout={updateLayout}
+      updateShell={updateShell}
       draftObjectIds={draftObjectIds}
       onDraftQueued={() => {
         localStorage.setItem(seedDraftedKey, "1");
@@ -171,13 +212,14 @@ type BaseSessionProps = {
   setPanel: (panel: Panel) => void;
   openDeployment: () => void;
   updateLayout: (layout: BaseLayout, draftObjectId?: string) => Promise<void>;
+  updateShell: (shell: BaseShellId) => Promise<void>;
   draftObjectIds: string[];
   onDraftQueued: () => void;
   updateLoadout: (loadout: WireItemCode[]) => Promise<void>;
 };
 
 function BaseSession(props: BaseSessionProps) {
-  const map = useMemo(() => createBaseMap(props.base.layout), [props.base.layout]);
+  const map = useMemo(() => createBaseMap(props.base.layout, props.base.shell), [props.base.layout, props.base.shell]);
   const session = useMemo(() => createSession("local", {
     map,
     config: { ...defaultGameConfig, runDurationMs: Number.MAX_SAFE_INTEGER },
@@ -246,6 +288,14 @@ function BaseSession(props: BaseSessionProps) {
         <span>DOTBOT / HOME BAY</span>
         <strong>{props.name || "UNCOMMISSIONED"}</strong>
         <small>{props.base.storageLinked ? "STORAGE LINK ACTIVE" : "OFFLINE — NO STORAGE LINK"}</small>
+        <button
+          type="button"
+          className="base-settings-button"
+          disabled={!props.identityReady}
+          onClick={() => props.setPanel(props.panel?.type === "settings" ? null : { type: "settings" })}
+        >
+          SHELL PLAN: {baseShellDef(props.base.shell).name} ▾
+        </button>
       </header>
       <div className="base-instruction">STAND STILL AT AN OBJECT TO CHANNEL · WALK THROUGH DEPLOYMENT TO LEAVE</div>
       {props.notice ? <div className="base-notice">{props.notice}</div> : null}
@@ -266,22 +316,27 @@ function BaseSession(props: BaseSessionProps) {
           move={(fromSlotId, toSlotId) => props.updateLayout(moveObject(props.base.layout, fromSlotId, toSlotId), `base-object-${toSlotId}`)}
           chooseMove={(next) => props.setPanel(next)}
           updateLoadout={props.updateLoadout}
+          updateShell={props.updateShell}
         />
       ) : null}
     </main>
   );
 }
 
-function BasePanel({ panel, base, close, move, chooseMove, updateLoadout }: {
+function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, updateShell }: {
   panel: Exclude<Panel, null>;
   base: BasePayload;
   close: () => void;
   move: (fromSlotId: string, toSlotId: string) => void;
   chooseMove: (panel: Exclude<Panel, null>) => void;
   updateLoadout: (loadout: WireItemCode[]) => Promise<void>;
+  updateShell: (shell: BaseShellId) => Promise<void>;
 }) {
   if (panel.type === "move") {
     return <MovePanel panel={panel} layout={base.layout} close={close} move={move} />;
+  }
+  if (panel.type === "settings") {
+    return <ShellPanel current={base.shell} storageLinked={base.storageLinked} close={close} updateShell={updateShell} />;
   }
   const title = panel.type === "bayConsole" ? "BAY CONSOLE" : panel.type.replace(/([A-Z])/g, " $1").toUpperCase();
   return (
@@ -317,9 +372,9 @@ function MovePanel({ panel, layout, close, move }: {
   close: () => void;
   move: (from: string, to: string) => void;
 }) {
-  const slotIndex = new Map(basePlacementSlots.map((slot) => [slot.id, slot]));
+  const slotIndex = new Map<string, { id: string; zone: "wall" | "floor" }>(BASE_SLOT_DEFS.map((slot) => [slot.id, slot]));
   const choices = panel.fromSlotId
-    ? basePlacementSlots.filter((slot) => !layout[slot.id] && isObjectAllowedInSlot(layout[panel.fromSlotId!]!, slot)).map((slot) => ({ slotId: slot.id, label: slot.id }))
+    ? BASE_SLOT_DEFS.filter((slot) => !layout[slot.id] && isObjectAllowedInSlot(layout[panel.fromSlotId!]!, slot)).map((slot) => ({ slotId: slot.id, label: slot.id }))
     : Object.entries(layout).filter(([from, kind]) => panel.toSlotId && isObjectAllowedInSlot(kind, slotIndex.get(panel.toSlotId)!)).map(([slotId, kind]) => ({ slotId, label: `${kind} / ${slotId}` }));
   return (
     <section className="base-panel" aria-label="Placement slot picker">
@@ -333,6 +388,74 @@ function MovePanel({ panel, layout, close, move }: {
         {choices.length === 0 ? <span>NO COMPATIBLE EMPTY SLOTS</span> : null}
       </div>
     </section>
+  );
+}
+
+function ShellPanel({ current, storageLinked, close, updateShell }: {
+  current: BaseShellId;
+  storageLinked: boolean;
+  close: () => void;
+  updateShell: (shell: BaseShellId) => Promise<void>;
+}) {
+  return (
+    <section className="base-panel shell-panel" aria-label="Shell plan picker">
+      <header><span>HOME BAY / SETTINGS</span><strong>SHELL PLAN</strong><button type="button" onClick={close}>×</button></header>
+      <p>SAME SLOTS, SAME CAPACITY, EVERY PLAN — LAYOUT AND AESTHETICS ONLY.</p>
+      <div className="shell-choices">
+        {BASE_SHELL_IDS.map((shellId) => {
+          const def = baseShellDef(shellId);
+          return (
+            <button
+              type="button"
+              key={shellId}
+              className={shellId === current ? "shell-choice is-current" : "shell-choice"}
+              aria-pressed={shellId === current}
+              onClick={() => void updateShell(shellId)}
+            >
+              <ShellPreview shell={shellId} />
+              <strong>{def.name}</strong>
+              <small>{def.blurb}</small>
+            </button>
+          );
+        })}
+      </div>
+      {!storageLinked ? <p className="offline-hint">OFFLINE — CHOICE SAVED TO THIS DEVICE</p> : null}
+    </section>
+  );
+}
+
+/** Miniature plan-view of a shell, drawn from the same wall data as the map. */
+function ShellPreview({ shell }: { shell: BaseShellId }) {
+  const def = baseShellDef(shell);
+  return (
+    <svg viewBox="0 0 1000 760" role="img" aria-label={`${def.name} floor plan`}>
+      {def.walls.map((wall) => (
+        <rect key={wall.id} x={wall.x} y={wall.y} width={wall.w} height={wall.h} fill="currentColor" />
+      ))}
+      <rect
+        x={def.deployment.x}
+        y={def.deployment.y}
+        width={def.deployment.w}
+        height={def.deployment.h}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={6}
+        strokeDasharray="18 12"
+      />
+      {def.slots.map((slot) => (
+        <rect
+          key={slot.id}
+          x={slot.rect.x}
+          y={slot.rect.y}
+          width={slot.rect.w}
+          height={slot.rect.h}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={4}
+          opacity={0.55}
+        />
+      ))}
+    </svg>
   );
 }
 
@@ -357,6 +480,11 @@ function readLocalLayout(): BaseLayout {
   } catch {
     return { ...starterBaseLayout };
   }
+}
+
+function readLocalShell(): BaseShellId {
+  const value = localStorage.getItem(localShellKey);
+  return isBaseShellId(value) ? value : DEFAULT_BASE_SHELL;
 }
 
 function wireItemGlyph(code: WireItemCode): string {

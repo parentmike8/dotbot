@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
-import { basePlacementSlots, createBaseMap, starterBaseLayout } from "./content/base";
+import { BASE_SHELL_IDS, createBaseMap, starterBaseLayout } from "./content/base";
+import type { BaseLayout } from "./types";
 import { collisionLayers, isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Doorway, MapDocument, Rect, StairLink, Vec2 } from "./types";
@@ -285,12 +286,27 @@ describe("downtown map validation", () => {
   });
 });
 
-describe("base map validation", () => {
-  const map = createBaseMap(starterBaseLayout);
+/**
+ * Worst-case furnishing: every wall slot filled plus the planning table.
+ * (Floor slots accept only the singleton planning table today, so this is
+ * the maximum possible solid load in any shell.)
+ */
+const maximalBaseLayout: BaseLayout = {
+  "wall-nw": "fabricator",
+  "wall-n": "locker",
+  "wall-ne": "locker",
+  "wall-east": "bayConsole",
+  "wall-west": "locker",
+  "wall-se": "locker",
+  "floor-center": "planningTable",
+};
+
+describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map validation (%s shell)", (shellId) => {
+  const map = createBaseMap(maximalBaseLayout, shellId);
   const [world] = collectFloors(map);
 
   it("is deterministic and contains only the player with empty bays", () => {
-    expect(createBaseMap(starterBaseLayout)).toEqual(createBaseMap({ ...starterBaseLayout }));
+    expect(createBaseMap(starterBaseLayout, shellId)).toEqual(createBaseMap({ ...starterBaseLayout }, shellId));
     expect(map.outdoor.dotSpawns).toEqual([]);
     expect(map.buildings.flatMap((building) => building.floors.flatMap((floor) => floor.dotSpawns))).toEqual([]);
     expect(map.botSpawns).toEqual([
@@ -298,12 +314,20 @@ describe("base map validation", () => {
     ]);
   });
 
-  it("keeps the shell spawn, every slot, and the deployment threshold reachable", () => {
+  it("exposes the identical slot roster as every other shell", () => {
+    const roster = map.placementSlots!.map((slot) => ({ id: slot.id, zone: slot.zone }));
+    for (const otherId of BASE_SHELL_IDS) {
+      const other = createBaseMap(starterBaseLayout, otherId);
+      expect(other.placementSlots!.map((slot) => ({ id: slot.id, zone: slot.zone }))).toEqual(roster);
+    }
+  });
+
+  it("keeps the spawn, every slot, and the deployment threshold reachable when fully furnished", () => {
     const reachable = floodReachable(world, map);
     const spawn = map.botSpawns[0];
     expect(nearestReachableDistance(spawn.position, reachable, BOT_RADIUS, map)).toBeLessThanOrEqual(BOT_RADIUS);
 
-    for (const slot of basePlacementSlots) {
+    for (const slot of map.placementSlots!) {
       const center = { x: slot.rect.x + slot.rect.w / 2, y: slot.rect.y + slot.rect.h / 2 };
       const interactionReach = Math.hypot(slot.rect.w, slot.rect.h) / 2 + 48;
       expect(
@@ -318,8 +342,8 @@ describe("base map validation", () => {
   });
 
   it("rejects unknown slots, object kinds, and zone mismatches", () => {
-    expect(() => createBaseMap({ mystery: "locker" })).toThrow(/Unknown base placement slot/);
-    expect(() => createBaseMap({ "wall-n": "not-real" } as never)).toThrow(/Unknown base object kind/);
-    expect(() => createBaseMap({ "floor-center": "fabricator" })).toThrow(/cannot be placed in floor slot/);
+    expect(() => createBaseMap({ mystery: "locker" }, shellId)).toThrow(/Unknown base placement slot/);
+    expect(() => createBaseMap({ "wall-n": "not-real" } as never, shellId)).toThrow(/Unknown base object kind/);
+    expect(() => createBaseMap({ "floor-center": "fabricator" }, shellId)).toThrow(/cannot be placed in floor slot/);
   });
 });

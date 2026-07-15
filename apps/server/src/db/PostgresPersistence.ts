@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { WireItemCode } from "@dotbot/protocol";
-import { starterBaseLayout } from "@dotbot/game/content/base";
-import type { BaseLayout } from "@dotbot/game/types";
+import { DEFAULT_BASE_SHELL, starterBaseLayout } from "@dotbot/game/content/base";
+import type { BaseLayout, BaseShellId } from "@dotbot/game/types";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import type {
@@ -107,14 +107,24 @@ export class PostgresPersistence implements Persistence {
         .from(stashItems).where(eq(stashItems.playerId, identity.playerId)).groupBy(stashItems.itemType),
       this.db.select({ blueprintId: learnedBlueprints.blueprintId })
         .from(learnedBlueprints).where(eq(learnedBlueprints.playerId, identity.playerId)),
-      this.db.select({ loadout: players.loadout }).from(players).where(eq(players.id, identity.playerId)).limit(1),
+      this.db.select({ loadout: players.loadout, baseShell: players.baseShell })
+        .from(players).where(eq(players.id, identity.playerId)).limit(1),
     ]);
     return {
+      shell: player[0]?.baseShell ?? DEFAULT_BASE_SHELL,
       layout: Object.fromEntries(layout.map((row) => [row.slotId, row.objectKind])) as BaseLayout,
       stash: stash.map((row) => ({ itemType: row.itemType as WireItemCode, qty: Number(row.qty) })),
       learnedBlueprints: learned.map((row) => row.blueprintId),
       loadout: player[0]?.loadout ?? [],
     };
+  }
+
+  async setBaseShell(token: string, shell: BaseShellId) {
+    const tokenHash = hashToken(token);
+    const updated = await this.db.update(players).set({ baseShell: shell })
+      .where(eq(players.deviceTokenHash, tokenHash)).returning({ id: players.id });
+    if (updated.length === 0) return null;
+    return this.getBase(token);
   }
 
   async saveBaseLayout(token: string, layout: BaseLayout): Promise<BaseLayout | null> {

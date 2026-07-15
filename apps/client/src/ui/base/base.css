@@ -4,6 +4,16 @@
 .base-title-block strong { font-size: 14px; letter-spacing: .08em; }
 .base-title-block small { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--hairline); }
 .base-instruction { position: absolute; z-index: 7; right: 14px; bottom: 14px; max-width: calc(100vw - 28px); padding: 8px 10px; border: 1px solid var(--hairline); background: var(--paper-glass); color: var(--muted); font: 800 8px/1.25 ui-monospace, monospace; letter-spacing: .1em; }
+.base-settings-button { margin-top: 6px; min-height: 26px; border: 1px solid var(--ink); background: var(--paper); padding: 0 8px; font: 900 8px/1 ui-monospace, monospace; letter-spacing: .12em; text-transform: uppercase; text-align: left; cursor: pointer; }
+.base-settings-button:disabled { color: var(--muted); border-color: var(--hairline); cursor: default; }
+.shell-panel { width: min(520px, calc(100vw - 28px)); }
+.shell-choices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.shell-choices .shell-choice { display: grid; gap: 6px; padding: 8px; border: 1.5px solid var(--hairline); background: var(--paper); text-align: left; cursor: pointer; }
+.shell-choices .shell-choice.is-current { border-color: var(--ink); box-shadow: 3px 3px 0 var(--ink); }
+.shell-choices .shell-choice svg { width: 100%; height: auto; color: var(--ink); }
+.shell-choices .shell-choice strong { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.shell-choices .shell-choice small { color: var(--muted); font: 750 7px/1.4 ui-monospace, monospace; letter-spacing: .06em; text-transform: uppercase; }
+@media (max-width: 620px) { .shell-choices { grid-template-columns: 1fr; } }
 .base-notice { position: absolute; z-index: 8; top: 14px; right: 14px; padding: 8px 10px; border: 1px solid var(--ink); background: var(--paper); font: 800 8px/1 ui-monospace, monospace; letter-spacing: .1em; }
 .base-panel { position: absolute; z-index: 30; top: 50%; left: 50%; width: min(430px, calc(100vw - 28px)); max-height: min(620px, calc(100vh - 28px)); overflow: auto; padding: 16px; border: 2px solid var(--ink); background: rgba(255,255,255,.97); box-shadow: 8px 8px 0 var(--ink); transform: translate(-50%,-50%); pointer-events: auto; }
 .base-panel header { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; padding-bottom: 12px; border-bottom: 2px solid var(--ink); text-transform: uppercase; }

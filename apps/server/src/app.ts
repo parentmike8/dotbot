@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
-import { isBaseObjectKind, validateBaseLayout } from "@dotbot/game/content/base";
+import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/game/content/base";
 import type { BaseLayout } from "@dotbot/game/types";
 import { createPersistence, type Persistence } from "./db";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
@@ -62,6 +62,17 @@ export async function createServer(options: CreateServerOptions = {}) {
     const saved = await persistence.saveBaseLayout(token, layout);
     if (!saved) return reply.code(404).send({ error: "Unknown device token." });
     return { layout: saved };
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { shell?: unknown } }>("/api/base/shell", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const shell = request.body?.shell;
+    if (!isBaseShellId(shell)) return reply.code(400).send({ error: "Unknown base shell." });
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
+    const base = await persistence.setBaseShell(token, shell);
+    if (!base) return reply.code(404).send({ error: "Unknown device token." });
+    return { storageLinked: true, ...base };
   });
 
   app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { loadout?: unknown } }>("/api/base/loadout", async (request, reply) => {

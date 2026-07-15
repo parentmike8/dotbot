@@ -15,6 +15,13 @@
       "when": 1784130737471,
       "tag": "0001_redundant_terror",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784135561600,
+      "tag": "0002_base_shell",
+      "breakpoints": true
     }
   ]
 }

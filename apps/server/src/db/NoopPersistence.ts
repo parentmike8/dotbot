@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Persistence, PlayerIdentity, PlayerProfile, RegisteredPlayer } from "./Persistence";
-import { starterBaseLayout } from "@dotbot/game/content/base";
+import { DEFAULT_BASE_SHELL, starterBaseLayout } from "@dotbot/game/content/base";
 import type { BaseLayout } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
 
@@ -25,10 +25,11 @@ export class NoopPersistence implements Persistence {
   }
 
   async getBase() {
-    return { layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [] };
+    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [] };
   }
 
   async saveBaseLayout(_token: string, layout: BaseLayout): Promise<BaseLayout> { return layout; }
+  async setBaseShell(): Promise<null> { return null; }
   async setLoadout(): Promise<null> { return null; }
   async consumeLoadout(): Promise<WireItemCode[]> { return []; }
 

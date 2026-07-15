@@ -192,6 +192,17 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(initial.statusCode).toBe(200);
     expect(initial.json<{ storageLinked: boolean; layout: BaseLayout }>().storageLinked).toBe(true);
     expect(initial.json<{ layout: BaseLayout }>().layout).toEqual(starterBaseLayout);
+    expect(initial.json<{ shell: string }>().shell).toBe("workshop");
+
+    // Shell choice is cosmetic: it round-trips per player and never touches
+    // the layout (identical slot roster across shells).
+    const reshelled = await app.inject({ method: "POST", url: "/api/base/shell", headers, payload: { shell: "berths" } });
+    expect(reshelled.statusCode).toBe(200);
+    expect(reshelled.json<{ shell: string; layout: BaseLayout }>().shell).toBe("berths");
+    expect(reshelled.json<{ layout: BaseLayout }>().layout).toEqual(starterBaseLayout);
+    expect((await app.inject({ method: "GET", url: "/api/base", headers })).json<{ shell: string }>().shell).toBe("berths");
+    expect((await app.inject({ method: "POST", url: "/api/base/shell", headers, payload: { shell: "mansion" } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url: "/api/base/shell", headers: { "x-device-token": "0".repeat(32) }, payload: { shell: "hangar" } })).statusCode).toBe(404);
 
     const movedLayout = { ...starterBaseLayout };
     delete movedLayout["wall-nw"];

@@ -125,6 +125,13 @@ export type ObjectKind =
 /** Furniture that can be installed in the persistent player base. */
 export type BaseObjectKind = "fabricator" | "locker" | "bayConsole" | "planningTable";
 
+/**
+ * Purely cosmetic floor-plan variants of the home base. Every shell exposes
+ * the exact same placement slots (ids and zones), so no shell has a gameplay
+ * advantage — the choice is layout and aesthetics only.
+ */
+export type BaseShellId = "workshop" | "hangar" | "berths";
+
 export type PlacementSlot = {
   id: string;
   rect: Rect;

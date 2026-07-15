@@ -1,5 +1,5 @@
 import type { WireItemCode } from "@dotbot/protocol";
-import type { BaseLayout } from "@dotbot/game/types";
+import type { BaseLayout, BaseShellId } from "@dotbot/game/types";
 
 export type PlayerIdentity = {
   playerId: string;
@@ -34,6 +34,7 @@ export type PlayerProfile = {
 };
 
 export type PlayerBase = {
+  shell: BaseShellId;
   layout: BaseLayout;
   stash: Array<{ itemType: WireItemCode; qty: number }>;
   learnedBlueprints: string[];
@@ -48,6 +49,7 @@ export interface Persistence {
   getProfile(token: string): Promise<PlayerProfile | null>;
   getBase(token: string): Promise<PlayerBase | null>;
   saveBaseLayout(token: string, layout: BaseLayout): Promise<BaseLayout | null>;
+  setBaseShell(token: string, shell: BaseShellId): Promise<PlayerBase | null>;
   setLoadout(token: string, loadout: WireItemCode[]): Promise<PlayerBase | null>;
   consumeLoadout(playerId: string): Promise<WireItemCode[]>;
   startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void>;

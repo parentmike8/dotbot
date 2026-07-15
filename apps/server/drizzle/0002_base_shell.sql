@@ -1,0 +1,1 @@
+ALTER TABLE "players" ADD COLUMN "base_shell" text DEFAULT 'workshop' NOT NULL;
