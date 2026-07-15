@@ -4,6 +4,9 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
+import type { WireItemCode } from "@dotbot/protocol";
+import { isBaseObjectKind, validateBaseLayout } from "@dotbot/game/content/base";
+import type { BaseLayout } from "@dotbot/game/types";
 import { createPersistence, type Persistence } from "./db";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
 
@@ -40,6 +43,40 @@ export async function createServer(options: CreateServerOptions = {}) {
     const profile = await persistence.getProfile(token);
     if (!profile) return reply.code(404).send({ error: "Unknown device token." });
     return profile;
+  });
+
+  app.get<{ Headers: { "x-device-token"?: string; authorization?: string } }>("/api/base", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const base = await persistence.getBase(token);
+    if (!base) return reply.code(404).send({ error: "Unknown device token." });
+    return { storageLinked: persistence.live, ...base };
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { layout?: unknown } }>("/api/base/layout", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const layout = parseBaseLayout(request.body?.layout);
+    if (!layout) return reply.code(400).send({ error: "Layout contains an unknown slot, object kind, or zone mismatch." });
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
+    const saved = await persistence.saveBaseLayout(token, layout);
+    if (!saved) return reply.code(404).send({ error: "Unknown device token." });
+    return { layout: saved };
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { loadout?: unknown } }>("/api/base/loadout", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const loadout = parseLoadout(request.body?.loadout);
+    if (!loadout) return reply.code(400).send({ error: "Loadout must contain at most four powerups; blueprint fragments are cargo." });
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
+    try {
+      const base = await persistence.setLoadout(token, loadout);
+      if (!base) return reply.code(404).send({ error: "Unknown device token." });
+      return { storageLinked: true, ...base };
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
   });
 
   if (process.env.NODE_ENV === "production") {
@@ -98,4 +135,32 @@ function sanitizeName(value: unknown): string {
 
 function bearerToken(value: string | undefined): string | undefined {
   return value?.match(/^Bearer\s+(.+)$/i)?.[1];
+}
+
+function authToken(headers: { "x-device-token"?: string; authorization?: string }): string | undefined {
+  return headers["x-device-token"] ?? bearerToken(headers.authorization);
+}
+
+function parseBaseLayout(value: unknown): BaseLayout | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const layout: BaseLayout = {};
+  for (const [slotId, kind] of Object.entries(value)) {
+    if (!isBaseObjectKind(kind)) return null;
+    layout[slotId] = kind;
+  }
+  try {
+    validateBaseLayout(layout);
+    return layout;
+  } catch {
+    return null;
+  }
+}
+
+function parseLoadout(value: unknown): WireItemCode[] | null {
+  if (!Array.isArray(value) || value.length > 4) return null;
+  return value.every((code) => code === "h" || code === "r" || code === "d" || code === "i") ? value as WireItemCode[] : null;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

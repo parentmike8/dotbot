@@ -19,7 +19,10 @@
 .base-stash { margin: 0; padding: 0; list-style: none; }
 .base-stash li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--hairline); font: 800 10px/1 ui-monospace, monospace; text-transform: uppercase; }
 .loadout-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 7px; }
-.loadout-row span { display: grid; height: 50px; place-items: center; border: 1.5px solid var(--ink); font: 900 22px/1 ui-monospace, monospace; }
+.loadout-row button { display: grid; height: 50px; place-items: center; border: 1.5px solid var(--ink); background: var(--paper); font: 900 22px/1 ui-monospace, monospace; cursor: pointer; }
+.loadout-row button:disabled { color: var(--muted); cursor: default; }
+.loadout-stash { display: grid; gap: 5px; margin-top: 12px; }
+.loadout-stash button { display: flex; min-height: 38px; align-items: center; justify-content: space-between; border: 1px solid var(--ink); background: var(--paper); padding: 0 10px; font: 800 9px/1 ui-monospace, monospace; text-transform: uppercase; cursor: pointer; }
 .slot-choices { display: grid; gap: 6px; margin-top: 14px; }
 .slot-choices button { text-align: left; }
 .slot-choices span { color: var(--muted); font: 800 9px/1.3 ui-monospace, monospace; }

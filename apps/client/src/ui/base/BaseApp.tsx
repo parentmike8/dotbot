@@ -64,7 +64,7 @@ export function BaseApp() {
       const response = await fetch("/api/base", { headers: { "x-device-token": token } });
       if (!response.ok) throw new Error(`Base fetch failed (${response.status})`);
       const payload = await response.json() as BasePayload;
-      const next = { ...payload, layout: { ...payload.layout } };
+      const next = { ...payload, layout: payload.storageLinked ? { ...payload.layout } : readLocalLayout() };
       setBase(next);
       localStorage.setItem(localLayoutKey, JSON.stringify(next.layout));
       setNotice("");
@@ -112,6 +112,25 @@ export function BaseApp() {
     }
   }, []);
 
+  const updateLoadout = useCallback(async (loadout: WireItemCode[]) => {
+    if (!base.storageLinked) return;
+    const token = localStorage.getItem(deviceTokenKey);
+    if (!token) return;
+    try {
+      const response = await fetch("/api/base/loadout", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-device-token": token },
+        body: JSON.stringify({ loadout }),
+      });
+      const body = await response.json() as BasePayload & { error?: string };
+      if (!response.ok) throw new Error(body.error ?? `Loadout update failed (${response.status})`);
+      setBase(body);
+      setNotice("");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message.toUpperCase() : "LOADOUT UPDATE FAILED");
+    }
+  }, [base.storageLinked]);
+
   if (deployment) {
     return <LobbyApp embedded onReturnToBase={() => {
       setDeployment(false);
@@ -142,6 +161,7 @@ export function BaseApp() {
         localStorage.setItem(seedDraftedKey, "1");
         setDraftObjectIds([]);
       }}
+      updateLoadout={updateLoadout}
     />
   );
 }
@@ -159,6 +179,7 @@ type BaseSessionProps = {
   updateLayout: (layout: BaseLayout, draftObjectId?: string) => Promise<void>;
   draftObjectIds: string[];
   onDraftQueued: () => void;
+  updateLoadout: (loadout: WireItemCode[]) => Promise<void>;
 };
 
 function BaseSession(props: BaseSessionProps) {
@@ -259,18 +280,20 @@ function BaseSession(props: BaseSessionProps) {
           close={() => props.setPanel(null)}
           move={(fromSlotId, toSlotId) => props.updateLayout(moveObject(props.base.layout, fromSlotId, toSlotId), `base-object-${toSlotId}`)}
           chooseMove={(next) => props.setPanel(next)}
+          updateLoadout={props.updateLoadout}
         />
       ) : null}
     </main>
   );
 }
 
-function BasePanel({ panel, base, close, move, chooseMove }: {
+function BasePanel({ panel, base, close, move, chooseMove, updateLoadout }: {
   panel: Exclude<Panel, null>;
   base: BasePayload;
   close: () => void;
   move: (fromSlotId: string, toSlotId: string) => void;
   chooseMove: (panel: Exclude<Panel, null>) => void;
+  updateLoadout: (loadout: WireItemCode[]) => Promise<void>;
 }) {
   if (panel.type === "move") {
     return <MovePanel panel={panel} layout={base.layout} close={close} move={move} />;
@@ -286,8 +309,12 @@ function BasePanel({ panel, base, close, move, chooseMove }: {
       </> : null}
       {panel.type === "bayConsole" ? <>
         <h2>AT-RISK LOADOUT</h2>
-        <div className="loadout-row">{[0, 1, 2, 3].map((index) => <span key={index}>{base.loadout[index] ? wireItemGlyph(base.loadout[index]) : "·"}</span>)}</div>
-        <p>{base.storageLinked ? "SELECT UP TO FOUR STASHED POWERUPS" : "LOADOUT UNAVAILABLE"}</p>
+        <div className="loadout-row">{[0, 1, 2, 3].map((index) => {
+          const item = base.loadout[index];
+          return <button type="button" key={index} disabled={!item || !base.storageLinked} onClick={() => void updateLoadout(base.loadout.filter((_, itemIndex) => itemIndex !== index))} aria-label={item ? `Return ${wireItemName(item)} to stash` : `Empty loadout slot ${index + 1}`}>{item ? wireItemGlyph(item) : "·"}</button>;
+        })}</div>
+        <p>{base.storageLinked ? "SELECT UP TO FOUR STASHED POWERUPS · TAP A LOADOUT SLOT TO RETURN IT" : "LOADOUT UNAVAILABLE"}</p>
+        {base.storageLinked ? <div className="loadout-stash">{base.stash.filter((entry) => !entry.itemType.startsWith("b:")).map((entry) => <button type="button" key={entry.itemType} disabled={base.loadout.length >= 4 || entry.qty < 1} onClick={() => void updateLoadout([...base.loadout, entry.itemType])}><span>{wireItemGlyph(entry.itemType)} {wireItemName(entry.itemType)}</span><b>×{entry.qty}</b></button>)}</div> : null}
       </> : null}
       {panel.type === "fabricator" ? <>
         <h2>LEARNED BLUEPRINTS</h2><p>{base.learnedBlueprints.length ? base.learnedBlueprints.join(" · ") : "NONE YET"}</p>

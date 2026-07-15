@@ -4,8 +4,9 @@ import { downtownMap } from "@dotbot/game/content/downtown";
 import { physicsFloorId } from "@dotbot/game/mapModel";
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, SimEvent } from "@dotbot/game/types";
-import { filterEventsForViewer, filterForViewer, itemToCode, toEntityMeta, toWireEvent, toWireSnapshot } from "@dotbot/protocol";
+import { filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toWireEvent, toWireSnapshot } from "@dotbot/protocol";
 import type { ClientMessage, LobbyMember, RoomPhase, ServerMessage } from "@dotbot/protocol";
+import type { WireItemCode } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type RunManifest } from "./db";
 
 export interface RoomPeer {
@@ -300,35 +301,6 @@ export class Room {
     const simulation = await DotBotSimulation.create({ map: downtownMap, config: this.config });
     for (const spawn of downtownMap.botSpawns) simulation.removeBot(spawn.id);
 
-    const squadCounts = new Map<string, number>();
-    for (const member of this.members.values()) {
-      const squadIndex = squads.indexOf(member.squadId as (typeof squads)[number]);
-      const count = squadCounts.get(member.squadId) ?? 0;
-      const anchor = squadAnchors[squadIndex];
-      const botId = `human-${member.playerId}`;
-      simulation.spawnBot(makeSpawn(botId, member.name, member.squadId, squadColors[squadIndex], anchor, count), "human");
-      member.botId = botId;
-      member.inRun = true;
-      member.streaming = true;
-      member.runOver = null;
-      member.persistenceEligible = true;
-      member.persistedOutcome = null;
-      squadCounts.set(member.squadId, count + 1);
-    }
-
-    for (const [squadId, count] of squadCounts) {
-      if (!this.aiWingmates || count >= 2) continue;
-      const squadIndex = squads.indexOf(squadId as (typeof squads)[number]);
-      simulation.spawnBot(
-        makeSpawn(`ai-${squadId}`, `${squadId} wing`, squadId, squadColors[squadIndex], squadAnchors[squadIndex], count),
-        "ai",
-      );
-    }
-    for (const spawn of downtownMap.botSpawns.filter((candidate) => candidate.isAmbient)) {
-      simulation.spawnBot(spawn, "ai");
-    }
-
-    this.simulation = simulation;
     this.matchId = randomUUID();
     this.matchOutcomes.clear();
     try {
@@ -342,6 +314,45 @@ export class Room {
       console.warn(`[persistence] failed to start match ${this.matchId}; continuing statelessly. ${errorMessage(error)}`);
       this.matchId = null;
     }
+
+    const loadouts = new Map<string, WireItemCode[]>();
+    for (const member of this.members.values()) {
+      try {
+        loadouts.set(member.playerId, await this.persistence.consumeLoadout(member.playerId));
+      } catch (error) {
+        console.warn(`[persistence] failed to consume loadout for ${member.playerId}; using default spawn. ${errorMessage(error)}`);
+      }
+    }
+
+    const squadCounts = new Map<string, number>();
+    for (const member of this.members.values()) {
+      const squadIndex = squads.indexOf(member.squadId as (typeof squads)[number]);
+      const count = squadCounts.get(member.squadId) ?? 0;
+      const anchor = squadAnchors[squadIndex];
+      const botId = `human-${member.playerId}`;
+      simulation.spawnBot(makeSpawn(botId, member.name, member.squadId, squadColors[squadIndex], anchor, count, loadouts.get(member.playerId) ?? []), "human");
+      member.botId = botId;
+      member.inRun = true;
+      member.streaming = true;
+      member.runOver = null;
+      member.persistenceEligible = true;
+      member.persistedOutcome = null;
+      squadCounts.set(member.squadId, count + 1);
+    }
+
+    for (const [squadId, count] of squadCounts) {
+      if (!this.aiWingmates || count >= 2) continue;
+      const squadIndex = squads.indexOf(squadId as (typeof squads)[number]);
+      simulation.spawnBot(
+        makeSpawn(`ai-${squadId}`, `${squadId} wing`, squadId, squadColors[squadIndex], squadAnchors[squadIndex], count, []),
+        "ai",
+      );
+    }
+    for (const spawn of downtownMap.botSpawns.filter((candidate) => candidate.isAmbient)) {
+      simulation.spawnBot(spawn, "ai");
+    }
+
+    this.simulation = simulation;
     this.tickDurationMs = 1000 / simulation.config.tickHz;
     this.endTick = Math.ceil(simulation.config.runDurationMs / this.tickDurationMs);
     this.accumulatorMs = 0;
@@ -599,14 +610,25 @@ export class Room {
   }
 }
 
-function makeSpawn(id: string, name: string, squadId: string, color: string, anchor: { x: number; y: number }, offset: number): BotSpawn {
+function makeSpawn(
+  id: string,
+  name: string,
+  squadId: string,
+  color: string,
+  anchor: { x: number; y: number },
+  offset: number,
+  loadout: WireItemCode[],
+): BotSpawn {
+  const defaultHealth = { kind: "powerup", type: "health" } as const;
   return {
     id,
     name,
     squadId,
     color,
     position: { x: anchor.x + (offset % 2) * 70, y: anchor.y + Math.floor(offset / 2) * 70 },
-    bays: [{ kind: "powerup", type: "health" }, null, null, null],
+    bays: loadout.length > 0
+      ? Array.from({ length: 4 }, (_, index) => loadout[index] ? itemFromCode(loadout[index]) : null)
+      : [defaultHealth, null, null, null],
     hold: [],
   };
 }

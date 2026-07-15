@@ -1,4 +1,5 @@
 import { integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import type { WireItemCode } from "@dotbot/protocol";
 
 export const players = pgTable("players", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -6,6 +7,7 @@ export const players = pgTable("players", {
   deviceTokenHash: text("device_token_hash").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  loadout: jsonb("loadout").$type<WireItemCode[]>().notNull().default([]),
 }, (table) => [uniqueIndex("players_device_token_hash_unique").on(table.deviceTokenHash)]);
 
 export const matchResults = pgTable("match_results", {
@@ -39,3 +41,9 @@ export const learnedBlueprints = pgTable("learned_blueprints", {
   blueprintId: text("blueprint_id").notNull(),
   learnedAt: timestamp("learned_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [primaryKey({ columns: [table.playerId, table.blueprintId] })]);
+
+export const baseLayouts = pgTable("base_layouts", {
+  playerId: uuid("player_id").notNull().references(() => players.id, { onDelete: "cascade" }),
+  slotId: text("slot_id").notNull(),
+  objectKind: text("object_kind").notNull(),
+}, (table) => [primaryKey({ columns: [table.playerId, table.slotId] })]);

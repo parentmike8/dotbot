@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { WireItemCode } from "@dotbot/protocol";
+import { starterBaseLayout } from "@dotbot/game/content/base";
+import type { BaseLayout } from "@dotbot/game/types";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import type {
@@ -10,7 +12,7 @@ import type {
   RegisteredPlayer,
   RunManifest,
 } from "./Persistence";
-import { learnedBlueprints, matchParticipants, matchResults, players, stashItems } from "./schema";
+import { baseLayouts, learnedBlueprints, matchParticipants, matchResults, players, stashItems } from "./schema";
 
 export class PostgresPersistence implements Persistence {
   readonly live = true;
@@ -22,10 +24,14 @@ export class PostgresPersistence implements Persistence {
 
   async registerPlayer(name: string): Promise<RegisteredPlayer> {
     const token = randomBytes(16).toString("hex");
-    const [player] = await this.db.insert(players).values({
-      displayName: name,
-      deviceTokenHash: hashToken(token),
-    }).returning({ id: players.id, name: players.displayName });
+    const player = await this.db.transaction(async (tx) => {
+      const [created] = await tx.insert(players).values({
+        displayName: name,
+        deviceTokenHash: hashToken(token),
+      }).returning({ id: players.id, name: players.displayName });
+      await tx.insert(baseLayouts).values(layoutRows(created.id, starterBaseLayout));
+      return created;
+    });
     return { playerId: player.id, name: player.name, token };
   }
 
@@ -48,6 +54,7 @@ export class PostgresPersistence implements Persistence {
       target: players.deviceTokenHash,
       set: { displayName: offeredName, lastSeenAt: new Date() },
     }).returning({ id: players.id, name: players.displayName });
+    await this.ensureBaseLayout(player.id);
     return { playerId: player.id, name: player.name };
   }
 
@@ -87,6 +94,74 @@ export class PostgresPersistence implements Persistence {
         };
       }),
     };
+  }
+
+  async getBase(token: string) {
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
+    await this.ensureBaseLayout(identity.playerId);
+    const [layout, stash, learned, player] = await Promise.all([
+      this.db.select({ slotId: baseLayouts.slotId, objectKind: baseLayouts.objectKind })
+        .from(baseLayouts).where(eq(baseLayouts.playerId, identity.playerId)),
+      this.db.select({ itemType: stashItems.itemType, qty: sql<number>`sum(${stashItems.qty})::int` })
+        .from(stashItems).where(eq(stashItems.playerId, identity.playerId)).groupBy(stashItems.itemType),
+      this.db.select({ blueprintId: learnedBlueprints.blueprintId })
+        .from(learnedBlueprints).where(eq(learnedBlueprints.playerId, identity.playerId)),
+      this.db.select({ loadout: players.loadout }).from(players).where(eq(players.id, identity.playerId)).limit(1),
+    ]);
+    return {
+      layout: Object.fromEntries(layout.map((row) => [row.slotId, row.objectKind])) as BaseLayout,
+      stash: stash.map((row) => ({ itemType: row.itemType as WireItemCode, qty: Number(row.qty) })),
+      learnedBlueprints: learned.map((row) => row.blueprintId),
+      loadout: player[0]?.loadout ?? [],
+    };
+  }
+
+  async saveBaseLayout(token: string, layout: BaseLayout): Promise<BaseLayout | null> {
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
+    await this.db.transaction(async (tx) => {
+      await tx.delete(baseLayouts).where(eq(baseLayouts.playerId, identity.playerId));
+      const rows = layoutRows(identity.playerId, layout);
+      if (rows.length > 0) await tx.insert(baseLayouts).values(rows);
+    });
+    return layout;
+  }
+
+  async setLoadout(token: string, loadout: WireItemCode[]) {
+    const tokenHash = hashToken(token);
+    await this.db.transaction(async (tx) => {
+      const [player] = await tx.select({ id: players.id, loadout: players.loadout })
+        .from(players).where(eq(players.deviceTokenHash, tokenHash)).limit(1).for("update");
+      if (!player) throw new Error("Unknown device token.");
+
+      if (player.loadout.length > 0) {
+        await tx.insert(stashItems).values(player.loadout.map((itemType) => ({ playerId: player.id, itemType, qty: 1 })));
+      }
+      for (const itemType of loadout) {
+        const [row] = await tx.select({ id: stashItems.id, qty: stashItems.qty })
+          .from(stashItems)
+          .where(and(eq(stashItems.playerId, player.id), eq(stashItems.itemType, itemType)))
+          .orderBy(stashItems.acquiredAt)
+          .limit(1)
+          .for("update");
+        if (!row) throw new Error(`STASH does not contain ${itemType}.`);
+        if (row.qty > 1) await tx.update(stashItems).set({ qty: row.qty - 1 }).where(eq(stashItems.id, row.id));
+        else await tx.delete(stashItems).where(eq(stashItems.id, row.id));
+      }
+      await tx.update(players).set({ loadout }).where(eq(players.id, player.id));
+    });
+    return this.getBase(token);
+  }
+
+  async consumeLoadout(playerId: string): Promise<WireItemCode[]> {
+    return this.db.transaction(async (tx) => {
+      const [player] = await tx.select({ loadout: players.loadout })
+        .from(players).where(eq(players.id, playerId)).limit(1).for("update");
+      const loadout = player?.loadout ?? [];
+      if (player && loadout.length > 0) await tx.update(players).set({ loadout: [] }).where(eq(players.id, playerId));
+      return loadout;
+    });
   }
 
   async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void> {
@@ -165,6 +240,13 @@ export class PostgresPersistence implements Persistence {
   async close(): Promise<void> {
     await this.client.end({ timeout: 2 });
   }
+
+  private async ensureBaseLayout(playerId: string): Promise<void> {
+    const [existing] = await this.db.select({ slotId: baseLayouts.slotId })
+      .from(baseLayouts).where(eq(baseLayouts.playerId, playerId)).limit(1);
+    if (existing) return;
+    await this.db.insert(baseLayouts).values(layoutRows(playerId, starterBaseLayout)).onConflictDoNothing();
+  }
 }
 
 export async function connectPostgres(databaseUrl: string): Promise<PostgresPersistence> {
@@ -186,4 +268,8 @@ function isRunManifest(value: unknown): value is RunManifest {
   if (!value || typeof value !== "object") return false;
   const manifest = value as Partial<RunManifest>;
   return Array.isArray(manifest.keptItems) && Array.isArray(manifest.lostItems) && Array.isArray(manifest.learnedBlueprints);
+}
+
+function layoutRows(playerId: string, layout: BaseLayout) {
+  return Object.entries(layout).map(([slotId, objectKind]) => ({ playerId, slotId, objectKind }));
 }
