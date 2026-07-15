@@ -31,6 +31,7 @@ export class NoopPersistence implements Persistence {
   async saveBaseLayout(_token: string, layout: BaseLayout): Promise<BaseLayout> { return layout; }
   async setBaseShell(): Promise<null> { return null; }
   async setLoadout(): Promise<null> { return null; }
+  async fabricate(): Promise<null> { return null; }
   async consumeLoadout(): Promise<WireItemCode[]> { return []; }
 
   async startMatch(): Promise<void> {}

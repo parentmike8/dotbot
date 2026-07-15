@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
-import type { WireItemCode } from "@dotbot/protocol";
-import { DEFAULT_BASE_SHELL, starterBaseLayout } from "@dotbot/game/content/base";
+import { itemToCode, type WireItemCode } from "@dotbot/protocol";
+import { BASE_SLOT_DEFS, DEFAULT_BASE_SHELL, isObjectAllowedInSlot, starterBaseLayout, validateBaseLayout } from "@dotbot/game/content/base";
+import { recipeById } from "@dotbot/game/content/recipes";
 import type { BaseLayout, BaseShellId } from "@dotbot/game/types";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
@@ -172,6 +173,77 @@ export class PostgresPersistence implements Persistence {
       if (player && loadout.length > 0) await tx.update(players).set({ loadout: [] }).where(eq(players.id, playerId));
       return loadout;
     });
+  }
+
+  async fabricate(token: string, recipeId: string, slotId?: string) {
+    const recipe = recipeById(recipeId);
+    if (!recipe) throw new Error("Unknown fabrication recipe.");
+    const tokenHash = hashToken(token);
+    const fabrication = await this.db.transaction(async (tx) => {
+      const [player] = await tx.select({ id: players.id })
+        .from(players).where(eq(players.deviceTokenHash, tokenHash)).limit(1).for("update");
+      if (!player) return null;
+
+      const layoutRowsLocked = await tx.select({ slotId: baseLayouts.slotId, objectKind: baseLayouts.objectKind })
+        .from(baseLayouts).where(eq(baseLayouts.playerId, player.id)).for("update");
+      const layout = Object.fromEntries(layoutRowsLocked.map((row) => [row.slotId, row.objectKind])) as BaseLayout;
+
+      if (recipe.requiresBlueprint) {
+        const [learned] = await tx.select({ blueprintId: learnedBlueprints.blueprintId })
+          .from(learnedBlueprints)
+          .where(and(eq(learnedBlueprints.playerId, player.id), eq(learnedBlueprints.blueprintId, recipe.requiresBlueprint)))
+          .limit(1);
+        if (!learned) throw new Error(`REQUIRES BLUEPRINT: ${recipe.requiresBlueprint}`);
+      }
+      if (recipe.requiresObject && !Object.values(layout).includes(recipe.requiresObject)) {
+        throw new Error(`REQUIRES: ${recipe.requiresObject === "repairBench" ? "REPAIR BENCH" : recipe.requiresObject}`);
+      }
+
+      if (recipe.output.kind === "furniture") {
+        if (!slotId) throw new Error("SELECT A COMPATIBLE EMPTY SLOT.");
+        const slot = BASE_SLOT_DEFS.find((candidate) => candidate.id === slotId);
+        if (!slot) throw new Error("UNKNOWN BASE PLACEMENT SLOT.");
+        if (!isObjectAllowedInSlot(recipe.output.objectKind, slot)) {
+          throw new Error(`${recipe.output.objectKind} CANNOT BE PLACED IN ${slot.zone.toUpperCase()} SLOT ${slot.id}.`);
+        }
+        if (layout[slotId]) throw new Error(`SLOT ${slotId} IS OCCUPIED.`);
+        validateBaseLayout({ ...layout, [slotId]: recipe.output.objectKind });
+      }
+
+      const lockedStash = await tx.select({ id: stashItems.id, itemType: stashItems.itemType, qty: stashItems.qty })
+        .from(stashItems)
+        .where(eq(stashItems.playerId, player.id))
+        .orderBy(stashItems.acquiredAt)
+        .for("update");
+      for (const cost of recipe.costs) {
+        const available = lockedStash
+          .filter((row) => row.itemType === cost.itemType)
+          .reduce((total, row) => total + row.qty, 0);
+        if (available < cost.qty) throw new Error(`MISSING ${cost.qty - available}× ${cost.itemType}.`);
+      }
+      for (const cost of recipe.costs) {
+        let remaining = cost.qty;
+        for (const row of lockedStash.filter((candidate) => candidate.itemType === cost.itemType)) {
+          if (remaining === 0) break;
+          const used = Math.min(row.qty, remaining);
+          if (used === row.qty) await tx.delete(stashItems).where(eq(stashItems.id, row.id));
+          else await tx.update(stashItems).set({ qty: row.qty - used }).where(eq(stashItems.id, row.id));
+          remaining -= used;
+        }
+      }
+
+      if (recipe.output.kind === "furniture") {
+        await tx.insert(baseLayouts).values({ playerId: player.id, slotId: slotId!, objectKind: recipe.output.objectKind });
+      } else {
+        const outputCode = itemToCode(recipe.output.item);
+        if (outputCode.startsWith("b:")) throw new Error("Fabrication cannot output blueprint cargo.");
+        await tx.insert(stashItems).values({ playerId: player.id, itemType: outputCode, qty: 1 });
+      }
+      return { output: recipe.output, slotId: recipe.output.kind === "furniture" ? slotId : undefined };
+    });
+    if (!fabrication) return null;
+    const base = await this.getBase(token);
+    return base ? { base, ...fabrication } : null;
   }
 
   async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void> {

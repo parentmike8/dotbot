@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/game/content/base";
+import { recipeById } from "@dotbot/game/content/recipes";
 import type { BaseLayout } from "@dotbot/game/types";
 import { createPersistence, type Persistence } from "./db";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
@@ -85,6 +86,24 @@ export async function createServer(options: CreateServerOptions = {}) {
       const base = await persistence.setLoadout(token, loadout);
       if (!base) return reply.code(404).send({ error: "Unknown device token." });
       return { storageLinked: true, ...base };
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { recipeId?: unknown; slotId?: unknown } }>("/api/base/fabricate", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const recipeId = typeof request.body?.recipeId === "string" ? request.body.recipeId : "";
+    const recipe = recipeById(recipeId);
+    if (!recipe) return reply.code(400).send({ error: "Unknown fabrication recipe." });
+    const slotId = request.body?.slotId;
+    if (slotId !== undefined && typeof slotId !== "string") return reply.code(400).send({ error: "slotId must be a string." });
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
+    try {
+      const result = await persistence.fabricate(token, recipeId, slotId);
+      if (!result) return reply.code(404).send({ error: "Unknown device token." });
+      return { storageLinked: true, ...result.base, fabricated: { recipeId, output: result.output, slotId: result.slotId } };
     } catch (error) {
       return reply.code(409).send({ error: errorMessage(error) });
     }
