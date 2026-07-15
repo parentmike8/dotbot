@@ -32,6 +32,18 @@
 .insertion-choices button { min-height: 34px; border: 1px solid var(--hairline); background: var(--paper); font: 850 8px/1 ui-monospace, monospace; letter-spacing: .08em; cursor: pointer; }
 .insertion-choices button.is-selected { border-color: var(--ink); box-shadow: 2px 2px 0 var(--ink); }
 .insertion-choices button:disabled { color: var(--muted); cursor: default; }
+.contract-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; }
+.contract-heading h2 { margin: 0; }
+.contract-heading button, .contract-card button { min-height: 32px; border: 1px solid var(--ink); background: var(--paper); padding: 0 9px; font: 900 8px/1 ui-monospace, monospace; letter-spacing: .08em; cursor: pointer; }
+.contract-list { display: grid; gap: 6px; margin-top: 7px; }
+.contract-card { display: grid; grid-template-columns: 1fr auto; gap: 5px 8px; padding: 9px; border: 1px solid var(--hairline); }
+.contract-card.is-active { border-color: var(--ink); }
+.contract-card strong, .contract-card small { grid-column: 1; text-transform: uppercase; }
+.contract-card strong { font-size: 9px; letter-spacing: .06em; }
+.contract-card small { color: var(--muted); font: 750 7px/1.35 ui-monospace, monospace; letter-spacing: .04em; }
+.contract-card span { grid-column: 1; font: 900 10px/1 ui-monospace, monospace; letter-spacing: .1em; }
+.contract-card button { grid-column: 2; grid-row: 1 / span 3; }
+.contract-card button:disabled, .contract-heading button:disabled { color: var(--muted); border-color: var(--hairline); cursor: default; }
 .base-stash { margin: 0; padding: 0; list-style: none; }
 .base-stash li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--hairline); font: 800 10px/1 ui-monospace, monospace; text-transform: uppercase; }
 .loadout-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 7px; }

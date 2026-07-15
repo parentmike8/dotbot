@@ -2,6 +2,7 @@ export { DotBotSimulation } from "./simulation";
 export { defaultGameConfig } from "./config";
 export { assignSquadInsertions, squadPreference, squadSpawnPosition, validateInsertionMap } from "./insertion";
 export type { InsertionAssignment, InsertionMemberPreference, InsertionSquad } from "./insertion";
+export { CONTRACT_ACTIVE_CAP, CONTRACT_OFFER_COUNT, contractDayStamp, contractObjectiveLabel, contractSatisfied, deriveContractTemplates, generateContractOffers } from "./contracts";
 export { downtownMap } from "./content/downtown";
 export {
   BASE_OBJECT_KINDS,

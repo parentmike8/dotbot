@@ -180,6 +180,32 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("preserves authored building provenance on captured contract cargo", async () => {
+    const map = makeMap([playerSpawn({ position: { x: 100, y: 100 } })]);
+    map.buildings = [{
+      id: "source-building",
+      kind: "warehouse",
+      name: "SOURCE",
+      footprint: { x: 60, y: 60, w: 160, h: 160 },
+      floors: [{
+        id: "source-building:GROUND",
+        label: "GROUND",
+        walls: [],
+        doorways: [],
+        objects: [],
+        stairs: [],
+        dotSpawns: [{ id: "source-dot", item: healthItem, position: { x: 100, y: 100 } }],
+      }],
+    }];
+    const simulation = await DotBotSimulation.create({ map, config: testConfig });
+    runTicks(simulation, 8);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.bays[0]).toEqual({
+      ...healthItem,
+      sourceBuildingId: "source-building",
+    });
+    simulation.dispose();
+  });
+
   it("routes pickups through bays, hold, then refuses a full inventory", async () => {
     const items = [healthItem, radarItem, overchargeItem];
     const simulation = await DotBotSimulation.create({

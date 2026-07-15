@@ -1118,6 +1118,22 @@ button {
   background: rgba(25, 113, 194, 0.08);
 }
 
+.manifest-grid .manifest-contract {
+  grid-column: 1 / -1;
+  border-right: 0;
+  background: rgba(21, 170, 191, 0.09);
+}
+
+.manifest-contract dd {
+  display: grid;
+  gap: 7px;
+}
+
+.manifest-contract small {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
 .manifest-grid dt {
   margin-bottom: 12px;
   color: var(--muted);

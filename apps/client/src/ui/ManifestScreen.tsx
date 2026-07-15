@@ -78,6 +78,12 @@ export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun
               <dd>{result.learnedBlueprints.map((blueprintId) => `${blueprintId} blueprint`).join(", ")}</dd>
             </div>
           ) : null}
+          {result.contractCompletions.map((completion) => (
+            <div className="manifest-contract" key={completion.contractId}>
+              <dt>Contract complete</dt>
+              <dd>{completion.title}<small>PAYOUT · {completion.payout.map(manifestName).join(" · ") || "STASH FULL"}</small></dd>
+            </div>
+          ))}
         </dl>
         <button type="button" className="manifest-new-run" onClick={onNewRun}>
           {actionLabel}

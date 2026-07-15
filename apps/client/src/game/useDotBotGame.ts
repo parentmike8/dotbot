@@ -15,6 +15,7 @@ export type RunResult = {
   keptItems: Item[];
   lostItems: Item[];
   learnedBlueprints: string[];
+  contractCompletions: Array<{ contractId: string; title: string; payout: Item[] }>;
   runTimeMs: number;
 };
 
@@ -178,6 +179,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             keptItems: runState.keptItems,
             lostItems: runState.lostItems,
             learnedBlueprints: runState.learnedBlueprints,
+            contractCompletions: runState.contractCompletions ?? [],
             runTimeMs: nextSnapshot.timeMs,
           };
           runEndedRef.current = true;

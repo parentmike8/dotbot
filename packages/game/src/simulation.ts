@@ -226,13 +226,13 @@ export class DotBotSimulation {
   }
 
   private spawnDots(): void {
-    const register = (floorId: string, spawns: typeof this.map.outdoor.dotSpawns) => {
+    const register = (floorId: string, spawns: typeof this.map.outdoor.dotSpawns, sourceBuildingId?: string) => {
       for (const spawn of spawns) {
         this.dots.set(spawn.id, {
           id: spawn.id,
           position: { ...spawn.position },
           radius: spawn.radius ?? this.config.dotRadius,
-          item: { ...spawn.item },
+          item: { ...spawn.item, sourceBuildingId: spawn.item.sourceBuildingId ?? sourceBuildingId },
           floorId,
           active: true,
           captureProgressMs: 0,
@@ -244,7 +244,7 @@ export class DotBotSimulation {
 
     for (const building of this.map.buildings) {
       for (const floor of building.floors) {
-        register(physicsFloorId(this.map, floor.id), floor.dotSpawns);
+        register(physicsFloorId(this.map, floor.id), floor.dotSpawns, building.id);
       }
     }
   }

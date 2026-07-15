@@ -3,6 +3,8 @@ import type { Persistence, PlayerIdentity, PlayerProfile, RegisteredPlayer } fro
 import { DEFAULT_BASE_SHELL, starterBaseLayout } from "@dotbot/game/content/base";
 import type { BaseLayout } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
+import { contractDayStamp, generateContractOffers } from "@dotbot/game/contracts";
+import { downtownMap } from "@dotbot/game/content/downtown";
 
 export class NoopPersistence implements Persistence {
   readonly live = false;
@@ -24,8 +26,8 @@ export class NoopPersistence implements Persistence {
     return { name: "Player", stash: [], learnedBlueprints: [], recentManifests: [] };
   }
 
-  async getBase() {
-    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40, presets: [], insertionPreference: null };
+  async getBase(token: string) {
+    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40, presets: [], insertionPreference: null, contractOffers: generateContractOffers(downtownMap, fallbackIdentity(token, "Player").playerId, contractDayStamp()), activeContracts: [] };
   }
 
   async saveBaseLayout(_token: string, layout: BaseLayout): Promise<BaseLayout> { return layout; }
@@ -36,6 +38,9 @@ export class NoopPersistence implements Persistence {
   async applyPreset(): Promise<null> { return null; }
   async setInsertionPreference(_token: string, _insertionPointId: string | null): Promise<string | null> { return null; }
   async getInsertionPreference(_playerId: string): Promise<string | null> { return null; }
+  async acceptContract(): Promise<void> {}
+  async rerollContracts(): Promise<void> {}
+  async abandonContract(): Promise<void> {}
   async consumeLoadout(): Promise<WireItemCode[]> { return []; }
 
   async startMatch(): Promise<void> {}

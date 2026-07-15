@@ -1,5 +1,5 @@
 import { integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import type { BaseShellId, LoadoutPreset } from "@dotbot/game/types";
+import type { BaseShellId, ContractDefinition, LoadoutPreset } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
 
 export const players = pgTable("players", {
@@ -13,6 +13,7 @@ export const players = pgTable("players", {
   baseShell: text("base_shell").$type<BaseShellId>().notNull().default("workshop"),
   presets: jsonb("presets").$type<LoadoutPreset[]>().notNull().default([]),
   insertionPreference: text("insertion_pref"),
+  contractReroll: integer("contract_reroll").notNull().default(0),
 }, (table) => [uniqueIndex("players_device_token_hash_unique").on(table.deviceTokenHash)]);
 
 export const matchResults = pgTable("match_results", {
@@ -52,3 +53,11 @@ export const baseLayouts = pgTable("base_layouts", {
   slotId: text("slot_id").notNull(),
   objectKind: text("object_kind").notNull(),
 }, (table) => [primaryKey({ columns: [table.playerId, table.slotId] })]);
+
+export const contracts = pgTable("contracts", {
+  id: text("id").primaryKey(),
+  playerId: uuid("player_id").notNull().references(() => players.id, { onDelete: "cascade" }),
+  contract: jsonb("contract").$type<ContractDefinition>().notNull(),
+  status: text("status").notNull(),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull().defaultNow(),
+});

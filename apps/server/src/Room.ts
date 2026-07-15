@@ -558,19 +558,21 @@ export class Room {
       if (!member?.inRun) continue;
       this.sendRunOver(member, event.type === "extracted"
         ? { type: "runOver", reason: "extracted", keptItems: event.items.map(itemToCode), lostItems: [], learnedBlueprints: [] }
-        : { type: "runOver", reason: "died", keptItems: [], lostItems: event.lostItems.map(itemToCode), learnedBlueprints: [] });
+        : { type: "runOver", reason: "died", keptItems: [], lostItems: event.lostItems.map(itemToCode), learnedBlueprints: [] },
+      event.type === "extracted" ? event.items : []);
     }
   }
 
-  private sendRunOver(member: Member, message: Extract<ServerMessage, { type: "runOver" }>): void {
+  private sendRunOver(member: Member, message: Extract<ServerMessage, { type: "runOver" }>, cargo: import("@dotbot/game/types").Item[] = []): void {
     member.inRun = false;
     member.latestInput = { move: { x: 0, y: 0 }, dash: false };
     member.runOver = message;
     this.matchOutcomes.set(member.playerId, message.reason);
-    const persistenceWrite = this.persistRunOutcome(member, message).then((manifest) => {
+    const persistenceWrite = this.persistRunOutcome(member, message, cargo).then((manifest) => {
       message.keptItems = manifest.keptItems;
       message.lostItems = manifest.lostItems;
       message.learnedBlueprints = manifest.learnedBlueprints;
+      if (manifest.contractCompletions?.length) message.contractCompletions = manifest.contractCompletions;
       member.runOver = message;
     });
     this.trackPersistence(persistenceWrite, () => member.peer?.send(message));
@@ -619,12 +621,14 @@ export class Room {
     this.completeIfNoActiveMembers();
   }
 
-  private async persistRunOutcome(member: Member, message: Extract<ServerMessage, { type: "runOver" }>): Promise<RunManifest> {
+  private async persistRunOutcome(member: Member, message: Extract<ServerMessage, { type: "runOver" }>, cargo: import("@dotbot/game/types").Item[]): Promise<RunManifest> {
     const unchanged: RunManifest = {
       reason: message.reason,
       keptItems: message.keptItems,
       lostItems: message.lostItems,
       learnedBlueprints: message.learnedBlueprints,
+      cargo,
+      contractCompletions: message.contractCompletions ?? [],
     };
     if (!this.matchId || !member.persistenceEligible) return unchanged;
     try {
@@ -634,6 +638,8 @@ export class Room {
           keptItems: message.keptItems,
           lostItems: message.lostItems,
           learnedBlueprints: [],
+          cargo,
+          contractCompletions: [],
         };
         const result = await this.persistence.recordExtraction({
           matchId: this.matchId,

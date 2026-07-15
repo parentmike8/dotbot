@@ -154,6 +154,52 @@ export async function createServer(options: CreateServerOptions = {}) {
     }
   });
 
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { contractId?: unknown } }>("/api/base/contracts/accept", async (request, reply) => {
+    const token = authToken(request.headers);
+    const contractId = request.body?.contractId;
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (typeof contractId !== "string" || !contractId) return reply.code(400).send({ error: "A contract id is required." });
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — CONTRACTS ARE READ-ONLY" });
+    try {
+      await persistence.acceptContract(token, contractId);
+      const base = await persistence.getBase(token);
+      if (!base) return reply.code(404).send({ error: "Unknown device token." });
+      return { storageLinked: true, ...base };
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string } }>("/api/base/contracts/reroll", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — CONTRACTS ARE READ-ONLY" });
+    try {
+      await persistence.rerollContracts(token);
+      const base = await persistence.getBase(token);
+      if (!base) return reply.code(404).send({ error: "Unknown device token." });
+      return { storageLinked: true, ...base };
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { contractId?: unknown } }>("/api/base/contracts/abandon", async (request, reply) => {
+    const token = authToken(request.headers);
+    const contractId = request.body?.contractId;
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (typeof contractId !== "string" || !contractId) return reply.code(400).send({ error: "A contract id is required." });
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — CONTRACTS ARE READ-ONLY" });
+    try {
+      await persistence.abandonContract(token, contractId);
+      const base = await persistence.getBase(token);
+      if (!base) return reply.code(404).send({ error: "Unknown device token." });
+      return { storageLinked: true, ...base };
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
+  });
+
   if (process.env.NODE_ENV === "production") {
     await app.register(fastifyStatic, {
       root: fileURLToPath(new URL("../../client/dist", import.meta.url)),

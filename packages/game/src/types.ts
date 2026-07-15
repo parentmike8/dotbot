@@ -25,9 +25,24 @@ export type LoadoutPreset = {
   items: WirePowerupCode[];
 };
 
-export type Item =
+export type Item = (
   | { kind: "powerup"; type: PowerupType }
-  | { kind: "blueprint"; blueprintId: string };
+  | { kind: "blueprint"; blueprintId: string }
+) & { /** Authored building where this cargo was captured, when applicable. */ sourceBuildingId?: string };
+
+export type ContractObjective =
+  | { kind: "extractBlueprint"; blueprintId: string; buildingId: string }
+  | { kind: "extractPowerups"; powerupType: PowerupType; count: number }
+  | { kind: "extractFromBuilding"; buildingId: string; count: number };
+
+export type ContractDefinition = {
+  id: string;
+  templateId: string;
+  title: string;
+  objective: ContractObjective;
+  difficulty: number;
+  payout: { items: Item[] };
+};
 
 export type RadarPing = Vec2 & { ageMs: number };
 

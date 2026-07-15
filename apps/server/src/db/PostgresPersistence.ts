@@ -3,7 +3,9 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { BASE_SLOT_DEFS, DEFAULT_BASE_SHELL, isObjectAllowedInSlot, starterBaseLayout, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById } from "@dotbot/game/content/recipes";
-import type { BaseLayout, BaseShellId, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
+import { downtownMap } from "@dotbot/game/content/downtown";
+import { CONTRACT_ACTIVE_CAP, contractDayStamp, contractSatisfied, generateContractOffers } from "@dotbot/game/contracts";
+import type { BaseLayout, BaseShellId, ContractDefinition, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import type {
@@ -13,7 +15,7 @@ import type {
   RegisteredPlayer,
   RunManifest,
 } from "./Persistence";
-import { baseLayouts, learnedBlueprints, matchParticipants, matchResults, players, stashItems } from "./schema";
+import { baseLayouts, contracts as contractRows, learnedBlueprints, matchParticipants, matchResults, players, stashItems } from "./schema";
 
 export class PostgresPersistence implements Persistence {
   readonly live = true;
@@ -101,16 +103,22 @@ export class PostgresPersistence implements Persistence {
     const identity = await this.helloPlayer(token);
     if (!identity) return null;
     await this.ensureBaseLayout(identity.playerId);
-    const [layout, stash, learned, player] = await Promise.all([
+    const [layout, stash, learned, player, activeContracts] = await Promise.all([
       this.db.select({ slotId: baseLayouts.slotId, objectKind: baseLayouts.objectKind })
         .from(baseLayouts).where(eq(baseLayouts.playerId, identity.playerId)),
       this.db.select({ itemType: stashItems.itemType, qty: sql<number>`sum(${stashItems.qty})::int` })
         .from(stashItems).where(eq(stashItems.playerId, identity.playerId)).groupBy(stashItems.itemType),
       this.db.select({ blueprintId: learnedBlueprints.blueprintId })
         .from(learnedBlueprints).where(eq(learnedBlueprints.playerId, identity.playerId)),
-      this.db.select({ loadout: players.loadout, baseShell: players.baseShell, presets: players.presets, insertionPreference: players.insertionPreference })
+      this.db.select({ id: players.id, loadout: players.loadout, baseShell: players.baseShell, presets: players.presets, insertionPreference: players.insertionPreference, contractReroll: players.contractReroll })
         .from(players).where(eq(players.id, identity.playerId)).limit(1),
+      this.db.select({ contract: contractRows.contract }).from(contractRows)
+        .where(and(eq(contractRows.playerId, identity.playerId), eq(contractRows.status, "active")))
+        .orderBy(contractRows.acceptedAt),
     ]);
+    const active = activeContracts.map((row) => row.contract);
+    const offers = generateContractOffers(downtownMap, identity.playerId, contractDayStamp(), player[0]?.contractReroll ?? 0)
+      .filter((offer) => !active.some((contract) => contract.id === offer.id));
     return {
       shell: player[0]?.baseShell ?? DEFAULT_BASE_SHELL,
       layout: Object.fromEntries(layout.map((row) => [row.slotId, row.objectKind])) as BaseLayout,
@@ -120,6 +128,8 @@ export class PostgresPersistence implements Persistence {
       stashCapacity: layout.filter((row) => row.objectKind === "locker").length * 20,
       presets: player[0]?.presets ?? [],
       insertionPreference: player[0]?.insertionPreference ?? null,
+      contractOffers: offers,
+      activeContracts: active,
     };
   }
 
@@ -303,6 +313,37 @@ export class PostgresPersistence implements Persistence {
     return player?.insertionPreference ?? null;
   }
 
+  async acceptContract(token: string, contractId: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const [player] = await tx.select({ id: players.id, contractReroll: players.contractReroll })
+        .from(players).where(eq(players.deviceTokenHash, hashToken(token))).limit(1).for("update");
+      if (!player) throw new Error("Unknown device token.");
+      const active = await tx.select({ id: contractRows.id }).from(contractRows)
+        .where(and(eq(contractRows.playerId, player.id), eq(contractRows.status, "active"))).for("update");
+      if (active.length >= CONTRACT_ACTIVE_CAP) throw new Error(`ACTIVE CONTRACT CAP IS ${CONTRACT_ACTIVE_CAP}.`);
+      const offer = generateContractOffers(downtownMap, player.id, contractDayStamp(), player.contractReroll)
+        .find((candidate) => candidate.id === contractId);
+      if (!offer) throw new Error("CONTRACT OFFER IS NO LONGER AVAILABLE.");
+      await tx.insert(contractRows).values({ id: offer.id, playerId: player.id, contract: offer, status: "active" });
+    });
+  }
+
+  async rerollContracts(token: string): Promise<void> {
+    const updated = await this.db.update(players).set({ contractReroll: sql`${players.contractReroll} + 1` })
+      .where(eq(players.deviceTokenHash, hashToken(token))).returning({ id: players.id });
+    if (updated.length === 0) throw new Error("Unknown device token.");
+  }
+
+  async abandonContract(token: string, contractId: string): Promise<void> {
+    const [player] = await this.db.select({ id: players.id }).from(players)
+      .where(eq(players.deviceTokenHash, hashToken(token))).limit(1);
+    if (!player) throw new Error("Unknown device token.");
+    const updated = await this.db.update(contractRows).set({ status: "abandoned" })
+      .where(and(eq(contractRows.id, contractId), eq(contractRows.playerId, player.id), eq(contractRows.status, "active")))
+      .returning({ id: contractRows.id });
+    if (updated.length === 0) throw new Error("ACTIVE CONTRACT NOT FOUND.");
+  }
+
   async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void> {
     await this.db.insert(matchResults).values({
       id: input.matchId,
@@ -320,6 +361,7 @@ export class PostgresPersistence implements Persistence {
   }): Promise<{ manifest: RunManifest }> {
     return this.db.transaction(async (tx) => {
       const newlyLearned: string[] = [];
+      const completedContracts: Array<{ contractId: string; title: string; payout: WireItemCode[] }> = [];
       const layout = await tx.select({ objectKind: baseLayouts.objectKind })
         .from(baseLayouts).where(eq(baseLayouts.playerId, input.playerId)).for("update");
       const capacity = layout.filter((row) => row.objectKind === "locker").length * 20;
@@ -360,11 +402,31 @@ export class PostgresPersistence implements Persistence {
         }
       }
 
+      const active = await tx.select({ id: contractRows.id, contract: contractRows.contract })
+        .from(contractRows)
+        .where(and(eq(contractRows.playerId, input.playerId), eq(contractRows.status, "active")))
+        .for("update");
+      for (const row of active) {
+        if (!contractSatisfied(row.contract, input.manifest.cargo ?? [])) continue;
+        const payout: WireItemCode[] = [];
+        for (const item of row.contract.payout.items) {
+          if (stashCount >= capacity) break;
+          const itemType = itemToCode(item);
+          await tx.insert(stashItems).values({ playerId: input.playerId, itemType, qty: 1, acquiredMatchId: input.matchId });
+          stashCount += 1;
+          payout.push(itemType);
+        }
+        await tx.update(contractRows).set({ status: "completed" })
+          .where(and(eq(contractRows.id, row.id), eq(contractRows.playerId, input.playerId)));
+        completedContracts.push({ contractId: row.id, title: row.contract.title, payout });
+      }
+
       const manifest: RunManifest = {
         ...input.manifest,
         keptItems,
         lostItems: [...input.manifest.lostItems, ...overflow],
         learnedBlueprints: newlyLearned,
+        ...(completedContracts.length > 0 ? { contractCompletions: completedContracts } : {}),
       };
       await tx.insert(matchParticipants).values({
         matchId: input.matchId,

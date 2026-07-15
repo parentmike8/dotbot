@@ -1,5 +1,5 @@
 import type { WireItemCode } from "@dotbot/protocol";
-import type { BaseLayout, BaseShellId, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
+import type { BaseLayout, BaseShellId, ContractDefinition, Item, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
 import type { Recipe } from "@dotbot/game/content/recipes";
 
 export type PlayerIdentity = {
@@ -16,7 +16,11 @@ export type RunManifest = {
   keptItems: WireItemCode[];
   lostItems: WireItemCode[];
   learnedBlueprints: string[];
+  cargo?: Item[];
+  contractCompletions?: ContractCompletion[];
 };
+
+export type ContractCompletion = { contractId: string; title: string; payout: WireItemCode[] };
 
 export type RecentManifest = {
   roomCode: string;
@@ -43,6 +47,8 @@ export type PlayerBase = {
   stashCapacity: number;
   presets: LoadoutPreset[];
   insertionPreference: string | null;
+  contractOffers: ContractDefinition[];
+  activeContracts: ContractDefinition[];
 };
 
 export type FabricationResult = {
@@ -71,6 +77,9 @@ export interface Persistence {
   applyPreset(token: string, presetIndex: number): Promise<PresetApplyResult | null>;
   setInsertionPreference(token: string, insertionPointId: string | null): Promise<string | null>;
   getInsertionPreference(playerId: string): Promise<string | null>;
+  acceptContract(token: string, contractId: string): Promise<void>;
+  rerollContracts(token: string): Promise<void>;
+  abandonContract(token: string, contractId: string): Promise<void>;
   consumeLoadout(playerId: string): Promise<WireItemCode[]>;
   startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void>;
   recordExtraction(input: {

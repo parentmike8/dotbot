@@ -269,6 +269,10 @@ export class NetSession implements GameSession {
           keptItems: message.keptItems.map(itemFromCode),
           lostItems: message.lostItems.map(itemFromCode),
           learnedBlueprints: message.learnedBlueprints,
+          contractCompletions: (message.contractCompletions ?? []).map((completion) => ({
+            ...completion,
+            payout: completion.payout.map(itemFromCode),
+          })),
         };
         return;
       case "matchEnd":

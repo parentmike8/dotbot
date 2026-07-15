@@ -14,7 +14,8 @@ import {
 } from "@dotbot/game/content/base";
 import { RECIPES, recipeById, type Recipe } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
-import type { BaseLayout, BaseObjectKind, BaseShellId, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
+import { contractDayStamp, contractObjectiveLabel, generateContractOffers } from "@dotbot/game/contracts";
+import type { BaseLayout, BaseObjectKind, BaseShellId, ContractDefinition, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
 import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import { createSession } from "../../game/session/createSession";
@@ -38,6 +39,8 @@ export type BasePayload = {
   stashCapacity: number;
   presets: LoadoutPreset[];
   insertionPreference: string | null;
+  contractOffers: ContractDefinition[];
+  activeContracts: ContractDefinition[];
 };
 
 type Panel =
@@ -58,6 +61,8 @@ const offlinePayload: BasePayload = {
   stashCapacity: 40,
   presets: [],
   insertionPreference: null,
+  contractOffers: generateContractOffers(downtownMap, "offline", contractDayStamp()),
+  activeContracts: [],
 };
 
 export function BaseApp() {
@@ -265,6 +270,25 @@ export function BaseApp() {
     }
   }, [base.storageLinked]);
 
+  const updateContracts = useCallback(async (action: "accept" | "reroll" | "abandon", contractId?: string) => {
+    if (!base.storageLinked) return;
+    const token = localStorage.getItem(deviceTokenKey);
+    if (!token) return;
+    try {
+      const response = await fetch(`/api/base/contracts/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-device-token": token },
+        body: JSON.stringify(contractId ? { contractId } : {}),
+      });
+      const body = await response.json() as BasePayload & { error?: string };
+      if (!response.ok) throw new Error(body.error ?? `Contract ${action} failed (${response.status})`);
+      setBase((current) => ({ ...body, layout: current.layout }));
+      setNotice(action === "accept" ? "CONTRACT ACCEPTED" : action === "abandon" ? "CONTRACT ABANDONED" : "CONTRACT OFFERS REROLLED");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message.toUpperCase() : "CONTRACT LINK FAILED");
+    }
+  }, [base.storageLinked]);
+
   if (deployment) {
     return <LobbyApp embedded onReturnToBase={() => {
       setDeployment(false);
@@ -301,6 +325,7 @@ export function BaseApp() {
       savePresets={savePresets}
       applyPreset={applyPreset}
       updateInsertionPreference={updateInsertionPreference}
+      updateContracts={updateContracts}
     />
   );
 }
@@ -324,6 +349,7 @@ type BaseSessionProps = {
   savePresets: (presets: LoadoutPreset[]) => Promise<void>;
   applyPreset: (presetIndex: number) => Promise<void>;
   updateInsertionPreference: (insertionPointId: string | null) => Promise<void>;
+  updateContracts: (action: "accept" | "reroll" | "abandon", contractId?: string) => Promise<void>;
 };
 
 function BaseSession(props: BaseSessionProps) {
@@ -432,13 +458,14 @@ function BaseSession(props: BaseSessionProps) {
           savePresets={props.savePresets}
           applyPreset={props.applyPreset}
           updateInsertionPreference={props.updateInsertionPreference}
+          updateContracts={props.updateContracts}
         />
       ) : null}
     </main>
   );
 }
 
-function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, updateShell, notice, fabricate, savePresets, applyPreset, updateInsertionPreference }: {
+function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, updateShell, notice, fabricate, savePresets, applyPreset, updateInsertionPreference, updateContracts }: {
   panel: Exclude<Panel, null>;
   base: BasePayload;
   close: () => void;
@@ -451,6 +478,7 @@ function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, update
   savePresets: (presets: LoadoutPreset[]) => Promise<void>;
   applyPreset: (presetIndex: number) => Promise<void>;
   updateInsertionPreference: (insertionPointId: string | null) => Promise<void>;
+  updateContracts: (action: "accept" | "reroll" | "abandon", contractId?: string) => Promise<void>;
 }) {
   if (panel.type === "move") {
     return <MovePanel panel={panel} layout={base.layout} close={close} move={move} />;
@@ -478,15 +506,16 @@ function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, update
         if (recipe.output.kind === "furniture") chooseMove({ type: "fabricateSlot", recipeId: recipe.id });
         else void fabricate(recipe.id);
       }} /> : null}
-      {panel.type === "planningTable" ? <PlanningTablePanel base={base} updateInsertionPreference={updateInsertionPreference} /> : null}
+      {panel.type === "planningTable" ? <PlanningTablePanel base={base} updateInsertionPreference={updateInsertionPreference} updateContracts={updateContracts} /> : null}
       <footer><button type="button" onClick={() => chooseMove({ type: "move", fromSlotId: panel.slotId })}>MOVE</button></footer>
     </section>
   );
 }
 
-function PlanningTablePanel({ base, updateInsertionPreference }: {
+function PlanningTablePanel({ base, updateInsertionPreference, updateContracts }: {
   base: BasePayload;
   updateInsertionPreference: (insertionPointId: string | null) => Promise<void>;
+  updateContracts: (action: "accept" | "reroll" | "abandon", contractId?: string) => Promise<void>;
 }) {
   const selected = downtownMap.insertionPoints.find((point) => point.id === base.insertionPreference);
   return <>
@@ -511,8 +540,24 @@ function PlanningTablePanel({ base, updateInsertionPreference }: {
       >{point.name}</button>)}
     </div>
     <p>PREFERENCE, NOT PICK · SQUAD SPACING OVERRIDES EVERY VOTE</p>
-    <h2>CONTRACTS</h2>
-    <p className="stub-message">CONTRACT LINK AWAITING COMMISSION</p>
+    <div className="contract-heading"><h2>OFFERS</h2><button type="button" disabled={!base.storageLinked} onClick={() => void updateContracts("reroll")}>REROLL</button></div>
+    <div className="contract-list">
+      {base.contractOffers.map((contract) => <article className="contract-card" key={contract.id}>
+        <strong>{contract.title}</strong>
+        <small>{contractObjectiveLabel(contract, downtownMap)}</small>
+        <span>PAY · {contract.payout.items.map((item) => wireItemGlyph(itemToCode(item))).join(" ")}</span>
+        <button type="button" disabled={!base.storageLinked || base.activeContracts.length >= 2} onClick={() => void updateContracts("accept", contract.id)}>ACCEPT</button>
+      </article>)}
+    </div>
+    <h2>ACTIVE {base.activeContracts.length}/2</h2>
+    <div className="contract-list">
+      {base.activeContracts.map((contract) => <article className="contract-card is-active" key={contract.id}>
+        <strong>{contract.title}</strong><small>{contractObjectiveLabel(contract, downtownMap)}</small>
+        <button type="button" disabled={!base.storageLinked} onClick={() => void updateContracts("abandon", contract.id)}>ABANDON</button>
+      </article>)}
+      {base.activeContracts.length === 0 ? <p>NO ACTIVE CONTRACTS</p> : null}
+    </div>
+    {!base.storageLinked ? <p>READ-ONLY DAILY OFFERS</p> : null}
   </>;
 }
 

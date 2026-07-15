@@ -24,11 +24,15 @@ describe("persistence graceful degradation", () => {
       loadout: [],
     });
     expect(Object.keys(base.json<{ layout: Record<string, string> }>().layout)).toHaveLength(5);
+    expect(base.json<{ contractOffers: unknown[]; activeContracts: unknown[] }>().contractOffers).toHaveLength(3);
+    expect(base.json<{ activeContracts: unknown[] }>().activeContracts).toEqual([]);
     expect((await app.inject({ method: "POST", url: "/api/base/loadout", headers: { "x-device-token": account.token }, payload: { loadout: ["h"] } })).statusCode).toBe(503);
     expect((await app.inject({ method: "POST", url: "/api/base/shell", headers: { "x-device-token": account.token }, payload: { shell: "hangar" } })).statusCode).toBe(503);
     expect((await app.inject({ method: "POST", url: "/api/base/fabricate", headers: { "x-device-token": account.token }, payload: { recipeId: "convert-radar" } })).statusCode).toBe(503);
     expect((await app.inject({ method: "POST", url: "/api/base/presets", headers: { "x-device-token": account.token }, payload: { presets: [] } })).statusCode).toBe(503);
     expect((await app.inject({ method: "POST", url: "/api/base/insertion", headers: { "x-device-token": account.token }, payload: { insertionPointId: "ne-park" } })).statusCode).toBe(503);
+    expect((await app.inject({ method: "POST", url: "/api/base/contracts/reroll", headers: { "x-device-token": account.token } })).statusCode).toBe(503);
+    expect((await app.inject({ method: "POST", url: "/api/base/contracts/accept", headers: { "x-device-token": account.token }, payload: { contractId: "offline" } })).statusCode).toBe(503);
 
     await app.close();
     warning.mockRestore();

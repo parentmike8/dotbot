@@ -5,7 +5,7 @@ import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { createServer } from "./app";
 import { Room, type RoomPeer } from "./Room";
 import { starterBaseLayout } from "@dotbot/game/content/base";
-import type { BaseLayout } from "@dotbot/game/types";
+import type { BaseLayout, ContractDefinition } from "@dotbot/game/types";
 
 const databaseUrl = process.env.DATABASE_URL;
 let databaseAvailable = false;
@@ -341,6 +341,88 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(health.statusCode).toBe(200);
     expect((await stashTotals(account.playerId))).toMatchObject({ r: 5, d: 8, h: 1 });
     expect((await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "not-a-recipe" } })).statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("enforces contract flow rules and completes payouts inside extraction banking", async () => {
+    await sql!`truncate table contracts, base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
+    process.env.NODE_ENV = "test";
+    const { app, persistence } = await createServer({ databaseUrl });
+    const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Contract Pilot" } })).json<{ playerId: string; token: string }>();
+    const headers = { "x-device-token": account.token };
+    const initial = (await app.inject({ method: "GET", url: "/api/base", headers })).json<{ contractOffers: ContractDefinition[]; activeContracts: ContractDefinition[] }>();
+    expect(initial.contractOffers).toHaveLength(3);
+    expect(initial.activeContracts).toEqual([]);
+
+    for (const offer of initial.contractOffers.slice(0, 2)) {
+      expect((await app.inject({ method: "POST", url: "/api/base/contracts/accept", headers, payload: { contractId: offer.id } })).statusCode).toBe(200);
+    }
+    const capped = await app.inject({ method: "POST", url: "/api/base/contracts/accept", headers, payload: { contractId: initial.contractOffers[2].id } });
+    expect(capped.statusCode).toBe(409);
+    expect(capped.json<{ error: string }>().error).toMatch(/CAP IS 2/);
+    const rerolled = await app.inject({ method: "POST", url: "/api/base/contracts/reroll", headers });
+    expect(rerolled.statusCode).toBe(200);
+    expect(rerolled.json<{ contractOffers: ContractDefinition[] }>().contractOffers.map((contract) => contract.id))
+      .not.toEqual(initial.contractOffers.map((contract) => contract.id));
+    expect(rerolled.json<{ activeContracts: ContractDefinition[] }>().activeContracts).toHaveLength(2);
+    const abandonedId = rerolled.json<{ activeContracts: ContractDefinition[] }>().activeContracts[0].id;
+    const abandoned = await app.inject({ method: "POST", url: "/api/base/contracts/abandon", headers, payload: { contractId: abandonedId } });
+    expect(abandoned.statusCode).toBe(200);
+    expect(abandoned.json<{ activeContracts: ContractDefinition[] }>().activeContracts).toHaveLength(1);
+
+    // Isolate a known objective so exact and near-miss transaction outcomes
+    // can be asserted without depending on the daily offer mix.
+    await sql!`update contracts set status = 'abandoned' where player_id = ${account.playerId}`;
+    const exactContract: ContractDefinition = {
+      id: "contract-exact-health",
+      templateId: "test-health",
+      title: "EXACT HEALTH HAUL",
+      objective: { kind: "extractPowerups", powerupType: "health", count: 2 },
+      difficulty: 2,
+      payout: { items: [{ kind: "powerup", type: "radar" }] },
+    };
+    await sql!`insert into contracts (id, player_id, contract, status) values (${exactContract.id}, ${account.playerId}, ${sql!.json(exactContract)}, 'active')`;
+    const exactMatch = crypto.randomUUID();
+    await persistence.startMatch({ matchId: exactMatch, roomCode: "CNTR", mapId: "downtown", startedAt: new Date() });
+    const exact = await persistence.recordExtraction({
+      matchId: exactMatch,
+      playerId: account.playerId,
+      manifest: {
+        reason: "extracted",
+        keptItems: ["h", "h"],
+        lostItems: [],
+        learnedBlueprints: [],
+        cargo: [{ kind: "powerup", type: "health" }, { kind: "powerup", type: "health" }],
+      },
+      blueprintLearningThreshold: 3,
+    });
+    expect(exact.manifest.contractCompletions).toEqual([{
+      contractId: exactContract.id,
+      title: exactContract.title,
+      payout: ["r"],
+    }]);
+    expect((await sql!<Array<{ status: string }>>`select status from contracts where id = ${exactContract.id}`)[0].status).toBe("completed");
+    expect(await stashTotals(account.playerId)).toMatchObject({ h: 2, r: 1 });
+
+    const nearMiss: ContractDefinition = { ...exactContract, id: "contract-near-miss", title: "NEAR MISS" };
+    await sql!`insert into contracts (id, player_id, contract, status) values (${nearMiss.id}, ${account.playerId}, ${sql!.json(nearMiss)}, 'active')`;
+    const nearMatch = crypto.randomUUID();
+    await persistence.startMatch({ matchId: nearMatch, roomCode: "MISS", mapId: "downtown", startedAt: new Date() });
+    const near = await persistence.recordExtraction({
+      matchId: nearMatch,
+      playerId: account.playerId,
+      manifest: { reason: "extracted", keptItems: ["h"], lostItems: [], learnedBlueprints: [], cargo: [{ kind: "powerup", type: "health" }] },
+      blueprintLearningThreshold: 3,
+    });
+    expect(near.manifest.contractCompletions).toBeUndefined();
+    expect((await sql!<Array<{ status: string }>>`select status from contracts where id = ${nearMiss.id}`)[0].status).toBe("active");
+
+    const diedContract: ContractDefinition = { ...exactContract, id: "contract-died", title: "DIED PATH" };
+    await sql!`insert into contracts (id, player_id, contract, status) values (${diedContract.id}, ${account.playerId}, ${sql!.json(diedContract)}, 'active')`;
+    const diedMatch = crypto.randomUUID();
+    await persistence.startMatch({ matchId: diedMatch, roomCode: "DEAD", mapId: "downtown", startedAt: new Date() });
+    await persistence.recordOutcome({ matchId: diedMatch, playerId: account.playerId, outcome: "died" });
+    expect((await sql!<Array<{ status: string }>>`select status from contracts where id = ${diedContract.id}`)[0].status).toBe("active");
     await app.close();
   });
 
