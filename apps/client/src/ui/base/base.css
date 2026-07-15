@@ -33,6 +33,23 @@
 .loadout-row button:disabled { color: var(--muted); cursor: default; }
 .loadout-stash { display: grid; gap: 5px; margin-top: 12px; }
 .loadout-stash button { display: flex; min-height: 38px; align-items: center; justify-content: space-between; border: 1px solid var(--ink); background: var(--paper); padding: 0 10px; font: 800 9px/1 ui-monospace, monospace; text-transform: uppercase; cursor: pointer; }
+.recipe-list { display: grid; gap: 6px; }
+.recipe-row { display: grid; grid-template-columns: 38px 1fr auto; gap: 9px; align-items: center; min-height: 52px; border: 1px solid var(--ink); background: var(--paper); padding: 7px 9px; text-align: left; cursor: pointer; }
+.recipe-row:disabled { border-color: var(--hairline); color: var(--muted); cursor: default; }
+.recipe-row > span:nth-child(2) { display: grid; gap: 3px; }
+.recipe-row strong { font-size: 10px; letter-spacing: .08em; }
+.recipe-row small { color: var(--muted); font: 750 7px/1.25 ui-monospace, monospace; letter-spacing: .04em; }
+.recipe-row > b { font: 900 9px/1 ui-monospace, monospace; white-space: nowrap; }
+.recipe-glyph { display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid currentColor; font: 900 17px/1 ui-monospace, monospace; }
+.fabrication-confirmation, .preset-confirmation { padding: 8px; border: 1px solid var(--ink); color: var(--ink) !important; }
+.preset-list { display: grid; gap: 6px; }
+.preset-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; padding: 7px; border: 1px solid var(--hairline); }
+.preset-row > span { display: grid; gap: 4px; }
+.preset-row strong { font-size: 10px; text-transform: uppercase; }
+.preset-row small { font: 900 14px/1 ui-monospace, monospace; letter-spacing: .15em; }
+.preset-row button, .preset-save button { min-height: 34px; border: 1px solid var(--ink); background: var(--paper); padding: 0 8px; font-size: 8px; font-weight: 900; letter-spacing: .08em; cursor: pointer; }
+.preset-save { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin-top: 8px; }
+.preset-save input { min-height: 36px; min-width: 0; border: 1px solid var(--ink); padding: 0 9px; font: 800 9px/1 ui-monospace, monospace; }
 .slot-choices { display: grid; gap: 6px; margin-top: 14px; }
 .slot-choices button { text-align: left; }
 .slot-choices span { color: var(--muted); font: 800 9px/1.3 ui-monospace, monospace; }

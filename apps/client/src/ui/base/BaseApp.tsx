@@ -6,13 +6,15 @@ import {
   DEFAULT_BASE_SHELL,
   baseShellDef,
   createBaseMap,
+  isBaseObjectKind,
   isBaseShellId,
   isObjectAllowedInSlot,
   starterBaseLayout,
   validateBaseLayout,
 } from "@dotbot/game/content/base";
-import type { BaseLayout, BaseShellId } from "@dotbot/game/types";
-import type { WireItemCode } from "@dotbot/protocol";
+import { RECIPES, recipeById, type Recipe } from "@dotbot/game/content/recipes";
+import type { BaseLayout, BaseObjectKind, BaseShellId, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
+import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import { createSession } from "../../game/session/createSession";
 import { LobbyApp } from "../lobby/LobbyApp";
@@ -32,11 +34,15 @@ export type BasePayload = {
   stash: Array<{ itemType: WireItemCode; qty: number }>;
   learnedBlueprints: string[];
   loadout: WireItemCode[];
+  stashCapacity: number;
+  presets: LoadoutPreset[];
 };
 
 type Panel =
   | { type: "locker" | "bayConsole" | "fabricator" | "planningTable"; slotId: string }
   | { type: "move"; fromSlotId?: string; toSlotId?: string }
+  | { type: "fabricateSlot"; recipeId: string }
+  | { type: "object"; slotId: string; kind: BaseObjectKind }
   | { type: "settings" }
   | null;
 
@@ -47,6 +53,8 @@ const offlinePayload: BasePayload = {
   stash: [],
   learnedBlueprints: [],
   loadout: [],
+  stashCapacity: 40,
+  presets: [],
 };
 
 export function BaseApp() {
@@ -165,6 +173,75 @@ export function BaseApp() {
     }
   }, [base.storageLinked]);
 
+  const fabricate = useCallback(async (recipeId: string, slotId?: string) => {
+    if (!base.storageLinked) return;
+    const token = localStorage.getItem(deviceTokenKey);
+    if (!token) return;
+    try {
+      const response = await fetch("/api/base/fabricate", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-device-token": token },
+        body: JSON.stringify({ recipeId, slotId }),
+      });
+      const body = await response.json() as BasePayload & { error?: string; fabricated?: { output: Recipe["output"]; slotId?: string } };
+      if (!response.ok || !body.fabricated) throw new Error(body.error ?? `Fabrication failed (${response.status})`);
+      if (body.fabricated.output.kind === "furniture" && body.fabricated.slotId) {
+        localStorage.setItem(localLayoutKey, JSON.stringify(body.layout));
+        setBase(body);
+        setDraftObjectIds([`base-object-${body.fabricated.slotId}`]);
+        setPanel(null);
+        setNotice(`FABRICATED ${objectName(body.fabricated.output.objectKind)} · ${body.fabricated.slotId}`);
+      } else {
+        setBase((current) => ({ ...body, layout: current.layout }));
+        const outputCode = body.fabricated.output.kind === "item" ? itemToCode(body.fabricated.output.item) : null;
+        setNotice(outputCode ? `FABRICATED ${wireItemName(outputCode)} → STASH` : "FABRICATION COMPLETE");
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message.toUpperCase() : "FABRICATION FAILED");
+    }
+  }, [base.storageLinked]);
+
+  const savePresets = useCallback(async (presets: LoadoutPreset[]) => {
+    if (!base.storageLinked) return;
+    const token = localStorage.getItem(deviceTokenKey);
+    if (!token) return;
+    try {
+      const response = await fetch("/api/base/presets", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-device-token": token },
+        body: JSON.stringify({ presets }),
+      });
+      const body = await response.json() as BasePayload & { error?: string };
+      if (!response.ok) throw new Error(body.error ?? `Preset save failed (${response.status})`);
+      setBase((current) => ({ ...body, layout: current.layout }));
+      setNotice("PRESETS SAVED");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message.toUpperCase() : "PRESET SAVE FAILED");
+    }
+  }, [base.storageLinked]);
+
+  const applyPreset = useCallback(async (presetIndex: number) => {
+    if (!base.storageLinked) return;
+    const token = localStorage.getItem(deviceTokenKey);
+    if (!token) return;
+    try {
+      const response = await fetch("/api/base/presets/apply", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-device-token": token },
+        body: JSON.stringify({ presetIndex }),
+      });
+      const body = await response.json() as BasePayload & { error?: string; missing?: Array<{ itemType: WirePowerupCode; qty: number }> };
+      if (!response.ok) throw new Error(body.error ?? `Preset apply failed (${response.status})`);
+      setBase((current) => ({ ...body, layout: current.layout }));
+      const missing = body.missing ?? [];
+      setNotice(missing.length
+        ? `PRESET PARTIALLY APPLIED · MISSING ${missing.map((entry) => `${entry.qty}× ${wireItemName(entry.itemType)}`).join(" · ")}`
+        : "PRESET APPLIED");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message.toUpperCase() : "PRESET APPLY FAILED");
+    }
+  }, [base.storageLinked]);
+
   if (deployment) {
     return <LobbyApp embedded onReturnToBase={() => {
       setDeployment(false);
@@ -197,6 +274,9 @@ export function BaseApp() {
         setDraftObjectIds([]);
       }}
       updateLoadout={updateLoadout}
+      fabricate={fabricate}
+      savePresets={savePresets}
+      applyPreset={applyPreset}
     />
   );
 }
@@ -216,6 +296,9 @@ type BaseSessionProps = {
   draftObjectIds: string[];
   onDraftQueued: () => void;
   updateLoadout: (loadout: WireItemCode[]) => Promise<void>;
+  fabricate: (recipeId: string, slotId?: string) => Promise<void>;
+  savePresets: (presets: LoadoutPreset[]) => Promise<void>;
+  applyPreset: (presetIndex: number) => Promise<void>;
 };
 
 function BaseSession(props: BaseSessionProps) {
@@ -247,6 +330,8 @@ function BaseSession(props: BaseSessionProps) {
     const kind = target.object.kind;
     if (kind === "locker" || kind === "bayConsole" || kind === "fabricator" || kind === "planningTable") {
       props.setPanel({ type: kind, slotId: target.object.slotId! });
+    } else if (target.object.slotId && isBaseObjectKind(kind)) {
+      props.setPanel({ type: "object", slotId: target.object.slotId, kind });
     }
   }, [props]);
 
@@ -317,13 +402,17 @@ function BaseSession(props: BaseSessionProps) {
           chooseMove={(next) => props.setPanel(next)}
           updateLoadout={props.updateLoadout}
           updateShell={props.updateShell}
+          notice={props.notice}
+          fabricate={props.fabricate}
+          savePresets={props.savePresets}
+          applyPreset={props.applyPreset}
         />
       ) : null}
     </main>
   );
 }
 
-function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, updateShell }: {
+function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, updateShell, notice, fabricate, savePresets, applyPreset }: {
   panel: Exclude<Panel, null>;
   base: BasePayload;
   close: () => void;
@@ -331,6 +420,10 @@ function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, update
   chooseMove: (panel: Exclude<Panel, null>) => void;
   updateLoadout: (loadout: WireItemCode[]) => Promise<void>;
   updateShell: (shell: BaseShellId) => Promise<void>;
+  notice: string;
+  fabricate: (recipeId: string, slotId?: string) => Promise<void>;
+  savePresets: (presets: LoadoutPreset[]) => Promise<void>;
+  applyPreset: (presetIndex: number) => Promise<void>;
 }) {
   if (panel.type === "move") {
     return <MovePanel panel={panel} layout={base.layout} close={close} move={move} />;
@@ -338,32 +431,141 @@ function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, update
   if (panel.type === "settings") {
     return <ShellPanel current={base.shell} storageLinked={base.storageLinked} close={close} updateShell={updateShell} />;
   }
+  if (panel.type === "fabricateSlot") {
+    return <FabricationSlotPanel panel={panel} base={base} close={close} fabricate={fabricate} />;
+  }
+  if (panel.type === "object") {
+    return <ObjectPanel panel={panel} close={close} chooseMove={chooseMove} />;
+  }
   const title = panel.type === "bayConsole" ? "BAY CONSOLE" : panel.type.replace(/([A-Z])/g, " $1").toUpperCase();
   return (
     <section className="base-panel" aria-label={`${title} panel`}>
       <header><span>HOME BAY / OBJECT</span><strong>{title}</strong><button type="button" onClick={close}>×</button></header>
-      {!base.storageLinked && (panel.type === "locker" || panel.type === "bayConsole") ? <p className="offline-hint">OFFLINE — NO STORAGE LINK</p> : null}
+      {!base.storageLinked && (panel.type === "locker" || panel.type === "bayConsole" || panel.type === "fabricator") ? <p className="offline-hint">OFFLINE — NO STORAGE LINK</p> : null}
       {panel.type === "locker" ? <>
-        <h2>STASH</h2><ItemCounts items={base.stash} />
+        <h2>STASH {stashCount(base.stash)}/{base.stashCapacity}</h2><ItemCounts items={base.stash} />
         <h2>LEARNED BLUEPRINTS</h2><p>{base.learnedBlueprints.length ? base.learnedBlueprints.join(" · ") : "NONE YET"}</p>
       </> : null}
-      {panel.type === "bayConsole" ? <>
-        <h2>AT-RISK LOADOUT</h2>
-        <div className="loadout-row">{[0, 1, 2, 3].map((index) => {
-          const item = base.loadout[index];
-          return <button type="button" key={index} disabled={!item || !base.storageLinked} onClick={() => void updateLoadout(base.loadout.filter((_, itemIndex) => itemIndex !== index))} aria-label={item ? `Return ${wireItemName(item)} to stash` : `Empty loadout slot ${index + 1}`}>{item ? wireItemGlyph(item) : "·"}</button>;
-        })}</div>
-        <p>{base.storageLinked ? "SELECT UP TO FOUR STASHED POWERUPS · TAP A LOADOUT SLOT TO RETURN IT" : "LOADOUT UNAVAILABLE"}</p>
-        {base.storageLinked ? <div className="loadout-stash">{base.stash.filter((entry) => !entry.itemType.startsWith("b:")).map((entry) => <button type="button" key={entry.itemType} disabled={base.loadout.length >= 4 || entry.qty < 1} onClick={() => void updateLoadout([...base.loadout, entry.itemType])}><span>{wireItemGlyph(entry.itemType)} {wireItemName(entry.itemType)}</span><b>×{entry.qty}</b></button>)}</div> : null}
-      </> : null}
-      {panel.type === "fabricator" ? <>
-        <h2>LEARNED BLUEPRINTS</h2><p>{base.learnedBlueprints.length ? base.learnedBlueprints.join(" · ") : "NONE YET"}</p>
-        <p>FABRICATION COMES ONLINE WITH THE NEXT BASE UPGRADE PASS.</p>
-      </> : null}
+      {panel.type === "bayConsole" ? <BayConsolePanel base={base} updateLoadout={updateLoadout} savePresets={savePresets} applyPreset={applyPreset} notice={notice} /> : null}
+      {panel.type === "fabricator" ? <FabricatorPanel base={base} notice={notice} chooseRecipe={(recipe) => {
+        if (recipe.output.kind === "furniture") chooseMove({ type: "fabricateSlot", recipeId: recipe.id });
+        else void fabricate(recipe.id);
+      }} /> : null}
       {panel.type === "planningTable" ? <p className="stub-message">CONTRACTS — NOT YET COMMISSIONED</p> : null}
       <footer><button type="button" onClick={() => chooseMove({ type: "move", fromSlotId: panel.slotId })}>MOVE</button></footer>
     </section>
   );
+}
+
+function FabricatorPanel({ base, notice, chooseRecipe }: {
+  base: BasePayload;
+  notice: string;
+  chooseRecipe: (recipe: Recipe) => void;
+}) {
+  const stock = new Map(base.stash.map((entry) => [entry.itemType, entry.qty]));
+  return <>
+    <h2>RECIPES</h2>
+    {!base.storageLinked ? <p>READ-ONLY RECIPE CATALOG</p> : null}
+    {notice.startsWith("FABRICATED") ? <p className="fabrication-confirmation">{notice}</p> : null}
+    <div className="recipe-list">
+      {RECIPES.map((recipe) => {
+        const learned = !recipe.requiresBlueprint || base.learnedBlueprints.includes(recipe.requiresBlueprint);
+        const objectReady = !recipe.requiresObject || Object.values(base.layout).includes(recipe.requiresObject);
+        const missingCosts = recipe.costs
+          .map((cost) => ({ ...cost, missing: Math.max(0, cost.qty - (stock.get(cost.itemType) ?? 0)) }))
+          .filter((cost) => cost.missing > 0);
+        const furnitureKind = recipe.output.kind === "furniture" ? recipe.output.objectKind : null;
+        const hasSlot = !furnitureKind || BASE_SLOT_DEFS.some((slot) => !base.layout[slot.id] && isObjectAllowedInSlot(furnitureKind, slot));
+        const enabled = base.storageLinked && learned && objectReady && missingCosts.length === 0 && hasSlot;
+        const gate = !learned
+          ? `REQUIRES BLUEPRINT: ${recipe.requiresBlueprint}`
+          : !objectReady
+            ? `REQUIRES: ${objectName(recipe.requiresObject!)}`
+            : !hasSlot
+              ? "NO COMPATIBLE EMPTY SLOT"
+              : missingCosts.length
+                ? `MISSING ${missingCosts.map((cost) => `${cost.missing}× ${wireItemName(cost.itemType)}`).join(" · ")}`
+                : recipe.requiresBlueprint
+                  ? `BLUEPRINT: ${recipe.requiresBlueprint}`
+                  : "FABRICATOR INNATE";
+        return <button type="button" key={recipe.id} className="recipe-row" disabled={!enabled} onClick={() => chooseRecipe(recipe)}>
+          <span className="recipe-glyph">{recipeGlyph(recipe)}</span>
+          <span><strong>{recipeOutputLabel(recipe)}</strong><small>{gate}</small></span>
+          <b>{recipe.costs.map((cost) => `${cost.qty}× ${wireItemGlyph(cost.itemType)}`).join(" + ")}</b>
+        </button>;
+      })}
+    </div>
+  </>;
+}
+
+function FabricationSlotPanel({ panel, base, close, fabricate }: {
+  panel: Extract<Exclude<Panel, null>, { type: "fabricateSlot" }>;
+  base: BasePayload;
+  close: () => void;
+  fabricate: (recipeId: string, slotId?: string) => Promise<void>;
+}) {
+  const recipe = recipeById(panel.recipeId);
+  const furnitureKind = recipe?.output.kind === "furniture" ? recipe.output.objectKind : null;
+  const choices = furnitureKind
+    ? BASE_SLOT_DEFS.filter((slot) => !base.layout[slot.id] && isObjectAllowedInSlot(furnitureKind, slot))
+    : [];
+  return <section className="base-panel" aria-label="Fabrication placement slot picker">
+    <header><span>HOME BAY / FABRICATION</span><strong>PLACE {recipe ? recipeOutputLabel(recipe) : "OBJECT"}</strong><button type="button" onClick={close}>×</button></header>
+    <p>SELECT ONE COMPATIBLE EMPTY DECLARED SLOT. FABRICATION IS ATOMIC.</p>
+    <div className="slot-choices">
+      {choices.map((slot) => <button type="button" key={slot.id} onClick={() => void fabricate(panel.recipeId, slot.id)}>{slot.id} / {slot.zone}</button>)}
+      {choices.length === 0 ? <span>NO COMPATIBLE EMPTY SLOTS</span> : null}
+    </div>
+  </section>;
+}
+
+function BayConsolePanel({ base, updateLoadout, savePresets, applyPreset, notice }: {
+  base: BasePayload;
+  updateLoadout: (loadout: WireItemCode[]) => Promise<void>;
+  savePresets: (presets: LoadoutPreset[]) => Promise<void>;
+  applyPreset: (presetIndex: number) => Promise<void>;
+  notice: string;
+}) {
+  const [presetName, setPresetName] = useState("");
+  return <>
+    <h2>AT-RISK LOADOUT</h2>
+    <div className="loadout-row">{[0, 1, 2, 3].map((index) => {
+      const item = base.loadout[index];
+      return <button type="button" key={index} disabled={!item || !base.storageLinked} onClick={() => void updateLoadout(base.loadout.filter((_, itemIndex) => itemIndex !== index))} aria-label={item ? `Return ${wireItemName(item)} to stash` : `Empty loadout slot ${index + 1}`}>{item ? wireItemGlyph(item) : "·"}</button>;
+    })}</div>
+    <p>{base.storageLinked ? "SELECT UP TO FOUR STASHED POWERUPS · TAP A LOADOUT SLOT TO RETURN IT" : "LOADOUT UNAVAILABLE"}</p>
+    {base.storageLinked ? <div className="loadout-stash">{base.stash.filter((entry) => !entry.itemType.startsWith("b:")).map((entry) => <button type="button" key={entry.itemType} disabled={base.loadout.length >= 4 || entry.qty < 1} onClick={() => void updateLoadout([...base.loadout, entry.itemType])}><span>{wireItemGlyph(entry.itemType)} {wireItemName(entry.itemType)}</span><b>×{entry.qty}</b></button>)}</div> : null}
+    <h2>PRESETS {base.presets.length}/3</h2>
+    {notice.startsWith("PRESET") ? <p className="preset-confirmation">{notice}</p> : null}
+    <div className="preset-list">
+      {base.presets.map((preset, index) => <div className="preset-row" key={`${index}-${preset.name}`}>
+        <span><strong>{preset.name}</strong><small>{preset.items.length ? preset.items.map(wireItemGlyph).join(" ") : "EMPTY"}</small></span>
+        <button type="button" disabled={!base.storageLinked} onClick={() => void applyPreset(index)}>APPLY</button>
+        <button type="button" disabled={!base.storageLinked} onClick={() => void savePresets(base.presets.filter((_, candidate) => candidate !== index))}>DELETE</button>
+      </div>)}
+    </div>
+    {base.storageLinked && base.presets.length < 3 ? <div className="preset-save">
+      <input aria-label="Preset name" maxLength={24} placeholder="PRESET NAME" value={presetName} onChange={(event) => setPresetName(event.target.value)} />
+      <button type="button" disabled={!presetName.trim() || base.loadout.length === 0} onClick={() => {
+        const clean = presetName.trim().replace(/\s+/g, " ").slice(0, 24);
+        if (!clean) return;
+        void savePresets([...base.presets, { name: clean, items: base.loadout.filter(isWirePowerup) as WirePowerupCode[] }]);
+        setPresetName("");
+      }}>SAVE CURRENT</button>
+    </div> : null}
+  </>;
+}
+
+function ObjectPanel({ panel, close, chooseMove }: {
+  panel: Extract<Exclude<Panel, null>, { type: "object" }>;
+  close: () => void;
+  chooseMove: (panel: Exclude<Panel, null>) => void;
+}) {
+  return <section className="base-panel" aria-label={`${objectName(panel.kind)} panel`}>
+    <header><span>HOME BAY / OBJECT</span><strong>{objectName(panel.kind)}</strong><button type="button" onClick={close}>×</button></header>
+    <p>{panel.kind === "repairBench" ? "REPAIR BENCH ONLINE · HEALTH CONVERSION ENABLED" : "DISPLAYED FROM A LEARNED CITY BLUEPRINT · NO COMBAT STAT MODIFIERS"}</p>
+    <footer><button type="button" onClick={() => chooseMove({ type: "move", fromSlotId: panel.slotId })}>MOVE</button></footer>
+  </section>;
 }
 
 function MovePanel({ panel, layout, close, move }: {
@@ -461,6 +663,27 @@ function ShellPreview({ shell }: { shell: BaseShellId }) {
 
 function ItemCounts({ items }: { items: BasePayload["stash"] }) {
   return items.length ? <ul className="base-stash">{items.map((entry) => <li key={entry.itemType}><span>{wireItemGlyph(entry.itemType)} {wireItemName(entry.itemType)}</span><b>×{entry.qty}</b></li>)}</ul> : <p>EMPTY</p>;
+}
+
+function stashCount(items: BasePayload["stash"]): number {
+  return items.reduce((total, entry) => total + entry.qty, 0);
+}
+
+function recipeGlyph(recipe: Recipe): string {
+  if (recipe.output.kind === "furniture") return recipe.output.objectKind === "repairBench" ? "✚" : "▱";
+  return wireItemGlyph(itemToCode(recipe.output.item));
+}
+
+function recipeOutputLabel(recipe: Recipe): string {
+  return recipe.output.kind === "furniture" ? objectName(recipe.output.objectKind) : wireItemName(itemToCode(recipe.output.item));
+}
+
+function objectName(kind: BaseObjectKind): string {
+  return kind.replace(/([A-Z])/g, " $1").toUpperCase();
+}
+
+function isWirePowerup(code: WireItemCode): code is WirePowerupCode {
+  return code === "h" || code === "r" || code === "d" || code === "i";
 }
 
 function moveObject(layout: BaseLayout, from: string, to: string): BaseLayout {
