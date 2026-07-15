@@ -16,6 +16,14 @@ describe("persistence graceful degradation", () => {
     const hello = await app.inject({ method: "POST", url: "/api/auth/hello", payload: { token: account.token } });
     expect(hello.statusCode).toBe(200);
     expect(hello.json<{ playerId: string }>().playerId).toBe(account.playerId);
+    const base = await app.inject({ method: "GET", url: "/api/base", headers: { "x-device-token": account.token } });
+    expect(base.statusCode).toBe(200);
+    expect(base.json<{ storageLinked: boolean; layout: Record<string, string>; loadout: string[] }>()).toMatchObject({
+      storageLinked: false,
+      loadout: [],
+    });
+    expect(Object.keys(base.json<{ layout: Record<string, string> }>().layout)).toHaveLength(5);
+    expect((await app.inject({ method: "POST", url: "/api/base/loadout", headers: { "x-device-token": account.token }, payload: { loadout: ["h"] } })).statusCode).toBe(503);
 
     await app.close();
     warning.mockRestore();

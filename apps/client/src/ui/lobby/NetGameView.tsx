@@ -11,8 +11,9 @@ type NetGameViewProps = {
 };
 
 export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "RETURN TO LOBBY" }: NetGameViewProps) {
-  const { hostRef, snapshot, events, runResult, spectating, queueDash, cycleSpectator } = useDotBotGame({ session, spectate: true });
+  const { hostRef, snapshot, events, runResult, spectating, queueDash, cycleSpectator, giveUp } = useDotBotGame({ session, spectate: true });
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
+  const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === session.playerId) ?? false;
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
   const killCounts = useMemo(() => {
     const viewerSquadId = session.getEntityMeta(session.playerId)?.squadId;
@@ -35,6 +36,14 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         <span>{player ? `${player.shields}/${player.maxShields} shields` : "Waiting for snapshots"}</span>
         <span>Run {formatRunTime(remainingRunMs)}</span>
       </aside>
+      <aside className="net-game-bays" aria-label="In-run bays">
+        <span>BAYS</span>
+        <div>{(player?.bays ?? [null, null, null, null]).map((item, index) => (
+          <b key={index} aria-label={item ? item.kind === "blueprint" ? `${item.blueprintId} blueprint` : item.type : `Empty bay ${index + 1}`}>
+            {item?.kind === "blueprint" ? "⌑" : item?.type === "health" ? "+" : item?.type === "radar" ? "◎" : item?.type === "dashOvercharge" ? "›" : item?.type === "incognito" ? "◌" : "·"}
+          </b>
+        ))}</div>
+      </aside>
       {spectating ? (
         <button className="spectating-chip" type="button" onPointerDown={cycleSpectator}>
           SPECTATING {spectating.name.toUpperCase()}
@@ -43,6 +52,9 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       <button className="net-dash-button" type="button" disabled={runResult !== null} onPointerDown={queueDash}>
         Dash
       </button>
+      {player?.state === "downed" && !reviveInProgress && !runResult ? (
+        <button type="button" className="give-up-button" onClick={giveUp}>GIVE UP</button>
+      ) : null}
       {runResult ? (
         <ManifestScreen
           result={runResult}

@@ -123,7 +123,7 @@ export function createBaseMap(layout: BaseLayout): MapDocument {
       squadId: "base",
       controller: "human",
       color: "#ff3b6b",
-      position: { x: SHELL.x + SHELL.w / 2, y: bottomY - 104 },
+      position: { x: 330, y: bottomY - 104 },
       floorId: OUTDOOR_FLOOR_ID,
       bays: [null, null, null, null],
       hold: [],

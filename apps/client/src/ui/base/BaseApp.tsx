@@ -7,18 +7,18 @@ import {
   starterBaseLayout,
   validateBaseLayout,
 } from "@dotbot/game/content/base";
-import type { BaseLayout, BaseObjectKind, MapObject, PlacementSlot, Rect, Vec2 } from "@dotbot/game/types";
+import type { BaseLayout } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import { createSession } from "../../game/session/createSession";
 import { LobbyApp } from "../lobby/LobbyApp";
 import { deviceTokenKey, ensureAccountToken, playerNameKey } from "../identity";
 import "./base.css";
+import { advanceBaseChannel, findBaseTarget, type BaseChannelState, type BaseTarget } from "./baseFlow";
 
 const localLayoutKey = "dotbot.baseLayout";
 const seedDraftedKey = "dotbot.baseSeedDrafted";
 const channelDurationMs = 1000;
-const interactionReach = 46;
 
 export type BasePayload = {
   storageLinked: boolean;
@@ -27,11 +27,6 @@ export type BasePayload = {
   learnedBlueprints: string[];
   loadout: WireItemCode[];
 };
-
-type BaseTarget =
-  | { id: string; type: "deployment"; center: Vec2; rect: Rect }
-  | { id: string; type: "object"; center: Vec2; rect: Rect; object: MapObject }
-  | { id: string; type: "emptySlot"; center: Vec2; rect: Rect; slot: PlacementSlot };
 
 type Panel =
   | { type: "locker" | "bayConsole" | "fabricator" | "planningTable"; slotId: string }
@@ -104,7 +99,6 @@ export function BaseApp() {
       });
       if (!response.ok) throw new Error(`Layout update failed (${response.status})`);
       const payload = await response.json() as { layout: BaseLayout };
-      setBase((current) => ({ ...current, layout: payload.layout }));
       localStorage.setItem(localLayoutKey, JSON.stringify(payload.layout));
     } catch {
       setBase((current) => ({ ...current, storageLinked: false }));
@@ -124,7 +118,7 @@ export function BaseApp() {
       });
       const body = await response.json() as BasePayload & { error?: string };
       if (!response.ok) throw new Error(body.error ?? `Loadout update failed (${response.status})`);
-      setBase(body);
+      setBase((current) => ({ ...body, layout: current.layout }));
       setNotice("");
     } catch (error) {
       setNotice(error instanceof Error ? error.message.toUpperCase() : "LOADOUT UPDATE FAILED");
@@ -191,7 +185,7 @@ function BaseSession(props: BaseSessionProps) {
   }), [map]);
   const { hostRef, snapshot, playerId, setInteractionChannel, draftObjects } = useDotBotGame({ session });
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
-  const channelRef = useRef<{ targetId: string; startedAt: number; lastPosition: Vec2; completedId: string | null } | null>(null);
+  const channelRef = useRef<BaseChannelState | null>(null);
 
   useEffect(() => {
     if (props.draftObjectIds.length === 0) return;
@@ -220,28 +214,12 @@ function BaseSession(props: BaseSessionProps) {
       return;
     }
     const target = findBaseTarget(map, player.position);
-    const previous = channelRef.current;
-    const moved = previous ? distance(previous.lastPosition, player.position) > 1.5 : true;
-
-    if (!target) {
-      channelRef.current = { targetId: "", startedAt: snapshot.timeMs, lastPosition: { ...player.position }, completedId: null };
-      setInteractionChannel(null);
-      return;
-    }
-    if (previous?.completedId === target.id && !moved) {
-      setInteractionChannel(null);
-      return;
-    }
-    const startedAt = !previous || previous.targetId !== target.id || moved ? snapshot.timeMs : previous.startedAt;
-    const progress = Math.min(1, Math.max(0, (snapshot.timeMs - startedAt) / channelDurationMs));
-    channelRef.current = {
-      targetId: target.id,
-      startedAt,
-      lastPosition: { ...player.position },
-      completedId: progress >= 1 ? target.id : moved ? null : previous?.completedId ?? null,
-    };
-    setInteractionChannel({ position: target.center, radius: Math.max(target.rect.w, target.rect.h) / 2 + 10, progress });
-    if (progress >= 1 && previous?.completedId !== target.id) openTarget(target);
+    const advanced = advanceBaseChannel(channelRef.current, target, player.position, snapshot.timeMs, channelDurationMs);
+    channelRef.current = advanced.state;
+    setInteractionChannel(target && advanced.progress !== null
+      ? { position: target.center, radius: Math.max(target.rect.w, target.rect.h) / 2 + 10, progress: advanced.progress }
+      : null);
+    if (advanced.completed) openTarget(advanced.completed);
   }, [map, openTarget, player, props.identityReady, props.panel, setInteractionChannel, snapshot]);
 
   useEffect(() => {
@@ -255,7 +233,14 @@ function BaseSession(props: BaseSessionProps) {
   }, [player, props.base, props.panel]);
 
   return (
-    <main className="base-shell" aria-label="DotBot persistent base" data-storage-linked={props.base.storageLinked}>
+    <main
+      className="base-shell"
+      aria-label="DotBot persistent base"
+      data-storage-linked={props.base.storageLinked}
+      data-player-x={player ? Math.round(player.position.x) : undefined}
+      data-player-y={player ? Math.round(player.position.y) : undefined}
+      data-panel={props.panel?.type ?? "none"}
+    >
       <div ref={hostRef} className="game-canvas" />
       <header className="base-title-block">
         <span>DOTBOT / HOME BAY</span>
@@ -355,17 +340,6 @@ function ItemCounts({ items }: { items: BasePayload["stash"] }) {
   return items.length ? <ul className="base-stash">{items.map((entry) => <li key={entry.itemType}><span>{wireItemGlyph(entry.itemType)} {wireItemName(entry.itemType)}</span><b>×{entry.qty}</b></li>)}</ul> : <p>EMPTY</p>;
 }
 
-function findBaseTarget(map: ReturnType<typeof createBaseMap>, position: Vec2): BaseTarget | null {
-  const deployment = map.extractionPoints[0];
-  if (contains(deployment.rect, position)) return { id: deployment.id, type: "deployment", center: center(deployment.rect), rect: deployment.rect };
-  const floor = map.buildings[0]?.floors[0];
-  const object = floor?.objects.find((candidate) => distanceToRect(position, candidate) <= interactionReach);
-  if (object) return { id: object.id, type: "object", center: center(object), object, rect: object };
-  const occupied = new Set(floor?.objects.map((candidate) => candidate.slotId));
-  const slot = map.placementSlots?.find((candidate) => !occupied.has(candidate.id) && distanceToRect(position, candidate.rect) <= interactionReach);
-  return slot ? { id: `empty-${slot.id}`, type: "emptySlot", center: center(slot.rect), slot, rect: slot.rect } : null;
-}
-
 function moveObject(layout: BaseLayout, from: string, to: string): BaseLayout {
   const kind = layout[from];
   if (!kind || layout[to]) return layout;
@@ -383,17 +357,6 @@ function readLocalLayout(): BaseLayout {
   } catch {
     return { ...starterBaseLayout };
   }
-}
-
-function contains(rect: Rect, point: Vec2): boolean {
-  return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h;
-}
-function center(rect: Rect): Vec2 { return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 }; }
-function distance(a: Vec2, b: Vec2): number { return Math.hypot(a.x - b.x, a.y - b.y); }
-function distanceToRect(point: Vec2, rect: Rect): number {
-  const dx = point.x - Math.max(rect.x, Math.min(point.x, rect.x + rect.w));
-  const dy = point.y - Math.max(rect.y, Math.min(point.y, rect.y + rect.h));
-  return Math.hypot(dx, dy);
 }
 
 function wireItemGlyph(code: WireItemCode): string {

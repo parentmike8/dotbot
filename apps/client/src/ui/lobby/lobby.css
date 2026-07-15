@@ -33,6 +33,10 @@
 .lobby-waiting, .lobby-error { margin: 16px 0 0; font-size: 12px; font-weight: 750; }
 .lobby-error { color: #b42318; }
 .net-game-status { position: absolute; z-index: 8; top: 14px; left: 14px; display: grid; gap: 3px; padding: 9px 11px; border: 1px solid var(--ink); background: var(--paper-glass); font-size: 10px; text-transform: uppercase; }
+.net-game-bays { position: absolute; z-index: 8; top: 14px; right: 14px; display: grid; gap: 5px; padding: 8px; border: 1px solid var(--ink); background: var(--paper-glass); }
+.net-game-bays > span { color: var(--muted); font-size: 8px; font-weight: 850; letter-spacing: .12em; }
+.net-game-bays > div { display: grid; grid-template-columns: repeat(4,34px); gap: 4px; }
+.net-game-bays b { display: grid; height: 32px; place-items: center; border: 1px solid var(--ink); background: var(--paper); font: 900 17px/1 ui-monospace,monospace; }
 .spectating-chip { position: absolute; z-index: 21; top: 14px; left: 50%; padding: 8px 12px; border: 1px solid var(--ink); background: var(--paper-glass); color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 850; letter-spacing: 1.4px; transform: translateX(-50%); }
 .net-dash-button { position: absolute; z-index: 8; right: 24px; bottom: 24px; width: 74px; height: 74px; border: 2px solid var(--ink); border-radius: 50%; background: var(--paper-glass); font-weight: 900; text-transform: uppercase; }
 @media (max-width: 620px) { .lobby-actions { grid-template-columns: 1fr; } .lobby-or { text-align: center; } }

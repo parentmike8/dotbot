@@ -3,6 +3,9 @@ import WebSocket from "ws";
 import postgres, { type Sql } from "postgres";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { createServer } from "./app";
+import { Room, type RoomPeer } from "./Room";
+import { starterBaseLayout } from "@dotbot/game/content/base";
+import type { BaseLayout } from "@dotbot/game/types";
 
 const databaseUrl = process.env.DATABASE_URL;
 let databaseAvailable = false;
@@ -169,7 +172,119 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
 
     await app.close();
   }, 30_000);
+
+  it("round-trips base layouts and treats loadouts as one-shot at-risk withdrawals", async () => {
+    await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
+    process.env.NODE_ENV = "test";
+    const { app, persistence } = await createServer({
+      databaseUrl,
+      countdownMs: 0,
+      aiWingmates: false,
+      config: { runDurationMs: 30_000 },
+    });
+    const registration = await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Base Pilot" } });
+    const account = registration.json<{ playerId: string; token: string }>();
+    const headers = { "x-device-token": account.token };
+
+    const seeded = await sql!<Array<{ count: number }>>`select count(*)::int as count from base_layouts where player_id = ${account.playerId}`;
+    expect(seeded[0].count).toBe(Object.keys(starterBaseLayout).length);
+    const initial = await app.inject({ method: "GET", url: "/api/base", headers });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json<{ storageLinked: boolean; layout: BaseLayout }>().storageLinked).toBe(true);
+    expect(initial.json<{ layout: BaseLayout }>().layout).toEqual(starterBaseLayout);
+
+    const movedLayout = { ...starterBaseLayout };
+    delete movedLayout["wall-nw"];
+    movedLayout["wall-west"] = "fabricator";
+    const saved = await app.inject({ method: "POST", url: "/api/base/layout", headers, payload: { layout: movedLayout } });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json<{ layout: BaseLayout }>().layout).toEqual(movedLayout);
+    expect((await app.inject({ method: "GET", url: "/api/base", headers })).json<{ layout: BaseLayout }>().layout).toEqual(movedLayout);
+    expect((await app.inject({ method: "POST", url: "/api/base/layout", headers, payload: { layout: { mystery: "locker" } } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url: "/api/base/layout", headers, payload: { layout: { "wall-n": "mystery" } } })).statusCode).toBe(400);
+
+    await sql!`insert into hold_items (player_id, item_type, qty) values
+      (${account.playerId}, 'h', 2), (${account.playerId}, 'r', 1), (${account.playerId}, 'b:shelf', 1)`;
+    const withdrawn = await app.inject({ method: "POST", url: "/api/base/loadout", headers, payload: { loadout: ["h"] } });
+    expect(withdrawn.statusCode).toBe(200);
+    expect(withdrawn.json<{ loadout: string[] }>().loadout).toEqual(["h"]);
+    expect(stashQty(withdrawn.json<{ stash: Array<{ itemType: string; qty: number }> }>().stash, "h")).toBe(1);
+
+    const returned = await app.inject({ method: "POST", url: "/api/base/loadout", headers, payload: { loadout: [] } });
+    expect(returned.statusCode).toBe(200);
+    expect(returned.json<{ loadout: string[] }>().loadout).toEqual([]);
+    expect(stashQty(returned.json<{ stash: Array<{ itemType: string; qty: number }> }>().stash, "h")).toBe(2);
+    expect((await app.inject({ method: "POST", url: "/api/base/loadout", headers, payload: { loadout: ["b:shelf"] } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url: "/api/base/loadout", headers, payload: { loadout: ["h", "h", "h"] } })).statusCode).toBe(409);
+    const afterRollback = (await app.inject({ method: "GET", url: "/api/base", headers })).json<{ loadout: string[]; stash: Array<{ itemType: string; qty: number }> }>();
+    expect(afterRollback.loadout).toEqual([]);
+    expect(stashQty(afterRollback.stash, "h")).toBe(2);
+
+    const radarLoadout = await app.inject({ method: "POST", url: "/api/base/loadout", headers, payload: { loadout: ["r"] } });
+    expect(radarLoadout.statusCode).toBe(200);
+    const extractedPeer = collectingPeer("extract-peer");
+    const extractionRoom = new Room("LOAD", { countdownMs: 0, persistence, aiWingmates: false, config: { runDurationMs: 30_000 } });
+    extractionRoom.join(extractedPeer.peer, account.token, "Base Pilot", account.playerId);
+    extractionRoom.receive(account.playerId, { type: "startMatch" });
+    await waitFor(() => extractionRoom.phase === "live");
+    const extractionInternals = extractionRoom as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: { getSnapshot(): { bots: Array<{ id: string; squadId: string; bays: unknown[] }> } };
+      processRunEvents(events: Array<{ type: "extracted"; botId: string; squadId: string; items: Array<{ kind: "powerup"; type: "radar" }> }>): void;
+    };
+    const extractionBotId = extractionInternals.members.get(account.playerId)!.botId;
+    const extractionBot = extractionInternals.simulation.getSnapshot().bots.find((bot) => bot.id === extractionBotId)!;
+    expect(extractionBot.bays[0]).toEqual({ kind: "powerup", type: "radar" });
+    expect((await sql!<Array<{ loadout: unknown }>>`select loadout from players where id = ${account.playerId}`)[0].loadout).toEqual([]);
+    extractionInternals.processRunEvents([{ type: "extracted", botId: extractionBotId, squadId: extractionBot.squadId, items: [{ kind: "powerup", type: "radar" }] }]);
+    await waitFor(() => extractedPeer.messages.some((message) => message.type === "runOver"));
+    expect(extractedPeer.messages.find((message) => message.type === "runOver")).toMatchObject({ reason: "extracted", keptItems: ["r"] });
+    expect(Number((await sql!<Array<{ qty: number }>>`select coalesce(sum(qty), 0)::int as qty from hold_items where player_id = ${account.playerId} and item_type = 'r'`)[0].qty)).toBe(1);
+    extractionRoom.dispose();
+
+    expect((await app.inject({ method: "POST", url: "/api/base/loadout", headers, payload: { loadout: ["h"] } })).statusCode).toBe(200);
+    const diedPeer = collectingPeer("died-peer");
+    const diedRoom = new Room("LOSS", { countdownMs: 0, persistence, aiWingmates: false, config: { runDurationMs: 30_000 } });
+    diedRoom.join(diedPeer.peer, account.token, "Base Pilot", account.playerId);
+    diedRoom.receive(account.playerId, { type: "startMatch" });
+    await waitFor(() => diedRoom.phase === "live");
+    const diedInternals = diedRoom as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: { bots: Map<string, { state: string; shields: number }>; getSnapshot(): { bots: Array<{ id: string; bays: unknown[] }> } };
+    };
+    const diedBotId = diedInternals.members.get(account.playerId)!.botId;
+    expect(diedInternals.simulation.getSnapshot().bots.find((bot) => bot.id === diedBotId)?.bays[0]).toEqual({ kind: "powerup", type: "health" });
+    const diedBot = diedInternals.simulation.bots.get(diedBotId)!;
+    diedBot.state = "downed";
+    diedBot.shields = 0;
+    diedRoom.receive(account.playerId, { type: "leaveRun" });
+    await waitFor(() => diedPeer.messages.some((message) => message.type === "runOver"));
+    expect(diedPeer.messages.find((message) => message.type === "runOver")).toMatchObject({ reason: "died", keptItems: [], lostItems: ["h"] });
+    const finalBase = (await app.inject({ method: "GET", url: "/api/base", headers })).json<{ loadout: string[]; stash: Array<{ itemType: string; qty: number }> }>();
+    expect(finalBase.loadout).toEqual([]);
+    expect(stashQty(finalBase.stash, "h")).toBe(1);
+    diedRoom.dispose();
+    await app.close();
+  }, 20_000);
 });
+
+function collectingPeer(id: string): { peer: RoomPeer; messages: ServerMessage[] } {
+  const messages: ServerMessage[] = [];
+  return { peer: { id, send: (message) => messages.push(message) }, messages };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < 5000) {
+    if (predicate()) return;
+    await delay(5);
+  }
+  throw new Error("Timed out waiting for state");
+}
+
+function stashQty(stash: Array<{ itemType: string; qty: number }>, itemType: string): number {
+  return stash.find((entry) => entry.itemType === itemType)?.qty ?? 0;
+}
 
 async function connect(url: string, clients: WebSocket[]): Promise<Inbox> {
   const ws = new WebSocket(url);
