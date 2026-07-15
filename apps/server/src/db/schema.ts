@@ -1,5 +1,5 @@
 import { integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import type { BaseShellId } from "@dotbot/game/types";
+import type { BaseShellId, LoadoutPreset } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
 
 export const players = pgTable("players", {
@@ -11,6 +11,7 @@ export const players = pgTable("players", {
   loadout: jsonb("loadout").$type<WireItemCode[]>().notNull().default([]),
   /** Cosmetic floor-plan choice; every shell has identical slots. */
   baseShell: text("base_shell").$type<BaseShellId>().notNull().default("workshop"),
+  presets: jsonb("presets").$type<LoadoutPreset[]>().notNull().default([]),
 }, (table) => [uniqueIndex("players_device_token_hash_unique").on(table.deviceTokenHash)]);
 
 export const matchResults = pgTable("match_results", {

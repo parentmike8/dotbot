@@ -1,5 +1,5 @@
 import type { WireItemCode } from "@dotbot/protocol";
-import type { BaseLayout, BaseShellId } from "@dotbot/game/types";
+import type { BaseLayout, BaseShellId, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
 import type { Recipe } from "@dotbot/game/content/recipes";
 
 export type PlayerIdentity = {
@@ -41,12 +41,18 @@ export type PlayerBase = {
   learnedBlueprints: string[];
   loadout: WireItemCode[];
   stashCapacity: number;
+  presets: LoadoutPreset[];
 };
 
 export type FabricationResult = {
   base: PlayerBase;
   output: Recipe["output"];
   slotId?: string;
+};
+
+export type PresetApplyResult = {
+  base: PlayerBase;
+  missing: Array<{ itemType: WirePowerupCode; qty: number }>;
 };
 
 export interface Persistence {
@@ -60,6 +66,8 @@ export interface Persistence {
   setBaseShell(token: string, shell: BaseShellId): Promise<PlayerBase | null>;
   setLoadout(token: string, loadout: WireItemCode[]): Promise<PlayerBase | null>;
   fabricate(token: string, recipeId: string, slotId?: string): Promise<FabricationResult | null>;
+  savePresets(token: string, presets: LoadoutPreset[]): Promise<PlayerBase | null>;
+  applyPreset(token: string, presetIndex: number): Promise<PresetApplyResult | null>;
   consumeLoadout(playerId: string): Promise<WireItemCode[]>;
   startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void>;
   recordExtraction(input: {

@@ -19,6 +19,11 @@ export type PowerupType = "health" | "radar" | "dashOvercharge" | "incognito";
 /** Compact persistence/wire codes for powerups. Blueprint cargo is excluded. */
 export type WirePowerupCode = "h" | "r" | "d" | "i";
 
+export type LoadoutPreset = {
+  name: string;
+  items: WirePowerupCode[];
+};
+
 export type Item =
   | { kind: "powerup"; type: PowerupType }
   | { kind: "blueprint"; blueprintId: string };

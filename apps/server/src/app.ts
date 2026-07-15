@@ -7,7 +7,7 @@ import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById } from "@dotbot/game/content/recipes";
-import type { BaseLayout } from "@dotbot/game/types";
+import type { BaseLayout, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
 import { createPersistence, type Persistence } from "./db";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
 
@@ -109,6 +109,34 @@ export async function createServer(options: CreateServerOptions = {}) {
     }
   });
 
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { presets?: unknown } }>("/api/base/presets", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const presets = parsePresets(request.body?.presets);
+    if (!presets) return reply.code(400).send({ error: "Presets must be at most three named four-slot powerup templates." });
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
+    const base = await persistence.savePresets(token, presets);
+    if (!base) return reply.code(404).send({ error: "Unknown device token." });
+    return { storageLinked: true, ...base };
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { presetIndex?: unknown } }>("/api/base/presets/apply", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const presetIndex = request.body?.presetIndex;
+    if (!Number.isInteger(presetIndex) || (presetIndex as number) < 0 || (presetIndex as number) > 2) {
+      return reply.code(400).send({ error: "presetIndex must identify one of the three preset slots." });
+    }
+    if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
+    try {
+      const result = await persistence.applyPreset(token, presetIndex as number);
+      if (!result) return reply.code(404).send({ error: "Unknown device token." });
+      return { storageLinked: true, ...result.base, missing: result.missing };
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
+  });
+
   if (process.env.NODE_ENV === "production") {
     await app.register(fastifyStatic, {
       root: fileURLToPath(new URL("../../client/dist", import.meta.url)),
@@ -189,6 +217,24 @@ function parseBaseLayout(value: unknown): BaseLayout | null {
 function parseLoadout(value: unknown): WireItemCode[] | null {
   if (!Array.isArray(value) || value.length > 4) return null;
   return value.every((code) => code === "h" || code === "r" || code === "d" || code === "i") ? value as WireItemCode[] : null;
+}
+
+function parsePresets(value: unknown): LoadoutPreset[] | null {
+  if (!Array.isArray(value) || value.length > 3) return null;
+  const presets: LoadoutPreset[] = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+    const raw = candidate as { name?: unknown; items?: unknown };
+    const name = typeof raw.name === "string" ? raw.name.trim().replace(/\s+/g, " ").slice(0, 24) : "";
+    if (!name || !Array.isArray(raw.items) || raw.items.length > 4) return null;
+    if (!raw.items.every(isWirePowerupCode)) return null;
+    presets.push({ name, items: raw.items as WirePowerupCode[] });
+  }
+  return presets;
+}
+
+function isWirePowerupCode(value: unknown): value is WirePowerupCode {
+  return value === "h" || value === "r" || value === "d" || value === "i";
 }
 
 function errorMessage(error: unknown): string {

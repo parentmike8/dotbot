@@ -25,13 +25,15 @@ export class NoopPersistence implements Persistence {
   }
 
   async getBase() {
-    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40 };
+    return { shell: DEFAULT_BASE_SHELL, layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40, presets: [] };
   }
 
   async saveBaseLayout(_token: string, layout: BaseLayout): Promise<BaseLayout> { return layout; }
   async setBaseShell(): Promise<null> { return null; }
   async setLoadout(): Promise<null> { return null; }
   async fabricate(): Promise<null> { return null; }
+  async savePresets(): Promise<null> { return null; }
+  async applyPreset(): Promise<null> { return null; }
   async consumeLoadout(): Promise<WireItemCode[]> { return []; }
 
   async startMatch(): Promise<void> {}

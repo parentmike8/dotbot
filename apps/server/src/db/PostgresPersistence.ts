@@ -3,7 +3,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { BASE_SLOT_DEFS, DEFAULT_BASE_SHELL, isObjectAllowedInSlot, starterBaseLayout, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById } from "@dotbot/game/content/recipes";
-import type { BaseLayout, BaseShellId } from "@dotbot/game/types";
+import type { BaseLayout, BaseShellId, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import type {
@@ -108,7 +108,7 @@ export class PostgresPersistence implements Persistence {
         .from(stashItems).where(eq(stashItems.playerId, identity.playerId)).groupBy(stashItems.itemType),
       this.db.select({ blueprintId: learnedBlueprints.blueprintId })
         .from(learnedBlueprints).where(eq(learnedBlueprints.playerId, identity.playerId)),
-      this.db.select({ loadout: players.loadout, baseShell: players.baseShell })
+      this.db.select({ loadout: players.loadout, baseShell: players.baseShell, presets: players.presets })
         .from(players).where(eq(players.id, identity.playerId)).limit(1),
     ]);
     return {
@@ -118,6 +118,7 @@ export class PostgresPersistence implements Persistence {
       learnedBlueprints: learned.map((row) => row.blueprintId),
       loadout: player[0]?.loadout ?? [],
       stashCapacity: layout.filter((row) => row.objectKind === "locker").length * 20,
+      presets: player[0]?.presets ?? [],
     };
   }
 
@@ -245,6 +246,47 @@ export class PostgresPersistence implements Persistence {
     if (!fabrication) return null;
     const base = await this.getBase(token);
     return base ? { base, ...fabrication } : null;
+  }
+
+  async savePresets(token: string, presets: LoadoutPreset[]) {
+    const updated = await this.db.update(players).set({ presets })
+      .where(eq(players.deviceTokenHash, hashToken(token))).returning({ id: players.id });
+    if (updated.length === 0) return null;
+    return this.getBase(token);
+  }
+
+  async applyPreset(token: string, presetIndex: number) {
+    const tokenHash = hashToken(token);
+    const missing = await this.db.transaction(async (tx) => {
+      const [player] = await tx.select({ id: players.id, loadout: players.loadout, presets: players.presets })
+        .from(players).where(eq(players.deviceTokenHash, tokenHash)).limit(1).for("update");
+      if (!player) return null;
+      const preset = player.presets[presetIndex];
+      if (!preset) throw new Error("Unknown loadout preset.");
+      if (player.loadout.length > 0) {
+        await tx.insert(stashItems).values(player.loadout.map((itemType) => ({ playerId: player.id, itemType, qty: 1 })));
+      }
+      const rows = await tx.select({ id: stashItems.id, itemType: stashItems.itemType, qty: stashItems.qty })
+        .from(stashItems).where(eq(stashItems.playerId, player.id)).orderBy(stashItems.acquiredAt).for("update");
+      const applied: WireItemCode[] = [];
+      const missingCounts = new Map<WirePowerupCode, number>();
+      for (const itemType of preset.items) {
+        const row = rows.find((candidate) => candidate.itemType === itemType && candidate.qty > 0);
+        if (!row) {
+          missingCounts.set(itemType, (missingCounts.get(itemType) ?? 0) + 1);
+          continue;
+        }
+        row.qty -= 1;
+        if (row.qty === 0) await tx.delete(stashItems).where(eq(stashItems.id, row.id));
+        else await tx.update(stashItems).set({ qty: row.qty }).where(eq(stashItems.id, row.id));
+        applied.push(itemType);
+      }
+      await tx.update(players).set({ loadout: applied }).where(eq(players.id, player.id));
+      return [...missingCounts].map(([itemType, qty]) => ({ itemType, qty }));
+    });
+    if (!missing) return null;
+    const base = await this.getBase(token);
+    return base ? { base, missing } : null;
   }
 
   async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void> {

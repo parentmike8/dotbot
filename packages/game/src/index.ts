@@ -28,6 +28,7 @@ export type {
   GameConfig,
   GameSnapshot,
   InputCommand,
+  LoadoutPreset,
   MapDocument,
   PlacementSlot,
   SimEvent,
