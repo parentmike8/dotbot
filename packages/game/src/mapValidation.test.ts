@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
-import { BASE_SHELL_IDS, createBaseMap, starterBaseLayout } from "./content/base";
+import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, starterBaseLayout, validateBaseLayout } from "./content/base";
 import type { BaseLayout } from "./types";
 import { collisionLayers, isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
@@ -299,6 +299,29 @@ const maximalBaseLayout: BaseLayout = {
   "floor-ne": "serverRack",
   "floor-south": "workbench",
 };
+
+describe("canonical base slot roster", () => {
+  it("keeps ten legacy ground slots unchanged and adds exactly six canonical F1 slots", () => {
+    expect(BASE_GROUND_SLOT_DEFS.map(({ id, zone }) => ({ id, zone }))).toEqual([
+      { id: "wall-nw", zone: "wall" }, { id: "wall-n", zone: "wall" }, { id: "wall-ne", zone: "wall" },
+      { id: "wall-east", zone: "wall" }, { id: "wall-west", zone: "wall" }, { id: "wall-se", zone: "wall" },
+      { id: "floor-nw", zone: "floor" }, { id: "floor-center", zone: "floor" },
+      { id: "floor-ne", zone: "floor" }, { id: "floor-south", zone: "floor" },
+    ]);
+    expect(BASE_UPPER_SLOT_DEFS.map(({ id, zone, floor }) => ({ id, zone, floor }))).toEqual([
+      { id: "up-wall-a", zone: "wall", floor: "F1" }, { id: "up-wall-b", zone: "wall", floor: "F1" },
+      { id: "up-wall-c", zone: "wall", floor: "F1" }, { id: "up-wall-d", zone: "wall", floor: "F1" },
+      { id: "up-floor-a", zone: "floor", floor: "F1" }, { id: "up-floor-b", zone: "floor", floor: "F1" },
+    ]);
+    expect(BASE_SLOT_DEFS).toHaveLength(16);
+  });
+
+  it("rejects F1 layout rows until expansion ownership is supplied", () => {
+    expect(() => validateBaseLayout({ "up-wall-a": "locker" })).toThrow(/requires expansion-secondFloor/);
+    expect(() => createBaseMap({ ...starterBaseLayout, "up-wall-a": "locker" })).toThrow(/requires expansion-secondFloor/);
+    expect(() => validateBaseLayout({ "up-wall-a": "locker" }, { expanded: true })).not.toThrow();
+  });
+});
 
 describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map validation (%s shell)", (shellId) => {
   const map = createBaseMap(maximalBaseLayout, shellId);

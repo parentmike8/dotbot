@@ -79,17 +79,26 @@ export function isBaseShellId(value: unknown): value is BaseShellId {
  * compass positions; each shell decides where its "wall-nw" physically sits.
  */
 export const BASE_SLOT_DEFS = [
-  { id: "wall-nw", zone: "wall" },
-  { id: "wall-n", zone: "wall" },
-  { id: "wall-ne", zone: "wall" },
-  { id: "wall-east", zone: "wall" },
-  { id: "wall-west", zone: "wall" },
-  { id: "wall-se", zone: "wall" },
-  { id: "floor-nw", zone: "floor" },
-  { id: "floor-center", zone: "floor" },
-  { id: "floor-ne", zone: "floor" },
-  { id: "floor-south", zone: "floor" },
-] as const satisfies ReadonlyArray<{ id: string; zone: "wall" | "floor" }>;
+  { id: "wall-nw", zone: "wall", floor: "GROUND" },
+  { id: "wall-n", zone: "wall", floor: "GROUND" },
+  { id: "wall-ne", zone: "wall", floor: "GROUND" },
+  { id: "wall-east", zone: "wall", floor: "GROUND" },
+  { id: "wall-west", zone: "wall", floor: "GROUND" },
+  { id: "wall-se", zone: "wall", floor: "GROUND" },
+  { id: "floor-nw", zone: "floor", floor: "GROUND" },
+  { id: "floor-center", zone: "floor", floor: "GROUND" },
+  { id: "floor-ne", zone: "floor", floor: "GROUND" },
+  { id: "floor-south", zone: "floor", floor: "GROUND" },
+  { id: "up-wall-a", zone: "wall", floor: "F1" },
+  { id: "up-wall-b", zone: "wall", floor: "F1" },
+  { id: "up-wall-c", zone: "wall", floor: "F1" },
+  { id: "up-wall-d", zone: "wall", floor: "F1" },
+  { id: "up-floor-a", zone: "floor", floor: "F1" },
+  { id: "up-floor-b", zone: "floor", floor: "F1" },
+] as const satisfies ReadonlyArray<{ id: string; zone: "wall" | "floor"; floor: "GROUND" | "F1" }>;
+
+export const BASE_GROUND_SLOT_DEFS = BASE_SLOT_DEFS.filter((slot) => slot.floor === "GROUND");
+export const BASE_UPPER_SLOT_DEFS = BASE_SLOT_DEFS.filter((slot) => slot.floor === "F1");
 
 type BaseSlotId = (typeof BASE_SLOT_DEFS)[number]["id"];
 
@@ -114,6 +123,7 @@ export type BaseShellDef = {
 const SINGLETON_BASE_KINDS = new Set<BaseObjectKind>(["fabricator", "bayConsole", "planningTable", "repairBench"]);
 
 const SLOT_ZONES = new Map<string, "wall" | "floor">(BASE_SLOT_DEFS.map((def) => [def.id, def.zone]));
+const SLOT_FLOORS = new Map<string, "GROUND" | "F1">(BASE_SLOT_DEFS.map((def) => [def.id, def.floor]));
 
 // ---------------------------------------------------------------------------
 // Shell: WORKSHOP — L-shaped work hall with a south wing and a recessed
@@ -344,12 +354,13 @@ export function isObjectAllowedInSlot(kind: BaseObjectKind, slot: Pick<Placement
 }
 
 /** Shell-independent: every shell exposes the identical slot roster. */
-export function validateBaseLayout(layout: BaseLayout): void {
+export function validateBaseLayout(layout: BaseLayout, options: { expanded?: boolean } = {}): void {
   const seenObjects = new Set<BaseObjectKind>();
 
   for (const [slotId, kind] of Object.entries(layout)) {
     const zone = SLOT_ZONES.get(slotId);
     if (!zone) throw new Error(`Unknown base placement slot: ${slotId}`);
+    if (SLOT_FLOORS.get(slotId) === "F1" && !options.expanded) throw new Error(`Base placement slot ${slotId} requires expansion-secondFloor.`);
     if (!isBaseObjectKind(kind)) throw new Error(`Unknown base object kind: ${String(kind)}`);
     if (!isObjectAllowedInSlot(kind, { zone })) throw new Error(`${kind} cannot be placed in ${zone} slot ${slotId}`);
     if (SINGLETON_BASE_KINDS.has(kind) && seenObjects.has(kind)) throw new Error(`Base layout contains duplicate ${kind}`);
@@ -363,8 +374,8 @@ export function validateBaseLayout(layout: BaseLayout): void {
  * documents. Shells differ ONLY in geometry: the slot roster, capacities, and
  * rules are identical across all of them.
  */
-export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT_BASE_SHELL): MapDocument {
-  validateBaseLayout(layout);
+export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT_BASE_SHELL, options: { expanded?: boolean } = {}): MapDocument {
+  validateBaseLayout(layout, options);
   const shell = baseShellDef(shellId);
   const objects = shell.slots.flatMap((slot) => {
     const kind = layout[slot.id];
@@ -413,7 +424,12 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
       bays: [null, null, null, null],
       hold: [],
     }],
-    placementSlots: shell.slots.map((slot) => ({ id: slot.id, zone: SLOT_ZONES.get(slot.id)!, rect: { ...slot.rect } })),
+    placementSlots: shell.slots.map((slot) => ({
+      id: slot.id,
+      zone: SLOT_ZONES.get(slot.id)!,
+      floor: SLOT_FLOORS.get(slot.id)!,
+      rect: { ...slot.rect },
+    })),
   };
 }
 

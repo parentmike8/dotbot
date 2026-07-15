@@ -183,6 +183,8 @@ export type PlacementSlot = {
   id: string;
   rect: Rect;
   zone: "wall" | "floor";
+  /** Architectural floor that owns this marker and any placed object. */
+  floor: "GROUND" | "F1";
 };
 
 /** Sparse by design: omitted slot ids render as empty placement markers. */
