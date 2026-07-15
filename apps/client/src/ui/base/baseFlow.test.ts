@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createBaseMap, starterBaseLayout } from "@dotbot/game/content/base";
+import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import { selectClientSurface } from "../../routing";
 import { advanceBaseChannel, findBaseTarget } from "./baseFlow";
 
@@ -31,5 +32,20 @@ describe("base boot and deployment seams", () => {
     const moved = advanceBaseChannel(entered.state, target, { x: position.x + 4, y: position.y }, 1100);
     expect(moved.progress).toBe(0);
     expect(moved.completed).toBeNull();
+  });
+
+  it("resolves objects and empty slots only from the bot's active base floor", () => {
+    const map = createBaseMap({ ...starterBaseLayout, "up-wall-a": "locker" }, "workshop", { expanded: true });
+    const groundObject = map.buildings[0].floors[0].objects.find((object) => object.kind === "fabricator")!;
+    const upperObject = map.buildings[0].floors[1].objects.find((object) => object.slotId === "up-wall-a")!;
+    Object.assign(upperObject, { x: groundObject.x, y: groundObject.y, w: groundObject.w, h: groundObject.h });
+    const position = { x: groundObject.x + groundObject.w / 2, y: groundObject.y + groundObject.h / 2 };
+
+    expect(findBaseTarget(map, position, OUTDOOR_FLOOR_ID)).toMatchObject({ type: "object", object: { kind: "fabricator" } });
+    expect(findBaseTarget(map, position, "player-base:F1")).toMatchObject({ type: "object", object: { kind: "locker", slotId: "up-wall-a" } });
+
+    const deployment = map.extractionPoints[0].rect;
+    const threshold = { x: deployment.x + deployment.w / 2, y: deployment.y + deployment.h / 2 };
+    expect(findBaseTarget(map, threshold, "player-base:F1")?.type).not.toBe("deployment");
   });
 });

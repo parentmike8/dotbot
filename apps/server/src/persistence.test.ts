@@ -344,6 +344,50 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     await app.close();
   });
 
+  it("purchases the second floor atomically, rejects repeats and unauthorized F1 layouts, and counts F1 lockers", async () => {
+    await sql!`truncate table base_upgrades, base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
+    process.env.NODE_ENV = "test";
+    const { app } = await createServer({ databaseUrl });
+    const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Expansion Pilot" } })).json<{ playerId: string; token: string }>();
+    const headers = { "x-device-token": account.token };
+    const f1Layout = { ...starterBaseLayout, "up-wall-a": "locker" } satisfies BaseLayout;
+
+    const unauthorized = await app.inject({ method: "POST", url: "/api/base/layout", headers, payload: { layout: f1Layout } });
+    expect(unauthorized.statusCode).toBe(409);
+    expect(unauthorized.json<{ error: string }>().error).toMatch(/requires expansion-secondFloor/i);
+    expect((await app.inject({ method: "GET", url: "/api/base", headers })).json<{ upgrades: string[] }>().upgrades).toEqual([]);
+
+    await sql!`insert into hold_items(player_id, item_type, qty) values
+      (${account.playerId}, 'h', 6), (${account.playerId}, 'r', 6), (${account.playerId}, 'd', 6), (${account.playerId}, 'i', 6)`;
+    const purchased = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "expansion-secondFloor" } });
+    expect(purchased.statusCode).toBe(200);
+    expect(purchased.json<{ upgrades: string[] }>().upgrades).toEqual(["secondFloor"]);
+    expect(await stashTotals(account.playerId)).toEqual({ h: 0, r: 0, d: 0, i: 0 });
+    expect((await sql!<Array<{ count: number }>>`select count(*)::int as count from base_upgrades where player_id = ${account.playerId} and upgrade_id = 'secondFloor'`)[0].count).toBe(1);
+
+    const repeated = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "expansion-secondFloor" } });
+    expect(repeated.statusCode).toBe(409);
+    expect(repeated.json<{ error: string }>().error).toMatch(/already owned/i);
+    expect(await stashTotals(account.playerId)).toEqual({ h: 0, r: 0, d: 0, i: 0 });
+
+    await sql!`insert into learned_blueprints(player_id, blueprint_id) values (${account.playerId}, 'locker')`;
+    await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'r', 1), (${account.playerId}, 'd', 1)`;
+    const locker = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "furniture-locker", slotId: "up-wall-a" } });
+    expect(locker.statusCode).toBe(200);
+    expect(locker.json<{ layout: BaseLayout; stashCapacity: number }>().layout["up-wall-a"]).toBe("locker");
+    expect(locker.json<{ stashCapacity: number }>().stashCapacity).toBe(60);
+
+    const short = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Short Pilot" } })).json<{ playerId: string; token: string }>();
+    await sql!`insert into hold_items(player_id, item_type, qty) values
+      (${short.playerId}, 'h', 5), (${short.playerId}, 'r', 6), (${short.playerId}, 'd', 6), (${short.playerId}, 'i', 6)`;
+    const before = await stashTotals(short.playerId);
+    const insufficient = await app.inject({ method: "POST", url: "/api/base/fabricate", headers: { "x-device-token": short.token }, payload: { recipeId: "expansion-secondFloor" } });
+    expect(insufficient.statusCode).toBe(409);
+    expect(await stashTotals(short.playerId)).toEqual(before);
+    expect((await sql!<Array<{ count: number }>>`select count(*)::int as count from base_upgrades where player_id = ${short.playerId}`)[0].count).toBe(0);
+    await app.close();
+  });
+
   it("enforces contract flow rules and completes payouts inside extraction banking", async () => {
     await sql!`truncate table contracts, base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
     process.env.NODE_ENV = "test";
