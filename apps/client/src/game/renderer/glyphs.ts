@@ -517,6 +517,17 @@ function workbenchGlyph(g: Graphics, o: MapObject): void {
   }
 }
 
+function repairBenchGlyph(g: Graphics, o: MapObject): void {
+  body(g, o.x, o.y, o.w, o.h, T3, 2);
+  const cx = o.x + o.w / 2;
+  const cy = o.y + o.h / 2;
+  const arm = Math.min(o.w, o.h) * 0.18;
+  line(g, cx - arm, cy, cx + arm, cy, T4);
+  line(g, cx, cy - arm, cx, cy + arm, T4);
+  const inset = Math.max(4, Math.min(o.w, o.h) * 0.12);
+  g.rect(o.x + inset, o.y + inset, o.w - inset * 2, o.h - inset * 2).stroke(T5);
+}
+
 function fabricatorGlyph(g: Graphics, o: MapObject): void {
   body(g, o.x, o.y, o.w, o.h, T3, 2);
   const cx = o.x + o.w / 2;
@@ -813,6 +824,7 @@ export const glyphs: Record<ObjectKind, GlyphFn> = {
   fabricator: fabricatorGlyph,
   bayConsole: bayConsoleGlyph,
   planningTable: planningTableGlyph,
+  repairBench: repairBenchGlyph,
 };
 
 export function drawObject(g: Graphics, object: MapObject): void {

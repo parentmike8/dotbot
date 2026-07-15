@@ -45,6 +45,7 @@ const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "fabricator",
   "bayConsole",
   "planningTable",
+  "repairBench",
 ]);
 
 export function isSolidObject(object: MapObject): boolean {

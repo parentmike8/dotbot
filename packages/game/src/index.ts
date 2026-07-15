@@ -3,6 +3,7 @@ export { defaultGameConfig } from "./config";
 export { downtownMap } from "./content/downtown";
 export {
   BASE_OBJECT_KINDS,
+  BASE_KIND_ZONES,
   BASE_SHELL_IDS,
   BASE_SLOT_DEFS,
   DEFAULT_BASE_SHELL,
@@ -14,6 +15,8 @@ export {
   starterBaseLayout,
   validateBaseLayout,
 } from "./content/base";
+export { RECIPES, recipeById } from "./content/recipes";
+export type { Recipe, RecipeCost } from "./content/recipes";
 export type { BaseShellDef } from "./content/base";
 export type {
   BaseLayout,
@@ -29,4 +32,5 @@ export type {
   PlacementSlot,
   SimEvent,
   Vec2,
+  WirePowerupCode,
 } from "./types";

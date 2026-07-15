@@ -18,7 +18,53 @@ import type {
 const MAP_WIDTH = 1000;
 const MAP_HEIGHT = 760;
 
-export const BASE_OBJECT_KINDS = ["fabricator", "locker", "bayConsole", "planningTable"] as const satisfies readonly BaseObjectKind[];
+export const BASE_OBJECT_KINDS = [
+  "fabricator",
+  "bayConsole",
+  "planningTable",
+  "repairBench",
+  "bed",
+  "bench",
+  "bikeRack",
+  "conferenceTable",
+  "cot",
+  "couch",
+  "counter",
+  "desk",
+  "filingCabinet",
+  "fridge",
+  "generator",
+  "locker",
+  "receptionDesk",
+  "serverRack",
+  "shelf",
+  "toolCabinet",
+  "workbench",
+] as const satisfies readonly BaseObjectKind[];
+
+export const BASE_KIND_ZONES: Readonly<Record<BaseObjectKind, readonly ("wall" | "floor")[]>> = {
+  fabricator: ["wall"],
+  bayConsole: ["wall"],
+  repairBench: ["wall"],
+  locker: ["wall"],
+  shelf: ["wall", "floor"],
+  planningTable: ["floor"],
+  bed: ["floor"],
+  bench: ["floor"],
+  bikeRack: ["floor"],
+  conferenceTable: ["floor"],
+  cot: ["floor"],
+  couch: ["floor"],
+  counter: ["floor"],
+  desk: ["floor"],
+  filingCabinet: ["floor"],
+  fridge: ["floor"],
+  generator: ["floor"],
+  receptionDesk: ["floor"],
+  serverRack: ["floor"],
+  toolCabinet: ["floor"],
+  workbench: ["floor"],
+};
 
 export const BASE_SHELL_IDS = ["workshop", "hangar", "berths"] as const satisfies readonly BaseShellId[];
 
@@ -65,7 +111,7 @@ export type BaseShellDef = {
   slots: ShellSlot[];
 };
 
-const wallKinds = new Set<BaseObjectKind>(["fabricator", "locker", "bayConsole"]);
+const SINGLETON_BASE_KINDS = new Set<BaseObjectKind>(["fabricator", "bayConsole", "planningTable", "repairBench"]);
 
 const SLOT_ZONES = new Map<string, "wall" | "floor">(BASE_SLOT_DEFS.map((def) => [def.id, def.zone]));
 
@@ -292,7 +338,7 @@ export function isBaseObjectKind(value: unknown): value is BaseObjectKind {
 }
 
 export function isObjectAllowedInSlot(kind: BaseObjectKind, slot: Pick<PlacementSlot, "zone">): boolean {
-  return slot.zone === "wall" ? wallKinds.has(kind) : kind === "planningTable";
+  return BASE_KIND_ZONES[kind].includes(slot.zone);
 }
 
 /** Shell-independent: every shell exposes the identical slot roster. */
@@ -304,7 +350,7 @@ export function validateBaseLayout(layout: BaseLayout): void {
     if (!zone) throw new Error(`Unknown base placement slot: ${slotId}`);
     if (!isBaseObjectKind(kind)) throw new Error(`Unknown base object kind: ${String(kind)}`);
     if (!isObjectAllowedInSlot(kind, { zone })) throw new Error(`${kind} cannot be placed in ${zone} slot ${slotId}`);
-    if (kind !== "locker" && seenObjects.has(kind)) throw new Error(`Base layout contains duplicate ${kind}`);
+    if (SINGLETON_BASE_KINDS.has(kind) && seenObjects.has(kind)) throw new Error(`Base layout contains duplicate ${kind}`);
     seenObjects.add(kind);
   }
 }

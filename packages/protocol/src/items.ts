@@ -1,6 +1,7 @@
-import type { Item } from "@dotbot/game/types";
+import type { Item, WirePowerupCode } from "@dotbot/game/types";
 
-export type WireItemCode = "h" | "r" | "d" | "i" | `b:${string}`;
+export type { WirePowerupCode } from "@dotbot/game/types";
+export type WireItemCode = WirePowerupCode | `b:${string}`;
 
 export function itemToCode(item: Item): WireItemCode {
   if (item.kind === "blueprint") return `b:${item.blueprintId}`;

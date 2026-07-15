@@ -16,6 +16,9 @@ export type Controller = "human" | "ai" | "frozen";
 
 export type PowerupType = "health" | "radar" | "dashOvercharge" | "incognito";
 
+/** Compact persistence/wire codes for powerups. Blueprint cargo is excluded. */
+export type WirePowerupCode = "h" | "r" | "d" | "i";
+
 export type Item =
   | { kind: "powerup"; type: PowerupType }
   | { kind: "blueprint"; blueprintId: string };
@@ -120,10 +123,32 @@ export type ObjectKind =
   | "rug"
   | "fabricator"
   | "bayConsole"
-  | "planningTable";
+  | "planningTable"
+  | "repairBench";
 
 /** Furniture that can be installed in the persistent player base. */
-export type BaseObjectKind = "fabricator" | "locker" | "bayConsole" | "planningTable";
+export type BaseObjectKind =
+  | "fabricator"
+  | "bayConsole"
+  | "planningTable"
+  | "repairBench"
+  | "bed"
+  | "bench"
+  | "bikeRack"
+  | "conferenceTable"
+  | "cot"
+  | "couch"
+  | "counter"
+  | "desk"
+  | "filingCabinet"
+  | "fridge"
+  | "generator"
+  | "locker"
+  | "receptionDesk"
+  | "serverRack"
+  | "shelf"
+  | "toolCabinet"
+  | "workbench";
 
 /**
  * Purely cosmetic floor-plan variants of the home base. Every shell exposes
