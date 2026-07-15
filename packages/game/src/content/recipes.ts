@@ -20,8 +20,6 @@ const furnitureCost: RecipeCost[] = [
 
 const furnitureKinds = [
   "bed",
-  "bench",
-  "bikeRack",
   "conferenceTable",
   "cot",
   "couch",

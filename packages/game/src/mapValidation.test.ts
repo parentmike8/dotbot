@@ -286,19 +286,18 @@ describe("downtown map validation", () => {
   });
 });
 
-/**
- * Worst-case furnishing: every wall slot filled plus the planning table.
- * (Floor slots accept only the singleton planning table today, so this is
- * the maximum possible solid load in any shell.)
- */
+/** Richest solid furnishing: every shared slot is occupied with M6 kinds. */
 const maximalBaseLayout: BaseLayout = {
   "wall-nw": "fabricator",
   "wall-n": "locker",
   "wall-ne": "locker",
   "wall-east": "bayConsole",
-  "wall-west": "locker",
-  "wall-se": "locker",
+  "wall-west": "repairBench",
+  "wall-se": "shelf",
+  "floor-nw": "bed",
   "floor-center": "planningTable",
+  "floor-ne": "serverRack",
+  "floor-south": "workbench",
 };
 
 describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map validation (%s shell)", (shellId) => {
@@ -345,5 +344,6 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map val
     expect(() => createBaseMap({ mystery: "locker" }, shellId)).toThrow(/Unknown base placement slot/);
     expect(() => createBaseMap({ "wall-n": "not-real" } as never, shellId)).toThrow(/Unknown base object kind/);
     expect(() => createBaseMap({ "floor-center": "fabricator" }, shellId)).toThrow(/cannot be placed in floor slot/);
+    expect(() => createBaseMap({ "wall-west": "repairBench", "wall-se": "repairBench" }, shellId)).toThrow(/duplicate repairBench/);
   });
 });

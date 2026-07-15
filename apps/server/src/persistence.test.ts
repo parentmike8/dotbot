@@ -277,6 +277,111 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     diedRoom.dispose();
     await app.close();
   }, 20_000);
+
+  it("fabricates powerups and blueprint furniture atomically", async () => {
+    await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
+    process.env.NODE_ENV = "test";
+    const { app } = await createServer({ databaseUrl });
+    const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Fabricator Pilot" } })).json<{ playerId: string; token: string }>();
+    const headers = { "x-device-token": account.token };
+
+    const unlearned = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "furniture-shelf", slotId: "floor-nw" } });
+    expect(unlearned.statusCode).toBe(409);
+    expect(unlearned.json<{ error: string }>().error).toMatch(/REQUIRES BLUEPRINT: shelf/i);
+    expect((await baseRowCounts(account.playerId))).toEqual({ layout: 5, stash: 0 });
+
+    await sql!`insert into learned_blueprints(player_id, blueprint_id) values (${account.playerId}, 'shelf'), (${account.playerId}, 'workbench')`;
+    const insufficient = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "furniture-shelf", slotId: "floor-nw" } });
+    expect(insufficient.statusCode).toBe(409);
+    expect((await baseRowCounts(account.playerId))).toEqual({ layout: 5, stash: 0 });
+
+    await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'r', 10), (${account.playerId}, 'd', 10)`;
+    expect((await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "furniture-shelf", slotId: "wall-n" } })).statusCode).toBe(409);
+    expect((await stashTotals(account.playerId))).toMatchObject({ r: 10, d: 10 });
+    expect((await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "furniture-repairBench", slotId: "floor-nw" } })).statusCode).toBe(409);
+    expect((await stashTotals(account.playerId))).toMatchObject({ r: 10, d: 10 });
+
+    const shelf = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "furniture-shelf", slotId: "floor-nw" } });
+    expect(shelf.statusCode).toBe(200);
+    expect(shelf.json<{ layout: BaseLayout }>().layout["floor-nw"]).toBe("shelf");
+    expect((await stashTotals(account.playerId))).toMatchObject({ r: 9, d: 9 });
+
+    const healthBlocked = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "convert-health" } });
+    expect(healthBlocked.statusCode).toBe(409);
+    expect(healthBlocked.json<{ error: string }>().error).toMatch(/REQUIRES: REPAIR BENCH/);
+    expect((await stashTotals(account.playerId))).toMatchObject({ r: 9, d: 9, h: 0 });
+
+    const bench = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "furniture-repairBench", slotId: "wall-west" } });
+    expect(bench.statusCode).toBe(200);
+    expect(bench.json<{ layout: BaseLayout }>().layout["wall-west"]).toBe("repairBench");
+    expect((await stashTotals(account.playerId))).toMatchObject({ r: 7, d: 8 });
+    const health = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "convert-health" } });
+    expect(health.statusCode).toBe(200);
+    expect((await stashTotals(account.playerId))).toMatchObject({ r: 5, d: 8, h: 1 });
+    expect((await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "not-a-recipe" } })).statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("banks extraction items in fragment-first stash-cap order and preserves existing over-cap data", async () => {
+    await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
+    process.env.NODE_ENV = "test";
+    const { app, persistence } = await createServer({ databaseUrl });
+    const account = await persistence.registerPlayer("Capacity Pilot");
+    await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'h', 39)`;
+    const matchId = crypto.randomUUID();
+    await persistence.startMatch({ matchId, roomCode: "CAP1", mapId: "downtown", startedAt: new Date() });
+    const banked = await persistence.recordExtraction({
+      matchId,
+      playerId: account.playerId,
+      blueprintLearningThreshold: 3,
+      manifest: { reason: "extracted", keptItems: ["r", "d", "b:shelf"], lostItems: [], learnedBlueprints: [] },
+    });
+    expect(banked.manifest).toEqual({ reason: "extracted", keptItems: ["b:shelf"], lostItems: ["r", "d"], learnedBlueprints: [] });
+    expect((await stashTotals(account.playerId))).toMatchObject({ h: 39, "b:shelf": 1, r: 0, d: 0 });
+    const [participant] = await sql!<Array<{ manifest: { keptItems: string[]; lostItems: string[] } }>>`
+      select extracted_manifest as manifest from match_participants where match_id = ${matchId} and player_id = ${account.playerId}
+    `;
+    expect(participant.manifest).toMatchObject({ keptItems: ["b:shelf"], lostItems: ["r", "d"] });
+
+    await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'h', 2)`;
+    const overCapBefore = Number((await sql!<Array<{ qty: number }>>`select sum(qty)::int as qty from hold_items where player_id = ${account.playerId}`)[0].qty);
+    const secondMatchId = crypto.randomUUID();
+    await persistence.startMatch({ matchId: secondMatchId, roomCode: "CAP2", mapId: "downtown", startedAt: new Date() });
+    const overCap = await persistence.recordExtraction({
+      matchId: secondMatchId,
+      playerId: account.playerId,
+      blueprintLearningThreshold: 3,
+      manifest: { reason: "extracted", keptItems: ["i"], lostItems: [], learnedBlueprints: [] },
+    });
+    expect(overCap.manifest.lostItems).toEqual(["i"]);
+    expect(Number((await sql!<Array<{ qty: number }>>`select sum(qty)::int as qty from hold_items where player_id = ${account.playerId}`)[0].qty)).toBe(overCapBefore);
+    await app.close();
+  });
+
+  it("round-trips three presets and partially applies available stock", async () => {
+    await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
+    process.env.NODE_ENV = "test";
+    const { app } = await createServer({ databaseUrl });
+    const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Preset Pilot" } })).json<{ playerId: string; token: string }>();
+    const headers = { "x-device-token": account.token };
+    await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'h', 1), (${account.playerId}, 'r', 1)`;
+    const presets = [{ name: "Scout", items: ["h", "r", "r", "i"] }];
+    const saved = await app.inject({ method: "POST", url: "/api/base/presets", headers, payload: { presets } });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json<{ presets: unknown[] }>().presets).toEqual(presets);
+    expect((await app.inject({ method: "GET", url: "/api/base", headers })).json<{ presets: unknown[] }>().presets).toEqual(presets);
+
+    const applied = await app.inject({ method: "POST", url: "/api/base/presets/apply", headers, payload: { presetIndex: 0 } });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json<{ loadout: string[] }>().loadout).toEqual(["h", "r"]);
+    expect(applied.json<{ missing: unknown[] }>().missing).toEqual([{ itemType: "r", qty: 1 }, { itemType: "i", qty: 1 }]);
+    expect(await stashTotals(account.playerId)).toMatchObject({ h: 0, r: 0 });
+    const appliedAgain = await app.inject({ method: "POST", url: "/api/base/presets/apply", headers, payload: { presetIndex: 0 } });
+    expect(appliedAgain.json<{ loadout: string[] }>().loadout).toEqual(["h", "r"]);
+    expect((await app.inject({ method: "POST", url: "/api/base/presets", headers, payload: { presets: Array.from({ length: 4 }, (_, index) => ({ name: `P${index}`, items: [] })) } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url: "/api/base/presets", headers, payload: { presets: [{ name: "Cargo", items: ["b:shelf"] }] } })).statusCode).toBe(400);
+    await app.close();
+  });
 });
 
 function collectingPeer(id: string): { peer: RoomPeer; messages: ServerMessage[] } {
@@ -295,6 +400,24 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 
 function stashQty(stash: Array<{ itemType: string; qty: number }>, itemType: string): number {
   return stash.find((entry) => entry.itemType === itemType)?.qty ?? 0;
+}
+
+async function baseRowCounts(playerId: string): Promise<{ layout: number; stash: number }> {
+  const [row] = await sql!<Array<{ layout: number; stash: number }>>`
+    select
+      (select count(*)::int from base_layouts where player_id = ${playerId}) as layout,
+      (select coalesce(sum(qty), 0)::int from hold_items where player_id = ${playerId}) as stash
+  `;
+  return row;
+}
+
+async function stashTotals(playerId: string): Promise<Record<string, number>> {
+  const rows = await sql!<Array<{ itemType: string; qty: number }>>`
+    select item_type as "itemType", sum(qty)::int as qty from hold_items where player_id = ${playerId} group by item_type
+  `;
+  const totals: Record<string, number> = { h: 0, r: 0, d: 0, i: 0 };
+  for (const row of rows) totals[row.itemType] = Number(row.qty);
+  return totals;
 }
 
 async function connect(url: string, clients: WebSocket[]): Promise<Inbox> {

@@ -301,7 +301,9 @@ function berthsShell(): BaseShellDef {
       { id: "floor-nw", rect: { x: 270, y: 190, w: 100, h: 68 }, facing: "S" },
       { id: "floor-center", rect: { x: 450, y: 150, w: 108, h: 72 }, facing: "S" },
       { id: "floor-ne", rect: { x: 630, y: 190, w: 100, h: 68 }, facing: "S" },
-      { id: "floor-south", rect: { x: 450, y: 286, w: 108, h: 72 }, facing: "S" },
+      // Keep the central corridor and berth approaches clear even when every
+      // slot contains solid fabricated furniture.
+      { id: "floor-south", rect: { x: 650, y: 292, w: 108, h: 72 }, facing: "S" },
     ],
   };
 }
