@@ -300,6 +300,16 @@ const maximalBaseLayout: BaseLayout = {
   "floor-south": "workbench",
 };
 
+const maximalExpandedBaseLayout: BaseLayout = {
+  ...maximalBaseLayout,
+  "up-wall-a": "locker",
+  "up-wall-b": "shelf",
+  "up-wall-c": "locker",
+  "up-wall-d": "shelf",
+  "up-floor-a": "bed",
+  "up-floor-b": "couch",
+};
+
 describe("canonical base slot roster", () => {
   it("keeps ten legacy ground slots unchanged and adds exactly six canonical F1 slots", () => {
     expect(BASE_GROUND_SLOT_DEFS.map(({ id, zone }) => ({ id, zone }))).toEqual([
@@ -368,5 +378,59 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map val
     expect(() => createBaseMap({ "wall-n": "not-real" } as never, shellId)).toThrow(/Unknown base object kind/);
     expect(() => createBaseMap({ "floor-center": "fabricator" }, shellId)).toThrow(/cannot be placed in floor slot/);
     expect(() => createBaseMap({ "wall-west": "repairBench", "wall-se": "repairBench" }, shellId)).toThrow(/duplicate repairBench/);
+  });
+});
+
+describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("expanded base map validation (%s shell)", (shellId) => {
+  const map = createBaseMap(maximalExpandedBaseLayout, shellId, { expanded: true });
+
+  it("adds one F1 plan and exposes the identical sixteen-slot roster", () => {
+    expect(map.buildings[0].floors.map((floor) => floor.label)).toEqual(["GROUND", "F1"]);
+    const roster = map.placementSlots!.map(({ id, zone, floor }) => ({ id, zone, floor }));
+    expect(roster).toEqual(BASE_SLOT_DEFS.map(({ id, zone, floor }) => ({ id, zone, floor })));
+    for (const otherId of BASE_SHELL_IDS) {
+      const other = createBaseMap(maximalExpandedBaseLayout, otherId, { expanded: true });
+      expect(other.placementSlots!.map(({ id, zone, floor }) => ({ id, zone, floor }))).toEqual(roster);
+    }
+    expect(createBaseMap(starterBaseLayout, shellId).placementSlots).toHaveLength(10);
+  });
+
+  it("pairs one walk-through stair across GROUND and F1", () => {
+    const [ground, upper] = map.buildings[0].floors;
+    expect(ground.stairs).toHaveLength(1);
+    expect(upper.stairs).toHaveLength(1);
+    expect(ground.stairs[0]).toMatchObject({ direction: "up", toFloorId: upper.id });
+    expect(upper.stairs[0]).toMatchObject({ direction: "down", toFloorId: ground.id });
+    expect(upper.stairs[0].rect).toEqual(ground.stairs[0].rect);
+  });
+
+  it("keeps all sixteen furnished slots, both stair mouths, and deployment reachable", () => {
+    const worlds = new Map(collectFloors(map).map((world) => [world.floorId, world]));
+    const reachable = new Map([...worlds].map(([floorId, world]) => [floorId, floodReachable(world, map)]));
+
+    for (const slot of map.placementSlots!) {
+      const floorId = slot.floor === "GROUND" ? OUTDOOR_FLOOR_ID : "player-base:F1";
+      const center = { x: slot.rect.x + slot.rect.w / 2, y: slot.rect.y + slot.rect.h / 2 };
+      const interactionReach = Math.hypot(slot.rect.w, slot.rect.h) / 2 + 48;
+      expect(
+        nearestReachableDistance(center, reachable.get(floorId)!, interactionReach, map),
+        `${slot.floor} slot ${slot.id} cannot be approached`,
+      ).toBeLessThanOrEqual(interactionReach);
+    }
+
+    for (const [floorId, world] of worlds) {
+      for (const stair of world.stairs) {
+        const { entry } = stairHalves(stair);
+        const point = { x: entry.x + entry.w / 2, y: entry.y + entry.h / 2 };
+        expect(
+          nearestReachableDistance(point, reachable.get(floorId)!, BOT_RADIUS, map),
+          `stair ${stair.id} entry on ${floorId} cannot be reached`,
+        ).toBeLessThanOrEqual(BOT_RADIUS);
+      }
+    }
+
+    const threshold = map.extractionPoints[0].rect;
+    const center = { x: threshold.x + threshold.w / 2, y: threshold.y + threshold.h / 2 };
+    expect(nearestReachableDistance(center, reachable.get(OUTDOOR_FLOOR_ID)!, BOT_RADIUS, map)).toBeLessThanOrEqual(BOT_RADIUS);
   });
 });

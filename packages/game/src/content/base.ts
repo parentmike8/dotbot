@@ -10,6 +10,7 @@ import type {
   MapObject,
   PlacementSlot,
   Rect,
+  StairLink,
   Vec2,
   WallSegment,
   WindowBand,
@@ -104,6 +105,14 @@ type BaseSlotId = (typeof BASE_SLOT_DEFS)[number]["id"];
 
 type ShellSlot = { id: BaseSlotId; rect: Rect; facing: Facing };
 
+type BaseUpperDef = {
+  walls: WallSegment[];
+  doorways: Doorway[];
+  windows: WindowBand[];
+  slots: ShellSlot[];
+  stairs: { ground: StairLink; upper: StairLink };
+};
+
 export type BaseShellDef = {
   id: BaseShellId;
   /** Title-block name, uppercase by convention. */
@@ -118,6 +127,7 @@ export type BaseShellDef = {
   deployment: Rect;
   spawn: Vec2;
   slots: ShellSlot[];
+  upper: BaseUpperDef;
 };
 
 const SINGLETON_BASE_KINDS = new Set<BaseObjectKind>(["fabricator", "bayConsole", "planningTable", "repairBench"]);
@@ -187,6 +197,31 @@ function workshopShell(): BaseShellDef {
       { id: "floor-ne", rect: { x: 690, y: 180, w: 100, h: 68 }, facing: "S" },
       { id: "floor-south", rect: { x: 240, y: 540, w: 108, h: 72 }, facing: "S" },
     ],
+    upper: {
+      // A west/south mezzanine. The east edge is a low parapet with a wide
+      // break at the stair sightline so the plan reads as a guarded loft.
+      walls: [
+        { id: "ws-up-n", x: 92, y: 260, w: 408, h: 12 },
+        { id: "ws-up-w", x: 92, y: 272, w: 12, h: 416 },
+        { id: "ws-up-s", x: 104, y: 676, w: 384, h: 12 },
+        { id: "ws-up-e-n", x: 488, y: 272, w: 12, h: 108 },
+        { id: "ws-up-e-s", x: 488, y: 500, w: 12, h: 176 },
+      ],
+      doorways: [{ id: "ws-up-rail-break", x: 494, y: 440, width: 120, dir: "v", open: true }],
+      windows: [
+        { id: "ws-up-win-w", x: 98, y: 420, length: 64, dir: "v" },
+        { id: "ws-up-win-s", x: 260, y: 682, length: 64, dir: "h" },
+      ],
+      slots: [
+        { id: "up-wall-a", rect: { x: 124, y: 284, w: 86, h: 38 }, facing: "S" },
+        { id: "up-wall-b", rect: { x: 376, y: 284, w: 86, h: 38 }, facing: "S" },
+        { id: "up-wall-c", rect: { x: 110, y: 500, w: 38, h: 82 }, facing: "E" },
+        { id: "up-wall-d", rect: { x: 444, y: 540, w: 38, h: 82 }, facing: "W" },
+        { id: "up-floor-a", rect: { x: 340, y: 360, w: 108, h: 72 }, facing: "S" },
+        { id: "up-floor-b", rect: { x: 250, y: 560, w: 108, h: 72 }, facing: "S" },
+      ],
+      stairs: stairPair("ws-mezzanine-stair", { x: 220, y: 310, w: 80, h: 160 }, "S"),
+    },
   };
 }
 
@@ -247,6 +282,32 @@ function hangarShell(): BaseShellDef {
       { id: "floor-ne", rect: { x: 700, y: 330, w: 100, h: 68 }, facing: "S" },
       { id: "floor-south", rect: { x: 620, y: 480, w: 108, h: 72 }, facing: "S" },
     ],
+    upper: {
+      // A utility gallery over the north end; the long south parapet leaves
+      // the working bay below visibly double-height.
+      walls: [
+        { id: "hg-up-n", x: 608, y: 60, w: 320, h: 12 },
+        { id: "hg-up-w", x: 608, y: 72, w: 12, h: 348 },
+        { id: "hg-up-e", x: 916, y: 72, w: 12, h: 348 },
+        { id: "hg-up-s-w", x: 620, y: 408, w: 112, h: 12 },
+        { id: "hg-up-s-e", x: 852, y: 408, w: 64, h: 12 },
+      ],
+      doorways: [{ id: "hg-up-gallery-break", x: 792, y: 414, width: 120, dir: "h", open: true }],
+      windows: [
+        { id: "hg-up-win-n1", x: 676, y: 66, length: 64, dir: "h" },
+        { id: "hg-up-win-n2", x: 824, y: 66, length: 64, dir: "h" },
+        { id: "hg-up-win-e", x: 922, y: 180, length: 64, dir: "v" },
+      ],
+      slots: [
+        { id: "up-wall-a", rect: { x: 636, y: 84, w: 86, h: 38 }, facing: "S" },
+        { id: "up-wall-b", rect: { x: 792, y: 84, w: 86, h: 38 }, facing: "S" },
+        { id: "up-wall-c", rect: { x: 626, y: 220, w: 38, h: 82 }, facing: "E" },
+        { id: "up-wall-d", rect: { x: 872, y: 220, w: 38, h: 82 }, facing: "W" },
+        { id: "up-floor-a", rect: { x: 744, y: 170, w: 108, h: 72 }, facing: "S" },
+        { id: "up-floor-b", rect: { x: 680, y: 300, w: 108, h: 72 }, facing: "S" },
+      ],
+      stairs: stairPair("hg-gallery-stair", { x: 790, y: 240, w: 80, h: 160 }, "S"),
+    },
   };
 }
 
@@ -315,6 +376,32 @@ function berthsShell(): BaseShellDef {
       // slot contains solid fabricated furniture.
       { id: "floor-south", rect: { x: 650, y: 292, w: 108, h: 72 }, facing: "S" },
     ],
+    upper: {
+      // The commons repeats above the ground commons; the berth block below
+      // remains single-storey and outside this upper enclosure.
+      walls: [
+        { id: "br-up-n", x: 180, y: 60, w: 640, h: 12 },
+        { id: "br-up-w", x: 180, y: 72, w: 12, h: 306 },
+        { id: "br-up-e", x: 808, y: 72, w: 12, h: 306 },
+        { id: "br-up-s-w", x: 192, y: 366, w: 288, h: 12 },
+        { id: "br-up-s-e", x: 600, y: 366, w: 208, h: 12 },
+      ],
+      doorways: [{ id: "br-up-commons-break", x: 540, y: 372, width: 120, dir: "h", open: true }],
+      windows: [
+        { id: "br-up-win-n1", x: 320, y: 66, length: 64, dir: "h" },
+        { id: "br-up-win-n2", x: 620, y: 66, length: 64, dir: "h" },
+        { id: "br-up-win-e", x: 814, y: 180, length: 64, dir: "v" },
+      ],
+      slots: [
+        { id: "up-wall-a", rect: { x: 230, y: 84, w: 86, h: 38 }, facing: "S" },
+        { id: "up-wall-b", rect: { x: 560, y: 84, w: 86, h: 38 }, facing: "S" },
+        { id: "up-wall-c", rect: { x: 198, y: 180, w: 38, h: 82 }, facing: "E" },
+        { id: "up-wall-d", rect: { x: 764, y: 180, w: 38, h: 82 }, facing: "W" },
+        { id: "up-floor-a", rect: { x: 450, y: 150, w: 108, h: 72 }, facing: "S" },
+        { id: "up-floor-b", rect: { x: 620, y: 270, w: 108, h: 72 }, facing: "S" },
+      ],
+      stairs: stairPair("br-commons-stair", { x: 330, y: 240, w: 80, h: 120 }, "S"),
+    },
   };
 }
 
@@ -377,10 +464,14 @@ export function validateBaseLayout(layout: BaseLayout, options: { expanded?: boo
 export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT_BASE_SHELL, options: { expanded?: boolean } = {}): MapDocument {
   validateBaseLayout(layout, options);
   const shell = baseShellDef(shellId);
-  const objects = shell.slots.flatMap((slot) => {
+  const groundObjects = shell.slots.flatMap((slot) => {
     const kind = layout[slot.id];
     return kind ? [materializeObject(slot, kind)] : [];
   });
+  const upperObjects = options.expanded ? shell.upper.slots.flatMap((slot) => {
+    const kind = layout[slot.id];
+    return kind ? [materializeObject(slot, kind)] : [];
+  }) : [];
   const base: Building = {
     id: "player-base",
     kind: "warehouse",
@@ -392,10 +483,19 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
       walls: shell.walls.map((wall) => ({ ...wall })),
       doorways: shell.doorways.map((doorway) => ({ ...doorway })),
       windows: shell.windows.map((window) => ({ ...window })),
-      objects,
-      stairs: [],
+      objects: groundObjects,
+      stairs: options.expanded ? [{ ...shell.upper.stairs.ground, rect: { ...shell.upper.stairs.ground.rect } }] : [],
       dotSpawns: [],
-    }],
+    }, ...(options.expanded ? [{
+      id: "player-base:F1",
+      label: "F1" as const,
+      walls: shell.upper.walls.map((wall) => ({ ...wall })),
+      doorways: shell.upper.doorways.map((doorway) => ({ ...doorway })),
+      windows: shell.upper.windows.map((window) => ({ ...window })),
+      objects: upperObjects,
+      stairs: [{ ...shell.upper.stairs.upper, rect: { ...shell.upper.stairs.upper.rect } }],
+      dotSpawns: [],
+    }] : [])],
   };
 
   return {
@@ -424,12 +524,19 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
       bays: [null, null, null, null],
       hold: [],
     }],
-    placementSlots: shell.slots.map((slot) => ({
+    placementSlots: [...shell.slots, ...(options.expanded ? shell.upper.slots : [])].map((slot) => ({
       id: slot.id,
       zone: SLOT_ZONES.get(slot.id)!,
       floor: SLOT_FLOORS.get(slot.id)!,
       rect: { ...slot.rect },
     })),
+  };
+}
+
+function stairPair(id: string, rect: Rect, bottom: Facing): BaseUpperDef["stairs"] {
+  return {
+    ground: { id: `${id}-up`, rect: { ...rect }, direction: "up", toFloorId: "player-base:F1", bottom },
+    upper: { id: `${id}-down`, rect: { ...rect }, direction: "down", toFloorId: "player-base:GROUND", bottom },
   };
 }
 
