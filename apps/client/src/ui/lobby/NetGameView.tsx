@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import type { NetSession } from "../../game/session/NetSession";
+import { arrivalSparkline } from "../../game/session/netgraph";
 import { ManifestScreen } from "../ManifestScreen";
 
 type NetGameViewProps = {
@@ -11,7 +12,10 @@ type NetGameViewProps = {
 };
 
 export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "RETURN TO LOBBY" }: NetGameViewProps) {
-  const { hostRef, snapshot, events, runResult, spectating, legendVisible, toggleLegend, queueDash, cycleSpectator, giveUp, selectDownedVerb, plea } = useDotBotGame({ session, spectate: true });
+  const {
+    hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug,
+    legendVisible, toggleLegend, queueDash, cycleSpectator, giveUp, selectDownedVerb, plea,
+  } = useDotBotGame({ session, spectate: true });
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
   const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === session.playerId) ?? false;
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
@@ -50,6 +54,26 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
           </dl>
         ) : null}
       </aside>
+      {debugVisible && snapshot ? (
+        <aside className="debug-panel" aria-label="Debug panel">
+          <div>FPS {snapshot.debug.fps}</div>
+          <div>Tick {snapshot.debug.tickCount}</div>
+          <div>Bodies {snapshot.debug.activeBodies}</div>
+          <div>Dots {snapshot.debug.activeDots}</div>
+          {networkDebug ? (
+            <div className="netgraph" aria-label="Network graph">
+              <div className="netgraph-spark" aria-label="Snapshot inter-arrival sparkline">
+                {arrivalSparkline(networkDebug.snapshotIntervalsMs)}
+              </div>
+              <div>Snap {Math.round(networkDebug.snapshotP50Ms)}/{Math.round(networkDebug.snapshotP90Ms)}/{Math.round(networkDebug.snapshotP99Ms)}ms p50/90/99</div>
+              <div>RTT {networkDebug.rttMs === null ? "—" : `${Math.round(networkDebug.rttMs)}ms`}</div>
+              <div>Buffer {networkDebug.bufferDepthSnapshots} @ {networkDebug.interpolationDelayMs}ms</div>
+              <div>Error {networkDebug.predictionErrorPx.toFixed(1)}px</div>
+              <div>Corrections {networkDebug.correctionsPerSecond}/s</div>
+            </div>
+          ) : null}
+        </aside>
+      ) : null}
       {mineRotated ? <div className="spectating-chip" aria-live="polite">MINE ROTATED</div> : null}
       {legendVisible ? (
         <aside className="item-legend" aria-label="Item legend">
