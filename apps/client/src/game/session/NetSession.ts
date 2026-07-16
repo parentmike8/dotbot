@@ -12,6 +12,7 @@ import {
 } from "../prediction/reconciliation";
 import type { GameSession, RunState } from "./GameSession";
 import { snapshotArrivalStats, type NetworkDebugStats } from "./netgraph";
+import { capRemoteRecovery, sampleTimeline, type TimelineSnapshot } from "./interpolation";
 
 export type NetSessionOptions = {
   url: string;
@@ -23,7 +24,11 @@ export type NetSessionOptions = {
   onError?: (message: string) => void;
 };
 
-type BufferedSnapshot = { tick: number; snapshot: GameSnapshot };
+type BufferedSnapshot = TimelineSnapshot;
+
+const interpolationDelayMs = 125;
+const snapshotIntervalMs = 50;
+const maxRemoteCorrectionSpeedPxPerSecond = 1000;
 
 export class NetSession implements GameSession {
   private readonly options: NetSessionOptions;
@@ -63,6 +68,10 @@ export class NetSession implements GameSession {
   private bufferDepthSnapshots = 0;
   private predictionErrorPx = 0;
   private readonly correctionTimesMs: number[] = [];
+  private serverClockTick: number | null = null;
+  private serverClockClientMs = 0;
+  private lastRenderTick = Number.NEGATIVE_INFINITY;
+  private lastRenderedRemote: GameSnapshot | null = null;
 
   constructor(options: NetSessionOptions) {
     this.options = options;
@@ -178,7 +187,7 @@ export class NetSession implements GameSession {
       snapshotIntervalsMs: this.snapshotIntervalsMs.slice(-64),
       ...snapshotArrivalStats(this.snapshotIntervalsMs),
       rttMs: this.rttMs,
-      interpolationDelayMs: 100,
+      interpolationDelayMs,
       bufferDepthSnapshots: this.bufferDepthSnapshots,
       predictionErrorPx: this.predictionErrorPx,
       correctionsPerSecond: this.correctionTimesMs.length,
@@ -190,38 +199,22 @@ export class NetSession implements GameSession {
     this.maybePing();
     this.advancePrediction(elapsedMs);
     const newest = this.snapshots[this.snapshots.length - 1];
-    const renderTick = newest.tick - this.tickHz * 0.1;
-    let older = this.snapshots[0];
-    let newer = newest;
-
-    for (let index = 0; index < this.snapshots.length; index += 1) {
-      const candidate = this.snapshots[index];
-      if (candidate.tick <= renderTick) older = candidate;
-      if (candidate.tick >= renderTick) {
-        newer = candidate;
-        break;
-      }
-    }
-    this.bufferDepthSnapshots = this.snapshots.filter((candidate) => candidate.tick >= renderTick).length;
-    if (older.tick === newer.tick) return this.withPredictedOwnBot(older.snapshot);
-    const alpha = Math.max(0, Math.min(1, (renderTick - older.tick) / (newer.tick - older.tick)));
-    const newerBots = new Map(newer.snapshot.bots.map((bot) => [bot.id, bot]));
-    return this.withPredictedOwnBot({
-      ...older.snapshot,
-      timeMs: lerp(older.snapshot.timeMs, newer.snapshot.timeMs, alpha),
-      bots: older.snapshot.bots.map((bot) => {
-        const next = newerBots.get(bot.id);
-        if (!next) return bot;
-        return {
-          ...bot,
-          position: {
-            x: lerp(bot.position.x, next.position.x, alpha),
-            y: lerp(bot.position.y, next.position.y, alpha),
-          },
-          facing: lerpAngle(bot.facing, next.facing, alpha),
-        };
-      }),
-    });
+    const estimatedServerTick = this.estimatedServerTick(performance.now()) ?? newest.tick;
+    const desiredRenderTick = estimatedServerTick - interpolationDelayMs / (1000 / this.tickHz);
+    const renderTick = Math.max(this.lastRenderTick, desiredRenderTick);
+    this.lastRenderTick = renderTick;
+    const sampled = sampleTimeline(this.snapshots, renderTick, snapshotIntervalMs / (1000 / this.tickHz));
+    if (!sampled) return null;
+    this.bufferDepthSnapshots = sampled.bufferDepthSnapshots;
+    const remote = capRemoteRecovery(
+      this.lastRenderedRemote,
+      sampled.snapshot,
+      this.playerIdValue,
+      elapsedMs,
+      maxRemoteCorrectionSpeedPxPerSecond,
+    );
+    this.lastRenderedRemote = remote;
+    return this.withPredictedOwnBot(remote, newest.snapshot);
   }
 
   drainEvents(): SimEvent[] {
@@ -280,7 +273,8 @@ export class NetSession implements GameSession {
         this.rejectStart = null;
         return;
       case "snap": {
-        this.recordSnapshotArrival();
+        const arrivedAt = this.recordSnapshotArrival();
+        if (this.serverClockTick === null) this.setServerClock(message.tick, arrivedAt);
         if (this.intelValue && message.intel !== undefined) {
           this.intelValue = { ...this.intelValue, signal: message.intel.signal };
         }
@@ -319,6 +313,9 @@ export class NetSession implements GameSession {
         return;
       case "pong":
         this.rttMs = Math.max(0, Date.now() - message.cts);
+        if (message.tick !== undefined && message.tick > 0) {
+          this.correctServerClock(message.tick, performance.now() - this.rttMs / 2);
+        }
         return;
       case "err":
         this.failStart(message.msg);
@@ -397,15 +394,16 @@ export class NetSession implements GameSession {
     }
   }
 
-  private withPredictedOwnBot(snapshot: GameSnapshot): GameSnapshot {
+  private withPredictedOwnBot(snapshot: GameSnapshot, freshest: GameSnapshot): GameSnapshot {
     if (!this.predictor) return snapshot;
     const predicted = this.predictor.current;
     const offset = blendOffset(this.correctionOffset, this.correctionElapsedMs);
+    const freshOwn = freshest.bots.find((bot) => bot.id === this.playerIdValue);
     return {
       ...snapshot,
       bots: snapshot.bots.map((bot) =>
         bot.id === this.playerIdValue
-          ? this.mergePredictedBot(bot, predicted, offset)
+          ? this.mergePredictedBot(bot, freshOwn ?? bot, predicted, offset)
           : bot,
       ),
     };
@@ -413,11 +411,17 @@ export class NetSession implements GameSession {
 
   private mergePredictedBot(
     authoritative: GameSnapshot["bots"][number],
+    freshest: GameSnapshot["bots"][number],
     predicted: PredictedOwnBot,
     offset: { x: number; y: number },
   ): GameSnapshot["bots"][number] {
     return {
       ...authoritative,
+      shields: freshest.shields,
+      shieldSegments: freshest.shieldSegments,
+      bays: freshest.bays,
+      hold: freshest.hold,
+      carriedCount: freshest.carriedCount,
       position: {
         x: predicted.position.x + offset.x,
         y: predicted.position.y + offset.y,
@@ -443,19 +447,40 @@ export class NetSession implements GameSession {
     this.send({ type: "ping", cts: Date.now() });
   }
 
-  private recordSnapshotArrival(): void {
+  private recordSnapshotArrival(): number {
     const now = performance.now();
     if (this.lastSnapshotArrivalMs !== null) {
       this.snapshotIntervalsMs.push(now - this.lastSnapshotArrivalMs);
       if (this.snapshotIntervalsMs.length > 240) this.snapshotIntervalsMs.shift();
     }
     this.lastSnapshotArrivalMs = now;
+    return now;
   }
 
   private pruneCorrections(now: number): void {
     while (this.correctionTimesMs[0] !== undefined && now - this.correctionTimesMs[0] > 1000) {
       this.correctionTimesMs.shift();
     }
+  }
+
+  private estimatedServerTick(clientMs: number): number | null {
+    if (this.serverClockTick === null) return null;
+    return this.serverClockTick + (clientMs - this.serverClockClientMs) / (1000 / this.tickHz);
+  }
+
+  private setServerClock(tick: number, clientMs: number): void {
+    this.serverClockTick = tick;
+    this.serverClockClientMs = clientMs;
+  }
+
+  private correctServerClock(tick: number, clientMidpointMs: number): void {
+    const estimated = this.estimatedServerTick(clientMidpointMs);
+    if (estimated === null) {
+      this.setServerClock(tick, clientMidpointMs);
+      return;
+    }
+    const correction = Math.max(-1, Math.min(1, (tick - estimated) * 0.25));
+    this.setServerClock(estimated + correction, clientMidpointMs);
   }
 
   private checkClockSanity(tick: number, snapshotTimeMs: number): void {
@@ -480,13 +505,4 @@ function resolveWebSocketUrl(value: string): string {
   const url = new URL(value, window.location.href);
   url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
-}
-
-function lerp(a: number, b: number, alpha: number): number {
-  return a + (b - a) * alpha;
-}
-
-function lerpAngle(a: number, b: number, alpha: number): number {
-  const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
-  return a + delta * alpha;
 }

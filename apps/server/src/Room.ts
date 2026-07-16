@@ -82,6 +82,7 @@ export class Room {
   private readonly aiWingmates: boolean;
   private readonly matchIdFactory: () => string;
   private readonly matchIntel = new Map<string, MatchIntel>();
+  private latestServerTick = 0;
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
@@ -221,7 +222,7 @@ export class Room {
         };
         return;
       case "ping":
-        member.peer?.send({ type: "pong", cts: message.cts, sts: this.now() });
+        member.peer?.send({ type: "pong", cts: message.cts, sts: this.now(), tick: this.latestServerTick });
         return;
     }
   }
@@ -283,6 +284,7 @@ export class Room {
       steps += 1;
 
       const snapshot = this.simulation.getSnapshot();
+      this.latestServerTick = snapshot.debug.tickCount;
       const events = this.simulation.drainEvents();
       this.processRunEvents(events);
       if (events.length > 0) this.broadcastEvents(events, snapshot);
