@@ -1,11 +1,12 @@
-import type { MapDocument, MapObject, PlacementSlot, Rect, Vec2 } from "@dotbot/game/types";
+import { defaultGameConfig } from "@dotbot/game/config";
+import type { InteractionDot, MapDocument, MapObject, PlacementSlot, Rect, Vec2 } from "@dotbot/game/types";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import { physicsFloorId } from "@dotbot/game/mapModel";
 
 export type BaseTarget =
-  | { id: string; type: "deployment"; center: Vec2; rect: Rect }
-  | { id: string; type: "object"; center: Vec2; rect: Rect; object: MapObject }
-  | { id: string; type: "emptySlot"; center: Vec2; rect: Rect; slot: PlacementSlot };
+  | { id: string; type: "deployment"; center: Vec2; rect: Rect; dot: InteractionDot }
+  | { id: string; type: "object"; center: Vec2; rect: Rect; object: MapObject; dot: InteractionDot }
+  | { id: string; type: "emptySlot"; center: Vec2; rect: Rect; slot: PlacementSlot; dot: InteractionDot };
 
 export type BaseChannelState = {
   targetId: string;
@@ -14,20 +15,30 @@ export type BaseChannelState = {
   completedId: string | null;
 };
 
-export function findBaseTarget(map: MapDocument, position: Vec2, floorId = OUTDOOR_FLOOR_ID, interactionReach = 46): BaseTarget | null {
-  const deployment = map.extractionPoints[0];
-  if (floorId === OUTDOOR_FLOOR_ID && deployment && contains(deployment.rect, position)) {
-    return { id: deployment.id, type: "deployment", center: center(deployment.rect), rect: deployment.rect };
+export function findBaseTarget(
+  map: MapDocument,
+  position: Vec2,
+  floorId = OUTDOOR_FLOOR_ID,
+  interactionReach = defaultGameConfig.botRadius - defaultGameConfig.dotRadius - 2,
+): BaseTarget | null {
+  const dot = (map.interactionDots ?? [])
+    .filter((candidate) => physicsFloorId(map, candidate.floorId) === floorId)
+    .map((candidate) => ({ candidate, distance: distance(position, candidate.position) }))
+    .filter(({ distance }) => distance <= interactionReach)
+    .sort((a, b) => a.distance - b.distance || a.candidate.id.localeCompare(b.candidate.id))[0]?.candidate;
+  if (!dot) return null;
+
+  const floor = map.buildings[0]?.floors.find((candidate) => candidate.id === dot.floorId);
+  if (dot.kind === "object") {
+    const object = floor?.objects.find((candidate) => candidate.id === dot.targetId && candidate.slotId);
+    return object ? { id: dot.id, type: "object", center: dot.position, object, rect: object, dot } : null;
   }
-  const floor = map.buildings[0]?.floors.find((candidate) => physicsFloorId(map, candidate.id) === floorId);
-  // Only slot-backed furniture is interactive; architectural decor is not.
-  const object = floor?.objects.find((candidate) => candidate.slotId && distanceToRect(position, candidate) <= interactionReach);
-  if (object) return { id: object.id, type: "object", center: center(object), object, rect: object };
-  const occupied = new Set(floor?.objects.map((candidate) => candidate.slotId));
-  const slot = map.placementSlots?.find((candidate) =>
-    candidate.floor === floor?.label && !occupied.has(candidate.id) && distanceToRect(position, candidate.rect) <= interactionReach,
-  );
-  return slot ? { id: `empty-${slot.id}`, type: "emptySlot", center: center(slot.rect), slot, rect: slot.rect } : null;
+  if (dot.kind === "emptySlot") {
+    const slot = map.placementSlots?.find((candidate) => candidate.id === dot.targetId && candidate.floor === floor?.label);
+    return slot ? { id: dot.id, type: "emptySlot", center: dot.position, slot, rect: slot.rect, dot } : null;
+  }
+  const deployment = map.extractionPoints.find((candidate) => candidate.id === dot.targetId);
+  return deployment ? { id: dot.id, type: "deployment", center: dot.position, rect: deployment.rect, dot } : null;
 }
 
 export function advanceBaseChannel(
@@ -63,13 +74,4 @@ export function advanceBaseChannel(
   };
 }
 
-function contains(rect: Rect, point: Vec2): boolean {
-  return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h;
-}
-function center(rect: Rect): Vec2 { return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 }; }
 function distance(a: Vec2, b: Vec2): number { return Math.hypot(a.x - b.x, a.y - b.y); }
-function distanceToRect(point: Vec2, rect: Rect): number {
-  const dx = point.x - Math.max(rect.x, Math.min(point.x, rect.x + rect.w));
-  const dy = point.y - Math.max(rect.y, Math.min(point.y, rect.y + rect.h));
-  return Math.hypot(dx, dy);
-}

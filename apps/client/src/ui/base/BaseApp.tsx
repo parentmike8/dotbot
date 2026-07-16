@@ -408,7 +408,7 @@ function BaseSession(props: BaseSessionProps) {
     const advanced = advanceBaseChannel(channelRef.current, target, player.position, snapshot.timeMs, channelDurationMs);
     channelRef.current = advanced.state;
     setInteractionChannel(target && advanced.progress !== null
-      ? { position: target.center, radius: Math.max(target.rect.w, target.rect.h) / 2 + 10, progress: advanced.progress }
+      ? { position: target.center, radius: target.dot.radius + 8, progress: advanced.progress }
       : null);
     if (advanced.completed) openTarget(advanced.completed);
   }, [map, openTarget, player, props.identityReady, props.panel, setInteractionChannel, snapshot]);
