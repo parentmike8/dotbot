@@ -55,6 +55,10 @@ export type MineEntity = GameEntity & {
   placedAtMs: number;
   /** Player ids with a live radar reveal; filtered before delivery. */
   revealedToBotIds: string[];
+  /** Viewer-scoped presentation assigned by the protocol interest filter. */
+  presentation?: "squad" | "disguised" | "revealed";
+  disguise?: PowerupType;
+  seam?: boolean;
 };
 
 export type SimEvent =

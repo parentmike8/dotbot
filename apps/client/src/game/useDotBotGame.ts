@@ -160,7 +160,10 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const frameEvents = session.drainEvents();
 
         if (frameEvents.length > 0) {
-          for (const event of frameEvents) if (event.type === "plea") renderer.queuePlea(event);
+          for (const event of frameEvents) {
+            if (event.type === "plea") renderer.queuePlea(event);
+            if (event.type === "mineSensor") renderer.queueMineSensor(event);
+          }
           setEvents((current) => [...current, ...frameEvents]);
         }
 

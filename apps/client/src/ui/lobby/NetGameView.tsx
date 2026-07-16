@@ -11,7 +11,7 @@ type NetGameViewProps = {
 };
 
 export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "RETURN TO LOBBY" }: NetGameViewProps) {
-  const { hostRef, snapshot, events, runResult, spectating, queueDash, cycleSpectator, giveUp, selectDownedVerb, plea } = useDotBotGame({ session, spectate: true });
+  const { hostRef, snapshot, events, runResult, spectating, legendVisible, toggleLegend, queueDash, cycleSpectator, giveUp, selectDownedVerb, plea } = useDotBotGame({ session, spectate: true });
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
   const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === session.playerId) ?? false;
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
@@ -20,6 +20,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       && Math.hypot(bot.position.x - player.position.x, bot.position.y - player.position.y) <= player.radius * 2.2,
   ) : undefined;
   const hostileChannel = hostileDowned ? snapshot?.coverages.find((coverage) => coverage.actorId === player?.id && coverage.targetId === hostileDowned.id) : undefined;
+  const mineRotated = [...events].reverse().find((event) => event.type === "mineRotated");
   const killCounts = useMemo(() => {
     const viewerSquadId = session.getEntityMeta(session.playerId)?.squadId;
     let ai = 0;
@@ -40,8 +41,24 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         <strong>{player?.name ?? "Connecting"}</strong>
         <span>{player ? `${player.shields}/${player.maxShields} shields` : "Waiting for snapshots"}</span>
         <span>Run {formatRunTime(remainingRunMs)}</span>
+        <button type="button" onClick={toggleLegend}>L / KEY</button>
         {snapshot && snapshot.timeMs < 5_000 ? <b className="insertion-banner">INSERTED: {session.insertionName}</b> : null}
       </aside>
+      {mineRotated ? <div className="spectating-chip" aria-live="polite">MINE ROTATED</div> : null}
+      {legendVisible ? (
+        <aside className="item-legend" aria-label="Item legend">
+          <header><strong>DOTBOT / ITEM KEY</strong><button type="button" onClick={toggleLegend}>×</button></header>
+          <dl>
+            <div><dt className="powerup-mark">+</dt><dd>Health</dd></div>
+            <div><dt className="powerup-mark">◎</dt><dd>Radar</dd></div>
+            <div><dt className="powerup-mark">›</dt><dd>Dash overcharge</dd></div>
+            <div><dt className="powerup-mark">◌</dt><dd>Incognito</dd></div>
+            <div><dt className="blueprint-mark">⌑</dt><dd>Blueprint</dd></div>
+            <div><dt>×</dt><dd>Squad mine / radar-revealed mine</dd></div>
+            <div><dt className="powerup-mark">◜</dt><dd>Some dots are not dots — watch for the hairline seam</dd></div>
+          </dl>
+        </aside>
+      ) : null}
       <aside className="net-game-bays" aria-label="In-run bays">
         <span>BAYS</span>
         <div>{(player?.bays ?? [null, null, null, null]).map((item, index) => (

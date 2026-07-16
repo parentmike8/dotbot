@@ -32,7 +32,10 @@ const noises: NoiseEvent[] = [
   { id: "leak", kind: "dash", position: { x: 400, y: 250 }, floorId: "mercy:F1", loudness: 0.8, ageMs: 0, ttlMs: 1000 },
   { id: "quiet", kind: "dash", position: { x: 400, y: 250 }, floorId: "mercy:F1", loudness: 0.5, ageMs: 0, ttlMs: 1000 },
 ];
-const wire: WireSnapshot = { tick: 1, ack: 0, bots, dots, mines: [], coverages, noises };
+const mines: WireSnapshot["mines"] = [
+  { id: "mine-alpha-0", position: { x: 620, y: 500 }, radius: 10, placedByBotId: "viewer", squadId: "a", floorId: "outdoor", placedAtMs: 10, revealedToBotIds: ["street-enemy"] },
+];
+const wire: WireSnapshot = { tick: 1, ack: 0, bots, dots, mines, coverages, noises };
 
 describe("filterForViewer", () => {
   it("includes the viewer floor, excludes other-floor enemies, and always includes squadmates", () => {
@@ -74,6 +77,26 @@ describe("filterForViewer", () => {
     expect(filtered.bots.find((entry) => entry.i === "street-enemy")?.r).toBeUndefined();
   });
 
+  it("shows squad mines as X data, disguises them with seam data for rivals, and reveals only to the radar firer", () => {
+    const squad = filterForViewer(wire, meta, {
+      map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    expect(squad.mines[0]).toMatchObject({ presentation: "squad", seam: false, placedByBotId: "viewer", squadId: "a" });
+
+    const radarFirer = filterForViewer(wire, meta, {
+      map: downtownMap, squadId: "b", viewerBotId: "street-enemy", squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    expect(radarFirer.mines[0]).toMatchObject({ presentation: "revealed", seam: false, placedByBotId: "", squadId: "" });
+    expect(radarFirer.mines[0].revealedToBotIds).toEqual([]);
+
+    const disguisedWire = { ...wire, mines: wire.mines.map((mine) => ({ ...mine, revealedToBotIds: [] })) };
+    const rival = filterForViewer(disguisedWire, meta, {
+      map: downtownMap, squadId: "b", viewerBotId: "street-enemy", squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    expect(rival.mines[0]).toMatchObject({ presentation: "disguised", seam: true });
+    expect(rival.mines[0].disguise).toMatch(/health|radar|dashOvercharge|incognito/);
+  });
+
   it("uses classifyNoise floor-leak and loudness semantics", () => {
     const filtered = filterForViewer(wire, meta, {
       map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor", "lot6:B1"]),
@@ -100,6 +123,12 @@ describe("filterForViewer", () => {
       { type: "revived", botId: "mate", byBotId: "mate" },
     ], meta, new Set(["viewer", "mate"]), "a");
     expect(events.map((event) => event.type)).toEqual(["downed", "revived"]);
+  });
+
+  it("keeps mine sensor pings squad-private", () => {
+    const event = { type: "mineSensor" as const, botId: "viewer", squadId: "a", mineId: "mine-alpha-0", position: { x: 1, y: 2 }, floorId: "outdoor" };
+    expect(filterEventsForViewer([event], meta, new Set(["viewer"]), "a")).toEqual([event]);
+    expect(filterEventsForViewer([event], meta, new Set(["viewer"]), "b")).toEqual([]);
   });
 
   it("broadcasts pleas across squad and floor interest boundaries", () => {

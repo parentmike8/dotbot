@@ -44,7 +44,21 @@ export function filterForViewer(
   });
   const includedBotIds = new Set(bots.map((bot) => bot.i));
   const dots = wire.dots.filter((dot) => visibleFloors.has(physicsFloorId(viewerCtx.map, dot.floorId)));
-  const mines = wire.mines.filter((mine) => visibleFloors.has(physicsFloorId(viewerCtx.map, mine.floorId)));
+  const mines = wire.mines
+    .filter((mine) => visibleFloors.has(physicsFloorId(viewerCtx.map, mine.floorId)))
+    .map((mine) => {
+      const squadMine = mine.squadId === viewerCtx.squadId;
+      const radarRevealed = Boolean(viewerCtx.viewerBotId && mine.revealedToBotIds.includes(viewerCtx.viewerBotId));
+      return {
+        ...mine,
+        placedByBotId: squadMine ? mine.placedByBotId : "",
+        squadId: squadMine ? mine.squadId : "",
+        revealedToBotIds: [],
+        presentation: squadMine ? "squad" as const : radarRevealed ? "revealed" as const : "disguised" as const,
+        disguise: deterministicMineDisguise(mine.id),
+        seam: !squadMine && !radarRevealed,
+      };
+    });
   const coverages = wire.coverages.filter((coverage) =>
     visibleFloors.has(physicsFloorForBot(wire.bots, viewerCtx.map, coverage.actorId))
       || includedBotIds.has(coverage.actorId)
@@ -77,7 +91,20 @@ export function filterEventsForViewer(
   const visibleBot = (id: string | undefined) => Boolean(
     id && (includedBotIds.has(id) || metaById.get(id)?.squadId === squadId),
   );
-  return events.filter((event) => event.type === "plea" || visibleBot(event.botId) || ("byBotId" in event && visibleBot(event.byBotId)));
+  return events.filter((event) => {
+    if (event.type === "mineSensor") return event.squadId === squadId;
+    if (event.type === "mineRotated") return metaById.get(event.botId)?.squadId === squadId;
+    return event.type === "plea" || visibleBot(event.botId) || ("byBotId" in event && visibleBot(event.byBotId));
+  });
+}
+
+function deterministicMineDisguise(id: string): "health" | "radar" | "dashOvercharge" | "incognito" {
+  let hash = 2166136261;
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (["health", "radar", "dashOvercharge", "incognito"] as const)[(hash >>> 0) % 4];
 }
 
 function wirePosition(bot: WireBot): Vec2 {

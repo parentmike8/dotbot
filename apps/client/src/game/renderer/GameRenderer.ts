@@ -68,6 +68,7 @@ export class GameRenderer {
   private lastViewer: DotBotEntity | null = null;
   private lastTimeMs = 0;
   private readonly pleaSignals = new Map<string, { event: Extract<SimEvent, { type: "plea" }>; startedAt: number }>();
+  private readonly mineSignals = new Map<string, { event: Extract<SimEvent, { type: "mineSensor" }>; startedAt: number }>();
   private readonly draftAnimations = new Map<string, DraftAnimation>();
 
   private constructor(app: Application, map: MapDocument) {
@@ -173,6 +174,10 @@ export class GameRenderer {
     this.pleaSignals.set(event.botId, { event, startedAt: this.lastTimeMs });
   }
 
+  queueMineSensor(event: Extract<SimEvent, { type: "mineSensor" }>): void {
+    this.mineSignals.set(event.mineId, { event, startedAt: this.lastTimeMs });
+  }
+
   render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null): void {
     this.lastTimeMs = snapshot.timeMs;
     this.updateDraftAnimations(performance.now());
@@ -194,6 +199,7 @@ export class GameRenderer {
     this.screenGfx.clear();
     this.drawExtractionPulse(snapshot, player?.squadId);
     this.drawDots(snapshot, player?.squadId, playerContext);
+    this.drawMines(snapshot, playerContext);
     this.drawBots(snapshot, playerId, playerContext);
     if (interactionChannel) {
       this.drawProgressRing(this.dynamicGfx, interactionChannel.position, interactionChannel.radius, interactionChannel.progress, INK.opening, 3);
@@ -203,10 +209,29 @@ export class GameRenderer {
     if (player) {
       this.drawNoises(snapshot, player);
       this.drawPleaSignals(player);
+      this.drawMineSignals(player);
       this.drawDownedSquadmateArrow(snapshot, player);
     }
 
     this.drawStairOverlay(player ?? null);
+  }
+
+  private drawMineSignals(player: DotBotEntity): void {
+    const ttlMs = 2_000;
+    for (const [mineId, signal] of this.mineSignals) {
+      const ageMs = this.lastTimeMs - signal.startedAt;
+      if (ageMs > ttlMs) {
+        this.mineSignals.delete(mineId);
+        continue;
+      }
+      if (signal.event.floorId !== player.floorId) continue;
+      const progress = clamp01(ageMs / ttlMs);
+      this.dynamicGfx.circle(signal.event.position.x, signal.event.position.y, 12 + progress * 54).stroke({
+        color: SQUAD_CYAN,
+        width: 2,
+        alpha: (1 - progress) * 0.8,
+      });
+    }
   }
 
   private drawPleaSignals(player: DotBotEntity): void {
@@ -453,6 +478,27 @@ export class GameRenderer {
         const channelColor = channeler ? this.relationshipColor(channeler, viewerSquadId) : INK.structure;
         this.drawProgressRing(this.maskedGfx, dot.position, dot.radius + 8, coverage.progressMs / coverage.durationMs, channelColor, 3);
       }
+    }
+  }
+
+  private drawMines(snapshot: GameSnapshot, playerContext: string): void {
+    for (const mine of snapshot.mines) {
+      if (this.contextKey(mine.floorId, mine.position) !== playerContext) continue;
+      const { x, y } = mine.position;
+      const size = Math.max(4, mine.radius * 0.45);
+      if (mine.presentation === "squad" || mine.presentation === "revealed") {
+        this.maskedGfx.circle(x, y, mine.radius).fill({ color: 0xf1f3f5 });
+        this.maskedGfx.moveTo(x - size, y - size).lineTo(x + size, y + size)
+          .moveTo(x + size, y - size).lineTo(x - size, y + size)
+          .stroke({ color: INK.structure, width: 2 });
+        continue;
+      }
+
+      this.maskedGfx.circle(x, y, mine.radius).fill({ color: colorToNumber("#e8590c") });
+      const seamRadians = 1 / Math.max(1, mine.radius);
+      this.maskedGfx.arc(x, y, mine.radius, seamRadians / 2, Math.PI * 2 - seamRadians / 2)
+        .stroke({ color: INK.structure, width: 2 });
+      this.drawDotMark(this.maskedGfx, { kind: "powerup", type: mine.disguise ?? "health" }, mine.position, mine.radius);
     }
   }
 
