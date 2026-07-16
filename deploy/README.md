@@ -1,40 +1,53 @@
-# DotBot Fly.io deploy kit
+# Production deployment (Google Cloud, project `dot-bot-c39fc`)
 
-Run these commands from the repository root with Node 20 and a Fly.io account. Replace `YOUR_UNIQUE_DOTBOT_APP` with the final Fly app name.
+One Cloud Run service (`dotbot`, us-central1) serves everything — client, API,
+and websockets — from a single URL, backed by Cloud SQL Postgres
+(`dotbot-sql`). Firebase Hosting is deliberately NOT in the path: it cannot
+proxy websockets. (This kit replaces the earlier Fly.io notes from M1/M3,
+which were never provisioned.)
 
-```sh
-/Users/michaelparent/.nvm/versions/node/v20.20.0/bin/pnpm build:all
-fly auth login
-fly launch --no-deploy --name YOUR_UNIQUE_DOTBOT_APP --region yyz --config deploy/fly.toml --dockerfile deploy/Dockerfile
-fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+## Deploy a new build
+
+```
+./deploy/deploy.sh
 ```
 
-For later releases, rebuild and deploy with:
+Cloud Build builds the root Dockerfile from source and Cloud Run swaps
+revisions with zero config drift. The critical service flags (single
+instance, CPU always allocated, 1h websocket timeout, session affinity) live
+in the script.
 
-```sh
-/Users/michaelparent/.nvm/versions/node/v20.20.0/bin/pnpm build:all
-fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+## Run a schema migration against production
+
+Migrations are applied from your machine through the Cloud SQL Auth Proxy —
+the database has no public IP exposure.
+
+```
+# one-time: install the proxy
+brew install cloud-sql-proxy
+
+cloud-sql-proxy dot-bot-c39fc:us-central1:dotbot-sql --port 55433 &
+DATABASE_URL="postgres://dotbot:<password>@localhost:55433/dotbot" pnpm db:migrate
+kill %1
 ```
 
-The image contains only the self-contained server bundle and the built client. The server listens on `PORT` (3001 by default), serves `/api/health`, upgrades `/ws`, and serves the client from the same origin when `NODE_ENV=production`.
+The password lives in Secret Manager (`dotbot-database-url` holds the full
+production URL; the proxy variant just swaps host/port):
 
-## Postgres setup
-
-Local persistence requires Docker Desktop to be running. From the repository root:
-
-```sh
-cp .env.example .env
-/Users/michaelparent/.nvm/versions/node/v20.20.0/bin/pnpm db:up
-/Users/michaelparent/.nvm/versions/node/v20.20.0/bin/pnpm db:migrate
-/Users/michaelparent/.nvm/versions/node/v20.20.0/bin/pnpm dev:all
+```
+gcloud secrets versions access latest --secret dotbot-database-url --project dot-bot-c39fc
 ```
 
-`pnpm dev:db` performs the Docker startup, migration, and development startup in one command. Without `DATABASE_URL`, or when Postgres cannot be reached, the server logs one warning and continues in stateless mode.
+## Operate
 
-For production, provision and attach managed Fly Postgres before deploying. Replace both placeholders with the final names. These are owner-run commands; they are documented here and were not run during M3 implementation.
+- Logs:    `gcloud run services logs read dotbot --region us-central1 --project dot-bot-c39fc --limit 100`
+- Health:  `curl <service-url>/api/health` (rooms, tick p99, per-room bandwidth)
+- Rollback: `gcloud run services update-traffic dotbot --to-revisions <rev>=100 --region us-central1`
 
-```sh
-fly postgres create --name YOUR_DOTBOT_DB --region yyz
-fly postgres attach YOUR_DOTBOT_DB --app YOUR_UNIQUE_DOTBOT_APP
-fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
-```
+## Known limits (fine for playtests)
+
+- Cloud Run caps a websocket at 60 minutes; a drop mid-run hits the 15s
+  reconnect grace (AI handoff). Rooms are in-process: never raise
+  max-instances above 1 without a rooms-routing layer.
+- db-f1-micro is the smallest tier; watch `/api/health` if concurrent rooms
+  grow past a handful.

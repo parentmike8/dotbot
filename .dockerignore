@@ -1,0 +1,9 @@
+node_modules
+**/node_modules
+**/dist
+.git
+handoffs
+playtest
+*.md
+.env
+docker-compose.yml
