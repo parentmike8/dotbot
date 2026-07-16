@@ -2,11 +2,20 @@
 
 ## Result
 
-NET-1 is implemented and deployed. Production is serving Cloud Run revision `dotbot-00014-7bk` at <https://dotbot-jpawns5vla-uc.a.run.app/> with 100% traffic.
+NET-1 is implemented and deployed. Production is serving Cloud Run revision `dotbot-00015-prv` at <https://dotbot-jpawns5vla-uc.a.run.app/> with 100% traffic.
 
 The transport still arrives in the same stall-then-burst pattern identified by the handoff, but remote presentation now rides a server-tick interpolation timeline and the predicted own bot reconciles without ordinary backwards corrections. In the final production two-window run, both clients sustained a one-or-more snapshot buffer for normal play. A representative F3 reading during movement was `Snap 48/111/140ms`, `RTT 67ms`, `Buffer 1 @ 125ms`, `Error 0.0px`, `Corrections 0/s`.
 
 No server-side lag compensation was added.
+
+### Production follow-up: local navigation cadence and diagonal line
+
+A user playtest after the initial rollout exposed two presentation defects that the first live narrative missed:
+
+- local prediction advanced correctly at 60 Hz, but the rendered own-bot position used only the last completed fixed step. On displays whose frames did not align perfectly with simulation ticks, that presented a held frame followed by a larger step;
+- concealed-mine and radar arcs reused Pixi's current drawing path, allowing Pixi to draw a long connector from earlier geometry to the mine.
+
+Revision 15 renders a non-mutating partial-tick preview between the predictor's current and next fixed states. The fixed predictor, reconciliation, and replay semantics remain unchanged. The preview is monotonic through ordinary movement and dash expiry and lands exactly on the next fixed state. Mine seams and segmented radar/incognito marks now begin isolated paths, eliminating the diagonal connector.
 
 ## Netgraph
 
@@ -66,8 +75,8 @@ All commands used the Node 20.20.0 binaries. Postgres testing used `127.0.0.1:55
 
 | Gate | Result |
 | --- | --- |
-| `env -u DATABASE_URL pnpm test` | Passed: 168 tests; 7 expected DB-only skips |
-| `DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/dotbot pnpm test` | Passed: all 175 tests |
+| `env -u DATABASE_URL pnpm test` | Passed: 170 tests; 7 expected DB-only skips |
+| `DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/dotbot pnpm test` | Passed: all 177 tests |
 | `pnpm typecheck` | Passed across game, protocol, client, and server |
 | `pnpm build:all` | Passed: Vite client and Node 20 server bundle |
 | Harness pacing | Passed; extracted in 19.207 s with shelf blueprint + health retained and 0.04 timer remaining |
@@ -77,7 +86,7 @@ All commands used the Node 20.20.0 binaries. Postgres testing used `127.0.0.1:55
 
 ## Production narrative
 
-The exact deployment command was `./deploy/deploy.sh`. Cloud Run confirmed `dotbot-00014-7bk` as both the latest-ready revision and the 100%-traffic revision.
+The exact deployment command was `./deploy/deploy.sh`. Cloud Run confirmed follow-up revision `dotbot-00015-prv` as both the latest-ready revision and the 100%-traffic revision.
 
 Two visible production windows joined room `JFB7` as separate players on separate squads. Both received the same live run, and both multiplayer views rendered the F3 netgraph. The graph showed the real burst/stall pattern rather than a synthetic local profile: one client sampled `48/113/147ms` with `140ms` RTT and the other sampled `43/121/297ms` with `139ms` RTT during startup. Each held a 125 ms interpolation buffer with depth 1–2, while prediction error remained 0.0–0.2 px and corrections remained 0/s.
 
@@ -97,3 +106,4 @@ The remaining limitation is transport-level variance: production still commonly 
 - `f6e4dd9` — permanent jitter probe and transport hygiene
 - `191f45a` — production-QA netgraph route preservation
 - `1ab1a47` — multiplayer netgraph rendering
+- `a21d063` — partial-tick own movement and isolated renderer arcs
