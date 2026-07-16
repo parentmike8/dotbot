@@ -30,6 +30,13 @@ type JoystickState = {
 
 const joystickRadius = 54;
 
+function isEditableTarget(event: KeyboardEvent): boolean {
+  const element = event.target as HTMLElement | null;
+  return Boolean(
+    element && (element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.isContentEditable),
+  );
+}
+
 const emptyJoystick: JoystickState = {
   active: false,
   pointerId: null,
@@ -221,6 +228,10 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     start();
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // Never capture game hotkeys while the player is typing in a form
+      // field (callsign, preset names, room codes).
+      if (isEditableTarget(event)) return;
+
       if (event.code === "F3") {
         event.preventDefault();
         setDebugVisible((visible) => !visible);
@@ -274,6 +285,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
+      if (isEditableTarget(event)) return;
       if (movementKeyCodes.has(event.code)) {
         event.preventDefault();
         keysRef.current.delete(event.code);
