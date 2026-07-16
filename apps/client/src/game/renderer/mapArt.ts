@@ -4,6 +4,7 @@ import type {
   Building,
   Doorway,
   FloorPlan,
+  InteractionDot,
   MapDocument,
   Rect,
   PlacementSlot,
@@ -13,7 +14,7 @@ import type {
   WindowBand,
 } from "@dotbot/game/types";
 import { drawObject } from "./glyphs";
-import { INK, PAPER, strokes, WEIGHT } from "./style";
+import { DOT_COLOR, INK, PAPER, strokes, WEIGHT } from "./style";
 
 /**
  * Static map drawing, shared verbatim between the live game and Map Studio.
@@ -83,7 +84,13 @@ export function buildMapArt(map: MapDocument): MapArt {
   drawGround(ground, map);
   drawOutdoorObjects(outdoorDetail, outdoorObjects, map);
 
-  const buildings = map.buildings.map((building) => buildBuildingArt(building, buildingsLayer, labels, map.placementSlots));
+  const buildings = map.buildings.map((building) => buildBuildingArt(
+    building,
+    buildingsLayer,
+    labels,
+    map.placementSlots,
+    map.interactionDots,
+  ));
 
   drawStreetNames(labels, map);
   drawExtractionLabels(labels, map);
@@ -562,11 +569,22 @@ function drawExtractionLabels(layer: Container, map: MapDocument): void {
 // Buildings
 // ---------------------------------------------------------------------------
 
-function buildBuildingArt(building: Building, buildingsLayer: Container, labels: Container, placementSlots?: PlacementSlot[]): BuildingArt {
+function buildBuildingArt(
+  building: Building,
+  buildingsLayer: Container,
+  labels: Container,
+  placementSlots?: PlacementSlot[],
+  interactionDots?: InteractionDot[],
+): BuildingArt {
   const floors: FloorArt[] = [];
 
   for (const floor of building.floors) {
-    const art = buildFloorArt(building, floor, placementSlots?.filter((slot) => slot.floor === floor.label));
+    const art = buildFloorArt(
+      building,
+      floor,
+      placementSlots?.filter((slot) => slot.floor === floor.label),
+      interactionDots?.filter((dot) => dot.floorId === floor.id),
+    );
     art.view.visible = false;
     buildingsLayer.addChild(art.view);
     floors.push(art);
@@ -644,7 +662,12 @@ export function drawRoofPlate(g: Graphics, fp: Rect): void {
   g.rect(fp.x + 8, fp.y + 8, fp.w - 16, fp.h - 16).stroke(strokes.hairline);
 }
 
-function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: PlacementSlot[]): FloorArt {
+function buildFloorArt(
+  building: Building,
+  floor: FloorPlan,
+  placementSlots?: PlacementSlot[],
+  interactionDots: InteractionDot[] = [],
+): FloorArt {
   const view = new Container();
   const architecture = new Graphics();
   const furniture = new Container();
@@ -653,6 +676,7 @@ function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: Pl
   const stairViews = new Map<string, { stair: StairLink; view: Graphics }>();
   const slotMarkers = new Graphics();
   const annotationGfx = new Graphics();
+  const interactionDotGfx = new Graphics();
   const annotation = new Container();
   annotation.addChild(annotationGfx);
 
@@ -706,8 +730,20 @@ function buildFloorArt(building: Building, floor: FloorPlan, placementSlots?: Pl
     drawDoorway(architecture, annotationGfx, doorway, doorwayMode(doorway, floor, fp));
   }
 
-  view.addChild(architecture, stairFixtures, furniture, annotation);
+  for (const dot of interactionDots) {
+    drawInteractionDot(interactionDotGfx, dot);
+  }
+
+  view.addChild(architecture, stairFixtures, furniture, annotation, interactionDotGfx);
   return { floor, view, architecture, furniture, objectViews, stairViews, annotation, annotationGfx };
+}
+
+function drawInteractionDot(g: Graphics, dot: InteractionDot): void {
+  const { x, y } = dot.position;
+  g.circle(x, y, dot.radius).fill({ color: DOT_COLOR.interaction });
+  g.circle(x, y, dot.radius).stroke({ color: INK.structure, width: 1.2 });
+  // A three-pixel hollow port keeps the mark distinct from items and mines.
+  g.circle(x, y, 3).fill({ color: PAPER }).stroke({ color: INK.structure, width: WEIGHT.hairline });
 }
 
 function drawPlacementSlot(g: Graphics, slot: PlacementSlot): void {

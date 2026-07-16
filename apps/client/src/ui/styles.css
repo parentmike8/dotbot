@@ -291,6 +291,7 @@ button {
 .item-legend dd { margin: 0; letter-spacing: .08em; }
 .item-legend .powerup-mark { background: #e8590c; }
 .item-legend .blueprint-mark { background: #1971c2; }
+.item-legend .interaction-mark { background: #7d838a; color: #fff; }
 .item-legend small { color: var(--muted); }
 .intel-density { display: grid; gap: 2px; margin: 8px 0 0; font-size: 9px; letter-spacing: .08em; }
 .intel-density div { display: flex; justify-content: space-between; gap: 16px; }

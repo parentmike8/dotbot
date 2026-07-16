@@ -449,7 +449,7 @@ function BaseSession(props: BaseSessionProps) {
           SHELL PLAN: {baseShellDef(props.base.shell).name} ▾
         </button>
       </header>
-      <div className="base-instruction">STAND STILL AT AN OBJECT TO CHANNEL · WALK THROUGH DEPLOYMENT TO LEAVE</div>
+      <div className="base-instruction">STAND ON A GREY DOT TO INTERACT · DEPLOYMENT DOT TO LEAVE</div>
       {props.notice ? <div className="base-notice">{props.notice}</div> : null}
       {!props.identityReady ? (
         <section className="base-panel identity-panel" aria-label="Choose callsign">

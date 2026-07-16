@@ -15,7 +15,7 @@ import type { MatchIntel } from "@dotbot/protocol";
 import { shieldArcSpan } from "@dotbot/game/shields";
 import { buildMapArt, drawStair, drawStairExitHalf, type MapArt } from "./mapArt";
 import { drawObjectDraftLayers } from "./glyphs";
-import { INK, WEIGHT } from "./style";
+import { DOT_COLOR, INK, WEIGHT } from "./style";
 
 const SQUAD_CYAN = 0x15aabf;
 const RIVAL_RED = 0xe03131;
@@ -492,8 +492,8 @@ export class GameRenderer {
         continue;
       }
 
-      const color = dot.item.kind === "blueprint" ? "#1971c2" : "#e8590c";
-      this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).fill({ color: colorToNumber(color) });
+      const color = dot.item.kind === "blueprint" ? DOT_COLOR.blueprint : DOT_COLOR.powerup;
+      this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).fill({ color });
       this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).stroke({ color: 0x111111, width: 2 });
       this.drawDotMark(this.maskedGfx, dot.item, dot.position, dot.radius);
 

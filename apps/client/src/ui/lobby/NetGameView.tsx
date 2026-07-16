@@ -60,6 +60,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
             <div><dt className="powerup-mark">›</dt><dd>Dash overcharge</dd></div>
             <div><dt className="powerup-mark">◌</dt><dd>Incognito</dd></div>
             <div><dt className="blueprint-mark">⌑</dt><dd>Blueprint</dd></div>
+            <div><dt className="interaction-mark">○</dt><dd>INTERACTION — STAND ON</dd></div>
             <div><dt>×</dt><dd>Squad mine / radar-revealed mine</dd></div>
             <div><dt className="powerup-mark">◜</dt><dd>Some dots are not dots — watch for the hairline seam</dd></div>
           </dl>

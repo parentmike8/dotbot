@@ -37,6 +37,13 @@ export const INK = {
   plate: 0xf4f5f6,
 } as const;
 
+/** Permanent semantic dot palette. Keep interaction neutral and world items chromatic. */
+export const DOT_COLOR = {
+  powerup: 0xe8590c,
+  blueprint: 0x1971c2,
+  interaction: INK.fixture,
+} as const;
+
 /** Stroke widths in world units (map px). One place, so tiers stay honest. */
 export const WEIGHT = {
   structure: 2.6,
