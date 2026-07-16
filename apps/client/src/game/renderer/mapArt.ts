@@ -742,8 +742,9 @@ function drawInteractionDot(g: Graphics, dot: InteractionDot): void {
   const { x, y } = dot.position;
   g.circle(x, y, dot.radius).fill({ color: DOT_COLOR.interaction });
   g.circle(x, y, dot.radius).stroke({ color: INK.structure, width: 1.2 });
-  // A three-pixel hollow port keeps the mark distinct from items and mines.
-  g.circle(x, y, 3).fill({ color: PAPER }).stroke({ color: INK.structure, width: WEIGHT.hairline });
+  // An engraved hairline ring keeps the mark distinct from items and mines
+  // without the stark white center (owner styling note from live testing).
+  g.circle(x, y, 3.5).stroke({ color: INK.structure, width: WEIGHT.hairline, alpha: 0.8 });
 }
 
 function drawPlacementSlot(g: Graphics, slot: PlacementSlot): void {

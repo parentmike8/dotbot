@@ -414,6 +414,19 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map val
     }
   });
 
+  it("seals the shell: the sheet outside is unreachable on foot", () => {
+    // Deployment happens at the grey dot; walking out of the base is not a
+    // thing. Probe a point just beyond each shell's sealed entry plate.
+    const reachable = floodReachable(world, map);
+    const seal = map.buildings[0].floors[0].walls.find((wall) => wall.id.endsWith("-seal"))!;
+    expect(seal, "every shell declares a sealed entry plate").toBeDefined();
+    const outside = { x: seal.x + seal.w / 2, y: seal.y + seal.h + 40 };
+    expect(
+      nearestReachableDistance(outside, reachable, BOT_RADIUS, map),
+      "the sheet outside the sealed entry must be unreachable",
+    ).toBeGreaterThan(BOT_RADIUS);
+  });
+
   it("rejects unknown slots, object kinds, and zone mismatches", () => {
     expect(() => createBaseMap({ mystery: "locker" }, shellId)).toThrow(/Unknown base placement slot/);
     expect(() => createBaseMap({ "wall-n": "not-real" } as never, shellId)).toThrow(/Unknown base object kind/);

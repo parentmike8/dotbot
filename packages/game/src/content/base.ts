@@ -170,6 +170,9 @@ function workshopShell(): BaseShellDef {
     // Dock vestibule cheeks framing the threshold.
     { id: "ws-vest-w", x: 628, y: 408, w: 12, h: 60 },
     { id: "ws-vest-e", x: 760, y: 408, w: 12, h: 60 },
+    // Closed dock plate: deployment happens at the grey dot, never on foot.
+    // The band sits outside the roll-up so the shutter reads as shut.
+    { id: "ws-dock-seal", x: 628, y: 480, w: 144, h: 12 },
     // North-wall pilasters (rhythm only; clear of the wall slots).
     { id: "ws-pil-1", x: 280, y: 72, w: 14, h: 10 },
     { id: "ws-pil-2", x: 530, y: 72, w: 14, h: 10 },
@@ -254,6 +257,8 @@ function hangarShell(): BaseShellDef {
     // South wall split around the 240 roll-up strip.
     { id: "hg-s-w", x: 60, y: 608, w: 240, h: 12 },
     { id: "hg-s-e", x: 540, y: 608, w: 400, h: 12 },
+    // Closed roll-up plate: the strip is a deployment marker, not an exit.
+    { id: "hg-rollup-seal", x: 288, y: 620, w: 264, h: 12 },
     // Columns: a flanking pair at the roll-up, a mid-span pair in the bay.
     { id: "hg-col-sw", x: 276, y: 532, w: 24, h: 24 },
     { id: "hg-col-se", x: 540, y: 532, w: 24, h: 24 },
@@ -341,6 +346,8 @@ function berthsShell(): BaseShellDef {
     // South wall split around the entry door.
     { id: "br-s-w", x: 230, y: 688, w: 220, h: 12 },
     { id: "br-s-e", x: 550, y: 688, w: 220, h: 12 },
+    // Closed entry plate: deployment happens at the grey dot, never on foot.
+    { id: "br-entry-seal", x: 438, y: 700, w: 124, h: 12 },
     // Berth dividers reaching to the corridor line.
     { id: "br-div-w", x: 242, y: 527, w: 200, h: 12 },
     { id: "br-div-e", x: 558, y: 527, w: 200, h: 12 },
