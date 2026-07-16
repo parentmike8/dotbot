@@ -10,7 +10,8 @@ describe("economy recipe data", () => {
     expect(RECIPES.every((recipe) => recipe.costs.length > 0 && recipe.costs.every((cost) => cost.qty > 0))).toBe(true);
     const powerups = RECIPES.flatMap((recipe) => recipe.output.kind === "item" && recipe.output.item.kind === "powerup" ? [recipe.output.item.type] : []);
     expect(new Set(powerups)).toEqual(new Set(["health", "radar", "dashOvercharge", "incognito"]));
-    expect(RECIPES.every((recipe) => recipe.output.kind !== "item" || recipe.output.item.kind === "powerup")).toBe(true);
+    expect(RECIPES.filter((recipe) => recipe.output.kind === "item" && recipe.output.item.kind === "mine"))
+      .toMatchObject([{ id: "fabricate-mine", requiresBlueprint: "workbench" }]);
     const expansion = RECIPES.find((recipe) => recipe.id === "expansion-secondFloor");
     expect(expansion).toMatchObject({ output: { kind: "expansion", upgradeId: "secondFloor" } });
     expect(expansion?.costs).toEqual([

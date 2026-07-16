@@ -15,7 +15,7 @@ import {
 import { RECIPES, SECOND_FLOOR_UPGRADE_ID, recipeById, type Recipe } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { contractDayStamp, contractObjectiveLabel, generateContractOffers } from "@dotbot/game/contracts";
-import type { BaseLayout, BaseObjectKind, BaseShellId, ContractDefinition, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
+import type { BaseLayout, BaseObjectKind, BaseShellId, ContractDefinition, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import { createSession } from "../../game/session/createSession";
@@ -247,7 +247,7 @@ export function BaseApp() {
         headers: { "content-type": "application/json", "x-device-token": token },
         body: JSON.stringify({ presetIndex }),
       });
-      const body = await response.json() as BasePayload & { error?: string; missing?: Array<{ itemType: WirePowerupCode; qty: number }> };
+      const body = await response.json() as BasePayload & { error?: string; missing?: Array<{ itemType: WireLoadoutCode; qty: number }> };
       if (!response.ok) throw new Error(body.error ?? `Preset apply failed (${response.status})`);
       setBase((current) => ({ ...body, layout: current.layout }));
       const missing = body.missing ?? [];
@@ -674,7 +674,7 @@ function BayConsolePanel({ base, updateLoadout, savePresets, applyPreset, notice
       <button type="button" disabled={!presetName.trim() || base.loadout.length === 0} onClick={() => {
         const clean = presetName.trim().replace(/\s+/g, " ").slice(0, 24);
         if (!clean) return;
-        void savePresets([...base.presets, { name: clean, items: base.loadout.filter(isWirePowerup) as WirePowerupCode[] }]);
+        void savePresets([...base.presets, { name: clean, items: base.loadout.filter(isWireLoadout) }]);
         setPresetName("");
       }}>SAVE CURRENT</button>
     </div> : null}
@@ -823,8 +823,8 @@ function objectName(kind: BaseObjectKind): string {
   return kind.replace(/([A-Z])/g, " $1").toUpperCase();
 }
 
-function isWirePowerup(code: WireItemCode): code is WirePowerupCode {
-  return code === "h" || code === "r" || code === "d" || code === "i";
+function isWireLoadout(code: WireItemCode): code is WireLoadoutCode {
+  return code === "h" || code === "r" || code === "d" || code === "i" || code === "m";
 }
 
 function moveObject(layout: BaseLayout, from: string, to: string): BaseLayout {
@@ -852,9 +852,9 @@ function readLocalShell(): BaseShellId {
 }
 
 function wireItemGlyph(code: WireItemCode): string {
-  return code === "h" ? "+" : code === "r" ? "◎" : code === "d" ? "›" : code === "i" ? "◌" : "⌑";
+  return code === "h" ? "+" : code === "r" ? "◎" : code === "d" ? "›" : code === "i" ? "◌" : code === "m" ? "×" : "⌑";
 }
 function wireItemName(code: WireItemCode): string {
   if (code.startsWith("b:")) return `${code.slice(2)} fragment`;
-  return code === "h" ? "Health" : code === "r" ? "Radar" : code === "d" ? "Dash overcharge" : "Incognito";
+  return code === "h" ? "Health" : code === "r" ? "Radar" : code === "d" ? "Dash overcharge" : code === "i" ? "Incognito" : "Mine";
 }

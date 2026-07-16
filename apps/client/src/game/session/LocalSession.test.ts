@@ -116,6 +116,7 @@ function snapshot(timeMs: number, bots: GameSnapshot["bots"]): GameSnapshot {
     timeMs,
     bots,
     dots: [],
+    mines: [],
     coverages: [],
     noises: [],
     debug: { tickHz: 10, tickCount: 1, fps: 60, activeBodies: bots.length, activeDots: 0 },

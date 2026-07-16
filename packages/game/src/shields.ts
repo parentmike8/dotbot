@@ -81,6 +81,16 @@ export function nearestLivePlate(facing: number, segments: number[], impactAngle
   return best;
 }
 
+/** Shatter the intact plate nearest an impact. Cracked plates do not count as intact. */
+export function shatterNearestIntactPlate(facing: number, segments: number[], impactAngle: number): number | null {
+  const intactOnly = segments.map((segment) => segment === 1 ? segment : 0);
+  const nearest = nearestLivePlate(facing, intactOnly, impactAngle);
+  if (nearest === null) return null;
+  segments[nearest] = 0;
+  reseatPlates(segments);
+  return nearest;
+}
+
 /** Fresh plate array with the first `count` plates intact. */
 export function platesForCount(maxShields: number, count: number): number[] {
   return Array.from({ length: maxShields }, (_, index) => (index < count ? 1 : 0));

@@ -45,8 +45,8 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       <aside className="net-game-bays" aria-label="In-run bays">
         <span>BAYS</span>
         <div>{(player?.bays ?? [null, null, null, null]).map((item, index) => (
-          <b key={index} aria-label={item ? item.kind === "blueprint" ? `${item.blueprintId} blueprint` : item.type : `Empty bay ${index + 1}`}>
-            {item?.kind === "blueprint" ? "⌑" : item?.type === "health" ? "+" : item?.type === "radar" ? "◎" : item?.type === "dashOvercharge" ? "›" : item?.type === "incognito" ? "◌" : "·"}
+          <b key={index} aria-label={item ? item.kind === "blueprint" ? `${item.blueprintId} blueprint` : item.kind === "mine" ? "mine" : item.type : `Empty bay ${index + 1}`}>
+            {item?.kind === "blueprint" ? "⌑" : item?.kind === "mine" ? "×" : item?.type === "health" ? "+" : item?.type === "radar" ? "◎" : item?.type === "dashOvercharge" ? "›" : item?.type === "incognito" ? "◌" : "·"}
           </b>
         ))}</div>
       </aside>

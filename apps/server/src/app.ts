@@ -8,7 +8,7 @@ import type { WireItemCode } from "@dotbot/protocol";
 import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
-import type { BaseLayout, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
+import type { BaseLayout, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import { createPersistence, type Persistence } from "./db";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
 
@@ -286,7 +286,7 @@ function parseBaseLayout(value: unknown): BaseLayout | null {
 
 function parseLoadout(value: unknown): WireItemCode[] | null {
   if (!Array.isArray(value) || value.length > 4) return null;
-  return value.every((code) => code === "h" || code === "r" || code === "d" || code === "i") ? value as WireItemCode[] : null;
+  return value.every(isWireLoadoutCode) ? value as WireItemCode[] : null;
 }
 
 function parsePresets(value: unknown): LoadoutPreset[] | null {
@@ -297,14 +297,14 @@ function parsePresets(value: unknown): LoadoutPreset[] | null {
     const raw = candidate as { name?: unknown; items?: unknown };
     const name = typeof raw.name === "string" ? raw.name.trim().replace(/\s+/g, " ").slice(0, 24) : "";
     if (!name || !Array.isArray(raw.items) || raw.items.length > 4) return null;
-    if (!raw.items.every(isWirePowerupCode)) return null;
-    presets.push({ name, items: raw.items as WirePowerupCode[] });
+    if (!raw.items.every(isWireLoadoutCode)) return null;
+    presets.push({ name, items: raw.items as WireLoadoutCode[] });
   }
   return presets;
 }
 
-function isWirePowerupCode(value: unknown): value is WirePowerupCode {
-  return value === "h" || value === "r" || value === "d" || value === "i";
+function isWireLoadoutCode(value: unknown): value is WireLoadoutCode {
+  return value === "h" || value === "r" || value === "d" || value === "i" || value === "m";
 }
 
 function errorMessage(error: unknown): string {

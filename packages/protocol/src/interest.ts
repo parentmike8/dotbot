@@ -44,6 +44,7 @@ export function filterForViewer(
   });
   const includedBotIds = new Set(bots.map((bot) => bot.i));
   const dots = wire.dots.filter((dot) => visibleFloors.has(physicsFloorId(viewerCtx.map, dot.floorId)));
+  const mines = wire.mines.filter((mine) => visibleFloors.has(physicsFloorId(viewerCtx.map, mine.floorId)));
   const coverages = wire.coverages.filter((coverage) =>
     visibleFloors.has(physicsFloorForBot(wire.bots, viewerCtx.map, coverage.actorId))
       || includedBotIds.has(coverage.actorId)
@@ -63,7 +64,7 @@ export function filterForViewer(
     ) !== null,
   ));
 
-  return { ...wire, bots, dots, coverages, noises };
+  return { ...wire, bots, dots, mines, coverages, noises };
 }
 
 export function filterEventsForViewer(

@@ -18,19 +18,20 @@ const outcomeLabels: Record<RunResult["outcome"], string> = {
 
 function manifestName(item: Item): string {
   if (item.kind === "blueprint") return `Blueprint / ${item.blueprintId}`;
+  if (item.kind === "mine") return "Mine";
   return ({ health: "Health", radar: "Radar", dashOvercharge: "Dash overcharge", incognito: "Incognito" } as const)[item.type];
 }
 
 function ItemList({ items }: { items: Item[] }) {
   const counts = new Map<string, { item: Item; count: number }>();
   for (const item of items) {
-    const key = item.kind === "blueprint" ? `blueprint:${item.blueprintId}` : `powerup:${item.type}`;
+    const key = item.kind === "blueprint" ? `blueprint:${item.blueprintId}` : item.kind === "mine" ? "mine" : `powerup:${item.type}`;
     const current = counts.get(key);
     counts.set(key, { item, count: (current?.count ?? 0) + 1 });
   }
   if (counts.size === 0) return <span className="manifest-empty">None</span>;
   return <ul className="manifest-items">{[...counts.values()].map(({ item, count }) => (
-    <li key={manifestName(item)}><span>{item.kind === "blueprint" ? "⌑" : item.type === "health" ? "+" : item.type === "radar" ? "◎" : item.type === "dashOvercharge" ? "›" : "◌"}</span>{manifestName(item)} <b>×{count}</b></li>
+    <li key={manifestName(item)}><span>{item.kind === "blueprint" ? "⌑" : item.kind === "mine" ? "×" : item.type === "health" ? "+" : item.type === "radar" ? "◎" : item.type === "dashOvercharge" ? "›" : "◌"}</span>{manifestName(item)} <b>×{count}</b></li>
   ))}</ul>;
 }
 

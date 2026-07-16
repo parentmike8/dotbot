@@ -1,10 +1,12 @@
-import type { Item, WirePowerupCode } from "@dotbot/game/types";
+import type { Item, WireLoadoutCode, WirePowerupCode } from "@dotbot/game/types";
 
 export type { WirePowerupCode } from "@dotbot/game/types";
-export type WireItemCode = WirePowerupCode | `b:${string}`;
+export type { WireLoadoutCode } from "@dotbot/game/types";
+export type WireItemCode = WireLoadoutCode | `b:${string}`;
 
 export function itemToCode(item: Item): WireItemCode {
   if (item.kind === "blueprint") return `b:${item.blueprintId}`;
+  if (item.kind === "mine") return "m";
   return ({ health: "h", radar: "r", dashOvercharge: "d", incognito: "i" } as const)[item.type];
 }
 
@@ -15,6 +17,7 @@ export function itemFromCode(code: WireItemCode): Item {
     case "r": return { kind: "powerup", type: "radar" };
     case "d": return { kind: "powerup", type: "dashOvercharge" };
     case "i": return { kind: "powerup", type: "incognito" };
+    case "m": return { kind: "mine" };
     default: throw new Error(`Unknown wire item code: ${code}`);
   }
 }

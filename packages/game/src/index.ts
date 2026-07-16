@@ -37,4 +37,5 @@ export type {
   SimEvent,
   Vec2,
   WirePowerupCode,
+  WireLoadoutCode,
 } from "./types";

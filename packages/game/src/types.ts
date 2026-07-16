@@ -19,14 +19,16 @@ export type DownedHostileVerb = "consume" | "reviveClean" | "lootThenRevive";
 
 /** Compact persistence/wire codes for powerups. Blueprint cargo is excluded. */
 export type WirePowerupCode = "h" | "r" | "d" | "i";
+export type WireLoadoutCode = WirePowerupCode | "m";
 
 export type LoadoutPreset = {
   name: string;
-  items: WirePowerupCode[];
+  items: WireLoadoutCode[];
 };
 
 export type Item = (
   | { kind: "powerup"; type: PowerupType }
+  | { kind: "mine" }
   | { kind: "blueprint"; blueprintId: string }
 ) & { /** Authored building where this cargo was captured, when applicable. */ sourceBuildingId?: string };
 
@@ -46,13 +48,24 @@ export type ContractDefinition = {
 
 export type RadarPing = Vec2 & { ageMs: number };
 
+export type MineEntity = GameEntity & {
+  placedByBotId: string;
+  squadId: string;
+  floorId: string;
+  placedAtMs: number;
+  /** Player ids with a live radar reveal; filtered before delivery. */
+  revealedToBotIds: string[];
+};
+
 export type SimEvent =
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "consumed"; botId: string; byBotId: string; lostItems: Item[] }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "plea"; botId: string; squadId: string; position: Vec2; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
-  | { type: "extracted"; botId: string; squadId: string; items: Item[] };
+  | { type: "extracted"; botId: string; squadId: string; items: Item[] }
+  | { type: "mineRotated"; botId: string; mineId: string }
+  | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: Vec2; floorId: string };
 
 // ---------------------------------------------------------------------------
 // Map document model
@@ -368,7 +381,7 @@ export type InputCommand = {
 
 export type CoverageKind = "capture" | "consume" | "revive" | "reviveClean" | "lootThenRevive" | "extract" | "swap";
 
-export type NoiseKind = "dash" | "impact" | "stairs" | "channel";
+export type NoiseKind = "dash" | "impact" | "stairs" | "channel" | "mineDetonation";
 
 /** A sound the simulation emitted; rendered as an expanding ink ring. */
 export type NoiseEvent = {
@@ -402,6 +415,9 @@ export type GameConfig = {
   radarPingIntervalMs: number;
   radarRadius: number;
   radarPingTtlMs: number;
+  mineSenseRadius: number;
+  mineSensePingMs: number;
+  maxActiveMines: number;
   dashOverchargeUses: number;
   incognitoDurationMs: number;
   powerupNoiseLoudness: number;
@@ -431,6 +447,7 @@ export type GameSnapshot = {
   timeMs: number;
   bots: DotBotEntity[];
   dots: DotEntity[];
+  mines: MineEntity[];
   coverages: CoverageSnapshot[];
   noises: NoiseEvent[];
   debug: {

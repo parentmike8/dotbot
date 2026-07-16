@@ -1,4 +1,4 @@
-import type { DotEntity, DownedHostileVerb, GameConfig, MapDocument, RadarPing } from "@dotbot/game/types";
+import type { DotEntity, DownedHostileVerb, GameConfig, MapDocument, MineEntity, RadarPing } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
@@ -47,6 +47,7 @@ export type WireSnapshot = {
   ack: number;
   bots: WireBot[];
   dots: Array<Omit<DotEntity, "item"> & { it: WireItemCode }>;
+  mines: MineEntity[];
   coverages: import("@dotbot/game/types").CoverageSnapshot[];
   noises: import("@dotbot/game/types").NoiseEvent[];
 };
@@ -57,7 +58,9 @@ export type WireSimEvent =
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "plea"; botId: string; squadId: string; position: { x: number; y: number }; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
-  | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[] };
+  | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[] }
+  | { type: "mineRotated"; botId: string; mineId: string }
+  | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: { x: number; y: number }; floorId: string };
 
 export type ClientMessage =
   | { type: "hello"; token: string; name: string; roomCode: string; preferredSquad?: LobbySquadId }

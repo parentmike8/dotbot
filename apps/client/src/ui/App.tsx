@@ -18,12 +18,14 @@ function formatRunClock(timeMs: number): string {
 
 function itemLabel(item: Item): string {
   if (item.kind === "blueprint") return `Blueprint: ${item.blueprintId}`;
+  if (item.kind === "mine") return "Mine";
   return ({ health: "Health", radar: "Radar", dashOvercharge: "Dash overcharge", incognito: "Incognito" } as const)[item.type];
 }
 
 function itemGlyph(item: Item | null): string {
   if (!item) return "·";
   if (item.kind === "blueprint") return "⌑";
+  if (item.kind === "mine") return "×";
   return ({ health: "+", radar: "◎", dashOvercharge: "›", incognito: "◌" } as const)[item.type];
 }
 

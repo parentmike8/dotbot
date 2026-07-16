@@ -1,5 +1,5 @@
 import type { WireItemCode } from "@dotbot/protocol";
-import type { BaseLayout, BaseShellId, ContractDefinition, Item, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
+import type { BaseLayout, BaseShellId, ContractDefinition, Item, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import type { Recipe } from "@dotbot/game/content/recipes";
 
 export type PlayerIdentity = {
@@ -60,7 +60,7 @@ export type FabricationResult = {
 
 export type PresetApplyResult = {
   base: PlayerBase;
-  missing: Array<{ itemType: WirePowerupCode; qty: number }>;
+  missing: Array<{ itemType: WireLoadoutCode; qty: number }>;
 };
 
 export interface Persistence {

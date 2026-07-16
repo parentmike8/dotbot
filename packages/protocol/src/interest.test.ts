@@ -32,7 +32,7 @@ const noises: NoiseEvent[] = [
   { id: "leak", kind: "dash", position: { x: 400, y: 250 }, floorId: "mercy:F1", loudness: 0.8, ageMs: 0, ttlMs: 1000 },
   { id: "quiet", kind: "dash", position: { x: 400, y: 250 }, floorId: "mercy:F1", loudness: 0.5, ageMs: 0, ttlMs: 1000 },
 ];
-const wire: WireSnapshot = { tick: 1, ack: 0, bots, dots, coverages, noises };
+const wire: WireSnapshot = { tick: 1, ack: 0, bots, dots, mines: [], coverages, noises };
 
 describe("filterForViewer", () => {
   it("includes the viewer floor, excludes other-floor enemies, and always includes squadmates", () => {

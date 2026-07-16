@@ -20,7 +20,7 @@ import {
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, insertItem } from "./inventory";
-import { applyShieldHit, platesForCount, plateSum, restoreShieldPlate } from "./shields";
+import { applyShieldHit, platesForCount, plateSum, restoreShieldPlate, shatterNearestIntactPlate } from "./shields";
 import { loadRapier } from "./rapier";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import { hasLineOfSight } from "./visibility";
@@ -38,6 +38,7 @@ import type {
   InputCommand,
   Item,
   MapDocument,
+  MineEntity,
   NoiseEvent,
   NoiseKind,
   Rect,
@@ -56,6 +57,7 @@ const NOISE_LOUDNESS = {
   captureChannel: 0.5,
   coverChannel: 0.65,
   extractChannel: 0.7,
+  mineDetonation: 1.0,
 } as const;
 
 type RapierApi = typeof RAPIER;
@@ -88,6 +90,11 @@ type InternalBot = DotBotEntity & {
 
 type InternalDot = DotEntity;
 
+type InternalMine = MineEntity & {
+  sensorElapsedMs: number;
+  revealMsByBotId: Map<string, number>;
+};
+
 type ActiveCoverage = CoverageSnapshot;
 
 type AiIntent = "loot" | "hunt" | "revive" | "consume" | "extract" | "investigate" | "escort" | "wander";
@@ -117,6 +124,7 @@ export class DotBotSimulation {
   private readonly controllers = new Map<string, Controller>();
   private readonly inputs = new Map<string, InputCommand>();
   private readonly dots = new Map<string, InternalDot>();
+  private readonly mines = new Map<string, InternalMine>();
   private readonly coverages = new Map<string, ActiveCoverage>();
   /** Physics layer index per floor id (GROUND floors resolve to the outdoor layer). */
   private readonly layers: Map<string, number>;
@@ -133,6 +141,7 @@ export class DotBotSimulation {
   private noises: NoiseEvent[] = [];
   private noiseSeq = 0;
   private spillSeq = 0;
+  private mineSeq = 0;
 
   private constructor(rapier: RapierApi, map: MapDocument, config: GameConfig) {
     this.rapier = rapier;
@@ -422,6 +431,7 @@ export class DotBotSimulation {
     this.resolveWallPenetration();
     this.syncPhysicsPositions();
     this.resolveStairs();
+    this.resolveMines(dtMs);
     this.resolveCombat();
     this.resolveDotCapture(dtMs);
     this.resolveDownedCoverage(dtMs);
@@ -433,11 +443,22 @@ export class DotBotSimulation {
   getSnapshot(): GameSnapshot {
     const bots = [...this.bots.values()].map(toBotSnapshot);
     const dots = [...this.dots.values()].map((dot) => ({ ...dot, position: { ...dot.position } }));
+    const mines = [...this.mines.values()].map((mine): MineEntity => ({
+      id: mine.id,
+      position: { ...mine.position },
+      radius: mine.radius,
+      placedByBotId: mine.placedByBotId,
+      squadId: mine.squadId,
+      floorId: mine.floorId,
+      placedAtMs: mine.placedAtMs,
+      revealedToBotIds: [...mine.revealMsByBotId.keys()],
+    }));
 
     return {
       timeMs: this.timeMs,
       bots,
       dots,
+      mines,
       coverages: [...this.coverages.values()].map((coverage) => ({ ...coverage })),
       noises: this.noises.map((noise) => ({ ...noise, position: { ...noise.position } })),
       debug: {
@@ -529,6 +550,14 @@ export class DotBotSimulation {
         }
       }
     }
+
+    for (const mine of this.mines.values()) {
+      for (const [botId, remainingMs] of mine.revealMsByBotId) {
+        const next = remainingMs - dtMs;
+        if (next <= 0) mine.revealMsByBotId.delete(botId);
+        else mine.revealMsByBotId.set(botId, next);
+      }
+    }
   }
 
   private updateHumanIntents(): void {
@@ -592,8 +621,12 @@ export class DotBotSimulation {
 
   private fireBay(bot: InternalBot, bayIndex: 0 | 1 | 2 | 3): void {
     const item = bot.bays[bayIndex];
-    if (!item || item.kind !== "powerup") return;
+    if (!item || item.kind === "blueprint") return;
     bot.bays[bayIndex] = null;
+    if (item.kind === "mine") {
+      this.placeMine(bot);
+      return;
+    }
     switch (item.type) {
       case "health":
         restoreShieldPlate(bot.shieldSegments);
@@ -602,6 +635,11 @@ export class DotBotSimulation {
       case "radar":
         bot.radarActiveMs = this.config.radarDurationMs;
         bot.radarPingElapsedMs = 0;
+        for (const mine of this.mines.values()) {
+          if (mine.floorId === bot.floorId && distance(mine.position, bot.position) <= this.config.radarRadius) {
+            mine.revealMsByBotId.set(bot.id, this.config.radarDurationMs);
+          }
+        }
         break;
       case "dashOvercharge":
         bot.dashOverchargeCharges += this.config.dashOverchargeUses;
@@ -611,6 +649,81 @@ export class DotBotSimulation {
         break;
     }
     this.emitNoise("channel", bot.position, bot.floorId, this.config.powerupNoiseLoudness, bot);
+  }
+
+  private placeMine(bot: InternalBot): void {
+    const mine: InternalMine = {
+      id: `mine-${bot.id}-${this.mineSeq++}`,
+      position: { ...bot.position },
+      radius: this.config.dotRadius,
+      placedByBotId: bot.id,
+      squadId: bot.squadId,
+      floorId: bot.floorId,
+      placedAtMs: this.timeMs,
+      revealedToBotIds: [],
+      sensorElapsedMs: 0,
+      revealMsByBotId: new Map(),
+    };
+    this.mines.set(mine.id, mine);
+
+    const owned = [...this.mines.values()]
+      .filter((candidate) => candidate.placedByBotId === bot.id)
+      .sort((left, right) => left.placedAtMs - right.placedAtMs || left.id.localeCompare(right.id));
+    while (owned.length > this.config.maxActiveMines) {
+      const oldest = owned.shift()!;
+      this.mines.delete(oldest.id);
+      this.events.push({ type: "mineRotated", botId: bot.id, mineId: oldest.id });
+    }
+  }
+
+  private resolveMines(dtMs: number): void {
+    for (const mine of [...this.mines.values()]) {
+      const intruders = [...this.bots.values()]
+        .filter((bot) => bot.state === "alive" && bot.squadId !== mine.squadId && bot.floorId === mine.floorId)
+        .sort((left, right) => distance(left.position, mine.position) - distance(right.position, mine.position) || left.id.localeCompare(right.id));
+      const trigger = intruders.find((bot) => distance(bot.position, mine.position) + mine.radius <= bot.radius - 2);
+      if (trigger) {
+        this.detonateMine(mine, trigger);
+        continue;
+      }
+
+      const sensed = intruders.find((bot) => distance(bot.position, mine.position) <= this.config.mineSenseRadius);
+      if (!sensed) {
+        mine.sensorElapsedMs = 0;
+        continue;
+      }
+      mine.sensorElapsedMs += dtMs;
+      while (mine.sensorElapsedMs >= this.config.mineSensePingMs) {
+        mine.sensorElapsedMs -= this.config.mineSensePingMs;
+        this.events.push({
+          type: "mineSensor",
+          botId: mine.placedByBotId,
+          squadId: mine.squadId,
+          mineId: mine.id,
+          position: { ...sensed.position },
+          floorId: mine.floorId,
+        });
+      }
+    }
+  }
+
+  private detonateMine(mine: InternalMine, target: InternalBot): void {
+    this.mines.delete(mine.id);
+    const impactAngle = Math.atan2(mine.position.y - target.position.y, mine.position.x - target.position.x);
+    const shattered = shatterNearestIntactPlate(target.facing, target.shieldSegments, impactAngle);
+    target.shields = plateSum(target.shieldSegments);
+    target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
+    this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation);
+
+    if (shattered === null || target.shields <= 0) {
+      target.shieldSegments = platesForCount(target.maxShields, 0);
+      target.shields = 0;
+      target.state = "downed";
+      target.dashActiveMs = 0;
+      target.body.setLinvel(zeroVec(), true);
+      this.setBotPhysicsState(target, "downed");
+      this.events.push({ type: "downed", botId: target.id, byBotId: mine.placedByBotId });
+    }
   }
 
   private updateBotAi(): void {

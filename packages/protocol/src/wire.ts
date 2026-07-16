@@ -25,6 +25,7 @@ export function toWireSnapshot(snapshot: GameSnapshot, ack = 0): WireSnapshot {
     ack,
     bots: snapshot.bots.map(toWireBot),
     dots: snapshot.dots.map(({ item, ...dot }) => ({ ...dot, it: itemToCode(item) })),
+    mines: snapshot.mines.map((mine) => ({ ...mine, position: { ...mine.position }, revealedToBotIds: [...mine.revealedToBotIds] })),
     coverages: snapshot.coverages,
     noises: snapshot.noises,
   };
@@ -60,6 +61,7 @@ export function fromWireSnapshot(wire: WireSnapshot, metaIndex: ReadonlyMap<stri
     timeMs: wire.tick * (1000 / 60),
     bots: wire.bots.map((bot) => fromWireBot(bot, metaIndex)),
     dots: wire.dots.map(({ it, ...dot }) => ({ ...dot, item: itemFromCode(it) })),
+    mines: wire.mines.map((mine) => ({ ...mine, position: { ...mine.position }, revealedToBotIds: [...mine.revealedToBotIds] })),
     coverages: wire.coverages,
     noises: wire.noises,
     debug: {

@@ -38,6 +38,7 @@ const snapshot: GameSnapshot = {
     id: "dot-a", item: { kind: "powerup", type: "radar" }, position: { x: 4, y: 5 }, radius: 10,
     floorId: "outdoor", active: true, captureProgressMs: 0,
   }],
+  mines: [],
   coverages: [],
   noises: [],
   debug: { tickHz: 60, tickCount: 12, fps: 60, activeBodies: 1, activeDots: 1 },
@@ -73,9 +74,10 @@ describe("compact item codes", () => {
       { kind: "powerup", type: "radar" },
       { kind: "powerup", type: "dashOvercharge" },
       { kind: "powerup", type: "incognito" },
+      { kind: "mine" },
       { kind: "blueprint", blueprintId: "serverRack" },
     ] as const;
-    expect(items.map(itemToCode)).toEqual(["h", "r", "d", "i", "b:serverRack"]);
+    expect(items.map(itemToCode)).toEqual(["h", "r", "d", "i", "m", "b:serverRack"]);
     expect(items.map(itemToCode).map(itemFromCode)).toEqual(items);
   });
 });

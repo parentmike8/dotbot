@@ -467,6 +467,11 @@ export class GameRenderer {
         .moveTo(x - size, y + size * 0.55).lineTo(x + size, y + size * 0.55).stroke(line);
       return;
     }
+    if (item.kind === "mine") {
+      g.moveTo(x - size, y - size).lineTo(x + size, y + size)
+        .moveTo(x + size, y - size).lineTo(x - size, y + size).stroke(line);
+      return;
+    }
     if (item.type === "health") {
       g.moveTo(x - size, y).lineTo(x + size, y).moveTo(x, y - size).lineTo(x, y + size).stroke(line);
       return;

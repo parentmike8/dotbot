@@ -51,6 +51,15 @@ export const RECIPES: readonly Recipe[] = [
     })),
   },
   {
+    id: "fabricate-mine",
+    output: { kind: "item", item: { kind: "mine" } },
+    costs: [
+      { itemType: "d", qty: 1 },
+      { itemType: "i", qty: 1 },
+    ],
+    requiresBlueprint: "workbench",
+  },
+  {
     id: "convert-health",
     output: { kind: "item", item: { kind: "powerup", type: "health" } },
     costs: [{ itemType: "r", qty: 2 }],

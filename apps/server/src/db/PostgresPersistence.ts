@@ -5,7 +5,7 @@ import { BASE_SLOT_DEFS, DEFAULT_BASE_SHELL, isObjectAllowedInSlot, starterBaseL
 import { recipeById, SECOND_FLOOR_UPGRADE_ID } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { CONTRACT_ACTIVE_CAP, contractDayStamp, contractSatisfied, generateContractOffers } from "@dotbot/game/contracts";
-import type { BaseLayout, BaseShellId, ContractDefinition, LoadoutPreset, WirePowerupCode } from "@dotbot/game/types";
+import type { BaseLayout, BaseShellId, ContractDefinition, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import type {
@@ -296,7 +296,7 @@ export class PostgresPersistence implements Persistence {
       const rows = await tx.select({ id: stashItems.id, itemType: stashItems.itemType, qty: stashItems.qty })
         .from(stashItems).where(eq(stashItems.playerId, player.id)).orderBy(stashItems.acquiredAt).for("update");
       const applied: WireItemCode[] = [];
-      const missingCounts = new Map<WirePowerupCode, number>();
+      const missingCounts = new Map<WireLoadoutCode, number>();
       for (const itemType of preset.items) {
         const row = rows.find((candidate) => candidate.itemType === itemType && candidate.qty > 0);
         if (!row) {
