@@ -35,6 +35,11 @@ type Member = LobbyMember & {
   /** Ticks a lone frame has waited for its pair; bounded so sparse scripted
    * clients (single-frame messages) are never starved indefinitely. */
   starveHoldTicks: number;
+  /** Adaptive jitter-buffer window: minimum queue depth seen this window and
+   * ticks elapsed. Standing backlog (real input latency) keeps the minimum
+   * high across a whole window; burst padding dips it back down. */
+  backlogWindowMinDepth: number;
+  backlogWindowTicks: number;
   handoffTimer: ReturnType<typeof setTimeout> | null;
   inRun: boolean;
   streaming: boolean;
@@ -168,6 +173,8 @@ export class Room {
       lastAppliedSeq: 0,
       inputStarved: true,
       starveHoldTicks: 0,
+      backlogWindowMinDepth: Number.POSITIVE_INFINITY,
+      backlogWindowTicks: 0,
       handoffTimer: null,
       inRun: false,
       streaming: true,
@@ -365,6 +372,7 @@ export class Room {
    * repeats with its one-shot edges (dash, bay use, plea) cleared.
    */
   private consumeInputFrame(member: Member): InputCommand {
+    this.trimStandingBacklog(member);
     if (member.inputStarved && member.inputQueue.length === 1 && member.starveHoldTicks < 2) {
       member.starveHoldTicks += 1;
       return member.heldInput;
@@ -387,21 +395,38 @@ export class Room {
       plea: frame.plea,
     };
     member.heldInput = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
-    // A stall-burst leaves a standing backlog, which is standing input
-    // latency; converge back to the de-jitter target by discarding one frame
-    // per tick — a tick-sized correction the client blend absorbs — while
-    // preserving frames that carry one-shot edges when possible.
-    if (member.inputQueue.length > 2) {
+    return input;
+  }
+
+  /**
+   * Adaptive jitter-buffer trim. Burst padding comes and goes within a
+   * window; standing backlog — permanent input latency left behind by a
+   * transport stall — keeps even the window's MINIMUM depth above the
+   * de-jitter target. Only that surplus is trimmed (once a second, edge-free
+   * frames first), so ordinary burst absorption never costs a correction.
+   */
+  private trimStandingBacklog(member: Member): void {
+    member.backlogWindowMinDepth = Math.min(member.backlogWindowMinDepth, member.inputQueue.length);
+    member.backlogWindowTicks += 1;
+    if (member.backlogWindowTicks < 60) {
+      return;
+    }
+    const surplus = Math.min(member.backlogWindowMinDepth, member.inputQueue.length) - 2;
+    member.backlogWindowTicks = 0;
+    member.backlogWindowMinDepth = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < surplus; index += 1) {
       const candidate = member.inputQueue.findIndex(
         (queued) => !queued.dash && queued.useBay === undefined && !queued.swapBay && !queued.plea,
       );
       const dropAt = candidate === -1 ? 0 : candidate;
       const dropped = member.inputQueue.splice(dropAt, 1)[0];
+      if (!dropped) {
+        break;
+      }
       if (dropAt === 0) {
         member.lastAppliedSeq = Math.max(member.lastAppliedSeq, dropped.seq);
       }
     }
-    return input;
   }
 
   private beginCountdown(): void {
@@ -482,6 +507,8 @@ export class Room {
       member.lastAppliedSeq = 0;
       member.inputStarved = true;
       member.starveHoldTicks = 0;
+      member.backlogWindowMinDepth = Number.POSITIVE_INFINITY;
+      member.backlogWindowTicks = 0;
       member.inRun = true;
       member.streaming = true;
       member.runOver = null;
