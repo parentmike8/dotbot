@@ -68,6 +68,8 @@ export class GameRenderer {
   private destroyed = false;
   private lastViewer: DotBotEntity | null = null;
   private lastTimeMs = 0;
+  private cameraCenter: Vec2 | null = null;
+  private lastCameraAt = performance.now();
   private readonly pleaSignals = new Map<string, { event: Extract<SimEvent, { type: "plea" }>; startedAt: number }>();
   private readonly mineSignals = new Map<string, { event: Extract<SimEvent, { type: "mineSensor" }>; startedAt: number }>();
   private readonly draftAnimations = new Map<string, DraftAnimation>();
@@ -182,8 +184,9 @@ export class GameRenderer {
   render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null, intel?: MatchIntel): void {
     this.lastTimeMs = snapshot.timeMs;
     this.updateDraftAnimations(performance.now());
-    const currentPlayer = snapshot.bots.find((bot) => bot.id === playerId);
-    const player = currentPlayer ?? (preserveMissingViewer ? this.lastViewer ?? undefined : snapshot.bots[0]);
+    const overview = preserveMissingViewer;
+    const currentPlayer = overview ? undefined : snapshot.bots.find((bot) => bot.id === playerId);
+    const player = overview ? undefined : currentPlayer ?? snapshot.bots[0];
     if (currentPlayer) this.lastViewer = currentPlayer;
     const center = player?.position ?? { x: this.map.width / 2, y: this.map.height / 2 };
     const camera = this.getCamera(center);
@@ -390,12 +393,21 @@ export class GameRenderer {
   }
 
   private getCamera(target: Vec2): { x: number; y: number; scale: number } {
+    const now = performance.now();
+    const elapsed = Math.max(0, Math.min(100, now - this.lastCameraAt));
+    this.lastCameraAt = now;
+    if (!this.cameraCenter) this.cameraCenter = { ...target };
+    const alpha = 1 - Math.exp(-elapsed / 180);
+    this.cameraCenter = {
+      x: this.cameraCenter.x + (target.x - this.cameraCenter.x) * alpha,
+      y: this.cameraCenter.y + (target.y - this.cameraCenter.y) * alpha,
+    };
     const shortSide = Math.min(this.viewport.width, this.viewport.height);
     const scale = clamp(shortSide / 620, 0.55, 1.0);
     const visibleWidth = this.viewport.width / scale;
     const visibleHeight = this.viewport.height / scale;
-    const centerX = clamp(target.x, visibleWidth / 2, this.map.width - visibleWidth / 2);
-    const centerY = clamp(target.y, visibleHeight / 2, this.map.height - visibleHeight / 2);
+    const centerX = clamp(this.cameraCenter.x, visibleWidth / 2, this.map.width - visibleWidth / 2);
+    const centerY = clamp(this.cameraCenter.y, visibleHeight / 2, this.map.height - visibleHeight / 2);
 
     return {
       x: this.viewport.width / 2 - centerX * scale,

@@ -21,6 +21,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   ) : undefined;
   const hostileChannel = hostileDowned ? snapshot?.coverages.find((coverage) => coverage.actorId === player?.id && coverage.targetId === hostileDowned.id) : undefined;
   const mineRotated = [...events].reverse().find((event) => event.type === "mineRotated");
+  const spectateMode = runResult?.outcome === "died";
   const killCounts = useMemo(() => {
     const viewerSquadId = session.getEntityMeta(session.playerId)?.squadId;
     let ai = 0;
@@ -81,7 +82,11 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         <button className="spectating-chip" type="button" onPointerDown={cycleSpectator}>
           SPECTATING {spectating.name.toUpperCase()}
         </button>
-      ) : null}
+      ) : spectateMode ? <div className="spectating-chip">SQUAD WIPED · MAP OVERVIEW</div> : null}
+      {spectateMode ? <button className="leave-to-base" type="button" onClick={() => {
+        session.leaveRun();
+        onReturnToLobby();
+      }}>LEAVE TO BASE</button> : null}
       <button className="net-dash-button" type="button" disabled={runResult !== null} onPointerDown={queueDash}>
         Dash
       </button>
@@ -99,7 +104,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
           <button type="button" onClick={() => selectDownedVerb("lootThenRevive")}>F · LOOT + REVIVE</button>
         </div>
       ) : null}
-      {runResult ? (
+      {runResult && !spectateMode ? (
         <ManifestScreen
           result={runResult}
           aiKills={killCounts.ai}
