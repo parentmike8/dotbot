@@ -387,6 +387,20 @@ export class Room {
       plea: frame.plea,
     };
     member.heldInput = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
+    // A stall-burst leaves a standing backlog, which is standing input
+    // latency; converge back to the de-jitter target by discarding one frame
+    // per tick — a tick-sized correction the client blend absorbs — while
+    // preserving frames that carry one-shot edges when possible.
+    if (member.inputQueue.length > 2) {
+      const candidate = member.inputQueue.findIndex(
+        (queued) => !queued.dash && queued.useBay === undefined && !queued.swapBay && !queued.plea,
+      );
+      const dropAt = candidate === -1 ? 0 : candidate;
+      const dropped = member.inputQueue.splice(dropAt, 1)[0];
+      if (dropAt === 0) {
+        member.lastAppliedSeq = Math.max(member.lastAppliedSeq, dropped.seq);
+      }
+    }
     return input;
   }
 
