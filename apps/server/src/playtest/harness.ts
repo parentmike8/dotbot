@@ -21,7 +21,7 @@ const sql = postgres(databaseUrl, { max: 2 });
 type Inbox = {
   ws: WebSocket;
   messages: ServerMessage[];
-  bytes: { total: number; bySnap: number; snapCount: number };
+  bytes: { total: number; bySnap: number; snapCount: number; matchStart: number };
   send(message: ClientMessage): void;
   waitFor<T extends ServerMessage["type"]>(type: T, timeoutMs?: number, after?: number): Promise<Extract<ServerMessage, { type: T }>>;
   close(): void;
@@ -33,12 +33,13 @@ async function connect(url: string): Promise<Inbox> {
   const ws = new WebSocket(url);
   await new Promise<void>((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
   const messages: ServerMessage[] = [];
-  const bytes = { total: 0, bySnap: 0, snapCount: 0 };
+  const bytes = { total: 0, bySnap: 0, snapCount: 0, matchStart: 0 };
   ws.on("message", (data) => {
     const text = data.toString();
     bytes.total += text.length;
     const message = JSON.parse(text) as ServerMessage;
     if (message.type === "snap") { bytes.bySnap += text.length; bytes.snapCount += 1; }
+    if (message.type === "matchStart") bytes.matchStart = text.length;
     messages.push(message);
   });
   return {
@@ -85,7 +86,7 @@ async function steer(
   while (Date.now() - started < timeoutMs) {
     if (doneWhen?.()) { inbox.send({ type: "input", seq: ++seqRef.seq, move: [0, 0], dash: false }); return true; }
     const bot = botOf(inbox, botId);
-    if (bot && bot.s === "alive") {
+    if (bot && (bot.s ?? "alive") === "alive") {
       const dx = target.x - bot.p[0];
       const dy = target.y - bot.p[1];
       const dist = Math.hypot(dx, dy);
@@ -394,7 +395,7 @@ async function scenarioCombat() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 3 — load: six humans, three squads, everyone moving, 45 seconds.
+// Scenario 3 — load: six humans by default, three squads, everyone moving.
 // ---------------------------------------------------------------------------
 async function scenarioLoad() {
   const { app, persistence } = await createServer({ databaseUrl, countdownMs: 0 });
@@ -408,7 +409,8 @@ async function scenarioLoad() {
   const welcome = await host.waitFor("welcome");
   const clients: Inbox[] = [host];
   const squads = ["alpha", "alpha", "bravo", "bravo", "crew-3", "crew-3"];
-  for (let index = 1; index < 6; index += 1) {
+  const playerCount = Math.max(2, Math.min(6, Number(process.env.PLAYERS ?? 6)));
+  for (let index = 1; index < playerCount; index += 1) {
     const client = await connect(wsUrl);
     client.send({ type: "hello", token: `load-${index}`, name: `Load ${index}`, roomCode: welcome.roomCode });
     await client.waitFor("welcome");
@@ -421,7 +423,7 @@ async function scenarioLoad() {
   await Promise.all(clients.map((client) => client.waitFor("snap")));
 
   // Reset byte counters after the (one-time) matchStart payload.
-  const startupBytes = clients.map((client) => client.bytes.total);
+  const matchStartBytes = clients.map((client) => client.bytes.matchStart);
   clients.forEach((client) => { client.bytes.total = 0; client.bytes.bySnap = 0; client.bytes.snapCount = 0; });
 
   const seqs = clients.map(() => ({ seq: 0 }));
@@ -443,7 +445,8 @@ async function scenarioLoad() {
 
   const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
   report.load = {
-    matchStartPayloadBytes: startupBytes,
+    players: playerCount,
+    matchStartPayloadBytes: matchStartBytes,
     perClientBytesPerSecond: clients.map((client) => Math.round(client.bytes.total / (measureMs / 1000))),
     perClientSnapBytesPerSecond: clients.map((client) => Math.round(client.bytes.bySnap / (measureMs / 1000))),
     avgSnapBytes: clients.map((client) => (client.bytes.snapCount ? Math.round(client.bytes.bySnap / client.bytes.snapCount) : 0)),

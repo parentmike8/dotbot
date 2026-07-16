@@ -1,11 +1,11 @@
 import { downtownMap } from "@dotbot/game/content/downtown";
 import type { CoverageSnapshot, NoiseEvent } from "@dotbot/game/types";
 import { describe, expect, it } from "vitest";
-import type { EntityMeta, WireBot, WireSnapshot } from "./messages";
+import type { EntityMeta, FullWireSnapshot, WireBot } from "./messages";
 import { filterEventsForViewer, filterForViewer } from "./interest";
 
 const bot = (i: string, fl: string, x: number, y: number, overrides: Partial<WireBot> = {}): WireBot => ({
-  i, fl, p: [x, y], f: 0, s: "alive", sh: [1, 1, 1], b: [null, null, null, null], h: [], c: 0,
+  i, fl, p: [x, y], f: 0, sh: [1, 1, 1], b: [null, null, null, null], h: [], c: 0,
   ...overrides,
 });
 const meta: EntityMeta[] = [
@@ -20,7 +20,7 @@ const bots: WireBot[] = [
   bot("street-enemy", "outdoor", 1000, 660, { b: ["d", null, null, null], h: ["b:bed"], c: 2, r: [100, [{ x: 50, y: 60, ageMs: 0 }]] }),
   bot("upper-enemy", "mercy:F1", 400, 250),
 ];
-const dots: WireSnapshot["dots"] = [
+const dots: FullWireSnapshot["dots"] = [
   { id: "ground-dot", position: { x: 600, y: 500 }, radius: 10, it: "h", floorId: "outdoor", active: true, captureProgressMs: 0 },
   { id: "upper-dot", position: { x: 400, y: 250 }, radius: 10, it: "b:desk", floorId: "mercy:F1", active: true, captureProgressMs: 0 },
 ];
@@ -32,10 +32,10 @@ const noises: NoiseEvent[] = [
   { id: "leak", kind: "dash", position: { x: 400, y: 250 }, floorId: "mercy:F1", loudness: 0.8, ageMs: 0, ttlMs: 1000 },
   { id: "quiet", kind: "dash", position: { x: 400, y: 250 }, floorId: "mercy:F1", loudness: 0.5, ageMs: 0, ttlMs: 1000 },
 ];
-const mines: WireSnapshot["mines"] = [
+const mines: FullWireSnapshot["mines"] = [
   { id: "mine-alpha-0", position: { x: 620, y: 500 }, radius: 10, placedByBotId: "viewer", squadId: "a", floorId: "outdoor", placedAtMs: 10, revealedToBotIds: ["street-enemy"] },
 ];
-const wire: WireSnapshot = { tick: 1, ack: 0, bots, dots, mines, coverages, noises };
+const wire: FullWireSnapshot = { tick: 1, bots, dots, mines, coverages, noises };
 
 describe("filterForViewer", () => {
   it("includes the viewer floor, excludes other-floor enemies, and always includes squadmates", () => {
@@ -81,15 +81,19 @@ describe("filterForViewer", () => {
     const squad = filterForViewer(wire, meta, {
       map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor"]),
     });
-    expect(squad.mines[0]).toMatchObject({ presentation: "squad", seam: false, placedByBotId: "viewer", squadId: "a" });
+    expect(squad.mines[0]).toMatchObject({ presentation: "squad", placedByBotId: "viewer", squadId: "a" });
+    expect(squad.mines[0].seam).toBeUndefined();
 
     const radarFirer = filterForViewer(wire, meta, {
       map: downtownMap, squadId: "b", viewerBotId: "street-enemy", squadPhysicsFloorIds: new Set(["outdoor"]),
     });
-    expect(radarFirer.mines[0]).toMatchObject({ presentation: "revealed", seam: false, placedByBotId: "", squadId: "" });
-    expect(radarFirer.mines[0].revealedToBotIds).toEqual([]);
+    expect(radarFirer.mines[0]).toMatchObject({ presentation: "revealed" });
+    expect(radarFirer.mines[0].seam).toBeUndefined();
+    expect(radarFirer.mines[0].placedByBotId).toBeUndefined();
+    expect(radarFirer.mines[0].squadId).toBeUndefined();
+    expect(radarFirer.mines[0].revealedToBotIds).toBeUndefined();
 
-    const disguisedWire = { ...wire, mines: wire.mines.map((mine) => ({ ...mine, revealedToBotIds: [] })) };
+    const disguisedWire = { ...wire, mines: wire.mines.map(({ revealedToBotIds: _, ...mine }) => mine) };
     const rival = filterForViewer(disguisedWire, meta, {
       map: downtownMap, squadId: "b", viewerBotId: "street-enemy", squadPhysicsFloorIds: new Set(["outdoor"]),
     });

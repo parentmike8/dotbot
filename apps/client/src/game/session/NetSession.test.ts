@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
+import { defaultGameConfig } from "@dotbot/game/config";
 import { NetSession } from "./NetSession";
 
 describe("NetSession item edges", () => {
@@ -41,5 +42,36 @@ describe("NetSession item edges", () => {
       phase: "over",
       contractCompletions: [{ contractId: "contract-test", title: "TEST HAUL", payout: [{ kind: "powerup", type: "radar" }] }],
     });
+  });
+
+  it("seeds dots once, applies ordered deltas, and replaces floor contexts", () => {
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    const receive = (message: unknown) => (session as unknown as { receive(message: unknown): void }).receive(message);
+    receive({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "viewer",
+      meta: [{ id: "viewer", name: "Ada", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
+      tickHz: 60,
+      endTick: 3600,
+      insertionName: "TEST",
+      dotBaseline: [{ id: "outside", position: { x: 1, y: 2 }, radius: 10, floorId: "outdoor", it: "h", active: true }],
+    });
+    const bot = { i: "viewer", p: [0, 0] as [number, number] };
+    receive({ type: "snap", tick: 3, ack: 0, bots: [bot], dotDeltas: [{ id: "outside", captureProgressMs: 500 }] });
+    receive({
+      type: "snap",
+      tick: 6,
+      ack: 0,
+      bots: [{ ...bot, fl: "mercy:F1" }],
+      dotSync: [
+        { context: "outdoor" },
+        { context: "mercy:F1", dots: [{ id: "upper", position: { x: 3, y: 4 }, radius: 10, floorId: "mercy:F1", it: "r", active: false }] },
+      ],
+    });
+    const snapshots = (session as unknown as { snapshots: Array<{ snapshot: { dots: Array<{ id: string; captureProgressMs: number }> } }> }).snapshots;
+    expect(snapshots[0].snapshot.dots).toMatchObject([{ id: "outside", captureProgressMs: 500 }]);
+    expect(snapshots[1].snapshot.dots).toMatchObject([{ id: "upper", captureProgressMs: 0 }]);
   });
 });

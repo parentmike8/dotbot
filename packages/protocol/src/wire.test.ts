@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { DotBotEntity, GameSnapshot } from "@dotbot/game/types";
-import type { ClientMessage, ServerMessage } from "./messages";
+import type { ClientMessage, ServerMessage, WireDot } from "./messages";
 import { assertNever } from "./messages";
-import { fromWireSnapshot, toEntityMeta, toWireSnapshot } from "./wire";
+import { applyWireDotFrame, fromWireSnapshot, toEntityMeta, toViewerSnapshot, toWireSnapshot } from "./wire";
 import { itemFromCode, itemToCode } from "./items";
 
 const bot: DotBotEntity = {
@@ -46,13 +46,14 @@ const snapshot: GameSnapshot = {
 
 describe("snapshot wire mapping", () => {
   it("round-trips entity dynamics through JSON with bounded rounding", () => {
-    const decoded = JSON.parse(JSON.stringify(toWireSnapshot(snapshot, 7)));
-    const restored = fromWireSnapshot(decoded, new Map([[bot.id, toEntityMeta(bot)]]));
+    const full = toWireSnapshot(snapshot);
+    const decoded = JSON.parse(JSON.stringify(toViewerSnapshot(full, 7)));
+    const restored = fromWireSnapshot(decoded, new Map([[bot.id, toEntityMeta(bot)]]), full.dots);
     const restoredBot = restored.bots[0];
 
     expect(Math.abs(restoredBot.position.x - bot.position.x)).toBeLessThanOrEqual(0.005);
     expect(Math.abs(restoredBot.position.y - bot.position.y)).toBeLessThanOrEqual(0.005);
-    expect(Math.abs(restoredBot.facing - bot.facing)).toBeLessThanOrEqual(0.0005);
+    expect(Math.abs(restoredBot.facing - bot.facing)).toBeLessThanOrEqual(0.005);
     expect(restoredBot).toMatchObject({
       id: bot.id,
       name: bot.name,
@@ -60,10 +61,84 @@ describe("snapshot wire mapping", () => {
       shieldSegments: bot.shieldSegments,
       bays: bot.bays,
       hold: bot.hold,
-      dashCooldownMs: bot.dashCooldownMs,
-      dashActiveMs: bot.dashActiveMs,
-      invulnerabilityMs: bot.invulnerabilityMs,
+      dashCooldownMs: Math.round(bot.dashCooldownMs),
+      dashActiveMs: Math.round(bot.dashActiveMs),
+      invulnerabilityMs: Math.round(bot.invulnerabilityMs),
     });
+  });
+
+  it("omits empty collections and default bot fields while preserving round-trip defaults", () => {
+    const defaultBot = {
+      ...bot,
+      facing: 0,
+      floorId: "outdoor",
+      shieldSegments: [1, 1, 1],
+      shields: 3,
+      bays: [null, null, null, null],
+      carriedCount: 0,
+      dashCooldownMs: 0,
+      dashActiveMs: 0,
+      invulnerabilityMs: 0,
+    } satisfies DotBotEntity;
+    const full = toWireSnapshot({ ...snapshot, bots: [defaultBot], dots: [], mines: [], coverages: [], noises: [] });
+    const payload = toViewerSnapshot(full, 0);
+    expect(payload).not.toHaveProperty("dotDeltas");
+    expect(payload).not.toHaveProperty("dotSync");
+    expect(payload).not.toHaveProperty("mines");
+    expect(payload).not.toHaveProperty("coverages");
+    expect(payload).not.toHaveProperty("noises");
+    expect(payload.bots[0]).toEqual({ i: defaultBot.id, p: [123.46, 987.65] });
+    expect(fromWireSnapshot(payload, new Map([[defaultBot.id, toEntityMeta(defaultBot)]]), []).bots[0]).toMatchObject({
+      facing: 0,
+      floorId: "outdoor",
+      state: "alive",
+      shieldSegments: [1, 1, 1],
+      bays: [null, null, null, null],
+      carriedCount: 0,
+    });
+  });
+
+  it("reconstructs randomized dot state exactly from ordered deltas", () => {
+    let seed = 0x1a2b3c4d;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 0x1_0000_0000;
+    };
+    const makeDot = (id: string): WireDot => ({
+      id,
+      position: { x: Number(id.slice(1)), y: 2 },
+      radius: 10,
+      floorId: "outdoor",
+      it: "h",
+      active: true,
+    });
+    const authoritative = new Map(Array.from({ length: 20 }, (_, index) => {
+      const dot = makeDot(`d${index}`);
+      return [dot.id, dot] as const;
+    }));
+    const reconstructed = new Map([...authoritative].map(([id, dot]) => [id, { ...dot, position: { ...dot.position } }]));
+
+    for (let step = 0; step < 500; step += 1) {
+      const id = `d${Math.floor(random() * authoritative.size)}`;
+      const before = authoritative.get(id)!;
+      const active = random() > 0.08 ? before.active : !before.active;
+      const captureProgressMs = active ? Math.floor(random() * 1001) : 0;
+      authoritative.set(id, { ...before, active, captureProgressMs: captureProgressMs || undefined });
+      applyWireDotFrame(reconstructed, {
+        dotDeltas: [{ id, ...(active === before.active ? {} : { active }), captureProgressMs }],
+      }, () => "outdoor");
+      expect([...reconstructed.values()]).toEqual([...authoritative.values()]);
+    }
+  });
+
+  it("replaces changed floor contexts wholesale without retaining hidden dots", () => {
+    const outside: WireDot = { id: "outside", position: { x: 1, y: 1 }, radius: 10, floorId: "outdoor", it: "h", active: true };
+    const upper: WireDot = { id: "upper", position: { x: 2, y: 2 }, radius: 10, floorId: "mercy:F1", it: "r", active: false };
+    const store = new Map([[outside.id, outside]]);
+    applyWireDotFrame(store, {
+      dotSync: [{ context: "outdoor" }, { context: "mercy:F1", dots: [upper] }],
+    }, (floorId) => floorId);
+    expect([...store.values()]).toEqual([upper]);
   });
 });
 
