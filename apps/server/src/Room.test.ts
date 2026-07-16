@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ServerMessage } from "@dotbot/protocol";
-import { NoopPersistence } from "./db";
+import { NoopPersistence, type Persistence } from "./db";
+import type { BaseObjectKind } from "@dotbot/game/types";
 import { Room, type RoomPeer } from "./Room";
+import { buildingContaining, buildingOfFloor } from "@dotbot/game/mapModel";
+import { downtownMap } from "@dotbot/game/content/downtown";
 
 describe("Room lobby squads", () => {
   it("joins and switches capped squads, defaults late joins to the emptiest squad, and locks at host start", async () => {
@@ -65,7 +68,12 @@ describe("Room lobby squads", () => {
 
 describe("Room GIVE UP", () => {
   it("returns a died manifest for a downed member while their squadmate keeps playing", async () => {
-    const room = new Room("GIVE", { countdownMs: 0, persistence: new NoopPersistence() });
+    class CountingPersistence extends NoopPersistence {
+      outcomes: string[] = [];
+      override async recordOutcome(...[input]: Parameters<Persistence["recordOutcome"]>) { this.outcomes.push(input.playerId); }
+    }
+    const persistence = new CountingPersistence();
+    const room = new Room("GIVE", { countdownMs: 0, persistence });
     const peers = Array.from({ length: 4 }, (_, index) => collectingPeer(`peer-${index}`));
     for (let index = 0; index < peers.length; index += 1) {
       room.join(peers[index].peer, `token-${index}`, `Player ${index}`, `p${index + 1}`);
@@ -95,6 +103,85 @@ describe("Room GIVE UP", () => {
     expect(room.phase).toBe("live");
     expect(internals.members.get("p1")?.inRun).toBe(false);
     expect(internals.members.get("p4")?.inRun).toBe(true);
+    const richer = room as unknown as {
+      simulation: { getSnapshot(): import("@dotbot/game/types").GameSnapshot };
+      broadcastSnapshot(snapshot: import("@dotbot/game/types").GameSnapshot): void;
+    };
+    richer.broadcastSnapshot(richer.simulation.getSnapshot());
+    const spectatorSnap = peers[0].messages.filter((message) => message.type === "snap").at(-1);
+    expect(spectatorSnap?.bots.some((candidate) => candidate.i === internals.members.get("p4")?.botId)).toBe(true);
+    room.receive("p1", { type: "leaveRun" });
+    expect(persistence.outcomes).toEqual(["p1"]);
+    room.dispose();
+  });
+});
+
+describe("Room owner-private match intel", () => {
+  it("sends real grey counts and a deterministic signal only to owners, then expires the signal on capture and timeout", async () => {
+    class IntelPersistence extends NoopPersistence {
+      override async getMatchIntelObjects(playerId: string): Promise<BaseObjectKind[]> {
+        return playerId === "intel-owner" ? ["listeningPost", "signalMast"] : [];
+      }
+    }
+    const startRoom = async () => {
+      const room = new Room("INTL", {
+        countdownMs: 0,
+        persistence: new IntelPersistence(),
+        aiWingmates: false,
+        matchIdFactory: () => "00000000-0000-4000-8000-000000000088",
+      });
+      const owner = collectingPeer(`intel-owner-${Math.random()}`);
+      const rival = collectingPeer(`intel-rival-${Math.random()}`);
+      room.join(owner.peer, "intel-token-owner", "Owner", "intel-owner", "alpha");
+      room.join(rival.peer, "intel-token-rival", "Rival", "intel-rival", "bravo");
+      room.receive("intel-owner", { type: "startMatch" });
+      await waitFor(() => room.phase === "live");
+      return { room, owner, rival };
+    };
+
+    const first = await startRoom();
+    const ownerStart = first.owner.messages.find((message) => message.type === "matchStart");
+    const rivalStart = first.rival.messages.find((message) => message.type === "matchStart");
+    expect(ownerStart?.intel?.greyDensity).toBeDefined();
+    expect(ownerStart?.intel?.signal).toMatchObject({ dotId: expect.stringMatching(/^blueprint-/), blueprintId: expect.any(String) });
+    expect(rivalStart?.intel).toBeUndefined();
+
+    const internals = first.room as unknown as {
+      members: Map<string, unknown>;
+      simulation: { getSnapshot(): import("@dotbot/game/types").GameSnapshot; dots: Map<string, { active: boolean }> };
+      snapshotIntel(member: unknown, snapshot: import("@dotbot/game/types").GameSnapshot): import("@dotbot/protocol").MatchIntel | undefined;
+    };
+    const snapshot = internals.simulation.getSnapshot();
+    const actual = new Map(downtownMap.buildings.map((building) => [building.id, 0]));
+    for (const bot of snapshot.bots.filter((candidate) => candidate.isAmbient && candidate.state === "alive")) {
+      const building = buildingOfFloor(downtownMap, bot.floorId) ?? buildingContaining(downtownMap, bot.position);
+      if (building) actual.set(building.id, (actual.get(building.id) ?? 0) + 1);
+    }
+    expect(Object.fromEntries(ownerStart!.intel!.greyDensity!.map((row) => [row.buildingId, row.count]))).toEqual(Object.fromEntries(actual));
+
+    const ownerMember = internals.members.get("intel-owner")!;
+    const signal = ownerStart!.intel!.signal!;
+    internals.simulation.dots.get(signal.dotId)!.active = false;
+    expect(internals.snapshotIntel(ownerMember, internals.simulation.getSnapshot())).toEqual({});
+    internals.simulation.dots.get(signal.dotId)!.active = true;
+    const timedOut = internals.simulation.getSnapshot();
+    timedOut.debug.tickCount = signal.expiresAtTick;
+    expect(internals.snapshotIntel(ownerMember, timedOut)).toEqual({});
+
+    const second = await startRoom();
+    const secondStart = second.owner.messages.find((message) => message.type === "matchStart");
+    expect(secondStart?.intel?.signal?.dotId).toBe(signal.dotId);
+    first.room.dispose();
+    second.room.dispose();
+  });
+
+  it("omits all match intel in stateless mode", async () => {
+    const room = new Room("NINT", { countdownMs: 0, persistence: new NoopPersistence(), aiWingmates: false });
+    const peer = collectingPeer("no-intel");
+    room.join(peer.peer, "no-intel-token", "No Intel", "no-intel-player", "alpha");
+    room.receive("no-intel-player", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+    expect(peer.messages.find((message) => message.type === "matchStart")?.intel).toBeUndefined();
     room.dispose();
   });
 });

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { Persistence, PlayerIdentity, PlayerProfile, RegisteredPlayer } from "./Persistence";
 import { DEFAULT_BASE_SHELL, starterBaseLayout } from "@dotbot/game/content/base";
-import type { BaseLayout } from "@dotbot/game/types";
+import type { BaseLayout, BaseObjectKind } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
 import { contractDayStamp, generateContractOffers } from "@dotbot/game/contracts";
 import { downtownMap } from "@dotbot/game/content/downtown";
@@ -38,7 +38,7 @@ export class NoopPersistence implements Persistence {
   async applyPreset(): Promise<null> { return null; }
   async setInsertionPreference(_token: string, _insertionPointId: string | null): Promise<string | null> { return null; }
   async getInsertionPreference(_playerId: string): Promise<string | null> { return null; }
-  async getMatchIntelObjects(): Promise<[]> { return []; }
+  async getMatchIntelObjects(_playerId: string): Promise<BaseObjectKind[]> { return []; }
   async acceptContract(): Promise<void> {}
   async rerollContracts(): Promise<void> {}
   async abandonContract(): Promise<void> {}
@@ -48,7 +48,7 @@ export class NoopPersistence implements Persistence {
   async recordExtraction(input: Parameters<Persistence["recordExtraction"]>[0]): Promise<{ manifest: import("./Persistence").RunManifest }> {
     return { manifest: input.manifest };
   }
-  async recordOutcome(): Promise<void> {}
+  async recordOutcome(_input: Parameters<Persistence["recordOutcome"]>[0]): Promise<void> {}
   async finishMatch(): Promise<void> {}
   async close(): Promise<void> {}
 }

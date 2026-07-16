@@ -303,7 +303,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
   it("fabricates powerups and blueprint furniture atomically", async () => {
     await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
     process.env.NODE_ENV = "test";
-    const { app } = await createServer({ databaseUrl });
+    const { app, persistence } = await createServer({ databaseUrl });
     const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Fabricator Pilot" } })).json<{ playerId: string; token: string }>();
     const headers = { "x-device-token": account.token };
 
@@ -341,6 +341,26 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(health.statusCode).toBe(200);
     expect((await stashTotals(account.playerId))).toMatchObject({ r: 5, d: 8, h: 1 });
     expect((await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "not-a-recipe" } })).statusCode).toBe(400);
+
+    await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'i', 1)`;
+    const mine = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "fabricate-mine" } });
+    expect(mine.statusCode).toBe(200);
+    expect(stashQty(mine.json<{ stash: Array<{ itemType: string; qty: number }> }>().stash, "m")).toBe(1);
+    const mineLoadout = await app.inject({ method: "POST", url: "/api/base/loadout", headers, payload: { loadout: ["m"] } });
+    expect(mineLoadout.statusCode).toBe(200);
+    expect(mineLoadout.json<{ loadout: string[] }>().loadout).toEqual(["m"]);
+    expect(await persistence.consumeLoadout(account.playerId)).toEqual(["m"]);
+    const mineMatchId = crypto.randomUUID();
+    await persistence.startMatch({ matchId: mineMatchId, roomCode: "MINE", mapId: "downtown", startedAt: new Date() });
+    const mineManifest = await persistence.recordExtraction({
+      matchId: mineMatchId,
+      playerId: account.playerId,
+      blueprintLearningThreshold: 3,
+      manifest: { reason: "extracted", keptItems: ["m"], lostItems: [], learnedBlueprints: [] },
+    });
+    expect(mineManifest.manifest.keptItems).toEqual(["m"]);
+    expect(stashQty((await persistence.getBase(account.token))!.stash, "m")).toBe(1);
+    expect((await persistence.getProfile(account.token))!.recentManifests[0]).toMatchObject({ roomCode: "MINE", keptItems: ["m"] });
     await app.close();
   });
 

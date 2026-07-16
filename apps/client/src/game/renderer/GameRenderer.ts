@@ -389,7 +389,6 @@ export class GameRenderer {
     const bounds = vision.boundsRect;
     this.fogGfx.rect(bounds.x, bounds.y, bounds.w, bounds.h).fill({ color: 0x2f353b, alpha: 0.035 });
     this.fogGfx.poly(flat).cut();
-    this.fogGfx.poly(flat).stroke({ color: 0xb9c0c8, width: 1.1, alpha: 0.35 });
   }
 
   private getCamera(target: Vec2): { x: number; y: number; scale: number } {

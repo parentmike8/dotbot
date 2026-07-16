@@ -11,6 +11,7 @@ const healthItem = { kind: "powerup", type: "health" } as const;
 const radarItem = { kind: "powerup", type: "radar" } as const;
 const overchargeItem = { kind: "powerup", type: "dashOvercharge" } as const;
 const incognitoItem = { kind: "powerup", type: "incognito" } as const;
+const mineItem = { kind: "mine" } as const;
 const testBays = (count: number) => Array.from({ length: 4 }, (_, index) => index < count ? healthItem : null);
 
 const testConfig: Partial<GameConfig> = {
@@ -251,6 +252,75 @@ describe("DotBotSimulation", () => {
     expect(ping!.ageMs).toBeGreaterThan(0);
     runTicks(simulation, 30);
     expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.radarPings).toEqual([]);
+    simulation.dispose();
+  });
+
+  it("places mines silently, consumes bays, and rotates the oldest at the active cap", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([playerSpawn({ bays: [mineItem, mineItem, mineItem, mineItem] })]),
+      config: { ...testConfig, maxActiveMines: 3 },
+    });
+    for (const bay of [0, 1, 2, 3] as const) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: bay });
+      simulation.step();
+    }
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays).toEqual([null, null, null, null]);
+    expect(snapshot.mines.map((mine) => mine.id)).toEqual(["mine-player-1", "mine-player-2", "mine-player-3"]);
+    expect(snapshot.noises).toEqual([]);
+    expect(simulation.drainEvents()).toContainEqual({ type: "mineRotated", botId: "player", mineId: "mine-player-0" });
+    simulation.dispose();
+  });
+
+  it("lets ambient greys trigger a mine, shatters one intact plate, and downs a plateless bot", async () => {
+    const plated = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ bays: [mineItem, null, null, null] }),
+        enemySpawn({ controller: "frozen", position: { x: 100, y: 180 }, maxShields: 3, shields: 3 }),
+      ]),
+      config: testConfig,
+    });
+    plated.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    plated.step();
+    const platedEnemy = plated.getSnapshot().bots.find((bot) => bot.id === "enemy")!;
+    expect(platedEnemy).toMatchObject({ state: "alive", shields: 2 });
+    expect(platedEnemy.shieldSegments.filter((plate) => plate === 1)).toHaveLength(2);
+    expect(plated.getSnapshot().noises).toContainEqual(expect.objectContaining({ kind: "mineDetonation", loudness: 1 }));
+    plated.dispose();
+
+    const plateless = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ bays: [mineItem, null, null, null] }),
+        enemySpawn({ controller: "frozen", position: { x: 100, y: 180 }, maxShields: 3, shields: 0 }),
+      ]),
+      config: testConfig,
+    });
+    plateless.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    plateless.step();
+    expect(plateless.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
+    plateless.dispose();
+  });
+
+  it("emits floor-scoped sensor pings only while an intruder is in range and radar reveals only to its firer", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ bays: [mineItem, null, null, null], position: { x: 100, y: 180 } }),
+        enemySpawn({ id: "radar-enemy", controller: "human", isAmbient: false, position: { x: 220, y: 180 }, bays: [radarItem, null, null, null] }),
+        allySpawn({ id: "ally", controller: "frozen", position: { x: 350, y: 180 } }),
+      ]),
+      config: { ...testConfig, mineSenseRadius: 160, mineSensePingMs: 50, radarRadius: 200, radarDurationMs: 150 },
+    });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    simulation.step();
+    runTicks(simulation, 3);
+    expect(simulation.drainEvents()).toContainEqual(expect.objectContaining({ type: "mineSensor", squadId: "alpha", floorId: "outdoor" }));
+
+    simulation.applyInput("radar-enemy", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    simulation.step();
+    const mine = simulation.getSnapshot().mines[0];
+    expect(mine.revealedToBotIds).toEqual(["radar-enemy"]);
+    runTicks(simulation, 10);
+    expect(simulation.getSnapshot().mines[0].revealedToBotIds).toEqual([]);
     simulation.dispose();
   });
 

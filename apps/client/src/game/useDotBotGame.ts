@@ -4,6 +4,7 @@ import { downtownMap } from "@dotbot/game/content/downtown";
 import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer, type InteractionChannelVisual } from "./renderer/GameRenderer";
+import { selectSpectatedBot } from "./spectate";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
 import type { DotBotEntity, DownedHostileVerb, GameSnapshot, Item, SimEvent, Vec2 } from "@dotbot/game/types";
@@ -195,11 +196,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const livingSquadmates = spectateEnabled && runState.phase === "over" && playerSquadId
           ? nextSnapshot.bots.filter((bot) => bot.id !== session.playerId && bot.squadId === playerSquadId && bot.state === "alive")
           : [];
-        let spectator = livingSquadmates.find((bot) => bot.id === spectatedBotIdRef.current) ?? livingSquadmates[0] ?? null;
-        if (spectateCycleQueuedRef.current && livingSquadmates.length > 0) {
-          const currentIndex = livingSquadmates.findIndex((bot) => bot.id === spectator?.id);
-          spectator = livingSquadmates[(currentIndex + 1) % livingSquadmates.length];
-        }
+        const spectator = selectSpectatedBot(livingSquadmates, spectatedBotIdRef.current, spectateCycleQueuedRef.current);
         spectateCycleQueuedRef.current = false;
         spectatedBotIdRef.current = spectator?.id ?? null;
         const renderPlayerId = spectator?.id ?? session.playerId;
