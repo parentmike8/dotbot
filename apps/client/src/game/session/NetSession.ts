@@ -4,10 +4,11 @@ import { applyWireDotFrame, assertNever, fromWireEvent, fromWireSnapshot, itemFr
 import type { EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
-  blendOffset,
   classifyCorrection,
-  dropAcknowledgedInputs,
+  decayCorrectionOffset,
+  preventBackwardMotion,
   replayPendingInputs,
+  retainInputHistory,
   type PendingInput,
 } from "../prediction/reconciliation";
 import type { GameSession, RunState } from "./GameSession";
@@ -29,6 +30,9 @@ type BufferedSnapshot = TimelineSnapshot;
 const interpolationDelayMs = 125;
 const snapshotIntervalMs = 50;
 const maxRemoteCorrectionSpeedPxPerSecond = 1000;
+const correctionBlendRate = 0.3;
+const correctionCapPxPerFrame = 6;
+const teleportSnapDistancePx = 150;
 
 export class NetSession implements GameSession {
   private readonly options: NetSessionOptions;
@@ -49,7 +53,8 @@ export class NetSession implements GameSession {
   private predictionAccumulatorMs = 0;
   private predictionEnabled = false;
   private correctionOffset = { x: 0, y: 0 };
-  private correctionElapsedMs = 100;
+  private predictionTick = 0;
+  private lastOwnRenderedPosition: { x: number; y: number } | null = null;
   private tickHz = 60;
   private roomCode = "";
   private startPromise: Promise<void> | null = null;
@@ -176,7 +181,8 @@ export class NetSession implements GameSession {
       downedVerb: sentInput.downedVerb,
       plea: sentInput.plea,
     });
-    this.pendingInputs.push({ seq: this.seq, input: sentInput });
+    this.pendingInputs.push({ seq: this.seq, input: sentInput, predictionTick: this.predictionTick });
+    if (this.pendingInputs.length > 128) this.pendingInputs.splice(0, this.pendingInputs.length - 128);
     this.pendingInput = { move: this.pendingInput.move, dash: false, downedVerb: this.pendingInput.downedVerb, plea: false };
   }
 
@@ -284,7 +290,7 @@ export class NetSession implements GameSession {
         snapshot.timeMs = message.tick * (1000 / this.tickHz);
         snapshot.debug.tickHz = this.tickHz;
         this.checkClockSanity(message.tick, snapshot.timeMs);
-        this.reconcileOwnBot(snapshot, message.ack);
+        this.reconcileOwnBot(snapshot, message.ack, message.tick);
         this.snapshots.push({ tick: message.tick, snapshot });
         if (this.snapshots.length > 20) this.snapshots.splice(0, this.snapshots.length - 20);
         return;
@@ -338,15 +344,19 @@ export class NetSession implements GameSession {
     this.predictionAccumulatorMs += Math.min(elapsedMs, 250);
     while (this.predictionAccumulatorMs >= this.predictor.tickMs) {
       this.predictor.step({ ...this.predictionInput, dash: this.predictionDashQueued });
+      this.predictionTick += 1;
       this.predictionDashQueued = false;
       this.predictionAccumulatorMs -= this.predictor.tickMs;
     }
-    this.correctionElapsedMs += elapsedMs;
+    this.correctionOffset = decayCorrectionOffset(
+      this.correctionOffset,
+      correctionBlendRate,
+      correctionCapPxPerFrame,
+    );
   }
 
-  private reconcileOwnBot(snapshot: GameSnapshot, ack: number): void {
+  private reconcileOwnBot(snapshot: GameSnapshot, ack: number, serverTick: number): void {
     const authoritative = snapshot.bots.find((bot) => bot.id === this.playerIdValue);
-    this.pendingInputs = dropAcknowledgedInputs(this.pendingInputs, ack);
     if (!authoritative || !this.mapValue || !this.configValue) {
       this.predictor = null;
       this.predictionEnabled = false;
@@ -357,6 +367,8 @@ export class NetSession implements GameSession {
     if (!this.predictor) {
       this.predictor = new LitePredictor(this.mapValue, this.configValue, authoritative);
       this.predictionAccumulatorMs = 0;
+      this.predictionTick = serverTick;
+      this.pendingInputs = retainInputHistory(this.pendingInputs, ack);
       return;
     }
 
@@ -365,12 +377,24 @@ export class NetSession implements GameSession {
       this.predictor.reset(authoritative);
       this.predictionAccumulatorMs = 0;
       this.correctionOffset = { x: 0, y: 0 };
-      this.correctionElapsedMs = 100;
+      this.predictionTick = serverTick;
+      this.lastOwnRenderedPosition = { ...authoritative.position };
+      this.pendingInputs = retainInputHistory(this.pendingInputs, ack);
       return;
     }
 
-    const replay = replayPendingInputs(this.predictor, authoritative, this.pendingInputs, ack);
-    this.pendingInputs = replay.pending;
+    const targetPredictionTick = Math.max(serverTick, this.predictionTick);
+    const replay = replayPendingInputs(
+      this.predictor,
+      authoritative,
+      this.pendingInputs,
+      ack,
+      serverTick,
+      targetPredictionTick,
+      this.predictionInput,
+    );
+    this.predictionTick = targetPredictionTick;
+    this.pendingInputs = replay.history;
     const error = Math.hypot(
       replay.corrected.position.x - predictedBefore.position.x,
       replay.corrected.position.y - predictedBefore.position.y,
@@ -381,29 +405,31 @@ export class NetSession implements GameSession {
       this.correctionTimesMs.push(now);
       this.pruneCorrections(now);
     }
-    const kind = classifyCorrection(error, authoritative.radius);
+    const kind = classifyCorrection(error, teleportSnapDistancePx);
     if (kind === "blend") {
-      this.correctionOffset = {
-        x: predictedBefore.position.x - replay.corrected.position.x,
-        y: predictedBefore.position.y - replay.corrected.position.y,
+      const visibleBefore = this.lastOwnRenderedPosition ?? {
+        x: predictedBefore.position.x + this.correctionOffset.x,
+        y: predictedBefore.position.y + this.correctionOffset.y,
       };
-      this.correctionElapsedMs = 0;
+      this.correctionOffset = {
+        x: visibleBefore.x - replay.corrected.position.x,
+        y: visibleBefore.y - replay.corrected.position.y,
+      };
     } else {
       this.correctionOffset = { x: 0, y: 0 };
-      this.correctionElapsedMs = 100;
+      if (kind === "snap") this.lastOwnRenderedPosition = { ...replay.corrected.position };
     }
   }
 
   private withPredictedOwnBot(snapshot: GameSnapshot, freshest: GameSnapshot): GameSnapshot {
     if (!this.predictor) return snapshot;
     const predicted = this.predictor.current;
-    const offset = blendOffset(this.correctionOffset, this.correctionElapsedMs);
     const freshOwn = freshest.bots.find((bot) => bot.id === this.playerIdValue);
     return {
       ...snapshot,
       bots: snapshot.bots.map((bot) =>
         bot.id === this.playerIdValue
-          ? this.mergePredictedBot(bot, freshOwn ?? bot, predicted, offset)
+          ? this.mergePredictedBot(bot, freshOwn ?? bot, predicted, this.correctionOffset)
           : bot,
       ),
     };
@@ -415,6 +441,12 @@ export class NetSession implements GameSession {
     predicted: PredictedOwnBot,
     offset: { x: number; y: number },
   ): GameSnapshot["bots"][number] {
+    const candidate = {
+      x: predicted.position.x + offset.x,
+      y: predicted.position.y + offset.y,
+    };
+    const position = preventBackwardMotion(this.lastOwnRenderedPosition, candidate, this.predictionInput.move);
+    this.lastOwnRenderedPosition = { ...position };
     return {
       ...authoritative,
       shields: freshest.shields,
@@ -422,10 +454,7 @@ export class NetSession implements GameSession {
       bays: freshest.bays,
       hold: freshest.hold,
       carriedCount: freshest.carriedCount,
-      position: {
-        x: predicted.position.x + offset.x,
-        y: predicted.position.y + offset.y,
-      },
+      position,
       facing: predicted.facing,
       floorId: predicted.floorId,
       dashCooldownMs: predicted.dashCooldownMs,
