@@ -5,9 +5,9 @@ import { buildingContaining, buildingOfFloor, physicsFloorId } from "@dotbot/gam
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import { assignSquadInsertions, squadSpawnPosition, validateInsertionMap } from "@dotbot/game/insertion";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, InsertionPoint, SimEvent } from "@dotbot/game/types";
-import { filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toWireEvent, toWireSnapshot } from "@dotbot/protocol";
+import { filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot, visiblePhysicsFloors } from "@dotbot/protocol";
 import { LOBBY_SQUADS } from "@dotbot/protocol";
-import type { ClientMessage, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage } from "@dotbot/protocol";
+import type { ClientMessage, FullWireSnapshot, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type RunManifest } from "./db";
 
@@ -29,6 +29,8 @@ type Member = LobbyMember & {
   persistenceEligible: boolean;
   persistedOutcome: string | null;
   insertionName: string | null;
+  dotContexts: Set<string>;
+  dotState: Map<string, { active: boolean; captureProgressMs: number }>;
 };
 
 export type RoomBandwidthHealth = {
@@ -156,6 +158,8 @@ export class Room {
       persistenceEligible: true,
       persistedOutcome: null,
       insertionName: null,
+      dotContexts: new Set(),
+      dotState: new Map(),
     };
     this.members.set(member.playerId, member);
     this.memberByToken.set(token, member);
@@ -285,7 +289,6 @@ export class Room {
 
       if (snapshot.debug.tickCount % 3 === 0) {
         this.broadcastSnapshot(snapshot);
-        if (events.length === 0) this.broadcastToStreams({ type: "ev", events: [] });
       }
 
       if (snapshot.debug.tickCount >= this.endTick) {
@@ -474,6 +477,10 @@ export class Room {
   private sendMatchStart(member: Member): void {
     if (!member.botId || !this.simulation) return;
     const snapshot = this.simulation.getSnapshot();
+    const wire = toWireSnapshot(snapshot);
+    const context = this.viewerContext(member, snapshot);
+    const filtered = filterForViewer(wire, snapshot.bots.map(toEntityMeta), context);
+    this.resetDotState(member, filtered.dots, visiblePhysicsFloors(wire, context));
     member.peer?.send({
       type: "matchStart",
       map: downtownMap,
@@ -483,6 +490,7 @@ export class Room {
       tickHz: this.simulation.config.tickHz,
       endTick: this.endTick,
       insertionName: member.insertionName ?? "UNKNOWN",
+      dotBaseline: filtered.dots,
       intel: this.matchIntel.get(member.playerId),
     });
     if (member.runOver) member.peer?.send(member.runOver);
@@ -493,9 +501,53 @@ export class Room {
     const meta = snapshot.bots.map(toEntityMeta);
     for (const member of this.members.values()) {
       if (!member.streaming || !member.peer) continue;
-      const filtered = filterForViewer(wire, meta, this.viewerContext(member, snapshot));
-      this.sendStream(member, { type: "snap", ...filtered, ack: member.latestSeq });
+      const context = this.viewerContext(member, snapshot);
+      const filtered = filterForViewer(wire, meta, context);
+      const dotFrame = this.dotFrame(member, filtered, visiblePhysicsFloors(wire, context));
+      this.sendStream(member, { type: "snap", ...toViewerSnapshot(filtered, member.latestSeq, dotFrame) });
     }
+  }
+
+  private dotFrame(
+    member: Member,
+    filtered: FullWireSnapshot,
+    contexts: ReadonlySet<string>,
+  ): { deltas?: WireDotDelta[]; sync?: WireDotContextSync[] } {
+    if (!sameSet(member.dotContexts, contexts)) {
+      const affected = new Set([...member.dotContexts, ...contexts]);
+      const sync = [...affected].sort().map((context) => {
+        const dots = contexts.has(context)
+          ? filtered.dots.filter((dot) => physicsFloorId(downtownMap, dot.floorId) === context)
+          : [];
+        return { context, ...(dots.length ? { dots } : {}) };
+      });
+      this.resetDotState(member, filtered.dots, contexts);
+      return { sync };
+    }
+
+    const deltas: WireDotDelta[] = [];
+    for (const dot of filtered.dots) {
+      const previous = member.dotState.get(dot.id);
+      const captureProgressMs = dot.captureProgressMs ?? 0;
+      if (!previous) {
+        deltas.push({ id: dot.id, active: dot.active, captureProgressMs });
+      } else {
+        const delta: WireDotDelta = { id: dot.id };
+        if (previous.active !== dot.active) delta.active = dot.active;
+        if (previous.captureProgressMs !== captureProgressMs) delta.captureProgressMs = captureProgressMs;
+        if (delta.active !== undefined || delta.captureProgressMs !== undefined) deltas.push(delta);
+      }
+      member.dotState.set(dot.id, { active: dot.active, captureProgressMs });
+    }
+    return deltas.length ? { deltas } : {};
+  }
+
+  private resetDotState(member: Member, dots: readonly WireDot[], contexts: ReadonlySet<string>): void {
+    member.dotContexts = new Set(contexts);
+    member.dotState = new Map(dots.map((dot) => [
+      dot.id,
+      { active: dot.active, captureProgressMs: dot.captureProgressMs ?? 0 },
+    ]));
   }
 
   private end(reason: string): void {
@@ -530,12 +582,6 @@ export class Room {
     for (const member of this.members.values()) member.peer?.send(message);
   }
 
-  private broadcastToStreams(message: ServerMessage): void {
-    for (const member of this.members.values()) {
-      if (member.streaming && member.peer) this.sendStream(member, message);
-    }
-  }
-
   private broadcastEvents(events: SimEvent[], snapshot: GameSnapshot): void {
     const meta = snapshot.bots.map(toEntityMeta);
     for (const member of this.members.values()) {
@@ -548,7 +594,7 @@ export class Room {
     }
   }
 
-  private viewerContext(member: Member, snapshot: GameSnapshot) {
+  private viewerContext(member: Member, snapshot: GameSnapshot): ViewerContext {
     return {
       map: downtownMap,
       squadId: member.squadId,
@@ -730,6 +776,10 @@ export class Room {
       after?.();
     });
   }
+}
+
+function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value));
 }
 
 function makeSpawn(

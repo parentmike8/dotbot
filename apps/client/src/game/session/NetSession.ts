@@ -1,6 +1,7 @@
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
-import { assertNever, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
-import type { EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage } from "@dotbot/protocol";
+import { physicsFloorId } from "@dotbot/game/mapModel";
+import { applyWireDotFrame, assertNever, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
+import type { EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
   blendOffset,
@@ -53,6 +54,7 @@ export class NetSession implements GameSession {
   private insertionNameValue = "";
   private warnedClockDrift = false;
   private intelValue: MatchIntel | undefined;
+  private dotStore = new Map<string, WireDot>();
 
   constructor(options: NetSessionOptions) {
     this.options = options;
@@ -213,6 +215,7 @@ export class NetSession implements GameSession {
     this.events = [];
     this.pendingInputs = [];
     this.predictor = null;
+    this.dotStore.clear();
   }
 
   private receive(message: ServerMessage): void {
@@ -246,6 +249,7 @@ export class NetSession implements GameSession {
         this.insertionNameValue = message.insertionName;
         this.intelValue = message.intel;
         this.metaIndex = new Map(message.meta.map((meta) => [meta.id, meta]));
+        this.dotStore = new Map(message.dotBaseline.map((dot) => [dot.id, { ...dot, position: { ...dot.position } }]));
         this.runState = { phase: "live" };
         this.resolveStart?.();
         this.resolveStart = null;
@@ -255,7 +259,9 @@ export class NetSession implements GameSession {
         if (this.intelValue && message.intel !== undefined) {
           this.intelValue = { ...this.intelValue, signal: message.intel.signal };
         }
-        const snapshot = fromWireSnapshot(message, this.metaIndex);
+        if (!this.mapValue) return;
+        applyWireDotFrame(this.dotStore, message, (floorId) => physicsFloorId(this.mapValue!, floorId));
+        const snapshot = fromWireSnapshot(message, this.metaIndex, [...this.dotStore.values()]);
         snapshot.timeMs = message.tick * (1000 / this.tickHz);
         snapshot.debug.tickHz = this.tickHz;
         this.checkClockSanity(message.tick, snapshot.timeMs);

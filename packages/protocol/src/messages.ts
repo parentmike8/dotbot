@@ -1,4 +1,4 @@
-import type { DotEntity, DownedHostileVerb, GameConfig, MapDocument, MineEntity, RadarPing } from "@dotbot/game/types";
+import type { DownedHostileVerb, GameConfig, MapDocument, PowerupType, RadarPing } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
@@ -26,30 +26,80 @@ export type EntityMeta = {
 export type WireBot = {
   i: string;
   p: [number, number];
-  f: number;
-  fl: string;
-  s: "alive" | "downed" | "consumed";
-  sh: number[];
+  f?: number;
+  fl?: string;
+  s?: "downed" | "consumed";
+  sh?: number[];
   /** Detailed inventory is present only for the viewer's squad. */
   b?: (WireItemCode | null)[];
   h?: WireItemCode[];
   /** Always present, including privacy-redacted rivals. */
-  c: number;
+  c?: number;
   d?: [number, number];
   iv?: number;
-  r?: [number, RadarPing[]];
+  r?: [number, RadarPing[]?];
   o?: number;
   ic?: number;
 };
 
+export type WireDot = {
+  id: string;
+  position: { x: number; y: number };
+  radius: number;
+  floorId: string;
+  it: WireItemCode;
+  active: boolean;
+  captureProgressMs?: number;
+};
+
+export type WireDotDelta = {
+  id: string;
+  active?: boolean;
+  captureProgressMs?: number;
+};
+
+export type WireDotContextSync = {
+  /** Physics-floor context whose dot state is replaced wholesale. */
+  context: string;
+  dots?: WireDot[];
+};
+
+export type WireMine = {
+  id: string;
+  position: { x: number; y: number };
+  radius: number;
+  floorId: string;
+  placedAtMs: number;
+  placedByBotId?: string;
+  squadId?: string;
+  revealedToBotIds?: string[];
+  presentation?: "squad" | "disguised" | "revealed";
+  disguise?: PowerupType;
+  seam?: true;
+};
+
+/** Full server-side snapshot before per-viewer dot delta encoding. */
+export type FullWireSnapshot = {
+  tick: number;
+  bots: WireBot[];
+  dots: WireDot[];
+  mines: WireMine[];
+  coverages: import("@dotbot/game/types").CoverageSnapshot[];
+  noises: import("@dotbot/game/types").NoiseEvent[];
+  /** Viewer-private match intel; omitted for players without an intel object. */
+  intel?: MatchIntel;
+};
+
+/** Per-viewer snapshot payload sent after the one-time dot baseline. */
 export type WireSnapshot = {
   tick: number;
   ack: number;
   bots: WireBot[];
-  dots: Array<Omit<DotEntity, "item"> & { it: WireItemCode }>;
-  mines: MineEntity[];
-  coverages: import("@dotbot/game/types").CoverageSnapshot[];
-  noises: import("@dotbot/game/types").NoiseEvent[];
+  dotDeltas?: WireDotDelta[];
+  dotSync?: WireDotContextSync[];
+  mines?: WireMine[];
+  coverages?: import("@dotbot/game/types").CoverageSnapshot[];
+  noises?: import("@dotbot/game/types").NoiseEvent[];
   /** Viewer-private match intel; omitted for players without an intel object. */
   intel?: MatchIntel;
 };
@@ -112,6 +162,7 @@ export type ServerMessage =
       tickHz: number;
       endTick: number;
       insertionName: string;
+      dotBaseline: WireDot[];
       intel?: MatchIntel;
     }
   | ({ type: "snap" } & WireSnapshot)

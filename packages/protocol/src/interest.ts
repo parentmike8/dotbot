@@ -1,6 +1,6 @@
 import { classifyNoise, physicsFloorId } from "@dotbot/game/mapModel";
 import type { MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
-import type { EntityMeta, MatchIntel, WireBot, WireSnapshot } from "./messages";
+import type { EntityMeta, FullWireSnapshot, MatchIntel, WireBot } from "./messages";
 
 export type ViewerContext = {
   map: MapDocument;
@@ -15,26 +15,24 @@ export type ViewerContext = {
 };
 
 export function filterForViewer(
-  wire: WireSnapshot,
+  wire: FullWireSnapshot,
   meta: readonly EntityMeta[],
   viewerCtx: ViewerContext,
-): WireSnapshot {
+): FullWireSnapshot {
   const metaById = new Map(meta.map((entry) => [entry.id, entry]));
   const ownBot = viewerCtx.viewerBotId ? wire.bots.find((bot) => bot.i === viewerCtx.viewerBotId) : undefined;
   const isSpectating = !ownBot || ownBot.s === "consumed";
   const squadBots = wire.bots.filter((bot) => metaById.get(bot.i)?.squadId === viewerCtx.squadId);
   const spectatedBot = isSpectating
-    ? squadBots.find((bot) => bot.i === viewerCtx.spectatedBotId && bot.s === "alive")
-      ?? squadBots.find((bot) => bot.s === "alive")
+    ? squadBots.find((bot) => bot.i === viewerCtx.spectatedBotId && (bot.s ?? "alive") === "alive")
+      ?? squadBots.find((bot) => (bot.s ?? "alive") === "alive")
     : undefined;
   const observer = isSpectating ? spectatedBot : ownBot;
-  const visibleFloors = isSpectating
-    ? viewerCtx.squadPhysicsFloorIds
-    : new Set(observer ? [physicsFloorId(viewerCtx.map, observer.fl)] : []);
+  const visibleFloors = visiblePhysicsFloors(wire, viewerCtx);
 
   const bots = wire.bots.filter((bot) =>
     metaById.get(bot.i)?.squadId === viewerCtx.squadId
-      || visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl)),
+      || visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor")),
   ).map((bot) => {
     const squadDetail = metaById.get(bot.i)?.squadId === viewerCtx.squadId;
     return {
@@ -50,15 +48,17 @@ export function filterForViewer(
     .filter((mine) => visibleFloors.has(physicsFloorId(viewerCtx.map, mine.floorId)))
     .map((mine) => {
       const squadMine = mine.squadId === viewerCtx.squadId;
-      const radarRevealed = Boolean(viewerCtx.viewerBotId && mine.revealedToBotIds.includes(viewerCtx.viewerBotId));
+      const radarRevealed = Boolean(viewerCtx.viewerBotId && mine.revealedToBotIds?.includes(viewerCtx.viewerBotId));
       return {
-        ...mine,
-        placedByBotId: squadMine ? mine.placedByBotId : "",
-        squadId: squadMine ? mine.squadId : "",
-        revealedToBotIds: [],
+        id: mine.id,
+        position: mine.position,
+        radius: mine.radius,
+        floorId: mine.floorId,
+        placedAtMs: mine.placedAtMs,
+        ...(squadMine ? { placedByBotId: mine.placedByBotId, squadId: mine.squadId } : {}),
         presentation: squadMine ? "squad" as const : radarRevealed ? "revealed" as const : "disguised" as const,
-        disguise: deterministicMineDisguise(mine.id),
-        seam: !squadMine && !radarRevealed,
+        ...(!squadMine ? { disguise: deterministicMineDisguise(mine.id) } : {}),
+        ...(!squadMine && !radarRevealed ? { seam: true as const } : {}),
       };
     });
   const coverages = wire.coverages.filter((coverage) =>
@@ -67,12 +67,12 @@ export function filterForViewer(
       || includedBotIds.has(coverage.targetId),
   );
   const listeners = isSpectating
-    ? squadBots.filter((bot) => bot.s === "alive" && visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl)))
+    ? squadBots.filter((bot) => (bot.s ?? "alive") === "alive" && visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor")))
     : observer ? [observer] : [];
   const noises = wire.noises.filter((noise) => listeners.some((listener) =>
     classifyNoise(
       viewerCtx.map,
-      listener.fl,
+      listener.fl ?? "outdoor",
       wirePosition(listener),
       noise.floorId,
       noise.position,
@@ -81,6 +81,16 @@ export function filterForViewer(
   ));
 
   return { ...wire, bots, dots, mines, coverages, noises, intel: viewerCtx.intel };
+}
+
+export function visiblePhysicsFloors(
+  wire: Pick<FullWireSnapshot, "bots">,
+  viewerCtx: ViewerContext,
+): Set<string> {
+  const metaOwn = viewerCtx.viewerBotId ? wire.bots.find((bot) => bot.i === viewerCtx.viewerBotId) : undefined;
+  const isSpectating = !metaOwn || metaOwn.s === "consumed";
+  if (isSpectating) return new Set(viewerCtx.squadPhysicsFloorIds);
+  return new Set([physicsFloorId(viewerCtx.map, metaOwn.fl ?? "outdoor")]);
 }
 
 export function filterEventsForViewer(
@@ -115,5 +125,5 @@ function wirePosition(bot: WireBot): Vec2 {
 
 function physicsFloorForBot(bots: readonly WireBot[], map: MapDocument, botId: string): string {
   const bot = bots.find((candidate) => candidate.i === botId);
-  return bot ? physicsFloorId(map, bot.fl) : "";
+  return bot ? physicsFloorId(map, bot.fl ?? "outdoor") : "";
 }
