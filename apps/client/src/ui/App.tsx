@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Item } from "@dotbot/game/types";
 import { defaultGameConfig } from "@dotbot/game";
+import { withinDownedCoverRange } from "@dotbot/game/interactions";
 import { floorHeight, locationLabel, resolvePlan } from "@dotbot/game/mapModel";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
@@ -47,9 +48,13 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
   const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === playerId) ?? false;
   const hostileDowned = player?.state === "alive" ? snapshot?.bots.find((bot) =>
-    bot.state === "downed" && !bot.isAmbient && bot.squadId !== player.squadId && bot.floorId === player.floorId
-      && Math.hypot(bot.position.x - player.position.x, bot.position.y - player.position.y) <= player.radius * 2.2,
+    bot.state === "downed" && bot.squadId !== player.squadId && bot.floorId === player.floorId
+      && Math.hypot(bot.position.x - player.position.x, bot.position.y - player.position.y) <= player.radius * 2.6,
   ) : undefined;
+  // The SAME range math the simulation gates the channel on.
+  const hostileInRange = Boolean(player && hostileDowned && withinDownedCoverRange(
+    player.position, player.radius, hostileDowned.position, hostileDowned.radius, defaultGameConfig.coverCenterTolerance,
+  ));
   const hostileChannel = hostileDowned
     ? snapshot?.coverages.find((coverage) => coverage.actorId === player?.id && coverage.targetId === hostileDowned.id)
     : undefined;
@@ -285,7 +290,7 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
 
       {hostileDowned && !runResult ? (
         <div className="hostile-verb-strip" aria-label="Downed hostile actions">
-          <strong>{hostileChannel?.kind === "consume" ? "CONSUMING" : hostileChannel?.kind === "reviveClean" ? "REVIVING CLEAN" : hostileChannel?.kind === "lootThenRevive" ? "LOOTING + REVIVING" : "DOWNED HOSTILE"}</strong>
+          <strong>{hostileChannel?.kind === "consume" ? "CONSUMING" : hostileChannel?.kind === "reviveClean" ? "REVIVING CLEAN" : hostileChannel?.kind === "lootThenRevive" ? "LOOTING + REVIVING" : hostileInRange ? "DOWNED HOSTILE · PICK A VERB" : "STAND ON THE BODY"}</strong>
           <button type="button" onClick={() => selectDownedVerb("consume")}>C · CONSUME</button>
           <button type="button" onClick={() => selectDownedVerb("reviveClean")}>R · REVIVE CLEAN</button>
           <button type="button" onClick={() => selectDownedVerb("lootThenRevive")}>F · LOOT + REVIVE</button>
