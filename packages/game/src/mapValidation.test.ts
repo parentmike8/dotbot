@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
-import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, starterBaseLayout, validateBaseLayout } from "./content/base";
+import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, deriveBaseInteractionDots, starterBaseLayout, validateBaseLayout } from "./content/base";
 import type { BaseLayout } from "./types";
 import { collisionLayers, isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
@@ -73,6 +73,10 @@ function collectFloors(map: MapDocument = downtownMap): FloorWorld[] {
     if (spawn.controller === "human") {
       world.seeds.push(spawn.position);
     }
+  }
+
+  for (const dot of map.interactionDots ?? []) {
+    floor(physicsFloorId(map, dot.floorId)).dots.push({ id: dot.id, position: dot.position });
   }
 
   return [...floors.values()];
@@ -341,9 +345,52 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map val
     expect(createBaseMap(starterBaseLayout, shellId)).toEqual(createBaseMap({ ...starterBaseLayout }, shellId));
     expect(map.outdoor.dotSpawns).toEqual([]);
     expect(map.buildings.flatMap((building) => building.floors.flatMap((floor) => floor.dotSpawns))).toEqual([]);
+    expect(map.interactionDots).toHaveLength(map.placementSlots!.length + 1);
     expect(map.botSpawns).toEqual([
       expect.objectContaining({ id: "player", controller: "human", bays: [null, null, null, null], hold: [] }),
     ]);
+  });
+
+  it("derives exactly one dot for every placed object, empty slot, and deployment threshold", () => {
+    const starter = createBaseMap(starterBaseLayout, shellId);
+    const objects = starter.buildings[0].floors.flatMap((floor) => floor.objects);
+    const occupied = new Set(objects.map((object) => object.slotId));
+    const emptySlots = starter.placementSlots!.filter((slot) => !occupied.has(slot.id));
+    const dots = starter.interactionDots!;
+
+    expect(dots.filter((dot) => dot.kind === "object").map((dot) => dot.targetId).sort())
+      .toEqual(objects.map((object) => object.id).sort());
+    expect(dots.filter((dot) => dot.kind === "emptySlot").map((dot) => dot.targetId).sort())
+      .toEqual(emptySlots.map((slot) => slot.id).sort());
+    expect(dots.filter((dot) => dot.kind === "deployment").map((dot) => dot.targetId))
+      .toEqual(starter.extractionPoints.map((point) => point.id));
+    expect(new Set(dots.map((dot) => dot.id))).toHaveLength(dots.length);
+  });
+
+  it("anchors object dots on the facing side and falls back through sides deterministically", () => {
+    const facingMap = createBaseMap(starterBaseLayout, shellId);
+    const object = facingMap.buildings[0].floors[0].objects[0];
+    const facingDot = facingMap.interactionDots!.find((dot) => dot.targetId === object.id)!;
+    const push = BOT_RADIUS + defaultGameConfig.dotRadius;
+    const preferred = object.facing ?? "S";
+    const preferredPosition = preferred === "N" ? { x: object.x + object.w / 2, y: object.y - push }
+      : preferred === "E" ? { x: object.x + object.w + push, y: object.y + object.h / 2 }
+      : preferred === "W" ? { x: object.x - push, y: object.y + object.h / 2 }
+      : { x: object.x + object.w / 2, y: object.y + object.h + push };
+    expect(facingDot.position).toEqual(preferredPosition);
+
+    const fallbackMap = createBaseMap({ "floor-center": "planningTable" }, "workshop");
+    const floor = fallbackMap.buildings[0].floors[0];
+    const fallbackObject = floor.objects[0];
+    fallbackObject.facing = "N";
+    const north = { x: fallbackObject.x + fallbackObject.w / 2, y: fallbackObject.y - push };
+    floor.walls.push({ id: "test-facing-block", x: north.x - 8, y: north.y - 8, w: 16, h: 16 });
+    const fallbackDot = deriveBaseInteractionDots(fallbackMap).find((dot) => dot.targetId === fallbackObject.id)!;
+    expect(fallbackDot.position).toEqual({
+      x: fallbackObject.x + fallbackObject.w + push,
+      y: fallbackObject.y + fallbackObject.h / 2,
+    });
+    expect(deriveBaseInteractionDots(fallbackMap)).toEqual(deriveBaseInteractionDots(fallbackMap));
   });
 
   it("exposes the identical slot roster as every other shell", () => {
@@ -354,23 +401,17 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map val
     }
   });
 
-  it("keeps the spawn, every slot, and the deployment threshold reachable when fully furnished", () => {
+  it("keeps the spawn and every interaction dot stand-on-able when fully furnished", () => {
     const reachable = floodReachable(world, map);
     const spawn = map.botSpawns[0];
     expect(nearestReachableDistance(spawn.position, reachable, BOT_RADIUS, map)).toBeLessThanOrEqual(BOT_RADIUS);
 
-    for (const slot of map.placementSlots!) {
-      const center = { x: slot.rect.x + slot.rect.w / 2, y: slot.rect.y + slot.rect.h / 2 };
-      const interactionReach = Math.hypot(slot.rect.w, slot.rect.h) / 2 + 48;
+    for (const dot of map.interactionDots!) {
       expect(
-        nearestReachableDistance(center, reachable, interactionReach, map),
-        `base slot ${slot.id} cannot be approached`,
-      ).toBeLessThanOrEqual(interactionReach);
+        nearestReachableDistance(dot.position, reachable, CAPTURE_RANGE, map),
+        `interaction dot ${dot.id} cannot be stood on`,
+      ).toBeLessThanOrEqual(CAPTURE_RANGE);
     }
-
-    const threshold = map.extractionPoints[0].rect;
-    const center = { x: threshold.x + threshold.w / 2, y: threshold.y + threshold.h / 2 };
-    expect(nearestReachableDistance(center, reachable, BOT_RADIUS, map)).toBeLessThanOrEqual(BOT_RADIUS);
   });
 
   it("rejects unknown slots, object kinds, and zone mismatches", () => {
@@ -404,18 +445,17 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("expanded bas
     expect(upper.stairs[0].rect).toEqual(ground.stairs[0].rect);
   });
 
-  it("keeps all sixteen furnished slots, both stair mouths, and deployment reachable", () => {
+  it("keeps all seventeen interaction dots stand-on-able with both stair mouths reachable", () => {
     const worlds = new Map(collectFloors(map).map((world) => [world.floorId, world]));
     const reachable = new Map([...worlds].map(([floorId, world]) => [floorId, floodReachable(world, map)]));
 
-    for (const slot of map.placementSlots!) {
-      const floorId = slot.floor === "GROUND" ? OUTDOOR_FLOOR_ID : "player-base:F1";
-      const center = { x: slot.rect.x + slot.rect.w / 2, y: slot.rect.y + slot.rect.h / 2 };
-      const interactionReach = Math.hypot(slot.rect.w, slot.rect.h) / 2 + 48;
+    expect(map.interactionDots).toHaveLength(17);
+    for (const dot of map.interactionDots!) {
+      const floorId = physicsFloorId(map, dot.floorId);
       expect(
-        nearestReachableDistance(center, reachable.get(floorId)!, interactionReach, map),
-        `${slot.floor} slot ${slot.id} cannot be approached`,
-      ).toBeLessThanOrEqual(interactionReach);
+        nearestReachableDistance(dot.position, reachable.get(floorId)!, CAPTURE_RANGE, map),
+        `interaction dot ${dot.id} on ${floorId} cannot be stood on`,
+      ).toBeLessThanOrEqual(CAPTURE_RANGE);
     }
 
     for (const [floorId, world] of worlds) {
@@ -428,9 +468,5 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("expanded bas
         ).toBeLessThanOrEqual(BOT_RADIUS);
       }
     }
-
-    const threshold = map.extractionPoints[0].rect;
-    const center = { x: threshold.x + threshold.w / 2, y: threshold.y + threshold.h / 2 };
-    expect(nearestReachableDistance(center, reachable.get(OUTDOOR_FLOOR_ID)!, BOT_RADIUS, map)).toBeLessThanOrEqual(BOT_RADIUS);
   });
 });

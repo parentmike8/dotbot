@@ -14,8 +14,7 @@ describe("base boot and deployment seams", () => {
 
   it("channels the deployment threshold for one stationary second and movement cancels", () => {
     const map = createBaseMap(starterBaseLayout);
-    const threshold = map.extractionPoints[0].rect;
-    const position = { x: threshold.x + threshold.w / 2, y: threshold.y + threshold.h / 2 };
+    const position = map.interactionDots!.find((dot) => dot.kind === "deployment")!.position;
     const target = findBaseTarget(map, position);
     expect(target?.type).toBe("deployment");
 
@@ -36,16 +35,32 @@ describe("base boot and deployment seams", () => {
 
   it("resolves objects and empty slots only from the bot's active base floor", () => {
     const map = createBaseMap({ ...starterBaseLayout, "up-wall-a": "locker" }, "workshop", { expanded: true });
-    const groundObject = map.buildings[0].floors[0].objects.find((object) => object.kind === "fabricator")!;
-    const upperObject = map.buildings[0].floors[1].objects.find((object) => object.slotId === "up-wall-a")!;
-    Object.assign(upperObject, { x: groundObject.x, y: groundObject.y, w: groundObject.w, h: groundObject.h });
-    const position = { x: groundObject.x + groundObject.w / 2, y: groundObject.y + groundObject.h / 2 };
+    const groundDot = map.interactionDots!.find((dot) => dot.kind === "object" && dot.floorId === "player-base:GROUND")!;
+    const upperDot = map.interactionDots!.find((dot) => dot.kind === "object" && dot.floorId === "player-base:F1")!;
+    upperDot.position = { ...groundDot.position };
+    const position = groundDot.position;
 
-    expect(findBaseTarget(map, position, OUTDOOR_FLOOR_ID)).toMatchObject({ type: "object", object: { kind: "fabricator" } });
-    expect(findBaseTarget(map, position, "player-base:F1")).toMatchObject({ type: "object", object: { kind: "locker", slotId: "up-wall-a" } });
+    expect(findBaseTarget(map, position, OUTDOOR_FLOOR_ID)).toMatchObject({ id: groundDot.id, type: "object" });
+    expect(findBaseTarget(map, position, "player-base:F1")).toMatchObject({ id: upperDot.id, type: "object", object: { slotId: "up-wall-a" } });
 
-    const deployment = map.extractionPoints[0].rect;
-    const threshold = { x: deployment.x + deployment.w / 2, y: deployment.y + deployment.h / 2 };
-    expect(findBaseTarget(map, threshold, "player-base:F1")?.type).not.toBe("deployment");
+    const deploymentDot = map.interactionDots!.find((dot) => dot.kind === "deployment")!;
+    expect(findBaseTarget(map, deploymentDot.position, "player-base:F1")?.type).not.toBe("deployment");
+  });
+
+  it("uses world-dot capture range and resolves nearest ties by stable dot id", () => {
+    const map = createBaseMap({});
+    const [first, second] = map.interactionDots!.filter((dot) => dot.kind === "emptySlot").slice(0, 2);
+    const position = { x: 400, y: 400 };
+    first.position = { x: position.x + 12, y: position.y };
+    second.position = { x: position.x - 12, y: position.y };
+
+    const expected = [first, second].sort((a, b) => a.id.localeCompare(b.id))[0].id;
+    expect(findBaseTarget(map, position)?.id).toBe(expected);
+    map.interactionDots!.reverse();
+    expect(findBaseTarget(map, position)?.id).toBe(expected);
+
+    first.position = { x: position.x + 12.01, y: position.y };
+    second.position = { x: position.x - 12.01, y: position.y };
+    expect(findBaseTarget(map, position)).toBeNull();
   });
 });
