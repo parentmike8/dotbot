@@ -1,14 +1,14 @@
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { physicsFloorId } from "@dotbot/game/mapModel";
 import { applyWireDotFrame, assertNever, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
-import type { EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot } from "@dotbot/protocol";
+import type { EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot, WireInputFrame } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
   classifyCorrection,
   decayCorrectionOffset,
+  dropAcknowledgedInputs,
   preventBackwardMotion,
   replayPendingInputs,
-  retainInputHistory,
   type PendingInput,
 } from "../prediction/reconciliation";
 import type { GameSession, RunState } from "./GameSession";
@@ -44,16 +44,18 @@ export class NetSession implements GameSession {
   private snapshots: BufferedSnapshot[] = [];
   private events: SimEvent[] = [];
   private seq = 0;
-  private sendFrame = false;
-  private pendingInput: InputCommand = { move: { x: 0, y: 0 }, dash: false };
   private pendingInputs: PendingInput[] = [];
   private predictionInput: InputCommand = { move: { x: 0, y: 0 }, dash: false };
   private predictionDashQueued = false;
+  private queuedUseBay: 0 | 1 | 2 | 3 | undefined;
+  private queuedSwapBay: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number } | undefined;
+  private stagedDownedVerb: InputCommand["downedVerb"];
+  private queuedPlea = false;
+  private edgeAwaitingFlush = false;
   private predictor: LitePredictor | null = null;
   private predictionAccumulatorMs = 0;
   private predictionEnabled = false;
   private correctionOffset = { x: 0, y: 0 };
-  private predictionTick = 0;
   private lastOwnRenderedPosition: { x: number; y: number } | null = null;
   private tickHz = 60;
   private roomCode = "";
@@ -149,41 +151,19 @@ export class NetSession implements GameSession {
     this.leaveRun();
   }
 
+  /**
+   * Stages the current input state. Actual input frames are cut at the fixed
+   * prediction tick rate inside advancePrediction — one frame per tick, seq
+   * per frame — so the server can consume them tick-exactly regardless of the
+   * display's frame rate.
+   */
   sendInput(input: InputCommand): void {
     this.predictionInput = { move: { ...input.move }, dash: false };
     this.predictionDashQueued ||= input.dash;
-    this.pendingInput = {
-      move: { ...input.move },
-      dash: this.pendingInput.dash || input.dash,
-      useBay: this.pendingInput.useBay ?? input.useBay,
-      swapBay: this.pendingInput.swapBay ?? input.swapBay,
-      downedVerb: input.downedVerb,
-      plea: this.pendingInput.plea || input.plea,
-    };
-    this.sendFrame = !this.sendFrame;
-    if (!this.sendFrame || !this.mapValue) return;
-    this.seq += 1;
-    const sentInput = {
-      move: { ...this.pendingInput.move },
-      dash: this.pendingInput.dash,
-      useBay: this.pendingInput.useBay,
-      swapBay: this.pendingInput.swapBay,
-      downedVerb: this.pendingInput.downedVerb,
-      plea: this.pendingInput.plea,
-    };
-    this.send({
-      type: "input",
-      seq: this.seq,
-      move: [sentInput.move.x, sentInput.move.y],
-      dash: sentInput.dash,
-      useBay: sentInput.useBay,
-      swapBay: sentInput.swapBay,
-      downedVerb: sentInput.downedVerb,
-      plea: sentInput.plea,
-    });
-    this.pendingInputs.push({ seq: this.seq, input: sentInput, predictionTick: this.predictionTick });
-    if (this.pendingInputs.length > 128) this.pendingInputs.splice(0, this.pendingInputs.length - 128);
-    this.pendingInput = { move: this.pendingInput.move, dash: false, downedVerb: this.pendingInput.downedVerb, plea: false };
+    if (input.useBay !== undefined && this.queuedUseBay === undefined) this.queuedUseBay = input.useBay;
+    if (input.swapBay && !this.queuedSwapBay) this.queuedSwapBay = input.swapBay;
+    this.stagedDownedVerb = input.downedVerb;
+    this.queuedPlea ||= input.plea ?? false;
   }
 
   getNetworkDebug(): NetworkDebugStats {
@@ -290,7 +270,7 @@ export class NetSession implements GameSession {
         snapshot.timeMs = message.tick * (1000 / this.tickHz);
         snapshot.debug.tickHz = this.tickHz;
         this.checkClockSanity(message.tick, snapshot.timeMs);
-        this.reconcileOwnBot(snapshot, message.ack, message.tick);
+        this.reconcileOwnBot(snapshot, message.ack);
         this.snapshots.push({ tick: message.tick, snapshot });
         if (this.snapshots.length > 20) this.snapshots.splice(0, this.snapshots.length - 20);
         return;
@@ -336,18 +316,16 @@ export class NetSession implements GameSession {
   }
 
   private advancePrediction(elapsedMs: number): void {
-    if (!this.predictor || !this.predictionEnabled) {
-      this.predictionDashQueued = false;
-      return;
-    }
-
+    if (!this.configValue) return;
+    const tickMs = 1000 / this.tickHz;
     this.predictionAccumulatorMs += Math.min(elapsedMs, 250);
-    while (this.predictionAccumulatorMs >= this.predictor.tickMs) {
-      this.predictor.step({ ...this.predictionInput, dash: this.predictionDashQueued });
-      this.predictionTick += 1;
-      this.predictionDashQueued = false;
-      this.predictionAccumulatorMs -= this.predictor.tickMs;
+    let emitted = false;
+    while (this.predictionAccumulatorMs >= tickMs) {
+      this.predictionAccumulatorMs -= tickMs;
+      this.emitInputFrame();
+      emitted = true;
     }
+    if (emitted) this.flushInputFrames();
     this.correctionOffset = decayCorrectionOffset(
       this.correctionOffset,
       correctionBlendRate,
@@ -355,11 +333,72 @@ export class NetSession implements GameSession {
     );
   }
 
-  private reconcileOwnBot(snapshot: GameSnapshot, ack: number, serverTick: number): void {
+  /** Cuts one tick-aligned input frame: consumed edges fire exactly once,
+   * the predictor steps with the very same frame the server will apply. */
+  private emitInputFrame(): void {
+    this.seq += 1;
+    const frame: InputCommand = {
+      move: { x: this.predictionInput.move.x, y: this.predictionInput.move.y },
+      dash: this.predictionDashQueued,
+      useBay: this.queuedUseBay,
+      swapBay: this.queuedSwapBay,
+      downedVerb: this.stagedDownedVerb,
+      plea: this.queuedPlea || undefined,
+    };
+    this.predictionDashQueued = false;
+    this.queuedUseBay = undefined;
+    this.queuedSwapBay = undefined;
+    this.queuedPlea = false;
+    if (this.predictor && this.predictionEnabled) {
+      this.predictor.step(frame);
+    }
+    if (frame.dash || frame.useBay !== undefined || frame.swapBay !== undefined || frame.plea === true) {
+      this.edgeAwaitingFlush = true;
+    }
+    this.pendingInputs.push({ seq: this.seq, input: frame });
+    if (this.pendingInputs.length > 240) this.pendingInputs.splice(0, this.pendingInputs.length - 240);
+  }
+
+  /**
+   * Ships the newest frames. Steady movement flushes every other tick (30
+   * messages/s); frames carrying a one-shot edge (dash, bay, plea, swap) go
+   * out immediately. Every message repeats the last few frames so a dropped
+   * or reordered packet cannot lose an input.
+   */
+  private flushInputFrames(): void {
+    const newest = this.pendingInputs[this.pendingInputs.length - 1];
+    if (!newest || !this.mapValue) return;
+    if (!this.edgeAwaitingFlush && newest.seq % 2 !== 0) return;
+    this.edgeAwaitingFlush = false;
+    const frames: WireInputFrame[] = this.pendingInputs.slice(-4).map(({ seq, input }) => ({
+      seq,
+      move: [input.move.x, input.move.y],
+      dash: input.dash,
+      useBay: input.useBay,
+      swapBay: input.swapBay,
+      downedVerb: input.downedVerb,
+      plea: input.plea,
+    }));
+    const top = frames[frames.length - 1];
+    this.send({
+      type: "input",
+      seq: top.seq,
+      move: top.move,
+      dash: top.dash,
+      useBay: top.useBay,
+      swapBay: top.swapBay,
+      downedVerb: top.downedVerb,
+      plea: top.plea,
+      frames,
+    });
+  }
+
+  private reconcileOwnBot(snapshot: GameSnapshot, ack: number): void {
     const authoritative = snapshot.bots.find((bot) => bot.id === this.playerIdValue);
     if (!authoritative || !this.mapValue || !this.configValue) {
       this.predictor = null;
       this.predictionEnabled = false;
+      this.pendingInputs = dropAcknowledgedInputs(this.pendingInputs, ack);
       return;
     }
 
@@ -369,38 +408,31 @@ export class NetSession implements GameSession {
     const obstacles = snapshot.bots
       .filter((bot) => bot.id !== this.playerIdValue && bot.state === "alive" && bot.floorId === authoritative.floorId)
       .map((bot) => ({ position: { ...bot.position }, radius: bot.radius }));
+    // Mirror the server's stationary-channel rule so looting/reviving does
+    // not rubber-band against held movement keys.
+    const channelFrozen = snapshot.coverages.some((coverage) =>
+      coverage.actorId === this.playerIdValue
+        && ["consume", "revive", "reviveClean", "lootThenRevive"].includes(coverage.kind));
     if (!this.predictor) {
       this.predictor = new LitePredictor(this.mapValue, this.configValue, authoritative);
       this.predictor.setObstacles(obstacles);
-      this.predictionAccumulatorMs = 0;
-      this.predictionTick = serverTick;
-      this.pendingInputs = retainInputHistory(this.pendingInputs, ack);
+      this.predictor.setChannelFrozen(channelFrozen);
+      this.pendingInputs = dropAcknowledgedInputs(this.pendingInputs, ack);
       return;
     }
     this.predictor.setObstacles(obstacles);
+    this.predictor.setChannelFrozen(channelFrozen);
 
     const predictedBefore = this.predictor.current;
     if (authoritative.floorId !== predictedBefore.floorId || !this.predictionEnabled) {
       this.predictor.reset(authoritative);
-      this.predictionAccumulatorMs = 0;
       this.correctionOffset = { x: 0, y: 0 };
-      this.predictionTick = serverTick;
       this.lastOwnRenderedPosition = { ...authoritative.position };
-      this.pendingInputs = retainInputHistory(this.pendingInputs, ack);
+      this.pendingInputs = dropAcknowledgedInputs(this.pendingInputs, ack);
       return;
     }
 
-    const targetPredictionTick = Math.max(serverTick, this.predictionTick);
-    const replay = replayPendingInputs(
-      this.predictor,
-      authoritative,
-      this.pendingInputs,
-      ack,
-      serverTick,
-      targetPredictionTick,
-      this.predictionInput,
-    );
-    this.predictionTick = targetPredictionTick;
+    const replay = replayPendingInputs(this.predictor, authoritative, this.pendingInputs, ack);
     this.pendingInputs = replay.history;
     const error = Math.hypot(
       replay.corrected.position.x - predictedBefore.position.x,
@@ -483,7 +515,10 @@ export class NetSession implements GameSession {
     const now = performance.now();
     if (now - this.lastPingSentAtMs < 1000) return;
     this.lastPingSentAtMs = now;
-    this.send({ type: "ping", cts: Date.now() });
+    // Report how far in the past this client renders the world so the server
+    // can lag-compensate dash hits to what was actually on screen.
+    const viewDelayMs = interpolationDelayMs + (this.rttMs ?? 100) / 2;
+    this.send({ type: "ping", cts: Date.now(), viewDelayMs });
   }
 
   private recordSnapshotArrival(): number {

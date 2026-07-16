@@ -1391,3 +1391,66 @@ describe("kinematic bot physics (solver-free)", () => {
     simulation.dispose();
   });
 });
+
+describe("combat lag compensation", () => {
+  /**
+   * The canonical whiff: a runner crosses left-to-right while the attacker
+   * dashes perpendicular through where the runner APPEARS on a delayed
+   * screen — 15 ticks (~250ms of interpolation + RTT) behind the true body,
+   * ~57px back along the trail. The dash crosses the trail there and never
+   * comes within contact range (52px) of the runner's true position, so the
+   * hit can only land if the server rewinds the victim to the attacker's
+   * perceived time.
+   */
+  async function crossingDashAtPerceivedPosition(viewDelayTicks: number): Promise<boolean> {
+    const simulation = await makeSimulation([
+      // x = where the runner's 15-tick-old ghost sits when the dash crosses
+      // the lane (runner position at tick ~21).
+      playerSpawn({ position: { x: 180.5, y: 270 } }),
+      enemySpawn({ id: "runner", isAmbient: false, controller: "human", squadId: "rival-1", position: { x: 100, y: 180 } }),
+    ]);
+    simulation.setController("runner", "human");
+    simulation.setViewDelayTicks("player", viewDelayTicks);
+
+    let hit = false;
+    for (let tick = 1; tick <= 55 && !hit; tick += 1) {
+      simulation.applyInput("player", tick < 30
+        ? { move: { x: 0, y: 0 }, dash: false }
+        : { move: { x: 0, y: -1 }, dash: tick === 30 });
+      simulation.applyInput("runner", { move: { x: 1, y: 0 }, dash: false });
+      simulation.step();
+      hit = simulation.getSnapshot().bots.find((bot) => bot.id === "runner")!
+        .shieldSegments.some((plate) => plate < 1);
+    }
+    simulation.dispose();
+    return hit;
+  }
+
+  it("a dash through the on-screen (rewound) enemy position lands", async () => {
+    expect(await crossingDashAtPerceivedPosition(15)).toBe(true);
+  });
+
+  it("without rewind the identical dash whiffs — the regression rewind exists to fix", async () => {
+    expect(await crossingDashAtPerceivedPosition(0)).toBe(false);
+  });
+
+  it("a human coverer outranks an AI squadmate hovering the same body", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 135, y: 180 } }),
+      // Sorts before "player" alphabetically, so only human priority — not
+      // id order — can hand the human the coverage slot.
+      enemySpawn({ id: "aide", isAmbient: false, controller: "frozen", squadId: "rival-1", position: { x: 185, y: 180 } }),
+      enemySpawn({ id: "victim", isAmbient: false, controller: "frozen", squadId: "rival-1", position: { x: 160, y: 180 }, state: "downed" }),
+    ]);
+
+    for (let tick = 0; tick < 5; tick += 1) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
+      simulation.step();
+    }
+
+    const coverage = simulation.getSnapshot().coverages.find((entry) => entry.targetId === "victim");
+    expect(coverage?.actorId).toBe("player");
+    expect(coverage?.kind).toBe("consume");
+    simulation.dispose();
+  });
+});

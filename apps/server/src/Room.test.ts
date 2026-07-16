@@ -186,6 +186,81 @@ describe("Room owner-private match intel", () => {
   });
 });
 
+describe("Room input stream", () => {
+  it("consumes one frame per tick in seq order, acks only applied frames, and sheds stall backlogs", async () => {
+    let clock = 0;
+    const room = new Room("TICK", { countdownMs: 0, persistence: new NoopPersistence(), aiWingmates: false, now: () => clock });
+    const peer = collectingPeer("stream-peer");
+    room.join(peer.peer, "stream-token", "Streamer", "stream-player", "alpha");
+    room.receive("stream-player", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+    const tickMs = 1000 / 60;
+    const internals = room as unknown as {
+      members: Map<string, {
+        botId: string;
+        lastAppliedSeq: number;
+        inputQueue: Array<{ seq: number }>;
+        heldInput: { move: { x: number; y: number } };
+      }>;
+    };
+    const member = internals.members.get("stream-player")!;
+    // The epsilon keeps float accumulation from rounding a tick away.
+    const step = () => { clock += tickMs + 0.01; room.tick(clock); };
+
+    // A stalled transport delivers frames 1..4 as one burst, including a
+    // redundant duplicate of seq 2 — the queue keeps one copy of each.
+    room.receive("stream-player", {
+      type: "input", seq: 4, move: [1, 0], dash: false,
+      frames: [
+        { seq: 1, move: [1, 0], dash: false },
+        { seq: 2, move: [1, 0], dash: true },
+        { seq: 2, move: [1, 0], dash: true },
+        { seq: 3, move: [1, 0], dash: false },
+        { seq: 4, move: [1, 0], dash: false },
+      ],
+    });
+    expect(member.inputQueue.map(({ seq }) => seq)).toEqual([1, 2, 3, 4]);
+
+    // One frame per tick, in order; the ack only ever names applied frames.
+    step();
+    expect(member.lastAppliedSeq).toBe(1);
+    step();
+    expect(member.lastAppliedSeq).toBe(2);
+    step();
+    step();
+    expect(member.lastAppliedSeq).toBe(4);
+    expect(member.inputQueue).toHaveLength(0);
+
+    // Underrun: held movement keeps flowing, the ack does not advance.
+    step();
+    expect(member.lastAppliedSeq).toBe(4);
+    expect(member.heldInput.move.x).toBe(1);
+
+    // A deep post-stall backlog is shed to a bounded depth instead of
+    // becoming standing input latency; shed frames count as acknowledged so
+    // the client never replays them as pending.
+    room.receive("stream-player", {
+      type: "input", seq: 13, move: [0, 1], dash: false,
+      frames: Array.from({ length: 9 }, (_, index) => ({ seq: 5 + index, move: [0, 1] as [number, number], dash: false })),
+    });
+    expect(member.inputQueue.map(({ seq }) => seq)).toEqual([8, 9, 10, 11, 12, 13]);
+    expect(member.lastAppliedSeq).toBe(7);
+
+    // After an underrun the de-jitter latch waits for two buffered frames
+    // before resuming, so a single arrival is held one tick — then both
+    // (legacy single-frame messages included) flow through the same queue.
+    step(); step(); step(); step(); step(); step(); step();
+    room.receive("stream-player", { type: "input", seq: 20, move: [0, 1], dash: false });
+    step();
+    expect(member.lastAppliedSeq).toBe(13);
+    room.receive("stream-player", { type: "input", seq: 21, move: [0, 1], dash: false });
+    step();
+    step();
+    expect(member.lastAppliedSeq).toBe(21);
+    room.dispose();
+  });
+});
+
 describe("Room contract manifest", () => {
   it("forwards transaction-time contract completions on runOver", async () => {
     class ContractPersistence extends NoopPersistence {

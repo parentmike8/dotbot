@@ -613,6 +613,11 @@ export class GameRenderer {
 
     if (bot.state === "downed") {
       g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color, width: 2.5, alpha });
+      // A downed body is a stand-on interaction (revive/consume/loot), so it
+      // carries the same engraved interaction mark as every dot in the world.
+      g.circle(bot.position.x, bot.position.y, 6).fill({ color: DOT_COLOR.interaction, alpha: 0.9 * fade });
+      g.circle(bot.position.x, bot.position.y, 6).stroke({ color: INK.structure, width: 1.2, alpha });
+      g.circle(bot.position.x, bot.position.y, 3.5).stroke({ color: INK.structure, width: WEIGHT.hairline, alpha: 0.8 * fade });
     } else {
       g.circle(bot.position.x, bot.position.y, coreRadius).fill({ color: INK.structure, alpha: 0.95 * fade });
       g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: INK.structure, width: 2, alpha });

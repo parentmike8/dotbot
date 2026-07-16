@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { withinDownedCoverRange } from "@dotbot/game/interactions";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import type { NetSession } from "../../game/session/NetSession";
 import { arrivalSparkline } from "../../game/session/netgraph";
@@ -20,9 +21,14 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === session.playerId) ?? false;
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
   const hostileDowned = player?.state === "alive" ? snapshot?.bots.find((bot) =>
-    bot.state === "downed" && !bot.isAmbient && bot.squadId !== player.squadId && bot.floorId === player.floorId
-      && Math.hypot(bot.position.x - player.position.x, bot.position.y - player.position.y) <= player.radius * 2.2,
+    bot.state === "downed" && bot.squadId !== player.squadId && bot.floorId === player.floorId
+      && Math.hypot(bot.position.x - player.position.x, bot.position.y - player.position.y) <= player.radius * 2.6,
   ) : undefined;
+  // The SAME range math the server gates the channel on — the UI must never
+  // claim an interaction the simulation would refuse.
+  const hostileInRange = Boolean(player && hostileDowned && withinDownedCoverRange(
+    player.position, player.radius, hostileDowned.position, hostileDowned.radius, session.config.coverCenterTolerance,
+  ));
   const hostileChannel = hostileDowned ? snapshot?.coverages.find((coverage) => coverage.actorId === player?.id && coverage.targetId === hostileDowned.id) : undefined;
   const mineRotated = [...events].reverse().find((event) => event.type === "mineRotated");
   const spectateMode = runResult?.outcome === "died";
@@ -123,7 +129,9 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       ) : null}
       {hostileDowned && !runResult ? (
         <div className="hostile-verb-strip" aria-label="Downed hostile actions">
-          <strong>{hostileChannel ? verbLabel(hostileChannel.kind) : "DOWNED HOSTILE"}</strong>
+          <strong>
+            {hostileChannel ? verbLabel(hostileChannel.kind) : hostileInRange ? "DOWNED HOSTILE · PICK A VERB" : "STAND ON THE BODY"}
+          </strong>
           <button type="button" onClick={() => selectDownedVerb("consume")}>C · CONSUME</button>
           <button type="button" onClick={() => selectDownedVerb("reviveClean")}>R · REVIVE CLEAN</button>
           <button type="button" onClick={() => selectDownedVerb("lootThenRevive")}>F · LOOT + REVIVE</button>

@@ -4,8 +4,6 @@ import { LitePredictor, type PredictedOwnBot } from "./LitePredictor";
 export type PendingInput = {
   seq: number;
   input: InputCommand;
-  /** Client prediction tick when this input frame became the latest latch. */
-  predictionTick: number;
 };
 
 export type CorrectionKind = "adopt" | "blend" | "snap";
@@ -14,42 +12,26 @@ export function dropAcknowledgedInputs(pending: readonly PendingInput[], ack: nu
   return pending.filter(({ seq }) => seq > ack);
 }
 
-export function retainInputHistory(history: readonly PendingInput[], ack: number): PendingInput[] {
-  const acknowledged = history.filter(({ seq }) => seq <= ack).at(-1);
-  return [...(acknowledged ? [acknowledged] : []), ...dropAcknowledgedInputs(history, ack)];
-}
-
+/**
+ * Tick-exact reconciliation. The server consumes exactly one input frame per
+ * simulation tick in seq order and acks the last frame it applied, so
+ * replaying every pending frame (seq > ack) — one predictor step each — on
+ * top of the authoritative state reproduces the server's future exactly.
+ * Corrections therefore only appear for genuinely server-side information
+ * (hits, knockback, channel freezes, other bots), never for transport jitter.
+ */
 export function replayPendingInputs(
   predictor: LitePredictor,
   authoritative: PredictedOwnBot,
   history: readonly PendingInput[],
   ack: number,
-  authoritativeTick: number,
-  predictionTick: number,
-  fallbackLatched: InputCommand = { move: { x: 0, y: 0 }, dash: false },
-): { corrected: PredictedOwnBot; pending: PendingInput[]; history: PendingInput[] } {
-  const ordered = [...history].sort((a, b) => a.predictionTick - b.predictionTick || a.seq - b.seq);
-  const acknowledged = ordered.filter(({ seq }) => seq <= ack).at(-1);
-  const remaining = ordered.filter(({ seq }) => seq > ack);
-  let latched = acknowledged?.input ?? fallbackLatched;
-  let nextIndex = 0;
+): { corrected: PredictedOwnBot; history: PendingInput[] } {
+  const remaining = dropAcknowledgedInputs(history, ack).sort((a, b) => a.seq - b.seq);
   predictor.reset(authoritative);
-
-  for (let tick = authoritativeTick + 1; tick <= predictionTick; tick += 1) {
-    let receivedNewInput = false;
-    while (remaining[nextIndex] && remaining[nextIndex].predictionTick <= tick) {
-      latched = remaining[nextIndex].input;
-      nextIndex += 1;
-      receivedNewInput = true;
-    }
-    predictor.step(receivedNewInput ? latched : withoutConsumedEdges(latched));
+  for (const { input } of remaining) {
+    predictor.step(input);
   }
-
-  return {
-    corrected: predictor.current,
-    pending: remaining,
-    history: [...(acknowledged ? [acknowledged] : []), ...remaining],
-  };
+  return { corrected: predictor.current, history: remaining };
 }
 
 export function classifyCorrection(errorDistance: number, snapDistance = 150, blendThreshold = 0.5): CorrectionKind {
@@ -81,13 +63,5 @@ export function preventBackwardMotion(previous: Vec2 | null, candidate: Vec2, in
   return {
     x: candidate.x - direction.x * along,
     y: candidate.y - direction.y * along,
-  };
-}
-
-function withoutConsumedEdges(input: InputCommand): InputCommand {
-  return {
-    move: input.move,
-    dash: false,
-    downedVerb: input.downedVerb,
   };
 }

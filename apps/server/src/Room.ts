@@ -7,7 +7,7 @@ import { assignSquadInsertions, squadSpawnPosition, validateInsertionMap } from 
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, InsertionPoint, SimEvent } from "@dotbot/game/types";
 import { filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot, visiblePhysicsFloors } from "@dotbot/protocol";
 import { LOBBY_SQUADS } from "@dotbot/protocol";
-import type { ClientMessage, FullWireSnapshot, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta } from "@dotbot/protocol";
+import type { ClientMessage, FullWireSnapshot, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta, WireInputFrame } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type RunManifest } from "./db";
 
@@ -20,8 +20,21 @@ type Member = LobbyMember & {
   token: string;
   peer: RoomPeer | null;
   botId: string | null;
-  latestInput: InputCommand;
-  latestSeq: number;
+  /** Seq-ordered frames not yet applied; exactly one is consumed per tick. */
+  inputQueue: WireInputFrame[];
+  /** Last applied input with its one-shot edges cleared; repeated on ticks
+   * where the queue has underrun so held movement keeps flowing. */
+  heldInput: InputCommand;
+  /** Seq of the newest frame the simulation has actually consumed — the ack.
+   * Reconciliation replays everything after it, so it must never report a
+   * frame the sim has not integrated. */
+  lastAppliedSeq: number;
+  /** De-jitter latch: set on underrun, cleared once two frames are buffered
+   * so paired 30Hz arrivals cannot ping-pong between starve and catch-up. */
+  inputStarved: boolean;
+  /** Ticks a lone frame has waited for its pair; bounded so sparse scripted
+   * clients (single-frame messages) are never starved indefinitely. */
+  starveHoldTicks: number;
   handoffTimer: ReturnType<typeof setTimeout> | null;
   inRun: boolean;
   streaming: boolean;
@@ -150,8 +163,11 @@ export class Room {
       squadId: this.availableSquad(preferredSquad),
       peer,
       botId: null,
-      latestInput: { move: { x: 0, y: 0 }, dash: false },
-      latestSeq: 0,
+      inputQueue: [],
+      heldInput: { move: { x: 0, y: 0 }, dash: false },
+      lastAppliedSeq: 0,
+      inputStarved: true,
+      starveHoldTicks: 0,
       handoffTimer: null,
       inRun: false,
       streaming: true,
@@ -209,19 +225,25 @@ export class Room {
       case "leaveRun":
         this.leaveRun(member);
         return;
-      case "input":
-        if (this.phase !== "live" || !member.inRun || message.seq <= member.latestSeq) return;
-        member.latestSeq = message.seq;
-        member.latestInput = {
-          move: { x: message.move[0], y: message.move[1] },
+      case "input": {
+        if (this.phase !== "live" || !member.inRun) return;
+        const frames: WireInputFrame[] = message.frames ?? [{
+          seq: message.seq,
+          move: message.move,
           dash: message.dash,
           useBay: message.useBay,
           swapBay: message.swapBay,
           downedVerb: message.downedVerb,
           plea: message.plea,
-        };
+        }];
+        this.enqueueInputFrames(member, frames);
         return;
+      }
       case "ping":
+        if (typeof message.viewDelayMs === "number" && member.botId && this.simulation) {
+          const clampedMs = Math.max(0, Math.min(250, message.viewDelayMs));
+          this.simulation.setViewDelayTicks(member.botId, clampedMs / this.tickDurationMs);
+        }
         member.peer?.send({ type: "pong", cts: message.cts, sts: this.now(), tick: this.latestServerTick });
         return;
     }
@@ -275,8 +297,7 @@ export class Room {
       const started = performance.now();
       for (const member of this.members.values()) {
         if (!member.botId) continue;
-        this.simulation.applyInput(member.botId, member.latestInput);
-        member.latestInput = { move: member.latestInput.move, dash: false, downedVerb: member.latestInput.downedVerb, plea: false };
+        this.simulation.applyInput(member.botId, this.consumeInputFrame(member));
       }
       this.simulation.step();
       durations.push(performance.now() - started);
@@ -318,6 +339,55 @@ export class Room {
     }
     this.simulation?.dispose();
     this.simulation = null;
+  }
+
+  /** Insert frames in seq order, dropping duplicates (redundant copies ride
+   * along in every message) and anything the simulation already consumed. */
+  private enqueueInputFrames(member: Member, frames: readonly WireInputFrame[]): void {
+    for (const frame of frames) {
+      if (frame.seq <= member.lastAppliedSeq) continue;
+      if (member.inputQueue.some((queued) => queued.seq === frame.seq)) continue;
+      const insertAt = member.inputQueue.findIndex((queued) => queued.seq > frame.seq);
+      if (insertAt === -1) member.inputQueue.push(frame);
+      else member.inputQueue.splice(insertAt, 0, frame);
+    }
+    // A transport stall delivers its backlog as one burst; anything beyond a
+    // couple of ticks of buffered input would become standing input latency,
+    // so shed the oldest frames and let client reconciliation absorb the gap.
+    while (member.inputQueue.length > 6) {
+      member.lastAppliedSeq = member.inputQueue.shift()!.seq;
+    }
+  }
+
+  /**
+   * Exactly one input frame is consumed per simulation tick — the invariant
+   * client prediction replays against. On underrun the last applied movement
+   * repeats with its one-shot edges (dash, bay use, plea) cleared.
+   */
+  private consumeInputFrame(member: Member): InputCommand {
+    if (member.inputStarved && member.inputQueue.length === 1 && member.starveHoldTicks < 2) {
+      member.starveHoldTicks += 1;
+      return member.heldInput;
+    }
+    const frame = member.inputQueue.shift();
+    if (!frame) {
+      member.inputStarved = true;
+      member.starveHoldTicks = 0;
+      return member.heldInput;
+    }
+    member.inputStarved = false;
+    member.starveHoldTicks = 0;
+    member.lastAppliedSeq = frame.seq;
+    const input: InputCommand = {
+      move: { x: frame.move[0], y: frame.move[1] },
+      dash: frame.dash,
+      useBay: frame.useBay,
+      swapBay: frame.swapBay,
+      downedVerb: frame.downedVerb,
+      plea: frame.plea,
+    };
+    member.heldInput = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
+    return input;
   }
 
   private beginCountdown(): void {
@@ -393,6 +463,11 @@ export class Room {
       const botId = `human-${member.playerId}`;
       simulation.spawnBot(makeSpawn(botId, member.name, member.squadId, squadColors[squadIndex], insertion, count, loadouts.get(member.playerId) ?? [], this.config.botRadius), "human");
       member.botId = botId;
+      member.inputQueue = [];
+      member.heldInput = { move: { x: 0, y: 0 }, dash: false };
+      member.lastAppliedSeq = 0;
+      member.inputStarved = true;
+      member.starveHoldTicks = 0;
       member.inRun = true;
       member.streaming = true;
       member.runOver = null;
@@ -506,7 +581,7 @@ export class Room {
       const context = this.viewerContext(member, snapshot);
       const filtered = filterForViewer(wire, meta, context);
       const dotFrame = this.dotFrame(member, filtered, visiblePhysicsFloors(wire, context));
-      this.sendStream(member, { type: "snap", ...toViewerSnapshot(filtered, member.latestSeq, dotFrame) });
+      this.sendStream(member, { type: "snap", ...toViewerSnapshot(filtered, member.lastAppliedSeq, dotFrame) });
     }
   }
 
@@ -661,7 +736,8 @@ export class Room {
 
   private sendRunOver(member: Member, message: Extract<ServerMessage, { type: "runOver" }>, cargo: import("@dotbot/game/types").Item[] = []): void {
     member.inRun = false;
-    member.latestInput = { move: { x: 0, y: 0 }, dash: false };
+    member.inputQueue = [];
+    member.heldInput = { move: { x: 0, y: 0 }, dash: false };
     member.runOver = message;
     this.matchOutcomes.set(member.playerId, message.reason);
     const persistenceWrite = this.persistRunOutcome(member, message, cargo).then((manifest) => {

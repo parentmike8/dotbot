@@ -61,8 +61,10 @@ describe("snapshot wire mapping", () => {
       shieldSegments: bot.shieldSegments,
       bays: bot.bays,
       hold: bot.hold,
-      dashCooldownMs: Math.round(bot.dashCooldownMs),
-      dashActiveMs: Math.round(bot.dashActiveMs),
+      // Centi-ms precision: reconciliation replays dashes from these values,
+      // and whole-ms rounding flips the dash-end tick (~7px correction).
+      dashCooldownMs: Math.round(bot.dashCooldownMs * 100) / 100,
+      dashActiveMs: Math.round(bot.dashActiveMs * 100) / 100,
       invulnerabilityMs: Math.round(bot.invulnerabilityMs),
     });
   });

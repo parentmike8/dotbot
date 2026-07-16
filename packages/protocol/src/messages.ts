@@ -125,6 +125,21 @@ export type WireSimEvent =
   | { type: "mineRotated"; botId: string; mineId: string }
   | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: { x: number; y: number }; floorId: string };
 
+/**
+ * One prediction tick's worth of input. The client emits exactly one frame
+ * per 60Hz tick and the server consumes exactly one per simulation tick, so
+ * reconciliation replay is tick-exact regardless of transport jitter.
+ */
+export type WireInputFrame = {
+  seq: number;
+  move: [number, number];
+  dash: boolean;
+  useBay?: 0 | 1 | 2 | 3;
+  swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
+  downedVerb?: DownedHostileVerb;
+  plea?: boolean;
+};
+
 export type ClientMessage =
   | { type: "hello"; token: string; name: string; roomCode: string; preferredSquad?: LobbySquadId }
   | { type: "joinSquad"; squadId: LobbySquadId }
@@ -139,8 +154,13 @@ export type ClientMessage =
       swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
       downedVerb?: DownedHostileVerb;
       plea?: boolean;
+      /** Tick-stamped frame batch (newest last), including redundant copies
+       * of recent frames so a dropped packet cannot lose an input. When
+       * present, the top-level fields mirror the newest frame and exist for
+       * older peers/scripted clients only. */
+      frames?: WireInputFrame[];
     }
-  | { type: "ping"; cts: number };
+  | { type: "ping"; cts: number; viewDelayMs?: number };
 
 export type ServerMessage =
   | {

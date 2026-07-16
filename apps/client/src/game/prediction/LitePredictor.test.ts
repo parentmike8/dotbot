@@ -96,23 +96,22 @@ describe("LitePredictor", () => {
     );
   });
 
-  it("drops acknowledged inputs and replays each remainder for two ticks", () => {
+  it("drops acknowledged inputs and replays one tick per remaining frame", () => {
     const authoritative = makeBot();
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, authoritative);
     const result = replayPendingInputs(
       predictor,
       authoritative,
       [
-        { seq: 4, input: moveRight, predictionTick: 98 },
-        { seq: 5, input: moveRight, predictionTick: 100 },
-        { seq: 6, input: moveRight, predictionTick: 101 },
+        { seq: 4, input: moveRight },
+        { seq: 5, input: moveRight },
+        { seq: 6, input: moveRight },
+        { seq: 7, input: moveRight },
       ],
       5,
-      100,
-      102,
     );
 
-    expect(result.pending.map(({ seq }) => seq)).toEqual([6]);
+    expect(result.history.map(({ seq }) => seq)).toEqual([6, 7]);
     expect(result.corrected.position.x).toBeCloseTo(
       authoritative.position.x + (defaultGameConfig.playerSpeed * 2) / defaultGameConfig.tickHz,
       5,
@@ -135,7 +134,7 @@ describe("LitePredictor", () => {
       .toEqual({ x: 104, y: 103 });
   });
 
-  it("matches the real simulation's per-tick input-latching semantics", async () => {
+  it("replays a tick-exact input stream to the simulation's exact state", async () => {
     const parityMap: MapDocument = {
       id: "prediction-parity",
       name: "Prediction parity",
@@ -157,22 +156,23 @@ describe("LitePredictor", () => {
     const simulation = await DotBotSimulation.create({ map: parityMap });
     const initial = simulation.getSnapshot().bots.find(({ id }) => id === "viewer")!;
     const predictor = new LitePredictor(parityMap, defaultGameConfig, initial);
-    const frames = [
-      { seq: 1, predictionTick: 1, input: { move: { x: 1, y: 0 }, dash: false } },
-      { seq: 2, predictionTick: 4, input: { move: { x: 0, y: 1 }, dash: false } },
-      { seq: 3, predictionTick: 8, input: { move: { x: -1, y: 0 }, dash: true } },
-    ] satisfies Array<{ seq: number; predictionTick: number; input: InputCommand }>;
+    // Turns, a dash mid-stream, and a stop: the exact frame set the client
+    // would cut. The server consumes one frame per tick, so replaying the
+    // same frames one step each must land on the simulation's exact state.
+    const frames: Array<{ seq: number; input: InputCommand }> = Array.from({ length: 14 }, (_, index) => ({
+      seq: index + 1,
+      input: {
+        move: index < 4 ? { x: 1, y: 0 } : index < 8 ? { x: 0, y: 1 } : index < 12 ? { x: -1, y: 0 } : { x: 0, y: 0 },
+        dash: index === 8,
+      },
+    }));
 
-    let latched: InputCommand = { move: { x: 0, y: 0 }, dash: false };
-    for (let tick = 1; tick <= 12; tick += 1) {
-      const newest = frames.filter((frame) => frame.predictionTick === tick).at(-1);
-      if (newest) latched = newest.input;
-      simulation.applyInput("viewer", latched);
-      latched = { move: latched.move, dash: false, downedVerb: latched.downedVerb };
+    for (const frame of frames) {
+      simulation.applyInput("viewer", frame.input);
       simulation.step();
     }
 
-    const replay = replayPendingInputs(predictor, initial, frames, 0, 0, 12);
+    const replay = replayPendingInputs(predictor, initial, frames, 0);
     const authoritative = simulation.getSnapshot().bots.find(({ id }) => id === "viewer")!;
     expect(replay.corrected.position.x).toBeCloseTo(authoritative.position.x, 4);
     expect(replay.corrected.position.y).toBeCloseTo(authoritative.position.y, 4);

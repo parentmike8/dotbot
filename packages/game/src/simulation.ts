@@ -18,6 +18,7 @@ import {
   stairExitPoint,
   stairHalves,
 } from "./mapModel";
+import { withinDownedCoverRange } from "./interactions";
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, insertItem } from "./inventory";
@@ -51,6 +52,11 @@ import type {
 const NOISE_TTL_MS = 900;
 const CHANNEL_PING_MS = 700;
 
+/** Combat rewind window: 15 ticks ≈ 250ms covers the client's 125ms
+ * interpolation buffer plus a generous half-RTT without letting laggy
+ * attackers hit deep into the past. */
+const MAX_REWIND_TICKS = 15;
+
 const NOISE_LOUDNESS = {
   dash: 0.8,
   impact: 1.0,
@@ -79,6 +85,10 @@ type InternalBot = DotBotEntity & {
   knockbackMs: number;
   /** Position at the start of the tick, for stair midline-crossing checks. */
   prevPosition: Vec2;
+  /** Recent end-of-tick positions (newest last) for combat lag compensation. */
+  positionHistory: Array<{ position: Vec2; floorId: string }>;
+  /** How many ticks in the past this bot perceives the world (render delay). */
+  viewDelayTicks: number;
   aiWanderTarget: Vec2;
   aiRetargetMs: number;
   aiPath: Vec2[];
@@ -325,6 +335,8 @@ export class DotBotSimulation {
       knockbackVel: zeroVec(),
       knockbackMs: 0,
       prevPosition: { ...spawn.position },
+      positionHistory: [],
+      viewDelayTicks: 0,
       aiWanderTarget: { ...spawn.position },
       aiRetargetMs: 0,
       aiPath: [],
@@ -361,6 +373,20 @@ export class DotBotSimulation {
       downedVerb: input.downedVerb,
       plea: (current?.plea ?? false) || input.plea,
     });
+  }
+
+  /**
+   * Lag compensation: how far in the past this bot's player perceives other
+   * bots (interpolation delay + half RTT, reported by the client and clamped
+   * here). Dash hits test the victim at the attacker's perceived time, so
+   * aiming at what you see on screen connects.
+   */
+  setViewDelayTicks(botId: string, ticks: number): void {
+    const bot = this.bots.get(botId);
+    if (!bot) {
+      return;
+    }
+    bot.viewDelayTicks = clamp(Math.round(ticks), 0, MAX_REWIND_TICKS);
   }
 
   setController(botId: string, controller: Controller): void {
@@ -439,6 +465,7 @@ export class DotBotSimulation {
     this.applyMovement(dtMs);
     this.resolveBotSeparation(dtMs);
     this.resolveStairs();
+    this.recordPositionHistory();
     this.resolveMines(dtMs);
     this.resolveCombat();
     this.resolveDotCapture(dtMs);
@@ -1334,6 +1361,36 @@ export class DotBotSimulation {
     }
   }
 
+  private recordPositionHistory(): void {
+    for (const bot of this.bots.values()) {
+      bot.positionHistory.push({ position: { ...bot.position }, floorId: bot.floorId });
+      if (bot.positionHistory.length > MAX_REWIND_TICKS + 1) {
+        bot.positionHistory.splice(0, bot.positionHistory.length - (MAX_REWIND_TICKS + 1));
+      }
+    }
+  }
+
+  /** The victim as the attacker perceived it `viewDelayTicks` ago. Falls back
+   * to the present when the history is short or the victim changed floors. */
+  private perceivedTarget(attacker: InternalBot, victim: InternalBot): { position: Vec2; floorId: string } {
+    const rewind = Math.min(attacker.viewDelayTicks, victim.positionHistory.length - 1);
+    if (rewind <= 0) {
+      return { position: victim.position, floorId: victim.floorId };
+    }
+    return victim.positionHistory[victim.positionHistory.length - 1 - rewind];
+  }
+
+  /** Contact test for a directed attack, lag-compensated to the attacker's
+   * view of the victim. The attacker's own position is always present-time —
+   * with client prediction it already matches what they see of themselves. */
+  private attackConnects(attacker: InternalBot, victim: InternalBot): boolean {
+    const perceived = this.perceivedTarget(attacker, victim);
+    if (perceived.floorId !== attacker.floorId) {
+      return false;
+    }
+    return distance(attacker.position, perceived.position) - attacker.radius - victim.radius <= 4;
+  }
+
   private resolveCombat(): void {
     const aliveBots = [...this.bots.values()].filter((bot) => bot.state === "alive");
 
@@ -1342,18 +1399,8 @@ export class DotBotSimulation {
         const a = aliveBots[i];
         const b = aliveBots[j];
 
-        if (a.floorId !== b.floorId) {
-          continue;
-        }
-
         // No friendly fire: squadmates bump, never wound each other.
         if (areFriendly(a, b)) {
-          continue;
-        }
-
-        const gap = distance(a.position, b.position) - a.radius - b.radius;
-
-        if (gap > 4) {
           continue;
         }
 
@@ -1362,15 +1409,29 @@ export class DotBotSimulation {
         const aDashing = a.dashActiveMs > 0;
         const bDashing = b.dashActiveMs > 0;
 
-        if (!aDashing && !bDashing && Math.max(aSpeed, bSpeed) < this.config.damageSpeed) {
+        if (aDashing || bDashing) {
+          // Dashes are the attack verb: each direction is tested against the
+          // victim as the attacker saw them (lag compensated), so a dash
+          // through the enemy on screen lands even though the wire is late.
+          if (aDashing && this.attackConnects(a, b)) {
+            this.damageBot(b, a);
+          }
+          if (bDashing && this.attackConnects(b, a)) {
+            this.damageBot(a, b);
+          }
           continue;
         }
 
-        if (aDashing && !bDashing) {
-          this.damageBot(b, a);
-        } else if (bDashing && !aDashing) {
-          this.damageBot(a, b);
-        } else if (aSpeed > bSpeed + 20) {
+        if (a.floorId !== b.floorId) {
+          continue;
+        }
+
+        const gap = distance(a.position, b.position) - a.radius - b.radius;
+        if (gap > 4 || Math.max(aSpeed, bSpeed) < this.config.damageSpeed) {
+          continue;
+        }
+
+        if (aSpeed > bSpeed + 20) {
           this.damageBot(b, a);
         } else if (bSpeed > aSpeed + 20) {
           this.damageBot(a, b);
@@ -1473,7 +1534,15 @@ export class DotBotSimulation {
   }
 
   private resolveDownedCoverage(dtMs: number): void {
-    const aliveBots = [...this.bots.values()].filter((bot) => bot.state === "alive" && !bot.isAmbient);
+    // Humans outrank AI for the coverage slot: an AI wingmate hovering the
+    // same body must never silently swallow the player's loot/revive channel.
+    const aliveBots = [...this.bots.values()]
+      .filter((bot) => bot.state === "alive" && !bot.isAmbient)
+      .sort((left, right) => {
+        const leftHuman = this.controllers.get(left.id) === "human" ? 0 : 1;
+        const rightHuman = this.controllers.get(right.id) === "human" ? 0 : 1;
+        return leftHuman - rightHuman || left.id.localeCompare(right.id);
+      });
     const downedBots = [...this.bots.values()].filter((bot) => bot.state === "downed");
 
     for (const downed of downedBots) {
@@ -1481,7 +1550,7 @@ export class DotBotSimulation {
         (bot) =>
           bot.id !== downed.id &&
           bot.floorId === downed.floorId &&
-          canCoverDownedBot(bot, downed, this.config.coverCenterTolerance),
+          withinDownedCoverRange(bot.position, bot.radius, downed.position, downed.radius, this.config.coverCenterTolerance),
       );
       const coverageKey = `downed:${downed.id}`;
 
@@ -1760,11 +1829,6 @@ function normalizedBays(spawn: BotSpawn, config: GameConfig): (import("./types")
 
 function rectContainsPoint(rect: Rect, point: Vec2): boolean {
   return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h;
-}
-
-function canCoverDownedBot(actor: InternalBot, target: InternalBot, minimumTolerance: number): boolean {
-  const downedFootprintRadius = target.radius * 0.55;
-  return distance(actor.position, target.position) <= Math.max(minimumTolerance, actor.radius + downedFootprintRadius);
 }
 
 function makeAiTarget(

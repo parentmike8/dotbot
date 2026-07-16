@@ -102,7 +102,10 @@ function toWireBot(bot: DotBotEntity): WireBot {
   if (bot.carriedCount !== 0) wire.c = bot.carriedCount;
 
   if (bot.dashCooldownMs !== 0 || bot.dashActiveMs !== 0) {
-    wire.d = [roundMs(bot.dashCooldownMs), roundMs(bot.dashActiveMs)];
+    // Dash timers keep centi-ms precision: reconciliation replays the dash
+    // from these values, and whole-ms rounding flips the dash-end boundary
+    // by a tick (~7px of divergence — a visible correction every dash).
+    wire.d = [roundFloat(bot.dashCooldownMs), roundFloat(bot.dashActiveMs)];
   }
   if (bot.invulnerabilityMs !== 0) {
     wire.iv = roundMs(bot.invulnerabilityMs);

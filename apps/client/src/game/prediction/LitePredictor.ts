@@ -27,6 +27,7 @@ export class LitePredictor {
   private state: PredictedOwnBot;
   private lastAim: Vec2 = { x: 1, y: 0 };
   private obstacles: PredictionObstacle[] = [];
+  private channelFrozen = false;
   private readonly solidsByFloor = new Map<string, ReturnType<typeof collectSolidRects>>();
 
   constructor(
@@ -49,6 +50,12 @@ export class LitePredictor {
   /** Latest known other bots (alive, same floor); refreshed per snapshot. */
   setObstacles(obstacles: PredictionObstacle[]): void {
     this.obstacles = obstacles;
+  }
+
+  /** Mirrors the server's stationary-channel rule: while this bot channels a
+   * loot/revive/consume, movement input is ignored (timers still run). */
+  setChannelFrozen(frozen: boolean): void {
+    this.channelFrozen = frozen;
   }
 
   step(input: InputCommand): PredictedOwnBot {
@@ -90,7 +97,7 @@ export class LitePredictor {
     if (Math.hypot(move.x, move.y) > 0.05 && consumeDash) {
       this.lastAim = move;
     }
-    const direction = state.dashActiveMs > 0 ? this.lastAim : move;
+    const direction = this.channelFrozen ? { x: 0, y: 0 } : state.dashActiveMs > 0 ? this.lastAim : move;
     const speed = state.dashActiveMs > 0 ? this.config.dashSpeed : this.config.playerSpeed;
     if (Math.hypot(direction.x, direction.y) > 0.05) {
       state.facing = Math.atan2(direction.y, direction.x);
