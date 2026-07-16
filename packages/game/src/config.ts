@@ -26,6 +26,12 @@ export const defaultGameConfig: GameConfig = {
   dashDurationMs: 145,
   dashCooldownMs: 1300,
   damageSpeed: 360,
+  /** Alive bots shoulder past each other at most this fast (px/s). */
+  botSeparationSpeed: 150,
+  /** A qualifying hit knocks the target back at this speed, decaying… */
+  knockbackSpeed: 320,
+  /** …over this window. Bounded feedback replaces solver shoves. */
+  knockbackDurationMs: 140,
   shieldInvulnerabilityMs: 720,
   dotCaptureDurationMs: 1200,
   coverDurationMs: 1850,

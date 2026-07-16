@@ -1,4 +1,5 @@
-import { collectSolidRects, separateCircleFromRect } from "@dotbot/game/collision";
+import { collectSolidRects } from "@dotbot/game/collision";
+import { integrateWithWalls, resolveAgainstSolids, separationPush } from "@dotbot/game/kinematics";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import type { DotBotEntity, GameConfig, InputCommand, MapDocument, Vec2 } from "@dotbot/game";
 
@@ -7,18 +8,25 @@ export type PredictedOwnBot = Pick<
   "id" | "position" | "radius" | "floorId" | "facing" | "dashCooldownMs" | "dashActiveMs"
 >;
 
+/** Another bot the predicted bot must shoulder past, from the latest snapshot. */
+export type PredictionObstacle = { position: Vec2; radius: number };
+
 const cloneState = (bot: PredictedOwnBot): PredictedOwnBot => ({
   ...bot,
   position: { ...bot.position },
 });
 
 /**
- * Fixed-step prediction for the local bot's movement state only.
- * It deliberately knows nothing about remote bots, combat, dots, or stairs.
+ * Fixed-step prediction for the local bot's movement state only. Integration
+ * runs through the SAME kinematics module as the server simulation — walls,
+ * substepping, and bot separation cannot diverge mechanically; only unknown
+ * information (hits, other players' inputs) produces corrections.
  */
 export class LitePredictor {
   readonly tickMs: number;
   private state: PredictedOwnBot;
+  private lastAim: Vec2 = { x: 1, y: 0 };
+  private obstacles: PredictionObstacle[] = [];
   private readonly solidsByFloor = new Map<string, ReturnType<typeof collectSolidRects>>();
 
   constructor(
@@ -36,6 +44,11 @@ export class LitePredictor {
 
   reset(bot: PredictedOwnBot): void {
     this.state = cloneState(bot);
+  }
+
+  /** Latest known other bots (alive, same floor); refreshed per snapshot. */
+  setObstacles(obstacles: PredictionObstacle[]): void {
+    this.obstacles = obstacles;
   }
 
   step(input: InputCommand): PredictedOwnBot {
@@ -72,42 +85,42 @@ export class LitePredictor {
       state.dashCooldownMs = this.config.dashCooldownMs;
     }
 
-    const direction = move;
+    // Mirror the server: a dash rides the LAST aim, so releasing the keys
+    // mid-dash no longer desyncs the predicted dash from the real one.
+    if (Math.hypot(move.x, move.y) > 0.05 && consumeDash) {
+      this.lastAim = move;
+    }
+    const direction = state.dashActiveMs > 0 ? this.lastAim : move;
     const speed = state.dashActiveMs > 0 ? this.config.dashSpeed : this.config.playerSpeed;
     if (Math.hypot(direction.x, direction.y) > 0.05) {
       state.facing = Math.atan2(direction.y, direction.x);
     }
 
-    state.position = this.resolveStaticCollision({
-      x: state.position.x + direction.x * speed * elapsedMs / 1000,
-      y: state.position.y + direction.y * speed * elapsedMs / 1000,
-    }, state);
-
-    return state;
-  }
-
-  private resolveStaticCollision(position: Vec2, state = this.state): Vec2 {
-    let next = position;
     const solids = this.solidsByFloor.get(state.floorId) ?? collectSolidRects(this.map, state.floorId);
     this.solidsByFloor.set(state.floorId, solids);
 
-    for (let iteration = 0; iteration < 3; iteration += 1) {
-      let moved = false;
-      for (const solid of solids) {
-        const separated = separateCircleFromRect(next, state.radius, solid);
-        if (separated.x !== next.x || separated.y !== next.y) {
-          next = separated;
-          moved = true;
-        }
-      }
-      if (!moved) {
-        break;
+    let position = integrateWithWalls(
+      state.position,
+      { x: direction.x * speed, y: direction.y * speed },
+      elapsedMs,
+      state.radius,
+      solids,
+    );
+
+    // Shoulder past other bots exactly like the server's separation pass;
+    // only this bot yields here (the server moves both halves).
+    const maxPushPx = (this.config.botSeparationSpeed * elapsedMs) / 1000;
+    for (const obstacle of this.obstacles) {
+      const push = separationPush(position, state.radius, obstacle.position, obstacle.radius, maxPushPx);
+      if (push.x !== 0 || push.y !== 0) {
+        position = resolveAgainstSolids({ x: position.x + push.x, y: position.y + push.y }, state.radius, solids);
       }
     }
 
-    return {
-      x: clamp(next.x, state.radius, this.map.width - state.radius),
-      y: clamp(next.y, state.radius, this.map.height - state.radius),
+    state.position = {
+      x: clamp(position.x, state.radius, this.map.width - state.radius),
+      y: clamp(position.y, state.radius, this.map.height - state.radius),
     };
+    return state;
   }
 }

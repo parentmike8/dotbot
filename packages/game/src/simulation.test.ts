@@ -1298,3 +1298,96 @@ describe("DotBotSimulation", () => {
     10_000,
   );
 });
+
+describe("kinematic bot physics (solver-free)", () => {
+  it("keeps a downed body immovable while an enemy presses into it", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ id: "victim", isAmbient: false, controller: "frozen", squadId: "rival-1", position: { x: 160, y: 180 }, state: "downed" }),
+    ]);
+    const downedAt = { x: 160, y: 180 };
+
+    for (let tick = 0; tick < 180; tick += 1) {
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+      simulation.step();
+    }
+
+    const victim = simulation.getSnapshot().bots.find((bot) => bot.id === "victim")!;
+    expect(victim.state).toBe("downed");
+    expect(Math.hypot(victim.position.x - downedAt.x, victim.position.y - downedAt.y)).toBeLessThan(0.01);
+    simulation.dispose();
+  });
+
+  it("lets the looter stand ON the body: hostile channels run from zero distance", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ id: "victim", isAmbient: false, controller: "frozen", squadId: "rival-1", position: { x: 160, y: 180 }, state: "downed", bays: [{ kind: "powerup", type: "health" }, null, null, null] }),
+    ]);
+
+    // Walk THROUGH the corpse onto its center, then channel.
+    for (let tick = 0; tick < 120; tick += 1) {
+      const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+      const dx = 160 - player.position.x;
+      const done = Math.abs(dx) < 2;
+      simulation.applyInput("player", { move: { x: done ? 0 : 1, y: 0 }, dash: false, downedVerb: "lootThenRevive" });
+      simulation.step();
+    }
+
+    const snapshot = simulation.getSnapshot();
+    const victim = snapshot.bots.find((bot) => bot.id === "victim")!;
+    const player = snapshot.bots.find((bot) => bot.id === "player")!;
+    expect(victim.state).toBe("alive");
+    expect(victim.shieldSegments[0]).toBe(0.5);
+    expect(player.bays.filter(Boolean).length).toBeGreaterThan(0);
+    simulation.dispose();
+  });
+
+  it("caps overlap between alive bots pressing into each other", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 140, y: 180 } }),
+      playerSpawn({ id: "buddy", squadId: "alpha", position: { x: 220, y: 180 } }),
+    ]);
+    simulation.setController("buddy", "human");
+
+    for (let tick = 0; tick < 240; tick += 1) {
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+      simulation.applyInput("buddy", { move: { x: -1, y: 0 }, dash: false });
+      simulation.step();
+    }
+
+    const snapshot = simulation.getSnapshot();
+    const a = snapshot.bots.find((bot) => bot.id === "player")!;
+    const b = snapshot.bots.find((bot) => bot.id === "buddy")!;
+    const gap = Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y) - a.radius - b.radius;
+    // Head-on pressure reaches a bounded equilibrium: bodies may kiss but
+    // shields can never sit over an enemy core (that needs ~-24px overlap).
+    expect(gap).toBeGreaterThan(-14);
+    simulation.dispose();
+  });
+
+  it("bounds knockback: one qualifying hit displaces a standing target under 70px", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ id: "victim", isAmbient: false, controller: "frozen", squadId: "rival-1", position: { x: 200, y: 180 } }),
+    ]);
+
+    let dashed = false;
+    for (let tick = 0; tick < 60; tick += 1) {
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: !dashed });
+      simulation.step();
+      dashed = true;
+      const victim = simulation.getSnapshot().bots.find((bot) => bot.id === "victim")!;
+      if (victim.shieldSegments.some((plate) => plate < 1)) break;
+    }
+    // Let the knockback fully decay, holding the attacker still.
+    for (let tick = 0; tick < 30; tick += 1) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
+      simulation.step();
+    }
+
+    const victim = simulation.getSnapshot().bots.find((bot) => bot.id === "victim")!;
+    expect(victim.shieldSegments.some((plate) => plate < 1)).toBe(true);
+    expect(victim.position.x - 200).toBeLessThan(70);
+    simulation.dispose();
+  });
+});

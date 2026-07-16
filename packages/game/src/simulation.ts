@@ -1,5 +1,6 @@
 import type RAPIER from "@dimforge/rapier2d-compat";
 import { separateCircleFromRect } from "./collision";
+import { integrateWithWalls, resolveAgainstSolids, separationPush } from "./kinematics";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import {
@@ -72,6 +73,10 @@ type InternalBot = DotBotEntity & {
   collider: RapierCollider;
   desiredMove: Vec2;
   lastAim: Vec2;
+  /** Velocity applied this tick (movement + knockback); combat reads this. */
+  velocity: Vec2;
+  knockbackVel: Vec2;
+  knockbackMs: number;
   /** Position at the start of the tick, for stair midline-crossing checks. */
   prevPosition: Vec2;
   aiWanderTarget: Vec2;
@@ -267,21 +272,22 @@ export class DotBotSimulation {
     const state = spawn.state ?? "alive";
     const shields = spawn.shields ?? (state === "alive" ? maxShields : 0);
     const floorId = physicsFloorId(this.map, spawn.floorId ?? OUTDOOR_FLOOR_ID);
+    // Bots are kinematic and OUTSIDE the contact solver (collision groups 0):
+    // movement, walls, and bot separation all resolve through the shared
+    // kinematics module, which the client predictor uses verbatim. Solver
+    // contacts previously gave unbounded shoves, deep interpenetration, and —
+    // via a Rapier disabled-collider quirk — pushable corpses.
     const body = this.world.createRigidBody(
-      this.rapier.RigidBodyDesc.dynamic()
+      this.rapier.RigidBodyDesc.kinematicPositionBased()
         .setTranslation(spawn.position.x, spawn.position.y)
-        .setLinearDamping(4)
-        .setAngularDamping(12)
-        .setCcdEnabled(true)
-        .setCanSleep(false)
         .lockRotations(),
     );
 
     const collider = this.world.createCollider(
-      this.rapier.ColliderDesc.ball(this.config.botRadius).setRestitution(0.14).setFriction(0.22).setDensity(1),
+      this.rapier.ColliderDesc.ball(this.config.botRadius),
       body,
     );
-    collider.setCollisionGroups(this.interactionGroups(floorId));
+    collider.setCollisionGroups(0);
 
     const shieldSegments = platesForCount(maxShields, shields);
     const bot: InternalBot = {
@@ -315,6 +321,9 @@ export class DotBotSimulation {
       collider,
       desiredMove: zeroVec(),
       lastAim: { x: 1, y: 0 },
+      velocity: zeroVec(),
+      knockbackVel: zeroVec(),
+      knockbackMs: 0,
       prevPosition: { ...spawn.position },
       aiWanderTarget: { ...spawn.position },
       aiRetargetMs: 0,
@@ -328,7 +337,6 @@ export class DotBotSimulation {
       pleaCooldownMs: 0,
     };
 
-    this.setBotPhysicsState(bot, state);
     this.bots.set(bot.id, bot);
     this.controllers.set(bot.id, controller);
     this.inputs.set(bot.id, { move: zeroVec(), dash: false });
@@ -364,7 +372,7 @@ export class DotBotSimulation {
     this.controllers.set(botId, controller);
     if (controller === "frozen") {
       bot.desiredMove = zeroVec();
-      bot.body.setLinvel(zeroVec(), true);
+      bot.velocity = zeroVec();
     }
   }
 
@@ -425,11 +433,11 @@ export class DotBotSimulation {
 
     this.updateHumanIntents();
     this.updateBotAi();
-    this.applyMovement();
-
-    this.world.step();
-    this.resolveWallPenetration();
-    this.syncPhysicsPositions();
+    // Bots are solver-free: the shared kinematics module integrates movement
+    // (substepped against walls) and applies capped shoulder-past separation.
+    // The Rapier world holds only static geometry and is never stepped.
+    this.applyMovement(dtMs);
+    this.resolveBotSeparation(dtMs);
     this.resolveStairs();
     this.resolveMines(dtMs);
     this.resolveCombat();
@@ -720,8 +728,8 @@ export class DotBotSimulation {
       target.shields = 0;
       target.state = "downed";
       target.dashActiveMs = 0;
-      target.body.setLinvel(zeroVec(), true);
-      this.setBotPhysicsState(target, "downed");
+      target.velocity = zeroVec();
+      target.knockbackMs = 0;
       this.events.push({ type: "downed", botId: target.id, byBotId: mine.placedByBotId });
     }
   }
@@ -1211,18 +1219,16 @@ export class DotBotSimulation {
     };
   }
 
-  private applyMovement(): void {
+  private applyMovement(dtMs: number): void {
     for (const bot of this.bots.values()) {
       if (bot.state !== "alive") {
-        bot.body.setLinvel(zeroVec(), true);
+        // Corpses are immovable by construction: no integration, no forces.
+        bot.velocity = zeroVec();
+        bot.knockbackMs = 0;
         continue;
       }
 
-      if (this.controllers.get(bot.id) === "frozen" || bot.activeSwap) {
-        bot.body.setLinvel(zeroVec(), true);
-        continue;
-      }
-
+      const frozen = this.controllers.get(bot.id) === "frozen" || bot.activeSwap;
       const speed =
         bot.dashActiveMs > 0
           ? this.config.dashSpeed
@@ -1232,67 +1238,62 @@ export class DotBotSimulation {
       const stationaryChannel = [...this.coverages.values()].some((coverage) =>
         coverage.actorId === bot.id && ["consume", "revive", "reviveClean", "lootThenRevive"].includes(coverage.kind),
       );
-      const direction = stationaryChannel ? zeroVec() : bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
-      bot.body.setLinvel(scale(direction, speed), true);
+      const direction = frozen || stationaryChannel ? zeroVec() : bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
+      let velocity = scale(direction, speed);
+
+      // Bounded, decaying knockback replaces the old solver shove.
+      if (bot.knockbackMs > 0) {
+        velocity = add(velocity, scale(bot.knockbackVel, bot.knockbackMs / this.config.knockbackDurationMs));
+        bot.knockbackMs = Math.max(0, bot.knockbackMs - dtMs);
+      }
+      bot.velocity = velocity;
 
       // Shield plates follow the direction of travel.
       if (length(direction) > 0.05) {
         bot.facing = Math.atan2(direction.y, direction.x);
       }
+
+      const solids = this.solidRects.get(bot.floorId) ?? [];
+      const next = integrateWithWalls(bot.position, velocity, dtMs, bot.radius, solids);
+      this.placeBot(bot, next);
     }
   }
 
-  private syncPhysicsPositions(): void {
-    for (const bot of this.bots.values()) {
-      if (bot.state === "consumed") {
-        continue;
-      }
+  /** Alive bots shoulder past each other at a capped rate instead of trading
+   * solver impulses; downed and consumed bodies are walkable and immovable. */
+  private resolveBotSeparation(dtMs: number): void {
+    const maxPushPx = (this.config.botSeparationSpeed * dtMs) / 1000;
+    const aliveBots = [...this.bots.values()]
+      .filter((bot) => bot.state === "alive")
+      .sort((left, right) => left.id.localeCompare(right.id));
 
-      const translation = bot.body.translation();
-      bot.position = {
-        x: clamp(translation.x, this.config.botRadius, this.map.width - this.config.botRadius),
-        y: clamp(translation.y, this.config.botRadius, this.map.height - this.config.botRadius),
-      };
-    }
-  }
-
-  private resolveWallPenetration(): void {
-    for (const bot of this.bots.values()) {
-      if (bot.state !== "alive") {
-        continue;
-      }
-
-      const rects = this.solidRects.get(bot.floorId) ?? [];
-      let position = bot.body.translation();
-
-      for (let iteration = 0; iteration < 3; iteration += 1) {
-        let moved = false;
-
-        for (const rect of rects) {
-          const next = separateCircleFromRect(position, bot.radius, rect);
-
-          if (next.x !== position.x || next.y !== position.y) {
-            position = next;
-            moved = true;
-          }
+    for (let i = 0; i < aliveBots.length; i += 1) {
+      for (let j = i + 1; j < aliveBots.length; j += 1) {
+        const a = aliveBots[i];
+        const b = aliveBots[j];
+        if (a.floorId !== b.floorId) {
+          continue;
         }
-
-        if (!moved) {
-          break;
+        const pushA = separationPush(a.position, a.radius, b.position, b.radius, maxPushPx);
+        if (pushA.x === 0 && pushA.y === 0) {
+          continue;
         }
-      }
-
-      const clampedPosition = {
-        x: clamp(position.x, bot.radius, this.map.width - bot.radius),
-        y: clamp(position.y, bot.radius, this.map.height - bot.radius),
-      };
-
-      if (clampedPosition.x !== bot.body.translation().x || clampedPosition.y !== bot.body.translation().y) {
-        bot.body.setTranslation(clampedPosition, true);
-        bot.body.setLinvel(zeroVec(), true);
+        const solidsA = this.solidRects.get(a.floorId) ?? [];
+        this.placeBot(a, resolveAgainstSolids(add(a.position, pushA), a.radius, solidsA));
+        this.placeBot(b, resolveAgainstSolids(add(b.position, { x: -pushA.x, y: -pushA.y }), b.radius, solidsA));
       }
     }
   }
+
+  /** Single write path for bot positions: map-clamped, mirrored to the body. */
+  private placeBot(bot: InternalBot, position: Vec2): void {
+    bot.position = {
+      x: clamp(position.x, this.config.botRadius, this.map.width - this.config.botRadius),
+      y: clamp(position.y, this.config.botRadius, this.map.height - this.config.botRadius),
+    };
+    bot.body.setTranslation(bot.position, true);
+  }
+
 
   /**
    * Stairs are walk-through: the two floors share the shaft's coordinates, so
@@ -1321,7 +1322,6 @@ export class DotBotSimulation {
         const sourceFloor = bot.floorId;
         const targetFloor = physicsFloorId(this.map, stair.toFloorId);
         bot.floorId = targetFloor;
-        bot.collider.setCollisionGroups(this.interactionGroups(targetFloor));
         bot.aiPath = [];
         bot.aiRepathMs = 0;
         bot.aiPathProjected = false;
@@ -1357,8 +1357,8 @@ export class DotBotSimulation {
           continue;
         }
 
-        const aSpeed = length(a.body.linvel());
-        const bSpeed = length(b.body.linvel());
+        const aSpeed = length(a.velocity);
+        const bSpeed = length(b.velocity);
         const aDashing = a.dashActiveMs > 0;
         const bDashing = b.dashActiveMs > 0;
 
@@ -1398,10 +1398,16 @@ export class DotBotSimulation {
     if (target.shields <= 0) {
       target.state = "downed";
       target.dashActiveMs = 0;
-      target.body.setLinvel(zeroVec(), true);
-      this.setBotPhysicsState(target, "downed");
+      target.velocity = zeroVec();
+      target.knockbackMs = 0;
       this.events.push({ type: "downed", botId: target.id, byBotId: source.id });
+      return;
     }
+
+    // Readable, bounded hit feedback replacing the solver shove.
+    const away = { x: -Math.cos(impactAngle), y: -Math.sin(impactAngle) };
+    target.knockbackVel = scale(away, this.config.knockbackSpeed);
+    target.knockbackMs = this.config.knockbackDurationMs;
   }
 
   private resolveDotCapture(dtMs: number): void {
@@ -1590,7 +1596,6 @@ export class DotBotSimulation {
       }
       swap.progressMs += dtMs;
       bot.desiredMove = zeroVec();
-      bot.body.setLinvel(zeroVec(), true);
       if (this.channelPingDue(swap.progressMs, dtMs)) {
         this.emitNoise("channel", bot.position, bot.floorId, NOISE_LOUDNESS.coverChannel, bot);
       }
@@ -1624,16 +1629,12 @@ export class DotBotSimulation {
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     const nudge = scale(length(reviver.lastAim) > 0 ? reviver.lastAim : { x: 1, y: 0 }, this.config.botRadius * 2.4);
-    const revivedPosition = add(target.position, nudge);
-    target.body.setTranslation(
-      {
-        x: clamp(revivedPosition.x, this.config.botRadius, this.map.width - this.config.botRadius),
-        y: clamp(revivedPosition.y, this.config.botRadius, this.map.height - this.config.botRadius),
-      },
-      true,
+    const revivedPosition = resolveAgainstSolids(
+      add(target.position, nudge),
+      target.radius,
+      this.solidRects.get(target.floorId) ?? [],
     );
-    target.body.setLinvel(zeroVec(), true);
-    this.setBotPhysicsState(target, "alive");
+    this.placeBot(target, revivedPosition);
     this.events.push({ type: "revived", botId: target.id, byBotId: reviver.id });
   }
 
@@ -1643,7 +1644,8 @@ export class DotBotSimulation {
     target.shieldSegments = platesForCount(target.maxShields, 0);
     target.shields = 0;
     target.consumedRespawnMs = this.config.respawnDelayMs;
-    this.setBotPhysicsState(target, "consumed");
+    target.velocity = zeroVec();
+    target.knockbackMs = 0;
     this.events.push({ type: "consumed", botId: target.id, byBotId: consumer.id, lostItems });
   }
 
@@ -1706,32 +1708,10 @@ export class DotBotSimulation {
       bot.aiPathProjected = false;
       bot.aiAvoidTargets.clear();
       bot.aiRetargetMs = 0;
-      bot.body.setEnabled(true);
-      bot.collider.setEnabled(true);
-      bot.collider.setCollisionGroups(this.interactionGroups(bot.spawnFloorId));
-      bot.body.setTranslation(bot.spawn, true);
-      bot.body.setLinvel(zeroVec(), true);
-      this.setBotPhysicsState(bot, "alive");
+      bot.velocity = zeroVec();
+      bot.knockbackMs = 0;
+      this.placeBot(bot, { ...bot.spawn });
     }
-  }
-
-  private setBotPhysicsState(bot: InternalBot, state: BotState): void {
-    if (state === "alive") {
-      bot.body.setEnabled(true);
-      bot.collider.setEnabled(true);
-      bot.collider.setSensor(false);
-      return;
-    }
-
-    if (state === "downed") {
-      bot.body.setEnabled(true);
-      bot.collider.setSensor(true);
-      bot.collider.setEnabled(false);
-      return;
-    }
-
-    bot.body.setEnabled(false);
-    bot.collider.setEnabled(false);
   }
 
   private nextRandom(): number {

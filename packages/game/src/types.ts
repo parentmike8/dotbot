@@ -452,6 +452,9 @@ export type GameConfig = {
   dashDurationMs: number;
   dashCooldownMs: number;
   damageSpeed: number;
+  botSeparationSpeed: number;
+  knockbackSpeed: number;
+  knockbackDurationMs: number;
   shieldInvulnerabilityMs: number;
   dotCaptureDurationMs: number;
   coverDurationMs: number;

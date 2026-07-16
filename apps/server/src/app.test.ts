@@ -64,12 +64,11 @@ describe("multiplayer server", () => {
     // the Main St corridor, move east beyond the depot wall, then south into
     // the 960..1070 x 1150..1260 extraction rectangle.
     a.send({ type: "input", seq: 1, move: [0, 1], dash: false });
-    await waitForBotPosition(a, startA.yourBotId, ([, y]) => y >= 920);
-    a.send({ type: "input", seq: 2, move: [1, 0], dash: false });
-    await waitForBotPosition(a, startA.yourBotId, ([x]) => x >= 1000);
-    a.send({ type: "input", seq: 3, move: [0, 1], dash: false });
+    await waitForBotPosition(a, startA.yourBotId, ([, y]) => y >= 918);
+    const seqAfterLane = await driveEastAlongLane(a, startA.yourBotId, 920, 1000, 1);
+    a.send({ type: "input", seq: seqAfterLane + 1, move: [0, 1], dash: false });
     await waitForBotPosition(a, startA.yourBotId, ([, y]) => y >= 1160);
-    a.send({ type: "input", seq: 4, move: [0, 0], dash: false });
+    a.send({ type: "input", seq: seqAfterLane + 2, move: [0, 0], dash: false });
 
     const runOverA = await a.waitFor("runOver", 5000);
     expect(runOverA).toEqual({ type: "runOver", reason: "extracted", keptItems: ["h"], lostItems: [], learnedBlueprints: [] });
@@ -136,6 +135,33 @@ async function connect(url: string): Promise<Inbox> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Drives along a horizontal lane, correcting latitude each input frame —
+ * street furniture protrudes into Main St, so a fixed heading drifts into
+ * face-blocks that the kinematic model (correctly) does not squeeze past. */
+async function driveEastAlongLane(
+  inbox: Inbox,
+  botId: string,
+  laneY: number,
+  untilX: number,
+  seqStart: number,
+): Promise<number> {
+  let seq = seqStart;
+  const started = Date.now();
+  while (Date.now() - started < 8000) {
+    const latest = inbox.messages
+      .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
+      .at(-1);
+    const position = latest?.bots.find((bot) => bot.i === botId)?.p;
+    if (position && position[0] >= untilX) return seq;
+    if (position) {
+      const correction = Math.max(-0.6, Math.min(0.6, (laneY - position[1]) / 30));
+      inbox.send({ type: "input", seq: ++seq, move: [1, correction], dash: false });
+    }
+    await delay(33);
+  }
+  throw new Error(`Timed out driving ${botId} east to ${untilX}`);
 }
 
 async function waitForBotPosition(inbox: Inbox, botId: string, predicate: (position: [number, number]) => boolean): Promise<void> {

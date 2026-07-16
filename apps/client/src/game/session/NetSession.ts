@@ -364,13 +364,20 @@ export class NetSession implements GameSession {
     }
 
     this.predictionEnabled = authoritative.state === "alive";
+    // The predictor shoulders past the other bots exactly like the server's
+    // separation pass; feed it the freshest authoritative positions.
+    const obstacles = snapshot.bots
+      .filter((bot) => bot.id !== this.playerIdValue && bot.state === "alive" && bot.floorId === authoritative.floorId)
+      .map((bot) => ({ position: { ...bot.position }, radius: bot.radius }));
     if (!this.predictor) {
       this.predictor = new LitePredictor(this.mapValue, this.configValue, authoritative);
+      this.predictor.setObstacles(obstacles);
       this.predictionAccumulatorMs = 0;
       this.predictionTick = serverTick;
       this.pendingInputs = retainInputHistory(this.pendingInputs, ack);
       return;
     }
+    this.predictor.setObstacles(obstacles);
 
     const predictedBefore = this.predictor.current;
     if (authoritative.floorId !== predictedBefore.floorId || !this.predictionEnabled) {
