@@ -248,6 +248,18 @@ export type DotSpawn = {
   radius?: number;
 };
 
+/** A non-lootable world affordance used by the persistent base. */
+export type InteractionDot = {
+  id: string;
+  kind: "object" | "emptySlot" | "deployment";
+  /** Id of the MapObject, PlacementSlot, or ExtractionPoint this dot opens. */
+  targetId: string;
+  /** Authored floor-plan id; callers resolve GROUND through physicsFloorId. */
+  floorId: string;
+  position: Vec2;
+  radius: number;
+};
+
 export type FloorPlan = {
   /** Globally unique, e.g. "mercy:F2". The outdoor plan uses OUTDOOR_FLOOR_ID. */
   id: string;
@@ -331,6 +343,8 @@ export type MapDocument = {
   botSpawns: BotSpawn[];
   /** Present only on maps that support slot-based furniture placement. */
   placementSlots?: PlacementSlot[];
+  /** Non-lootable, floor-aware interaction affordances derived from map data. */
+  interactionDots?: InteractionDot[];
 };
 
 // ---------------------------------------------------------------------------

@@ -1,3 +1,5 @@
+import { defaultGameConfig } from "../config";
+import { isSolidObject, stairExitPoint } from "../mapModel";
 import { OUTDOOR_FLOOR_ID } from "../types";
 import type {
   BaseLayout,
@@ -6,6 +8,8 @@ import type {
   Building,
   Doorway,
   Facing,
+  FloorPlan,
+  InteractionDot,
   MapDocument,
   MapObject,
   PlacementSlot,
@@ -18,6 +22,8 @@ import type {
 
 const MAP_WIDTH = 1000;
 const MAP_HEIGHT = 760;
+
+export const BASE_INTERACTION_DOT_RADIUS = defaultGameConfig.dotRadius;
 
 export const BASE_OBJECT_KINDS = [
   "fabricator",
@@ -502,7 +508,7 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
     }] : [])],
   };
 
-  return {
+  const map: MapDocument = {
     id: "player-base",
     name: "Base",
     width: MAP_WIDTH,
@@ -535,6 +541,182 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
       rect: { ...slot.rect },
     })),
   };
+  map.interactionDots = deriveBaseInteractionDots(map);
+  return map;
+}
+
+/**
+ * Derives the base's complete interaction grammar from placed objects, empty
+ * slots, and the deployment threshold. Nothing here is authored per shell.
+ */
+export function deriveBaseInteractionDots(map: MapDocument): InteractionDot[] {
+  const building = map.buildings[0];
+  if (!building || !map.placementSlots) return [];
+
+  const dots: InteractionDot[] = [];
+  for (const floor of building.floors) {
+    const standOnAble = createStandabilityCheck(map, building, floor);
+    const slots = map.placementSlots.filter((slot) => slot.floor === floor.label);
+    const objectsBySlot = new Map(
+      floor.objects.filter((object) => object.slotId).map((object) => [object.slotId!, object]),
+    );
+
+    for (const slot of slots) {
+      const object = objectsBySlot.get(slot.id);
+      if (object) {
+        dots.push({
+          id: `interaction-object-${object.id}`,
+          kind: "object",
+          targetId: object.id,
+          floorId: floor.id,
+          position: objectInteractionPosition(building, floor, object, standOnAble),
+          radius: BASE_INTERACTION_DOT_RADIUS,
+        });
+      } else {
+        dots.push({
+          id: `interaction-empty-${slot.id}`,
+          kind: "emptySlot",
+          targetId: slot.id,
+          floorId: floor.id,
+          position: rectCenter(slot.rect),
+          radius: BASE_INTERACTION_DOT_RADIUS,
+        });
+      }
+    }
+  }
+
+  const deployment = map.extractionPoints[0];
+  const ground = building.floors.find((floor) => floor.label === "GROUND");
+  if (deployment && ground) {
+    dots.push({
+      id: `interaction-deployment-${deployment.id}`,
+      kind: "deployment",
+      targetId: deployment.id,
+      floorId: ground.id,
+      position: rectCenter(deployment.rect),
+      radius: BASE_INTERACTION_DOT_RADIUS,
+    });
+  }
+
+  return dots;
+}
+
+function objectInteractionPosition(
+  building: Building,
+  floor: FloorPlan,
+  object: MapObject,
+  standOnAble: (position: Vec2) => boolean,
+): Vec2 {
+  const botRadius = defaultGameConfig.botRadius;
+  const push = botRadius + BASE_INTERACTION_DOT_RADIUS;
+  const preferred = object.facing ?? "S";
+  const sideOrder = [preferred, ...(["N", "E", "S", "W"] as const).filter((side) => side !== preferred)];
+  const solids: Rect[] = [
+    ...floor.walls,
+    ...floor.objects.filter((candidate) => candidate.id !== object.id && isSolidObject(candidate)),
+  ];
+  const valid = (position: Vec2) =>
+    insideWithRadius(position, building.footprint, botRadius) &&
+    circleClearsRects(position, botRadius - 1, solids) &&
+    standOnAble(position);
+
+  for (const side of sideOrder) {
+    const position = sideMidpoint(object, side, push);
+    if (valid(position)) return position;
+  }
+
+  // Match the scannable-dot escape hatch: crowded maximal furnishing can
+  // block every first-ring midpoint, so expand along the same side order.
+  for (let extra = 8; extra <= 160; extra += 8) {
+    for (const side of sideOrder) {
+      const position = sideMidpoint(object, side, push + extra);
+      if (valid(position)) return position;
+    }
+  }
+
+  throw new Error(`No bot-clear interaction dot for ${floor.id}/${object.id}`);
+}
+
+function createStandabilityCheck(map: MapDocument, building: Building, floor: FloorPlan): (position: Vec2) => boolean {
+  const cell = 8;
+  const botRadius = defaultGameConfig.botRadius;
+  const captureRange = botRadius - BASE_INTERACTION_DOT_RADIUS - 2;
+  const cols = Math.ceil(map.width / cell);
+  const rows = Math.ceil(map.height / cell);
+  const solids = floor.label === "GROUND"
+    ? [...map.outdoor.walls, ...map.outdoor.objects.filter(isSolidObject), ...floor.walls, ...floor.objects.filter(isSolidObject)]
+    : [...floor.walls, ...floor.objects.filter(isSolidObject)];
+  const seeds = floor.label === "GROUND"
+    ? map.botSpawns.filter((spawn) => spawn.controller === "human").map((spawn) => spawn.position)
+    : building.floors.flatMap((other) => other.stairs.filter((stair) => stair.toFloorId === floor.id).map(stairExitPoint));
+  const center = (index: number): Vec2 => ({
+    x: (index % cols) * cell + cell / 2,
+    y: Math.floor(index / cols) * cell + cell / 2,
+  });
+  const open = (index: number): boolean => {
+    const point = center(index);
+    return point.x >= botRadius && point.y >= botRadius && point.x <= map.width - botRadius && point.y <= map.height - botRadius &&
+      circleClearsRects(point, botRadius - 1, solids);
+  };
+  const reachable = new Set<number>();
+  const queue: number[] = [];
+  for (const seed of seeds) {
+    const index = Math.floor(seed.y / cell) * cols + Math.floor(seed.x / cell);
+    if (open(index)) {
+      reachable.add(index);
+      queue.push(index);
+    }
+  }
+  while (queue.length > 0) {
+    const index = queue.pop()!;
+    const col = index % cols;
+    for (const next of [index - cols, index + cols, col > 0 ? index - 1 : -1, col < cols - 1 ? index + 1 : -1]) {
+      if (next >= 0 && next < cols * rows && !reachable.has(next) && open(next)) {
+        reachable.add(next);
+        queue.push(next);
+      }
+    }
+  }
+
+  return (position) => {
+    const span = Math.ceil((captureRange + cell) / cell);
+    const baseCol = Math.floor(position.x / cell);
+    const baseRow = Math.floor(position.y / cell);
+    for (let row = baseRow - span; row <= baseRow + span; row += 1) {
+      for (let col = baseCol - span; col <= baseCol + span; col += 1) {
+        const index = row * cols + col;
+        if (reachable.has(index)) {
+          const point = center(index);
+          if (Math.hypot(point.x - position.x, point.y - position.y) <= captureRange) return true;
+        }
+      }
+    }
+    return false;
+  };
+}
+
+function sideMidpoint(object: MapObject, side: Facing, push: number): Vec2 {
+  if (side === "N") return { x: object.x + object.w / 2, y: object.y - push };
+  if (side === "E") return { x: object.x + object.w + push, y: object.y + object.h / 2 };
+  if (side === "W") return { x: object.x - push, y: object.y + object.h / 2 };
+  return { x: object.x + object.w / 2, y: object.y + object.h + push };
+}
+
+function rectCenter(rect: Rect): Vec2 {
+  return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+}
+
+function insideWithRadius(point: Vec2, bounds: Rect, radius: number): boolean {
+  return point.x >= bounds.x + radius && point.x <= bounds.x + bounds.w - radius &&
+    point.y >= bounds.y + radius && point.y <= bounds.y + bounds.h - radius;
+}
+
+function circleClearsRects(center: Vec2, radius: number, rects: Rect[]): boolean {
+  return rects.every((rect) => {
+    const dx = center.x - Math.max(rect.x, Math.min(center.x, rect.x + rect.w));
+    const dy = center.y - Math.max(rect.y, Math.min(center.y, rect.y + rect.h));
+    return dx * dx + dy * dy >= radius * radius;
+  });
 }
 
 function stairPair(id: string, rect: Rect, bottom: Facing): BaseUpperDef["stairs"] {
