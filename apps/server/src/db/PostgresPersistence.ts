@@ -494,7 +494,10 @@ export async function connectPostgres(databaseUrl: string): Promise<PostgresPers
   // query param must be lifted into an explicit option (postgres-js ignores
   // it in the URL form, and an empty-authority URL fails to parse at all).
   const socketHost = /[?&]host=([^&]+)/.exec(databaseUrl)?.[1];
-  const client = postgres(databaseUrl, {
+  // Strip the param from the URL too: postgres-js forwards leftover query
+  // params as server startup parameters, and Postgres rejects "host".
+  const cleanedUrl = databaseUrl.replace(/[?&]host=[^&]+/, (match) => (match.startsWith("?") ? "?" : "")).replace(/\?&/, "?").replace(/[?&]$/, "");
+  const client = postgres(cleanedUrl, {
     connect_timeout: 5,
     max: 5,
     ...(socketHost?.startsWith("/") ? { host: decodeURIComponent(socketHost) } : {}),
