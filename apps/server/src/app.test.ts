@@ -41,6 +41,7 @@ describe("multiplayer server", () => {
     const url = `ws://127.0.0.1:${address.port}/ws`;
 
     const a = await connect(url);
+    expect(a.ws.extensions).toContain("permessage-deflate");
     a.send({ type: "hello", token: "token-a", name: "Alice", roomCode: "" });
     const welcomeA = await a.waitFor("welcome");
     expect(welcomeA.roomCode).toMatch(/^[A-HJ-NP-Z2-9]{4}$/);

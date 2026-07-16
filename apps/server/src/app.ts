@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import type { Socket } from "node:net";
 import { WebSocketServer } from "ws";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
@@ -223,6 +224,7 @@ export async function createServer(options: CreateServerOptions = {}) {
       socket.destroy();
       return;
     }
+    (socket as Socket).setNoDelay(true);
     wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
   });
 

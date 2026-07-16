@@ -22,6 +22,7 @@
     "dev": "tsx watch --env-file=../../.env src/index.ts",
     "build": "tsc --noEmit",
     "build:bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=dist/index.js",
+    "jitterprobe": "tsx src/playtest/jitterprobe.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   }
