@@ -302,7 +302,7 @@ export function BaseApp() {
     return <LobbyApp embedded onReturnToBase={() => {
       setDeployment(false);
       setPanel(null);
-      window.history.replaceState(null, "", "/");
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
       void refreshBase();
     }} />;
   }
@@ -320,7 +320,7 @@ export function BaseApp() {
       openDeployment={() => {
         setPanel(null);
         setDeployment(true);
-        window.history.replaceState(null, "", "/#/lobby");
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/lobby`);
       }}
       updateLayout={updateLayout}
       updateShell={updateShell}

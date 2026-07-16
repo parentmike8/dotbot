@@ -74,7 +74,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const [events, setEvents] = useState<SimEvent[]>([]);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [spectating, setSpectating] = useState<DotBotEntity | null>(null);
-  const [debugVisible, setDebugVisible] = useState(false);
+  const [debugVisible, setDebugVisible] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("netgraph"),
+  );
   const [networkDebug, setNetworkDebug] = useState<NetworkDebugStats | null>(null);
   const [legendVisible, setLegendVisible] = useState(false);
   const [joystickView, setJoystickView] = useState(emptyJoystick);

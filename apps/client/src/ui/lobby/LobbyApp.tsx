@@ -34,6 +34,8 @@ type LobbyAppProps = {
   onReturnToBase?: () => void;
 };
 
+const appRoute = (hash: string) => `${window.location.pathname}${window.location.search}${hash}`;
+
 export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {}) {
   const route = lobbyRouteFromHash(window.location.hash);
   const routeCode = route.roomCode;
@@ -80,7 +82,7 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
       onLobby: (state) => {
         setLobby(state);
         setJoinCode(state.roomCode);
-        window.history.replaceState(null, "", `/#/r/${state.roomCode}`);
+        window.history.replaceState(null, "", appRoute(`#/r/${state.roomCode}`));
       },
       onError: setError,
     });
@@ -110,7 +112,7 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
           setPlaying(false);
           setSession(null);
           setLobby(null);
-          window.history.replaceState(null, "", "/#/lobby");
+          window.history.replaceState(null, "", appRoute("#/lobby"));
           void refreshProfile();
         }}
       />
