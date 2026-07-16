@@ -11,6 +11,7 @@
  */
 import WebSocket from "ws";
 import postgres from "postgres";
+import { randomUUID } from "node:crypto";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { createServer } from "../app";
 
@@ -66,7 +67,15 @@ function latestSnap(inbox: Inbox) {
   return null;
 }
 function botOf(inbox: Inbox, botId: string) {
-  return latestSnap(inbox)?.bots.find((bot) => bot.i === botId) ?? null;
+  const bot = latestSnap(inbox)?.bots.find((candidate) => candidate.i === botId);
+  return bot ? {
+    ...bot,
+    f: bot.f ?? 0,
+    fl: bot.fl ?? "outdoor",
+    s: bot.s ?? "alive",
+    sh: bot.sh ?? [1, 1, 1],
+    c: bot.c ?? 0,
+  } : null;
 }
 function events(inbox: Inbox) {
   return inbox.messages.flatMap((message) => (message.type === "ev" ? message.events : []));
@@ -117,6 +126,28 @@ async function steer(
   return false;
 }
 
+async function driveUntil(
+  inbox: Inbox,
+  botId: string,
+  move: [number, number],
+  seqRef: { seq: number },
+  doneWhen: (bot: NonNullable<ReturnType<typeof botOf>>) => boolean,
+  timeoutMs = 20_000,
+): Promise<boolean> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const bot = botOf(inbox, botId);
+    if (bot && doneWhen(bot)) {
+      inbox.send({ type: "input", seq: ++seqRef.seq, move: [0, 0], dash: false });
+      return true;
+    }
+    inbox.send({ type: "input", seq: ++seqRef.seq, move, dash: false });
+    await delay(33);
+  }
+  inbox.send({ type: "input", seq: ++seqRef.seq, move: [0, 0], dash: false });
+  return false;
+}
+
 async function registerPlayer(app: { inject: Function }, name: string) {
   const response = await app.inject({ method: "POST", url: "/api/auth/register", payload: { name } });
   return response.json() as { playerId: string; token: string };
@@ -131,12 +162,19 @@ async function scenarioPacing() {
     databaseUrl,
     countdownMs: 0,
     aiWingmates: false,
-    matchIdFactory: () => "00000000-0000-4000-8000-000000000016",
+    matchIdFactory: randomUUID,
   });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const address = app.server.address();
   const wsUrl = `ws://127.0.0.1:${(address as { port: number }).port}/ws`;
   const account = await registerPlayer(app, "Pacer");
+  const insertion = await app.inject({
+    method: "POST",
+    url: "/api/base/insertion",
+    headers: { "x-device-token": account.token },
+    payload: { insertionPointId: "west-gate" },
+  });
+  if (insertion.statusCode !== 200) throw new Error(`pacing insertion preference failed: ${insertion.statusCode}`);
 
   const alice = await connect(wsUrl);
   alice.send({ type: "hello", token: account.token, name: "Pacer", roomCode: "" });
@@ -166,11 +204,16 @@ async function scenarioPacing() {
   await steer(alice, start.yourBotId, { x: 450, y: 1100 }, seqRef, { arriveWithin: 30 });
   await steer(alice, start.yourBotId, { x: 340, y: 1080 }, seqRef, { arriveWithin: 30 });
   await steer(alice, start.yourBotId, { x: 340, y: 920 }, seqRef, { arriveWithin: 40 });
-  await steer(alice, start.yourBotId, { x: 1000, y: 920 }, seqRef, { arriveWithin: 40 });
+  await driveUntil(alice, start.yourBotId, [0, -1], seqRef, (bot) => bot.p[1] <= 940);
+  await driveUntil(alice, start.yourBotId, [1, 0], seqRef, (bot) => bot.p[0] >= 1000);
   // Aim at the depot pad from map data, not a guessed coordinate.
   const pad = start.map.extractionPoints.find((point) => point.id === "extract-depot")!.rect;
-  const padCenter = { x: pad.x + pad.w / 2, y: pad.y + pad.h / 2 };
-  await steer(alice, start.yourBotId, padCenter, seqRef, { arriveWithin: 45 });
+  // Cross the pad's north edge and stop on the first authoritative snapshot
+  // inside it. Reversing toward a point is unstable because wire input is
+  // normalized to full speed even when the steering helper requests a gain.
+  await driveUntil(alice, start.yourBotId, [0, 1], seqRef, (bot) => bot.fl === "outdoor"
+    && bot.p[0] >= pad.x && bot.p[0] <= pad.x + pad.w
+    && bot.p[1] >= pad.y && bot.p[1] <= pad.y + pad.h);
   alice.send({ type: "input", seq: ++seqRef.seq, move: [0, 0], dash: false });
   let over: Extract<ServerMessage, { type: "runOver" }> | null = null;
   try {
@@ -179,7 +222,7 @@ async function scenarioPacing() {
   } catch {
     const bot = botOf(alice, start.yourBotId);
     marks.extractionStall = 1;
-    report.pacingDebug = { finalPosition: bot?.p, carried: bot?.c, pad };
+    report.pacingDebug = { finalPosition: bot?.p, floorId: bot?.fl, carried: bot?.c, pad };
   }
 
   report.pacing = {
