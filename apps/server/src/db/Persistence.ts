@@ -1,5 +1,5 @@
 import type { WireItemCode } from "@dotbot/protocol";
-import type { BaseLayout, BaseShellId, ContractDefinition, Item, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
+import type { BaseLayout, BaseObjectKind, BaseShellId, ContractDefinition, Item, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import type { Recipe } from "@dotbot/game/content/recipes";
 
 export type PlayerIdentity = {
@@ -78,6 +78,7 @@ export interface Persistence {
   applyPreset(token: string, presetIndex: number): Promise<PresetApplyResult | null>;
   setInsertionPreference(token: string, insertionPointId: string | null): Promise<string | null>;
   getInsertionPreference(playerId: string): Promise<string | null>;
+  getMatchIntelObjects(playerId: string): Promise<BaseObjectKind[]>;
   acceptContract(token: string, contractId: string): Promise<void>;
   rerollContracts(token: string): Promise<void>;
   abandonContract(token: string, contractId: string): Promise<void>;

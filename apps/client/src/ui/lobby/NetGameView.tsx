@@ -43,6 +43,11 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         <span>Run {formatRunTime(remainingRunMs)}</span>
         <button type="button" onClick={toggleLegend}>L / KEY</button>
         {snapshot && snapshot.timeMs < 5_000 ? <b className="insertion-banner">INSERTED: {session.insertionName}</b> : null}
+        {snapshot && snapshot.timeMs < 5_000 && session.intel?.greyDensity ? (
+          <dl className="intel-density" aria-label="Listening post grey density">
+            {session.intel.greyDensity.map((row) => <div key={row.buildingId}><dt>{row.buildingName}</dt><dd>{row.count}</dd></div>)}
+          </dl>
+        ) : null}
       </aside>
       {mineRotated ? <div className="spectating-chip" aria-live="polite">MINE ROTATED</div> : null}
       {legendVisible ? (
@@ -57,6 +62,11 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
             <div><dt>×</dt><dd>Squad mine / radar-revealed mine</dd></div>
             <div><dt className="powerup-mark">◜</dt><dd>Some dots are not dots — watch for the hairline seam</dd></div>
           </dl>
+          {session.intel?.greyDensity ? (
+            <section className="intel-density"><strong>LISTENING POST / GREYS</strong>
+              <dl>{session.intel.greyDensity.map((row) => <div key={row.buildingId}><dt>{row.buildingName}</dt><dd>{row.count}</dd></div>)}</dl>
+            </section>
+          ) : null}
         </aside>
       ) : null}
       <aside className="net-game-bays" aria-label="In-run bays">

@@ -1,6 +1,6 @@
 import { classifyNoise, physicsFloorId } from "@dotbot/game/mapModel";
 import type { MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
-import type { EntityMeta, WireBot, WireSnapshot } from "./messages";
+import type { EntityMeta, MatchIntel, WireBot, WireSnapshot } from "./messages";
 
 export type ViewerContext = {
   map: MapDocument;
@@ -10,6 +10,8 @@ export type ViewerContext = {
   squadPhysicsFloorIds: ReadonlySet<string>;
   /** Current spectate focus when known; otherwise the first living squadmate. */
   spectatedBotId?: string;
+  /** Already authorized for this viewer by the room's persistence lookup. */
+  intel?: MatchIntel;
 };
 
 export function filterForViewer(
@@ -78,7 +80,7 @@ export function filterForViewer(
     ) !== null,
   ));
 
-  return { ...wire, bots, dots, mines, coverages, noises };
+  return { ...wire, bots, dots, mines, coverages, noises, intel: viewerCtx.intel };
 }
 
 export function filterEventsForViewer(

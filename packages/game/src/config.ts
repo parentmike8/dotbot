@@ -14,6 +14,7 @@ export const defaultGameConfig: GameConfig = {
   mineSenseRadius: 300,
   mineSensePingMs: 2000,
   maxActiveMines: 3,
+  signalIntelDurationMs: 60_000,
   dashOverchargeUses: 3,
   incognitoDurationMs: 10_000,
   powerupNoiseLoudness: 0.3,

@@ -50,6 +50,19 @@ export type WireSnapshot = {
   mines: MineEntity[];
   coverages: import("@dotbot/game/types").CoverageSnapshot[];
   noises: import("@dotbot/game/types").NoiseEvent[];
+  /** Viewer-private match intel; omitted for players without an intel object. */
+  intel?: MatchIntel;
+};
+
+export type MatchIntel = {
+  greyDensity?: Array<{ buildingId: string; buildingName: string; count: number }>;
+  signal?: {
+    dotId: string;
+    blueprintId: string;
+    position: { x: number; y: number };
+    floorId: string;
+    expiresAtTick: number;
+  };
 };
 
 export type WireSimEvent =
@@ -99,6 +112,7 @@ export type ServerMessage =
       tickHz: number;
       endTick: number;
       insertionName: string;
+      intel?: MatchIntel;
     }
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }

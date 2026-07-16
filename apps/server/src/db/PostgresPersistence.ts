@@ -194,6 +194,15 @@ export class PostgresPersistence implements Persistence {
     });
   }
 
+  async getMatchIntelObjects(playerId: string) {
+    const rows = await this.db.select({ objectKind: baseLayouts.objectKind })
+      .from(baseLayouts)
+      .where(eq(baseLayouts.playerId, playerId));
+    return rows
+      .map((row) => row.objectKind)
+      .filter((kind): kind is "listeningPost" | "signalMast" => kind === "listeningPost" || kind === "signalMast");
+  }
+
   async fabricate(token: string, recipeId: string, slotId?: string) {
     const recipe = recipeById(recipeId);
     if (!recipe) throw new Error("Unknown fabrication recipe.");

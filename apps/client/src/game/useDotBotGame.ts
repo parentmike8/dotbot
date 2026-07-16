@@ -203,7 +203,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         spectateCycleQueuedRef.current = false;
         spectatedBotIdRef.current = spectator?.id ?? null;
         const renderPlayerId = spectator?.id ?? session.playerId;
-        renderer.render(nextSnapshot, renderPlayerId, spectateEnabled && runState.phase === "over" && spectator === null, interactionChannelRef.current);
+        renderer.render(nextSnapshot, renderPlayerId, spectateEnabled && runState.phase === "over" && spectator === null, interactionChannelRef.current, session.intel);
 
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);

@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
-import { physicsFloorId } from "@dotbot/game/mapModel";
+import { buildingContaining, buildingOfFloor, physicsFloorId } from "@dotbot/game/mapModel";
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import { assignSquadInsertions, squadSpawnPosition, validateInsertionMap } from "@dotbot/game/insertion";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, InsertionPoint, SimEvent } from "@dotbot/game/types";
 import { filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toWireEvent, toWireSnapshot } from "@dotbot/protocol";
 import { LOBBY_SQUADS } from "@dotbot/protocol";
-import type { ClientMessage, LobbyMember, LobbySquadId, RoomPhase, ServerMessage } from "@dotbot/protocol";
+import type { ClientMessage, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type RunManifest } from "./db";
 
@@ -79,6 +79,7 @@ export class Room {
   private readonly matchOutcomes = new Map<string, string>();
   private readonly aiWingmates: boolean;
   private readonly matchIdFactory: () => string;
+  private readonly matchIntel = new Map<string, MatchIntel>();
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
@@ -329,6 +330,7 @@ export class Room {
     const assignmentSeed = this.matchIdFactory();
     this.matchId = assignmentSeed;
     this.matchOutcomes.clear();
+    this.matchIntel.clear();
     try {
       await this.persistence.startMatch({
         matchId: this.matchId,
@@ -343,6 +345,7 @@ export class Room {
 
     const loadouts = new Map<string, WireItemCode[]>();
     const insertionPreferences = new Map<string, string | null>();
+    const intelObjects = new Map<string, import("@dotbot/game/types").BaseObjectKind[]>();
     for (const member of this.members.values()) {
       try {
         loadouts.set(member.playerId, await this.persistence.consumeLoadout(member.playerId));
@@ -354,6 +357,12 @@ export class Room {
       } catch (error) {
         insertionPreferences.set(member.playerId, null);
         console.warn(`[persistence] failed to read insertion preference for ${member.playerId}; assigning without it. ${errorMessage(error)}`);
+      }
+      try {
+        intelObjects.set(member.playerId, await this.persistence.getMatchIntelObjects(member.playerId));
+      } catch (error) {
+        intelObjects.set(member.playerId, []);
+        console.warn(`[persistence] failed to read match intel furniture for ${member.playerId}; omitting intel. ${errorMessage(error)}`);
       }
     }
 
@@ -399,6 +408,33 @@ export class Room {
     }
     for (const spawn of downtownMap.botSpawns.filter((candidate) => candidate.isAmbient)) {
       simulation.spawnBot(spawn, "ai");
+    }
+
+    const spawnSnapshot = simulation.getSnapshot();
+    const greyDensity = downtownMap.buildings.map((building) => ({
+      buildingId: building.id,
+      buildingName: building.name,
+      count: spawnSnapshot.bots.filter((bot) => bot.isAmbient && bot.state === "alive" && buildingIdForBot(bot.floorId, bot.position) === building.id).length,
+    }));
+    const blueprintDots = spawnSnapshot.dots.filter((dot) => dot.active && dot.item.kind === "blueprint")
+      .sort((left, right) => left.id.localeCompare(right.id));
+    for (const member of this.members.values()) {
+      const owned = intelObjects.get(member.playerId) ?? [];
+      const intel: MatchIntel = {};
+      if (owned.includes("listeningPost")) intel.greyDensity = greyDensity;
+      if (owned.includes("signalMast") && blueprintDots.length > 0) {
+        const dot = blueprintDots[stableIndex(`${assignmentSeed}:${member.playerId}`, blueprintDots.length)];
+        if (dot.item.kind === "blueprint") {
+          intel.signal = {
+            dotId: dot.id,
+            blueprintId: dot.item.blueprintId,
+            position: { ...dot.position },
+            floorId: dot.floorId,
+            expiresAtTick: spawnSnapshot.debug.tickCount + Math.ceil(this.config.signalIntelDurationMs / (1000 / simulation.config.tickHz)),
+          };
+        }
+      }
+      if (intel.greyDensity || intel.signal) this.matchIntel.set(member.playerId, intel);
     }
 
     this.simulation = simulation;
@@ -447,6 +483,7 @@ export class Room {
       tickHz: this.simulation.config.tickHz,
       endTick: this.endTick,
       insertionName: member.insertionName ?? "UNKNOWN",
+      intel: this.matchIntel.get(member.playerId),
     });
     if (member.runOver) member.peer?.send(member.runOver);
   }
@@ -517,7 +554,18 @@ export class Room {
       squadId: member.squadId,
       viewerBotId: member.botId ?? undefined,
       squadPhysicsFloorIds: this.squadPhysicsFloorIds(member, snapshot),
+      intel: this.snapshotIntel(member, snapshot),
     };
+  }
+
+  private snapshotIntel(member: Member, snapshot: GameSnapshot): MatchIntel | undefined {
+    const intel = this.matchIntel.get(member.playerId);
+    if (!intel) return undefined;
+    const signal = intel.signal;
+    if (!signal) return {};
+    const active = snapshot.debug.tickCount < signal.expiresAtTick
+      && snapshot.dots.some((dot) => dot.id === signal.dotId && dot.active);
+    return active ? { signal } : {};
   }
 
   private squadPhysicsFloorIds(member: Member, snapshot: GameSnapshot): Set<string> {
@@ -715,4 +763,17 @@ function sanitizeName(name: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function stableIndex(seed: string, length: number): number {
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % length;
+}
+
+function buildingIdForBot(floorId: string, position: { x: number; y: number }): string | null {
+  return buildingOfFloor(downtownMap, floorId)?.id ?? buildingContaining(downtownMap, position)?.id ?? null;
 }

@@ -11,6 +11,7 @@ import {
 import { hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { MatchIntel } from "@dotbot/protocol";
 import { shieldArcSpan } from "@dotbot/game/shields";
 import { buildMapArt, drawStair, drawStairExitHalf, type MapArt } from "./mapArt";
 import { drawObjectDraftLayers } from "./glyphs";
@@ -178,7 +179,7 @@ export class GameRenderer {
     this.mineSignals.set(event.mineId, { event, startedAt: this.lastTimeMs });
   }
 
-  render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null): void {
+  render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null, intel?: MatchIntel): void {
     this.lastTimeMs = snapshot.timeMs;
     this.updateDraftAnimations(performance.now());
     const currentPlayer = snapshot.bots.find((bot) => bot.id === playerId);
@@ -200,6 +201,7 @@ export class GameRenderer {
     this.drawExtractionPulse(snapshot, player?.squadId);
     this.drawDots(snapshot, player?.squadId, playerContext);
     this.drawMines(snapshot, playerContext);
+    this.drawSignalIntel(snapshot, intel, playerContext);
     this.drawBots(snapshot, playerId, playerContext);
     if (interactionChannel) {
       this.drawProgressRing(this.dynamicGfx, interactionChannel.position, interactionChannel.radius, interactionChannel.progress, INK.opening, 3);
@@ -214,6 +216,18 @@ export class GameRenderer {
     }
 
     this.drawStairOverlay(player ?? null);
+  }
+
+  private drawSignalIntel(snapshot: GameSnapshot, intel: MatchIntel | undefined, playerContext: string): void {
+    const signal = intel?.signal;
+    if (!signal || snapshot.debug.tickCount >= signal.expiresAtTick) return;
+    if (this.contextKey(signal.floorId, signal.position) !== playerContext) return;
+    const dot = snapshot.dots.find((candidate) => candidate.id === signal.dotId);
+    if (dot && !dot.active) return;
+    const { x, y } = signal.position;
+    const pulse = 1 + Math.sin(snapshot.timeMs / 180) * 0.12;
+    this.dynamicGfx.moveTo(x - 9 * pulse, y).lineTo(x - 2, y + 7)
+      .lineTo(x + 11 * pulse, y - 10).stroke({ color: 0x1971c2, width: 3 });
   }
 
   private drawMineSignals(player: DotBotEntity): void {

@@ -41,6 +41,8 @@ export const BASE_OBJECT_KINDS = [
   "shelf",
   "toolCabinet",
   "workbench",
+  "listeningPost",
+  "signalMast",
 ] as const satisfies readonly BaseObjectKind[];
 
 export const BASE_KIND_ZONES: Readonly<Record<BaseObjectKind, readonly ("wall" | "floor")[]>> = {
@@ -65,6 +67,8 @@ export const BASE_KIND_ZONES: Readonly<Record<BaseObjectKind, readonly ("wall" |
   serverRack: ["floor"],
   toolCabinet: ["floor"],
   workbench: ["floor"],
+  listeningPost: ["wall"],
+  signalMast: ["wall"],
 };
 
 export const BASE_SHELL_IDS = ["workshop", "hangar", "berths"] as const satisfies readonly BaseShellId[];
@@ -130,7 +134,7 @@ export type BaseShellDef = {
   upper: BaseUpperDef;
 };
 
-const SINGLETON_BASE_KINDS = new Set<BaseObjectKind>(["fabricator", "bayConsole", "planningTable", "repairBench"]);
+const SINGLETON_BASE_KINDS = new Set<BaseObjectKind>(["fabricator", "bayConsole", "planningTable", "repairBench", "listeningPost", "signalMast"]);
 
 const SLOT_ZONES = new Map<string, "wall" | "floor">(BASE_SLOT_DEFS.map((def) => [def.id, def.zone]));
 const SLOT_FLOORS = new Map<string, "GROUND" | "F1">(BASE_SLOT_DEFS.map((def) => [def.id, def.floor]));

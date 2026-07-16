@@ -767,6 +767,24 @@ function rugGlyph(g: Graphics, o: MapObject): void {
   g.roundRect(o.x + 4, o.y + 4, o.w - 8, o.h - 8, 2).stroke(T5);
 }
 
+function listeningPostGlyph(g: Graphics, o: MapObject): void {
+  body(g, o.x, o.y, o.w, o.h, T3, 2);
+  const cx = o.x + o.w / 2;
+  const cy = o.y + o.h / 2;
+  g.arc(cx, cy, Math.min(o.w, o.h) * 0.18, -Math.PI * 0.8, Math.PI * 0.8).stroke(T3);
+  g.arc(cx, cy, Math.min(o.w, o.h) * 0.32, -Math.PI * 0.8, Math.PI * 0.8).stroke(T5);
+  g.circle(cx, cy, 2).fill({ color: INK.structure });
+}
+
+function signalMastGlyph(g: Graphics, o: MapObject): void {
+  body(g, o.x, o.y, o.w, o.h, T3, 2);
+  const cx = o.x + o.w / 2;
+  line(g, cx, o.y + 5, cx, o.y + o.h - 5, T3);
+  line(g, cx, o.y + 7, cx - Math.min(12, o.w * 0.2), o.y + o.h - 7, T5);
+  line(g, cx, o.y + 7, cx + Math.min(12, o.w * 0.2), o.y + o.h - 7, T5);
+  g.arc(cx, o.y + 8, Math.min(8, o.w * 0.12), Math.PI, 0).stroke(T5);
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -825,6 +843,8 @@ export const glyphs: Record<ObjectKind, GlyphFn> = {
   bayConsole: bayConsoleGlyph,
   planningTable: planningTableGlyph,
   repairBench: repairBenchGlyph,
+  listeningPost: listeningPostGlyph,
+  signalMast: signalMastGlyph,
 };
 
 export function drawObject(g: Graphics, object: MapObject): void {

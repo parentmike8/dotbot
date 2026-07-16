@@ -38,6 +38,7 @@ export class NoopPersistence implements Persistence {
   async applyPreset(): Promise<null> { return null; }
   async setInsertionPreference(_token: string, _insertionPointId: string | null): Promise<string | null> { return null; }
   async getInsertionPreference(_playerId: string): Promise<string | null> { return null; }
+  async getMatchIntelObjects(): Promise<[]> { return []; }
   async acceptContract(): Promise<void> {}
   async rerollContracts(): Promise<void> {}
   async abandonContract(): Promise<void> {}

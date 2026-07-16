@@ -163,7 +163,9 @@ export type ObjectKind =
   | "fabricator"
   | "bayConsole"
   | "planningTable"
-  | "repairBench";
+  | "repairBench"
+  | "listeningPost"
+  | "signalMast";
 
 /** Furniture that can be installed in the persistent player base. */
 export type BaseObjectKind =
@@ -187,7 +189,9 @@ export type BaseObjectKind =
   | "serverRack"
   | "shelf"
   | "toolCabinet"
-  | "workbench";
+  | "workbench"
+  | "listeningPost"
+  | "signalMast";
 
 /**
  * Purely cosmetic floor-plan variants of the home base. Every shell exposes
@@ -422,6 +426,7 @@ export type GameConfig = {
   mineSenseRadius: number;
   mineSensePingMs: number;
   maxActiveMines: number;
+  signalIntelDurationMs: number;
   dashOverchargeUses: number;
   incognitoDurationMs: number;
   powerupNoiseLoudness: number;

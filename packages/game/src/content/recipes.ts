@@ -87,6 +87,24 @@ export const RECIPES: readonly Recipe[] = [
     requiresBlueprint: objectKind,
   })),
   {
+    id: "furniture-listeningPost",
+    output: { kind: "furniture", objectKind: "listeningPost" },
+    costs: [
+      { itemType: "r", qty: 2 },
+      { itemType: "i", qty: 1 },
+    ],
+    requiresBlueprint: "serverRack",
+  },
+  {
+    id: "furniture-signalMast",
+    output: { kind: "furniture", objectKind: "signalMast" },
+    costs: [
+      { itemType: "r", qty: 2 },
+      { itemType: "d", qty: 1 },
+    ],
+    requiresBlueprint: "generator",
+  },
+  {
     id: "furniture-repairBench",
     output: { kind: "furniture", objectKind: "repairBench" },
     costs: [

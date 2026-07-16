@@ -1,4 +1,5 @@
 import type { GameSnapshot, InputCommand, Item, MapDocument, SimEvent } from "@dotbot/game/types";
+import type { MatchIntel } from "@dotbot/protocol";
 
 export type RunState =
   | { phase: "live" }
@@ -7,6 +8,7 @@ export type RunState =
 export interface GameSession {
   readonly map: MapDocument;
   readonly playerId: string;
+  readonly intel?: MatchIntel;
   /** Async init (Rapier load today; WS connect for M1's NetSession). */
   start(): Promise<void>;
   /** Latest input intent for the local player; called once per render frame. */

@@ -1,6 +1,6 @@
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { assertNever, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
-import type { EntityMeta, LobbyMember, LobbySquadId, ServerMessage } from "@dotbot/protocol";
+import type { EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
   blendOffset,
@@ -52,6 +52,7 @@ export class NetSession implements GameSession {
   private endTick = Number.MAX_SAFE_INTEGER;
   private insertionNameValue = "";
   private warnedClockDrift = false;
+  private intelValue: MatchIntel | undefined;
 
   constructor(options: NetSessionOptions) {
     this.options = options;
@@ -73,6 +74,10 @@ export class NetSession implements GameSession {
 
   get insertionName(): string {
     return this.insertionNameValue;
+  }
+
+  get intel(): MatchIntel | undefined {
+    return this.intelValue;
   }
 
   getEntityMeta(id: string): EntityMeta | undefined {
@@ -239,6 +244,7 @@ export class NetSession implements GameSession {
         this.tickHz = message.tickHz;
         this.endTick = message.endTick;
         this.insertionNameValue = message.insertionName;
+        this.intelValue = message.intel;
         this.metaIndex = new Map(message.meta.map((meta) => [meta.id, meta]));
         this.runState = { phase: "live" };
         this.resolveStart?.();
@@ -246,6 +252,9 @@ export class NetSession implements GameSession {
         this.rejectStart = null;
         return;
       case "snap": {
+        if (this.intelValue && message.intel !== undefined) {
+          this.intelValue = { ...this.intelValue, signal: message.intel.signal };
+        }
         const snapshot = fromWireSnapshot(message, this.metaIndex);
         snapshot.timeMs = message.tick * (1000 / this.tickHz);
         snapshot.debug.tickHz = this.tickHz;
