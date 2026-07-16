@@ -8,6 +8,7 @@ import { selectSpectatedBot } from "./spectate";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
 import type { DotBotEntity, DownedHostileVerb, GameSnapshot, Item, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { NetworkDebugStats } from "./session/netgraph";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
 
@@ -74,6 +75,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [spectating, setSpectating] = useState<DotBotEntity | null>(null);
   const [debugVisible, setDebugVisible] = useState(false);
+  const [networkDebug, setNetworkDebug] = useState<NetworkDebugStats | null>(null);
   const [legendVisible, setLegendVisible] = useState(false);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
 
@@ -212,6 +214,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);
           setSpectating(spectator);
+          setNetworkDebug(session.getNetworkDebug?.() ?? null);
           lastHudUpdate = now;
 
           if (import.meta.env.DEV) {
@@ -464,6 +467,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     playerId: providedSession?.playerId ?? "player",
     spectating,
     debugVisible,
+    networkDebug,
     legendVisible,
     toggleLegend: () => setLegendVisible((visible) => !visible),
     joystick: joystickView,

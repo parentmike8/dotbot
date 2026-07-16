@@ -5,6 +5,7 @@ import { floorHeight, locationLabel, resolvePlan } from "@dotbot/game/mapModel";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
 import { ManifestScreen } from "./ManifestScreen";
+import { arrivalSparkline } from "../game/session/netgraph";
 
 const coachFadeAtMs = 12_000;
 const coachDismissAtMs = 15_000;
@@ -38,7 +39,7 @@ export function App() {
 
 function GameSession({ onRestart }: { onRestart: () => void }) {
   const {
-    hostRef, snapshot, events, runResult, map, playerId, debugVisible, legendVisible, toggleLegend,
+    hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, legendVisible, toggleLegend,
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, giveUp, selectDownedVerb, plea,
   } = useDotBotGame();
   const [swapBay, setSwapBay] = useState<0 | 1 | 2 | 3 | null>(null);
@@ -348,6 +349,18 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
           <div>Capture {defaultGameConfig.dotCaptureDurationMs}ms</div>
           <div>Cover {defaultGameConfig.coverDurationMs}ms</div>
           <div>Damage {defaultGameConfig.damageSpeed}</div>
+          {networkDebug ? (
+            <div className="netgraph" aria-label="Network graph">
+              <div className="netgraph-spark" aria-label="Snapshot inter-arrival sparkline">
+                {arrivalSparkline(networkDebug.snapshotIntervalsMs)}
+              </div>
+              <div>Snap {Math.round(networkDebug.snapshotP50Ms)}/{Math.round(networkDebug.snapshotP90Ms)}/{Math.round(networkDebug.snapshotP99Ms)}ms p50/90/99</div>
+              <div>RTT {networkDebug.rttMs === null ? "—" : `${Math.round(networkDebug.rttMs)}ms`}</div>
+              <div>Buffer {networkDebug.bufferDepthSnapshots} @ {networkDebug.interpolationDelayMs}ms</div>
+              <div>Error {networkDebug.predictionErrorPx.toFixed(1)}px</div>
+              <div>Corrections {networkDebug.correctionsPerSecond}/s</div>
+            </div>
+          ) : null}
         </aside>
       ) : null}
 

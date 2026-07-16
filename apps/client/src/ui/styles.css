@@ -423,6 +423,20 @@ button {
   pointer-events: none;
 }
 
+.netgraph {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--hairline);
+}
+
+.netgraph-spark {
+  max-width: 32ch;
+  overflow: hidden;
+  color: #e8590c;
+  letter-spacing: -1px;
+  white-space: nowrap;
+}
+
 .coverage-meter span {
   display: block;
   height: 100%;

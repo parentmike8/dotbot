@@ -1,5 +1,6 @@
 import type { GameSnapshot, InputCommand, Item, MapDocument, SimEvent } from "@dotbot/game/types";
 import type { MatchIntel } from "@dotbot/protocol";
+import type { NetworkDebugStats } from "./netgraph";
 
 export type RunState =
   | { phase: "live" }
@@ -28,5 +29,7 @@ export interface GameSession {
   giveUp(): void;
   /** Debug instrumentation; optional so NetSession can no-op it. */
   setMeasuredFps?(fps: number): void;
+  /** Permanent F3 network diagnostics for live sessions. */
+  getNetworkDebug?(): NetworkDebugStats;
   dispose(): void;
 }

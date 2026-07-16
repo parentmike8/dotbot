@@ -11,6 +11,7 @@ import {
   type PendingInput,
 } from "../prediction/reconciliation";
 import type { GameSession, RunState } from "./GameSession";
+import { snapshotArrivalStats, type NetworkDebugStats } from "./netgraph";
 
 export type NetSessionOptions = {
   url: string;
@@ -55,6 +56,13 @@ export class NetSession implements GameSession {
   private warnedClockDrift = false;
   private intelValue: MatchIntel | undefined;
   private dotStore = new Map<string, WireDot>();
+  private readonly snapshotIntervalsMs: number[] = [];
+  private lastSnapshotArrivalMs: number | null = null;
+  private rttMs: number | null = null;
+  private lastPingSentAtMs = 0;
+  private bufferDepthSnapshots = 0;
+  private predictionErrorPx = 0;
+  private readonly correctionTimesMs: number[] = [];
 
   constructor(options: NetSessionOptions) {
     this.options = options;
@@ -163,8 +171,23 @@ export class NetSession implements GameSession {
     this.pendingInput = { move: this.pendingInput.move, dash: false, downedVerb: this.pendingInput.downedVerb, plea: false };
   }
 
+  getNetworkDebug(): NetworkDebugStats {
+    const now = performance.now();
+    this.pruneCorrections(now);
+    return {
+      snapshotIntervalsMs: this.snapshotIntervalsMs.slice(-64),
+      ...snapshotArrivalStats(this.snapshotIntervalsMs),
+      rttMs: this.rttMs,
+      interpolationDelayMs: 100,
+      bufferDepthSnapshots: this.bufferDepthSnapshots,
+      predictionErrorPx: this.predictionErrorPx,
+      correctionsPerSecond: this.correctionTimesMs.length,
+    };
+  }
+
   update(elapsedMs: number): GameSnapshot | null {
     if (this.snapshots.length === 0) return null;
+    this.maybePing();
     this.advancePrediction(elapsedMs);
     const newest = this.snapshots[this.snapshots.length - 1];
     const renderTick = newest.tick - this.tickHz * 0.1;
@@ -179,6 +202,7 @@ export class NetSession implements GameSession {
         break;
       }
     }
+    this.bufferDepthSnapshots = this.snapshots.filter((candidate) => candidate.tick >= renderTick).length;
     if (older.tick === newer.tick) return this.withPredictedOwnBot(older.snapshot);
     const alpha = Math.max(0, Math.min(1, (renderTick - older.tick) / (newer.tick - older.tick)));
     const newerBots = new Map(newer.snapshot.bots.map((bot) => [bot.id, bot]));
@@ -256,6 +280,7 @@ export class NetSession implements GameSession {
         this.rejectStart = null;
         return;
       case "snap": {
+        this.recordSnapshotArrival();
         if (this.intelValue && message.intel !== undefined) {
           this.intelValue = { ...this.intelValue, signal: message.intel.signal };
         }
@@ -293,6 +318,7 @@ export class NetSession implements GameSession {
       case "matchEnd":
         return;
       case "pong":
+        this.rttMs = Math.max(0, Date.now() - message.cts);
         return;
       case "err":
         this.failStart(message.msg);
@@ -352,6 +378,12 @@ export class NetSession implements GameSession {
       replay.corrected.position.x - predictedBefore.position.x,
       replay.corrected.position.y - predictedBefore.position.y,
     );
+    this.predictionErrorPx = error;
+    if (error >= 0.5) {
+      const now = performance.now();
+      this.correctionTimesMs.push(now);
+      this.pruneCorrections(now);
+    }
     const kind = classifyCorrection(error, authoritative.radius);
     if (kind === "blend") {
       this.correctionOffset = {
@@ -402,6 +434,28 @@ export class NetSession implements GameSession {
     this.rejectStart?.(new Error(message));
     this.resolveStart = null;
     this.rejectStart = null;
+  }
+
+  private maybePing(): void {
+    const now = performance.now();
+    if (now - this.lastPingSentAtMs < 1000) return;
+    this.lastPingSentAtMs = now;
+    this.send({ type: "ping", cts: Date.now() });
+  }
+
+  private recordSnapshotArrival(): void {
+    const now = performance.now();
+    if (this.lastSnapshotArrivalMs !== null) {
+      this.snapshotIntervalsMs.push(now - this.lastSnapshotArrivalMs);
+      if (this.snapshotIntervalsMs.length > 240) this.snapshotIntervalsMs.shift();
+    }
+    this.lastSnapshotArrivalMs = now;
+  }
+
+  private pruneCorrections(now: number): void {
+    while (this.correctionTimesMs[0] !== undefined && now - this.correctionTimesMs[0] > 1000) {
+      this.correctionTimesMs.shift();
+    }
   }
 
   private checkClockSanity(tick: number, snapshotTimeMs: number): void {
