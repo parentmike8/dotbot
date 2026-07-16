@@ -26,7 +26,8 @@ the database has no public IP exposure.
 # one-time: install the proxy
 brew install cloud-sql-proxy
 
-cloud-sql-proxy dot-bot-c39fc:us-central1:dotbot-sql --port 55433 &
+# --gcloud-auth reuses your gcloud CLI login (plain ADC goes stale separately)
+cloud-sql-proxy dot-bot-c39fc:us-central1:dotbot-sql --port 55433 --gcloud-auth &
 DATABASE_URL="postgres://dotbot:<password>@localhost:55433/dotbot" pnpm db:migrate
 kill %1
 ```
