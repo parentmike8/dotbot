@@ -490,7 +490,15 @@ export class PostgresPersistence implements Persistence {
 }
 
 export async function connectPostgres(databaseUrl: string): Promise<PostgresPersistence> {
-  const client = postgres(databaseUrl, { connect_timeout: 5, max: 5 });
+  // Cloud SQL connects over a unix socket passed as ?host=/cloudsql/… — the
+  // query param must be lifted into an explicit option (postgres-js ignores
+  // it in the URL form, and an empty-authority URL fails to parse at all).
+  const socketHost = /[?&]host=([^&]+)/.exec(databaseUrl)?.[1];
+  const client = postgres(databaseUrl, {
+    connect_timeout: 5,
+    max: 5,
+    ...(socketHost?.startsWith("/") ? { host: decodeURIComponent(socketHost) } : {}),
+  });
   try {
     await client`select 1`;
     return new PostgresPersistence(client);
