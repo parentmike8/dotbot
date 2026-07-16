@@ -521,7 +521,10 @@ export class GameRenderer {
 
       this.maskedGfx.circle(x, y, mine.radius).fill({ color: colorToNumber("#e8590c") });
       const seamRadians = 1 / Math.max(1, mine.radius);
-      this.maskedGfx.arc(x, y, mine.radius, seamRadians / 2, Math.PI * 2 - seamRadians / 2)
+      const seamStart = seamRadians / 2;
+      this.maskedGfx.beginPath()
+        .moveTo(x + Math.cos(seamStart) * mine.radius, y + Math.sin(seamStart) * mine.radius)
+        .arc(x, y, mine.radius, seamStart, Math.PI * 2 - seamRadians / 2)
         .stroke({ color: INK.structure, width: 2 });
       this.drawDotMark(this.maskedGfx, { kind: "powerup", type: mine.disguise ?? "health" }, mine.position, mine.radius);
     }
@@ -548,8 +551,8 @@ export class GameRenderer {
       return;
     }
     if (item.type === "radar") {
-      g.arc(x, y, size * 0.5, -Math.PI * 0.75, Math.PI * 0.75).stroke(line);
-      g.arc(x, y, size, -Math.PI * 0.75, Math.PI * 0.75).stroke(line);
+      this.drawArcStroke(g, center, size * 0.5, -Math.PI * 0.75, Math.PI * 0.75, { ...line, alpha: 1 });
+      this.drawArcStroke(g, center, size, -Math.PI * 0.75, Math.PI * 0.75, { ...line, alpha: 1 });
       return;
     }
     if (item.type === "dashOvercharge") {
@@ -560,7 +563,7 @@ export class GameRenderer {
       return;
     }
     for (let index = 0; index < 8; index += 2) {
-      g.arc(x, y, size, (index * Math.PI) / 4, ((index + 1) * Math.PI) / 4).stroke(line);
+      this.drawArcStroke(g, center, size, (index * Math.PI) / 4, ((index + 1) * Math.PI) / 4, { ...line, alpha: 1 });
     }
   }
 

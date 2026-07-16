@@ -51,6 +51,37 @@ describe("LitePredictor", () => {
     expect(predictor.current.position.y).toBeCloseTo(bot.position.y, 5);
   });
 
+  it("previews partial ticks smoothly without mutating fixed-step state", () => {
+    const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    const quarterTick = predictor.tickMs / 4;
+    const positions = [0, 1, 2, 3, 4].map((part) =>
+      predictor.preview(moveRight, quarterTick * part).position.x,
+    );
+
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(positions[0]).toBe(1200);
+    expect(positions[4]).toBeCloseTo(
+      1200 + defaultGameConfig.playerSpeed / defaultGameConfig.tickHz,
+      5,
+    );
+    expect(predictor.current.position.x).toBe(1200);
+  });
+
+  it("keeps partial-tick preview monotonic as a dash expires", () => {
+    const predictor = new LitePredictor(
+      downtownMap,
+      defaultGameConfig,
+      makeBot({ dashActiveMs: (1000 / defaultGameConfig.tickHz) / 3 }),
+    );
+    const positions = [0, 0.25, 0.5, 0.75, 1].map((alpha) =>
+      predictor.preview(moveRight, predictor.tickMs * alpha).position.x,
+    );
+
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    predictor.step(moveRight);
+    expect(positions.at(-1)).toBeCloseTo(predictor.current.position.x, 5);
+  });
+
   it("drops a dash press considered during cooldown instead of banking it", () => {
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot({ dashCooldownMs: 40 }));
 

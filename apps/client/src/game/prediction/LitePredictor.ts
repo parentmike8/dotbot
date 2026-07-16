@@ -39,38 +39,62 @@ export class LitePredictor {
   }
 
   step(input: InputCommand): PredictedOwnBot {
-    const move = normalizeInputVector(input.move);
-    this.state.dashCooldownMs = Math.max(0, this.state.dashCooldownMs - this.tickMs);
-    this.state.dashActiveMs = Math.max(0, this.state.dashActiveMs - this.tickMs);
-
-    if (input.dash && this.state.dashCooldownMs <= 0 && this.state.dashActiveMs <= 0) {
-      this.state.dashActiveMs = this.config.dashDurationMs;
-      this.state.dashCooldownMs = this.config.dashCooldownMs;
-    }
-
-    const direction = move;
-    const speed = this.state.dashActiveMs > 0 ? this.config.dashSpeed : this.config.playerSpeed;
-    if (Math.hypot(direction.x, direction.y) > 0.05) {
-      this.state.facing = Math.atan2(direction.y, direction.x);
-    }
-
-    this.state.position = this.resolveStaticCollision({
-      x: this.state.position.x + (direction.x * speed) / this.config.tickHz,
-      y: this.state.position.y + (direction.y * speed) / this.config.tickHz,
-    });
-
+    this.state = this.advance(cloneState(this.state), input, this.tickMs, true);
     return this.current;
   }
 
-  private resolveStaticCollision(position: Vec2): Vec2 {
+  /**
+   * Samples the partial tick after `current` without changing fixed-step
+   * prediction state. Rendering this preview avoids presenting a held frame
+   * followed by a double-sized step when display frames and sim ticks drift.
+   */
+  preview(input: InputCommand, elapsedMs: number): PredictedOwnBot {
+    const alpha = clamp(elapsedMs / this.tickMs, 0, 1);
+    const next = this.advance(cloneState(this.state), input, this.tickMs, false);
+    return {
+      ...next,
+      position: {
+        x: this.state.position.x + (next.position.x - this.state.position.x) * alpha,
+        y: this.state.position.y + (next.position.y - this.state.position.y) * alpha,
+      },
+      dashCooldownMs: this.state.dashCooldownMs + (next.dashCooldownMs - this.state.dashCooldownMs) * alpha,
+      dashActiveMs: this.state.dashActiveMs + (next.dashActiveMs - this.state.dashActiveMs) * alpha,
+    };
+  }
+
+  private advance(state: PredictedOwnBot, input: InputCommand, elapsedMs: number, consumeDash: boolean): PredictedOwnBot {
+    const move = normalizeInputVector(input.move);
+    state.dashCooldownMs = Math.max(0, state.dashCooldownMs - elapsedMs);
+    state.dashActiveMs = Math.max(0, state.dashActiveMs - elapsedMs);
+
+    if (consumeDash && input.dash && state.dashCooldownMs <= 0 && state.dashActiveMs <= 0) {
+      state.dashActiveMs = this.config.dashDurationMs;
+      state.dashCooldownMs = this.config.dashCooldownMs;
+    }
+
+    const direction = move;
+    const speed = state.dashActiveMs > 0 ? this.config.dashSpeed : this.config.playerSpeed;
+    if (Math.hypot(direction.x, direction.y) > 0.05) {
+      state.facing = Math.atan2(direction.y, direction.x);
+    }
+
+    state.position = this.resolveStaticCollision({
+      x: state.position.x + direction.x * speed * elapsedMs / 1000,
+      y: state.position.y + direction.y * speed * elapsedMs / 1000,
+    }, state);
+
+    return state;
+  }
+
+  private resolveStaticCollision(position: Vec2, state = this.state): Vec2 {
     let next = position;
-    const solids = this.solidsByFloor.get(this.state.floorId) ?? collectSolidRects(this.map, this.state.floorId);
-    this.solidsByFloor.set(this.state.floorId, solids);
+    const solids = this.solidsByFloor.get(state.floorId) ?? collectSolidRects(this.map, state.floorId);
+    this.solidsByFloor.set(state.floorId, solids);
 
     for (let iteration = 0; iteration < 3; iteration += 1) {
       let moved = false;
       for (const solid of solids) {
-        const separated = separateCircleFromRect(next, this.state.radius, solid);
+        const separated = separateCircleFromRect(next, state.radius, solid);
         if (separated.x !== next.x || separated.y !== next.y) {
           next = separated;
           moved = true;
@@ -82,8 +106,8 @@ export class LitePredictor {
     }
 
     return {
-      x: clamp(next.x, this.state.radius, this.map.width - this.state.radius),
-      y: clamp(next.y, this.state.radius, this.map.height - this.state.radius),
+      x: clamp(next.x, state.radius, this.map.width - state.radius),
+      y: clamp(next.y, state.radius, this.map.height - state.radius),
     };
   }
 }

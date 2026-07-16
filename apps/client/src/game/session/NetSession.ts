@@ -423,7 +423,10 @@ export class NetSession implements GameSession {
 
   private withPredictedOwnBot(snapshot: GameSnapshot, freshest: GameSnapshot): GameSnapshot {
     if (!this.predictor) return snapshot;
-    const predicted = this.predictor.current;
+    const predicted = this.predictor.preview(
+      { ...this.predictionInput, dash: false },
+      this.predictionAccumulatorMs,
+    );
     const freshOwn = freshest.bots.find((bot) => bot.id === this.playerIdValue);
     return {
       ...snapshot,
