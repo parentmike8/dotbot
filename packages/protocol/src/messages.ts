@@ -3,6 +3,15 @@ import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
 
+/**
+ * Delivery semantics are part of the game protocol, not a transport detail.
+ * Reliable messages must arrive in order. Latest-state messages may be
+ * dropped when a newer one supersedes them (WebTransport datagrams in the
+ * production transport; ordinary WebSocket frames in the compatibility
+ * transport).
+ */
+export type DeliveryClass = "reliable" | "latest";
+
 export const LOBBY_SQUADS = ["alpha", "bravo", "crew-3"] as const;
 export type LobbySquadId = (typeof LOBBY_SQUADS)[number];
 
@@ -134,6 +143,10 @@ export type WireInputFrame = {
   seq: number;
   move: [number, number];
   dash: boolean;
+  /** Server tick of the remote world that was visible when this input frame
+   * was cut. Dash lag compensation uses this exact combat timeline instead
+   * of guessing from a periodically sampled RTT. */
+  viewTick?: number;
   useBay?: 0 | 1 | 2 | 3;
   swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
   downedVerb?: DownedHostileVerb;
@@ -141,7 +154,16 @@ export type WireInputFrame = {
 };
 
 export type ClientMessage =
-  | { type: "hello"; token: string; name: string; roomCode: string; preferredSquad?: LobbySquadId }
+  | {
+      type: "hello";
+      token: string;
+      name: string;
+      roomCode: string;
+      preferredSquad?: LobbySquadId;
+      /** Required on the production GameLift path. The dedicated server
+       * accepts it with the local Server SDK before admitting the peer. */
+      playerSessionId?: string;
+    }
   | { type: "joinSquad"; squadId: LobbySquadId }
   | { type: "startMatch" }
   | { type: "leaveRun" }
@@ -150,6 +172,7 @@ export type ClientMessage =
       seq: number;
       move: [number, number];
       dash: boolean;
+      viewTick?: number;
       useBay?: 0 | 1 | 2 | 3;
       swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
       downedVerb?: DownedHostileVerb;

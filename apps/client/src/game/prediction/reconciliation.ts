@@ -4,6 +4,8 @@ import { LitePredictor, type PredictedOwnBot } from "./LitePredictor";
 export type PendingInput = {
   seq: number;
   input: InputCommand;
+  /** Remote-world server tick visible when this frame was generated. */
+  viewTick?: number;
 };
 
 export type CorrectionKind = "adopt" | "blend" | "snap";

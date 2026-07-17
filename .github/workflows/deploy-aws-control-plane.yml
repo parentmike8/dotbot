@@ -1,0 +1,79 @@
+name: Deploy AWS control plane
+
+on:
+  workflow_dispatch:
+    inputs:
+      fleet_id:
+        description: GameLift fleet ID after quota approval
+        required: false
+        default: pending-quota-approval
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-aws-control-plane
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  STACK_NAME: dotbot-production-control-plane
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Configure keyless AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.2
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::380314682423:role/DotBotGitHubDeploy
+          role-session-name: dotbot-control-${{ github.run_id }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.18.0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+
+      - name: Set up SAM
+        uses: aws-actions/setup-sam@v2
+
+      - name: Build and test matchmaker
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm --filter @dotbot/matchmaker typecheck
+          pnpm --filter @dotbot/matchmaker test
+          pnpm --filter @dotbot/matchmaker build
+          sam validate --lint --template-file deploy/aws/template.yml
+
+      - name: Deploy production control plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          sam deploy \
+            --template-file deploy/aws/template.yml \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --s3-bucket dotbot-deploy-artifacts-380314682423-us-east-1 \
+            --role-arn arn:aws:iam::380314682423:role/DotBotCloudFormationExecutionRole \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "FleetId=${{ inputs.fleet_id }}"
+
+          aws cloudformation describe-stacks \
+            --region "$AWS_REGION" \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs'

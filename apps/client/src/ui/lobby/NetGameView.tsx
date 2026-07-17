@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { withinDownedCoverRange } from "@dotbot/game/interactions";
+import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import type { NetSession } from "../../game/session/NetSession";
 import { arrivalSparkline } from "../../game/session/netgraph";
@@ -15,7 +16,7 @@ type NetGameViewProps = {
 export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "RETURN TO LOBBY" }: NetGameViewProps) {
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug,
-    legendVisible, toggleLegend, queueDash, cycleSpectator, giveUp, selectDownedVerb, plea,
+    legendVisible, toggleLegend, joystick, joystickHandlers, queueDash, cycleSpectator, giveUp, selectDownedVerb, plea,
   } = useDotBotGame({ session, spectate: true });
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
   const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === session.playerId) ?? false;
@@ -32,6 +33,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   const hostileChannel = hostileDowned ? snapshot?.coverages.find((coverage) => coverage.actorId === player?.id && coverage.targetId === hostileDowned.id) : undefined;
   const mineRotated = [...events].reverse().find((event) => event.type === "mineRotated");
   const spectateMode = runResult?.outcome === "died";
+  const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / session.config.dashCooldownMs) : 1;
   const killCounts = useMemo(() => {
     const viewerSquadId = session.getEntityMeta(session.playerId)?.squadId;
     let ai = 0;
@@ -118,9 +120,34 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         session.leaveRun();
         onReturnToLobby();
       }}>LEAVE TO BASE</button> : null}
-      <button className="net-dash-button" type="button" disabled={runResult !== null} onPointerDown={queueDash}>
-        Dash
-      </button>
+      {!spectating && !spectateMode ? (
+        <div className="touch-controls" aria-label="Touch controls">
+          <div
+            className={`joystick ${joystick.active ? "active" : ""}`}
+            role="application"
+            aria-label="Movement joystick"
+            {...joystickHandlers}
+          >
+            <span
+              className="joystick-knob"
+              style={{ transform: `translate(${joystick.knob.x}px, ${joystick.knob.y}px)` }}
+            />
+          </div>
+          <button
+            className="dash-button"
+            type="button"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              queueDash();
+            }}
+            style={{ "--dash-progress": dashProgress } as React.CSSProperties}
+            disabled={runResult !== null || !player || player.state !== "alive" || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)}
+            aria-label="Dash"
+          >
+            Dash
+          </button>
+        </div>
+      ) : null}
       {player?.state === "downed" && !reviveInProgress && !runResult ? (
         <div className="downed-actions">
           <button type="button" className="plea-button" onClick={plea}>PLEA · P</button>

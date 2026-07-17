@@ -322,7 +322,12 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
       ) : null}
 
       <div className="touch-controls" aria-label="Touch controls">
-        <div className={`joystick ${joystick.active ? "active" : ""}`} {...joystickHandlers}>
+        <div
+          className={`joystick ${joystick.active ? "active" : ""}`}
+          role="application"
+          aria-label="Movement joystick"
+          {...joystickHandlers}
+        >
           <span
             className="joystick-knob"
             style={{

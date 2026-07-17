@@ -7,13 +7,13 @@ import { assignSquadInsertions, squadSpawnPosition, validateInsertionMap } from 
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, InsertionPoint, SimEvent } from "@dotbot/game/types";
 import { filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot, visiblePhysicsFloors } from "@dotbot/protocol";
 import { LOBBY_SQUADS } from "@dotbot/protocol";
-import type { ClientMessage, FullWireSnapshot, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta, WireInputFrame } from "@dotbot/protocol";
+import type { ClientMessage, DeliveryClass, FullWireSnapshot, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta, WireInputFrame } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type RunManifest } from "./db";
 
 export interface RoomPeer {
   readonly id: string;
-  send(message: ServerMessage): void;
+  send(message: ServerMessage, delivery?: DeliveryClass): void;
 }
 
 type Member = LobbyMember & {
@@ -242,6 +242,7 @@ export class Room {
           seq: message.seq,
           move: message.move,
           dash: message.dash,
+          viewTick: message.viewTick,
           useBay: message.useBay,
           swapBay: message.swapBay,
           downedVerb: message.downedVerb,
@@ -368,7 +369,14 @@ export class Room {
     // couple of ticks of buffered input would become standing input latency,
     // so shed the oldest frames and let client reconciliation absorb the gap.
     while (member.inputQueue.length > 6) {
-      member.lastAppliedSeq = member.inputQueue.shift()!.seq;
+      // Preserve real actions when shedding stale continuous movement. A
+      // redundant datagram burst must never discard the only dash/bay/plea
+      // edge merely because it was older than newer movement samples.
+      const droppable = member.inputQueue.findIndex((queued) =>
+        !queued.dash && queued.useBay === undefined && !queued.swapBay && !queued.plea);
+      const dropAt = droppable === -1 ? 0 : droppable;
+      const dropped = member.inputQueue.splice(dropAt, 1)[0];
+      if (dropAt === 0 && dropped) member.lastAppliedSeq = dropped.seq;
     }
   }
 
@@ -392,6 +400,13 @@ export class Room {
     member.inputStarved = false;
     member.starveHoldTicks = 0;
     member.lastAppliedSeq = frame.seq;
+    if (frame.dash && frame.viewTick !== undefined && Number.isFinite(frame.viewTick) && member.botId && this.simulation) {
+      // The frame carries the actual remote-world tick visible when the dash
+      // was pressed. Queueing and uplink delay are therefore included once,
+      // without periodically guessing from a full RTT.
+      const attackTick = this.latestServerTick + 1;
+      this.simulation.setViewDelayTicks(member.botId, Math.max(0, attackTick - frame.viewTick));
+    }
     const input: InputCommand = {
       move: { x: frame.move[0], y: frame.move[1] },
       dash: frame.dash,
@@ -630,7 +645,7 @@ export class Room {
       const context = this.viewerContext(member, snapshot);
       const filtered = filterForViewer(wire, meta, context);
       const dotFrame = this.dotFrame(member, filtered, visiblePhysicsFloors(wire, context));
-      this.sendStream(member, { type: "snap", ...toViewerSnapshot(filtered, member.lastAppliedSeq, dotFrame) });
+      this.sendStream(member, { type: "snap", ...toViewerSnapshot(filtered, member.lastAppliedSeq, dotFrame) }, "latest");
     }
   }
 
@@ -757,9 +772,9 @@ export class Room {
       .map((bot) => bot.id));
   }
 
-  private sendStream(member: Member, message: ServerMessage): void {
+  private sendStream(member: Member, message: ServerMessage, delivery: DeliveryClass = "reliable"): void {
     this.bandwidthWindowBytes += Buffer.byteLength(JSON.stringify(message));
-    member.peer?.send(message);
+    member.peer?.send(message, delivery);
   }
 
   private rollBandwidthWindow(now: number): void {

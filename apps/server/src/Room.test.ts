@@ -202,6 +202,7 @@ describe("Room input stream", () => {
         inputQueue: Array<{ seq: number }>;
         heldInput: { move: { x: number; y: number } };
       }>;
+      simulation: { bots: Map<string, { viewDelayTicks: number }> };
     };
     const member = internals.members.get("stream-player")!;
     // The epsilon keeps float accumulation from rounding a tick away.
@@ -213,8 +214,8 @@ describe("Room input stream", () => {
       type: "input", seq: 4, move: [1, 0], dash: false,
       frames: [
         { seq: 1, move: [1, 0], dash: false },
-        { seq: 2, move: [1, 0], dash: true },
-        { seq: 2, move: [1, 0], dash: true },
+        { seq: 2, move: [1, 0], dash: true, viewTick: 0 },
+        { seq: 2, move: [1, 0], dash: true, viewTick: 0 },
         { seq: 3, move: [1, 0], dash: false },
         { seq: 4, move: [1, 0], dash: false },
       ],
@@ -226,6 +227,7 @@ describe("Room input stream", () => {
     expect(member.lastAppliedSeq).toBe(1);
     step();
     expect(member.lastAppliedSeq).toBe(2);
+    expect(internals.simulation.bots.get(member.botId)?.viewDelayTicks).toBe(2);
     step();
     step();
     expect(member.lastAppliedSeq).toBe(4);

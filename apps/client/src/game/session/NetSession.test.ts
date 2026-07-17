@@ -7,14 +7,15 @@ describe("NetSession item edges", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("cuts tick-aligned frames with one-shot edges and routes GIVE UP through leaveRun", () => {
-    vi.stubGlobal("WebSocket", { OPEN: 1 });
     const sent: Array<Record<string, unknown>> = [];
+    const deliveries: string[] = [];
     const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
     Object.assign(session as unknown as object, {
-      socket: { readyState: 1, send: (value: string) => sent.push(JSON.parse(value) as Record<string, unknown>) },
+      transport: { send: (message: Record<string, unknown>, delivery: string) => { sent.push(message); deliveries.push(delivery); } },
       mapValue: downtownMap,
       configValue: defaultGameConfig,
       tickHz: 60,
+      lastRenderTick: 120,
     });
     const advance = (ms: number) =>
       (session as unknown as { advancePrediction(ms: number): void }).advancePrediction(ms);
@@ -37,6 +38,8 @@ describe("NetSession item edges", () => {
     const seqs = allFrames.map((frame) => frame.seq as number);
     expect(Math.max(...seqs)).toBe(6);
     expect(allFrames.every((frame) => (frame.move as [number, number])[0] === 1)).toBe(true);
+    expect(allFrames.every((frame) => frame.viewTick === 120)).toBe(true);
+    expect(deliveries.slice(0, 2)).toEqual(["reliable", "latest"]);
     expect(sent.at(-2)).toEqual({ type: "leaveRun" });
     expect(sent.at(-1)).toEqual({ type: "joinSquad", squadId: "bravo" });
   });

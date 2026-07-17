@@ -1,0 +1,96 @@
+name: Publish GameLift EC2 build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-gamelift-build
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: 22.18.0
+  PNPM_VERSION: 9.15.0
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Configure keyless AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.2
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::380314682423:role/DotBotGitHubDeploy
+          role-session-name: dotbot-build-${{ github.run_id }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.x"
+          cache-dependency-path: apps/gamelift-adapter/go.sum
+
+      - name: Build and test the production runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm --filter @dotbot/server typecheck
+          pnpm --filter @dotbot/server test -- GameLiftSessionGate.test.ts gamelift-mode.test.ts
+          pnpm build:all
+          mkdir -p dist-gamelift
+          (
+            cd apps/gamelift-adapter
+            go test ./...
+            go vet ./...
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist-gamelift/gamelift-adapter .
+          )
+
+      - name: Assemble immutable GameLift build
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_root="$RUNNER_TEMP/dotbot-gamelift-build"
+          mkdir -p "$build_root/server" "$build_root/node" dist-gamelift
+          cp apps/server/dist/index.js "$build_root/server/index.js"
+          cp dist-gamelift/gamelift-adapter "$build_root/gamelift-adapter"
+          cp deploy/gamelift-ec2/install.sh "$build_root/install.sh"
+          cp deploy/gamelift-ec2/launch.sh "$build_root/launch.sh"
+          chmod 0555 "$build_root/install.sh" "$build_root/launch.sh" "$build_root/gamelift-adapter"
+
+          curl --fail --location --silent --show-error \
+            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+            | tar -xJ --strip-components=1 -C "$build_root/node"
+          "$build_root/node/bin/node" --version
+          sha256sum "$build_root/server/index.js" "$build_root/gamelift-adapter" > "$build_root/SHA256SUMS"
+
+      - name: Upload immutable GameLift build
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws gamelift upload-build \
+            --region "$AWS_REGION" \
+            --name "dotbot-production" \
+            --build-version "${GITHUB_SHA}-${GITHUB_RUN_ID}" \
+            --build-root "$RUNNER_TEMP/dotbot-gamelift-build" \
+            --server-sdk-version "5.5.0" \
+            --operating-system "AMAZON_LINUX_2023" \
+            --tags Project=DotBot Environment=production Commit="$GITHUB_SHA"

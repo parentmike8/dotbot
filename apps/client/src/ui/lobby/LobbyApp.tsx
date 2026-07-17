@@ -34,6 +34,12 @@ type LobbyAppProps = {
   onReturnToBase?: () => void;
 };
 
+type MatchAllocation = {
+  roomCode: string;
+  websocketUrl: string;
+  playerSessionId: string;
+};
+
 const appRoute = (hash: string) => `${window.location.pathname}${window.location.search}${hash}`;
 
 export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {}) {
@@ -73,11 +79,19 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
     await refreshProfile(token);
     session?.dispose();
     setError("");
+    let allocation: MatchAllocation | null;
+    try {
+      allocation = await allocateGameServer(code, token);
+    } catch (allocationError) {
+      setError(allocationError instanceof Error ? allocationError.message : "Unable to allocate a game server.");
+      return;
+    }
     const next = new NetSession({
-      url: "/ws",
-      roomCode: code,
+      url: allocation?.websocketUrl ?? "/ws",
+      roomCode: allocation?.roomCode ?? code,
       name: cleanName,
       token,
+      playerSessionId: allocation?.playerSessionId,
       preferredSquad,
       onLobby: (state) => {
         setLobby(state);
@@ -201,6 +215,30 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
       </section>
     </main>
   );
+}
+
+async function allocateGameServer(roomCode: string, token: string): Promise<MatchAllocation | null> {
+  const configResponse = await fetch("/api/game-config", { cache: "no-store" });
+  if (!configResponse.ok) return null;
+  const config = await configResponse.json() as { matchmakerUrl?: string | null };
+  if (!config.matchmakerUrl) return null;
+  const base = config.matchmakerUrl.endsWith("/") ? config.matchmakerUrl : `${config.matchmakerUrl}/`;
+  const cleanRoomCode = roomCode.trim().toUpperCase();
+  const endpoint = new URL(cleanRoomCode ? `rooms/${encodeURIComponent(cleanRoomCode)}/join` : "rooms", base);
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  const payload = await response.json() as Partial<MatchAllocation> & { error?: string };
+  if (!response.ok || !payload.roomCode || !payload.websocketUrl || !payload.playerSessionId) {
+    throw new Error(payload.error ?? "Unable to allocate a game server.");
+  }
+  return {
+    roomCode: payload.roomCode,
+    websocketUrl: payload.websocketUrl,
+    playerSessionId: payload.playerSessionId,
+  };
 }
 
 function squadName(squadId: LobbySquadId): string {

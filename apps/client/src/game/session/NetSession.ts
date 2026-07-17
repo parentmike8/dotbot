@@ -1,7 +1,7 @@
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { physicsFloorId } from "@dotbot/game/mapModel";
 import { applyWireDotFrame, assertNever, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
-import type { EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot, WireInputFrame } from "@dotbot/protocol";
+import type { ClientMessage, DeliveryClass, EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot, WireInputFrame } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
   classifyCorrection,
@@ -14,13 +14,19 @@ import {
 import type { GameSession, RunState } from "./GameSession";
 import { snapshotArrivalStats, type NetworkDebugStats } from "./netgraph";
 import { capRemoteRecovery, fastForwardCombatState, sampleTimeline, type TimelineSnapshot } from "./interpolation";
+import type { GameTransport, GameTransportFactory } from "../transport/GameTransport";
+import { createWebSocketGameTransport } from "../transport/WebSocketGameTransport";
 
 export type NetSessionOptions = {
   url: string;
   roomCode: string;
   name: string;
   token: string;
+  playerSessionId?: string;
   preferredSquad?: LobbySquadId;
+  /** Production seam for WebTransport; WebSocket remains the compatibility
+   * default for current and older mobile browsers. */
+  transportFactory?: GameTransportFactory;
   onLobby?: (state: { roomCode: string; members: LobbyMember[]; hostId: string; playerId: string; locked: boolean }) => void;
   onError?: (message: string) => void;
 };
@@ -36,7 +42,7 @@ const teleportSnapDistancePx = 150;
 
 export class NetSession implements GameSession {
   private readonly options: NetSessionOptions;
-  private socket: WebSocket | null = null;
+  private transport: GameTransport | null = null;
   private mapValue: MapDocument | null = null;
   private configValue: GameConfig | null = null;
   private playerIdValue = "";
@@ -116,21 +122,24 @@ export class NetSession implements GameSession {
     this.startPromise = new Promise<void>((resolve, reject) => {
       this.resolveStart = resolve;
       this.rejectStart = reject;
-      const socket = new WebSocket(resolveWebSocketUrl(this.options.url));
-      this.socket = socket;
-      socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({
-          type: "hello",
-          token: this.options.token,
-          name: this.options.name,
-          roomCode: this.options.roomCode.trim().toUpperCase(),
-          preferredSquad: this.options.preferredSquad,
-        }));
-      });
-      socket.addEventListener("message", (event) => this.receive(JSON.parse(String(event.data)) as ServerMessage));
-      socket.addEventListener("error", () => this.failStart("Unable to connect to the game server."));
-      socket.addEventListener("close", () => {
-        if (!this.mapValue) this.failStart("The game server closed the connection.");
+      const transport = (this.options.transportFactory ?? createWebSocketGameTransport)(this.options.url);
+      this.transport = transport;
+      transport.connect({
+        open: () => {
+          this.send({
+            type: "hello",
+            token: this.options.token,
+            name: this.options.name,
+            roomCode: this.options.roomCode.trim().toUpperCase(),
+            preferredSquad: this.options.preferredSquad,
+            playerSessionId: this.options.playerSessionId,
+          });
+        },
+        message: (message) => this.receive(message),
+        error: () => this.failStart("Unable to connect to the game server."),
+        close: () => {
+          if (!this.mapValue) this.failStart("The game server closed the connection.");
+        },
       });
     });
     return this.startPromise;
@@ -184,7 +193,6 @@ export class NetSession implements GameSession {
   update(elapsedMs: number): GameSnapshot | null {
     if (this.snapshots.length === 0) return null;
     this.maybePing();
-    this.advancePrediction(elapsedMs);
     const newest = this.snapshots[this.snapshots.length - 1];
     const estimatedServerTick = this.estimatedServerTick(performance.now()) ?? newest.tick;
     const desiredRenderTick = estimatedServerTick - interpolationDelayMs / (1000 / this.tickHz);
@@ -201,6 +209,11 @@ export class NetSession implements GameSession {
       maxRemoteCorrectionSpeedPxPerSecond,
     );
     this.lastRenderedRemote = remote;
+    // Prediction must collide with the enemy bodies the player can actually
+    // see, not the freshest snapshot hidden 125ms ahead of the render
+    // timeline. Otherwise a dash stops on an invisible leading collider.
+    this.setPredictionObstacles(remote);
+    this.advancePrediction(elapsedMs);
     return this.withPredictedOwnBot(
       fastForwardCombatState(remote, newest.snapshot, this.playerIdValue),
       newest.snapshot,
@@ -231,8 +244,8 @@ export class NetSession implements GameSession {
   }
 
   dispose(): void {
-    this.socket?.close();
-    this.socket = null;
+    this.transport?.close();
+    this.transport = null;
     this.snapshots = [];
     this.events = [];
     this.pendingInputs = [];
@@ -330,8 +343,8 @@ export class NetSession implements GameSession {
     }
   }
 
-  private send(message: import("@dotbot/protocol").ClientMessage): void {
-    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message));
+  private send(message: ClientMessage, delivery: DeliveryClass = "reliable"): void {
+    this.transport?.send(message, delivery);
   }
 
   private advancePrediction(elapsedMs: number): void {
@@ -374,7 +387,11 @@ export class NetSession implements GameSession {
     if (frame.dash || frame.useBay !== undefined || frame.swapBay !== undefined || frame.plea === true) {
       this.edgeAwaitingFlush = true;
     }
-    this.pendingInputs.push({ seq: this.seq, input: frame });
+    this.pendingInputs.push({
+      seq: this.seq,
+      input: frame,
+      viewTick: Number.isFinite(this.lastRenderTick) ? this.lastRenderTick : undefined,
+    });
     if (this.pendingInputs.length > 240) this.pendingInputs.splice(0, this.pendingInputs.length - 240);
   }
 
@@ -389,27 +406,33 @@ export class NetSession implements GameSession {
     if (!newest || !this.mapValue) return;
     if (!this.edgeAwaitingFlush && newest.seq % 2 !== 0) return;
     this.edgeAwaitingFlush = false;
-    const frames: WireInputFrame[] = this.pendingInputs.slice(-4).map(({ seq, input }) => ({
+    const frames: WireInputFrame[] = this.pendingInputs.slice(-4).map(({ seq, input, viewTick }) => ({
       seq,
       move: [input.move.x, input.move.y],
       dash: input.dash,
+      viewTick,
       useBay: input.useBay,
       swapBay: input.swapBay,
       downedVerb: input.downedVerb,
       plea: input.plea,
     }));
     const top = frames[frames.length - 1];
+    const delivery: DeliveryClass = frames.some((frame) =>
+      frame.dash || frame.useBay !== undefined || frame.swapBay !== undefined || frame.plea === true)
+      ? "reliable"
+      : "latest";
     this.send({
       type: "input",
       seq: top.seq,
       move: top.move,
       dash: top.dash,
+      viewTick: top.viewTick,
       useBay: top.useBay,
       swapBay: top.swapBay,
       downedVerb: top.downedVerb,
       plea: top.plea,
       frames,
-    });
+    }, delivery);
   }
 
   private reconcileOwnBot(snapshot: GameSnapshot, ack: number): void {
@@ -422,18 +445,6 @@ export class NetSession implements GameSession {
     }
 
     this.predictionEnabled = authoritative.state === "alive";
-    // The predictor shoulders past the other bots exactly like the server's
-    // separation pass; feed it the freshest authoritative positions.
-    const obstacles = snapshot.bots
-      .filter((bot) => bot.id !== this.playerIdValue && bot.state === "alive" && bot.floorId === authoritative.floorId)
-      .map((bot) => ({
-        position: { ...bot.position },
-        radius: bot.radius,
-        // Hostile-and-vulnerable bodies stop a predicted dash at contact,
-        // exactly like the server's stop-at-contact rule; invulnerable ones
-        // phase through there too.
-        hostile: bot.squadId !== authoritative.squadId && bot.invulnerabilityMs <= 0,
-      }));
     // Mirror the server's stationary-channel rule so looting/reviving does
     // not rubber-band against held movement keys.
     const channelFrozen = snapshot.coverages.some((coverage) =>
@@ -441,12 +452,10 @@ export class NetSession implements GameSession {
         && ["consume", "revive", "reviveClean", "lootThenRevive"].includes(coverage.kind));
     if (!this.predictor) {
       this.predictor = new LitePredictor(this.mapValue, this.configValue, authoritative);
-      this.predictor.setObstacles(obstacles);
       this.predictor.setChannelFrozen(channelFrozen);
       this.pendingInputs = dropAcknowledgedInputs(this.pendingInputs, ack);
       return;
     }
-    this.predictor.setObstacles(obstacles);
     this.predictor.setChannelFrozen(channelFrozen);
 
     const predictedBefore = this.predictor.current;
@@ -484,6 +493,19 @@ export class NetSession implements GameSession {
       this.correctionOffset = { x: 0, y: 0 };
       if (kind === "snap") this.lastOwnRenderedPosition = { ...replay.corrected.position };
     }
+  }
+
+  private setPredictionObstacles(rendered: GameSnapshot): void {
+    if (!this.predictor) return;
+    const own = rendered.bots.find((bot) => bot.id === this.playerIdValue);
+    const floorId = this.predictor.current.floorId;
+    this.predictor.setObstacles(rendered.bots
+      .filter((bot) => bot.id !== this.playerIdValue && bot.state === "alive" && bot.floorId === floorId)
+      .map((bot) => ({
+        position: { ...bot.position },
+        radius: bot.radius,
+        hostile: own !== undefined && bot.squadId !== own.squadId && bot.invulnerabilityMs <= 0,
+      })));
   }
 
   private withPredictedOwnBot(snapshot: GameSnapshot, freshest: GameSnapshot): GameSnapshot {
@@ -606,11 +628,4 @@ export class NetSession implements GameSession {
       });
     }
   }
-}
-
-function resolveWebSocketUrl(value: string): string {
-  if (/^wss?:\/\//.test(value)) return value;
-  const url = new URL(value, window.location.href);
-  url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
 }

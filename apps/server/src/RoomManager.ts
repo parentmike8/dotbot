@@ -14,6 +14,12 @@ export type RoomManagerOptions = {
   aiWingmates?: boolean;
   /** Test/replay hook; production uses random UUID match seeds. */
   matchIdFactory?: () => string;
+  /** Dedicated GameLift processes resolve exactly one externally allocated
+   * room code. Cloud Run leaves this unset and keeps the legacy multi-room
+   * behavior during migration. */
+  sessionRoomCode?: () => Promise<string>;
+  endedRoomTtlMs?: number;
+  onRoomExpired?: () => void | Promise<void>;
 };
 
 export class RoomManager {
@@ -56,11 +62,15 @@ export class RoomManager {
     this.peerRooms.clear();
   }
 
-  createRoom(): Room {
-    let code = "";
-    do {
-      code = Array.from({ length: 4 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
-    } while (this.roomMap.has(code));
+  createRoom(requestedCode?: string): Room {
+    let code = requestedCode?.trim().toUpperCase() ?? "";
+    if (!code) {
+      do {
+        code = Array.from({ length: 4 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
+      } while (this.roomMap.has(code));
+    }
+    const existing = this.roomMap.get(code);
+    if (existing) return existing;
     const room = new Room(code, this.options);
     this.roomMap.set(code, room);
     return room;
@@ -78,7 +88,14 @@ export class RoomManager {
       console.warn(`[persistence] identity lookup failed; accepting stateless WebSocket identity. ${errorMessage(error)}`);
       identity = await new NoopPersistence().resolveOrRegisterPlayer(message.token, message.name);
     }
-    const room = message.roomCode ? this.join(message.roomCode) : this.createRoom();
+    const assignedCode = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : undefined;
+    if (assignedCode && message.roomCode && message.roomCode.trim().toUpperCase() !== assignedCode) {
+      peer.send({ type: "err", code: "room_not_found", msg: "That room is hosted by a different game session." });
+      return;
+    }
+    const room = assignedCode
+      ? this.join(assignedCode) ?? this.createRoom(assignedCode)
+      : message.roomCode ? this.join(message.roomCode) : this.createRoom();
     if (!room) {
       peer.send({ type: "err", code: "room_not_found", msg: "That room does not exist." });
       return;
@@ -117,10 +134,15 @@ export class RoomManager {
       this.tickSamples.push(...room.tick(now));
       if (this.tickSamples.length > 2000) this.tickSamples.splice(0, this.tickSamples.length - 2000);
       const emptyLobbyExpired = room.phase === "lobby" && room.connectedCount === 0 && now - room.createdAt >= 10 * 60_000;
-      const endedExpired = room.phase === "ended" && room.endedAt !== null && now - room.endedAt >= 30_000;
+      const endedExpired = room.phase === "ended" && room.endedAt !== null && now - room.endedAt >= (this.options.endedRoomTtlMs ?? 30_000);
       if (emptyLobbyExpired || endedExpired) {
         room.dispose();
         this.roomMap.delete(code);
+        if (this.options.sessionRoomCode) {
+          Promise.resolve(this.options.onRoomExpired?.()).catch((error) => {
+            console.error(`[gamelift] failed to end expired room process: ${errorMessage(error)}`);
+          });
+        }
       }
     }
   }

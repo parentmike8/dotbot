@@ -1,0 +1,23 @@
+{
+  "name": "@dotbot/matchmaker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.883.0",
+    "@aws-sdk/client-gamelift": "^3.883.0",
+    "@aws-sdk/client-secrets-manager": "^3.883.0",
+    "@aws-sdk/lib-dynamodb": "^3.883.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.152",
+    "@types/node": "^24.10.1",
+    "esbuild": "0.28.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
+  },
+  "scripts": {
+    "build": "esbuild src/handler.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/handler.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  }
+}

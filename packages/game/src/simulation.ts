@@ -1408,32 +1408,45 @@ export class DotBotSimulation {
     return sweep - attacker.radius - victim.radius <= 4;
   }
 
-  /** Hit magnetism range: a connecting dash that ends slightly short of the
-   * victim's present body is pulled in to touching, so an impact never
-   * renders as two bots with daylight between them. Kept small so it can
-   * never read as a lunge across the screen. */
-  private static readonly DASH_CONTACT_PULL_PX = 16;
-
   /**
    * A connecting dash ends at its target: the attack reads as an impact, not
-   * a ghost pass-through. The attacker snaps to just-touching the victim's
-   * PRESENT body — out of an overlap, or inward across a small remaining gap
-   * (the victim never moves here; knockback handles that). The client
-   * predictor mirrors this against its rendered obstacles, so the stop is
-   * felt instantly.
+   * a ghost pass-through. Contact is resolved against the same rewound target
+   * position used by hit validation. Snapping against the victim's newer
+   * present-time body made valid lag-compensated hits stop at a different
+   * place than the attacker had actually seen.
    */
   private stopDashAtContact(attacker: InternalBot, victim: InternalBot): void {
     attacker.dashActiveMs = 0;
-    const offset = subtract(attacker.position, victim.position);
-    const dist = length(offset);
+    const target = this.perceivedTarget(attacker, victim).position;
     const touching = attacker.radius + victim.radius;
-    if (dist - touching > DotBotSimulation.DASH_CONTACT_PULL_PX) {
-      return;
+    const travel = subtract(attacker.position, attacker.prevPosition);
+    const fromTarget = subtract(attacker.prevPosition, target);
+    const travelLengthSquared = travel.x * travel.x + travel.y * travel.y;
+    let contact: Vec2;
+
+    // Earliest segment/circle intersection keeps the attacker on the entry
+    // side of the target instead of allowing a one-tick pass-through and
+    // snapping back from the far side.
+    const b = 2 * (fromTarget.x * travel.x + fromTarget.y * travel.y);
+    const c = fromTarget.x * fromTarget.x + fromTarget.y * fromTarget.y - touching * touching;
+    const discriminant = b * b - 4 * travelLengthSquared * c;
+    if (travelLengthSquared > 0.0001 && discriminant >= 0) {
+      const entry = clamp((-b - Math.sqrt(discriminant)) / (2 * travelLengthSquared), 0, 1);
+      contact = add(attacker.prevPosition, scale(travel, entry));
+    } else {
+      // The hit test permits a four-pixel forgiveness ring. For that narrow
+      // miss, magnetize to the closest point on the swept segment.
+      const projected = travelLengthSquared > 0.0001
+        ? clamp(-(fromTarget.x * travel.x + fromTarget.y * travel.y) / travelLengthSquared, 0, 1)
+        : 0;
+      const nearest = add(attacker.prevPosition, scale(travel, projected));
+      const normal = subtract(nearest, target);
+      const normalLength = length(normal);
+      const direction = normalLength > 0.001 ? scale(normal, 1 / normalLength) : { x: 1, y: 0 };
+      contact = add(target, scale(direction, touching));
     }
-    const direction = dist > 0.001 ? scale(offset, 1 / dist) : { x: 1, y: 0 };
-    const separated = add(victim.position, scale(direction, touching));
     const solids = this.solidRects.get(attacker.floorId) ?? [];
-    this.placeBot(attacker, resolveAgainstSolids(separated, attacker.radius, solids));
+    this.placeBot(attacker, resolveAgainstSolids(contact, attacker.radius, solids));
   }
 
   private resolveCombat(): void {

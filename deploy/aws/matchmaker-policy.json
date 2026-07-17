@@ -1,0 +1,33 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GameSessionTable",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:DeleteItem",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": "arn:aws:dynamodb:us-east-1:380314682423:table/dotbot-game-sessions"
+    },
+    {
+      "Sid": "AllocateGameLiftSessions",
+      "Effect": "Allow",
+      "Action": [
+        "gamelift:CreateGameSession",
+        "gamelift:CreatePlayerSession",
+        "gamelift:DescribeGameSessions",
+        "gamelift:DescribePlayerSessions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadPersistenceRelaySecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:380314682423:secret:dotbot/production/persistence-relay-V5v6wq"
+    }
+  ]
+}

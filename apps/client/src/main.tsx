@@ -1,11 +1,16 @@
 import { createRoot } from "react-dom/client";
-import { App } from "./ui/App";
-import { MapStudio } from "./ui/MapStudio";
-import { BaseApp } from "./ui/base/BaseApp";
 import "./ui/styles.css";
 import { selectClientSurface } from "./routing";
 
-// Development-only map authoring view: /?studio
-const surface = selectClientSurface(window.location.search);
+async function mount(): Promise<void> {
+  const surface = selectClientSurface(window.location.search);
+  const Component = surface === "studio"
+    ? (await import("./ui/MapStudio")).MapStudio
+    : surface === "solo"
+      ? (await import("./ui/App")).App
+      : (await import("./ui/base/BaseApp")).BaseApp;
 
-createRoot(document.getElementById("root")!).render(surface === "studio" ? <MapStudio /> : surface === "solo" ? <App /> : <BaseApp />);
+  createRoot(document.getElementById("root")!).render(<Component />);
+}
+
+void mount();

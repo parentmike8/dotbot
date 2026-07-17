@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Socket } from "node:net";
 import { WebSocketServer } from "ws";
@@ -12,18 +13,63 @@ import { downtownMap } from "@dotbot/game/content/downtown";
 import type { BaseLayout, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import { createPersistence, type Persistence } from "./db";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
+import { GameLiftSessionGate } from "./GameLiftSessionGate";
 
 export type CreateServerOptions = RoomManagerOptions & {
   databaseUrl?: string | null;
   persistence?: Persistence;
+  gameLift?: GameLiftSessionGate;
 };
 
 export async function createServer(options: CreateServerOptions = {}) {
-  const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
+  const tls = loadTlsOptions();
+  const app = Fastify({
+    logger: process.env.NODE_ENV !== "test",
+    ...(tls ? { https: tls } : {}),
+  });
   const persistence = options.persistence ?? await createPersistence(options.databaseUrl);
-  const rooms = new RoomManager({ ...options, persistence });
+  const gameLift = options.gameLift;
+  let draining = false;
+  const rooms = new RoomManager({
+    ...options,
+    persistence,
+    ...(gameLift ? {
+      sessionRoomCode: () => gameLift.roomCode(),
+      endedRoomTtlMs: 5_000,
+      onRoomExpired: () => gameLift.endProcess(),
+    } : {}),
+  });
 
-  app.get("/api/health", async () => ({ rooms: rooms.rooms, tickP99Ms: rooms.tickP99Ms, roomHealth: rooms.roomHealth }));
+  app.get("/api/health", async (_request, reply) => {
+    if (draining) return reply.code(503).send({ draining: true, rooms: rooms.rooms });
+    return { draining: false, rooms: rooms.rooms, tickP99Ms: rooms.tickP99Ms, roomHealth: rooms.roomHealth };
+  });
+
+  app.get("/api/game-config", async () => ({
+    matchmakerUrl: process.env.DOTBOT_MATCHMAKER_URL ?? null,
+  }));
+
+  app.post("/api/gamelift/drain", async (request, reply) => {
+    if (!isLoopback(request.ip)) return reply.code(404).send({ error: "Not found." });
+    draining = true;
+    return reply.code(204).send();
+  });
+
+  const relaySecret = process.env.DOTBOT_RELAY_SECRET;
+  if (relaySecret) {
+    app.post<{ Headers: { "x-dotbot-timestamp"?: string; "x-dotbot-signature"?: string }; Body: unknown }>("/api/internal/game-persistence", async (request, reply) => {
+      const body = JSON.stringify(request.body);
+      if (!validRelaySignature(relaySecret, request.headers["x-dotbot-timestamp"], request.headers["x-dotbot-signature"], body)) {
+        return reply.code(401).send({ error: "Invalid persistence relay signature." });
+      }
+      try {
+        return { result: await dispatchPersistenceRelay(persistence, request.body) };
+      } catch (error) {
+        request.log.warn({ err: error }, "persistence relay operation failed");
+        return reply.code(400).send({ error: errorMessage(error) });
+      }
+    });
+  }
 
   app.post<{ Body: { name?: unknown } }>("/api/auth/register", async (request, reply) => {
     const name = sanitizeName(request.body?.name);
@@ -229,21 +275,58 @@ export async function createServer(options: CreateServerOptions = {}) {
   });
 
   wss.on("connection", (ws) => {
+    if (draining) {
+      ws.close(1013, "Server is draining");
+      return;
+    }
+    let acceptedPlayerSessionId: string | null = null;
     const peer = {
       id: randomUUID(),
-      send(message: ServerMessage) {
+      send(message: ServerMessage, _delivery?: import("@dotbot/protocol").DeliveryClass) {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
       },
     };
     ws.on("message", async (data) => {
+      let message: ClientMessage;
       try {
-        const message = JSON.parse(data.toString()) as ClientMessage;
-        await rooms.handleMessage(peer, message);
+        message = JSON.parse(data.toString()) as ClientMessage;
       } catch {
         peer.send({ type: "err", code: "bad_message", msg: "Message must be valid JSON." });
+        return;
+      }
+      try {
+        if (gameLift && message.type === "hello") {
+          if (acceptedPlayerSessionId) {
+            peer.send({ type: "err", code: "bad_message", msg: "This connection already has a player session." });
+            return;
+          }
+          if (!message.playerSessionId) {
+            peer.send({ type: "err", code: "player_session_required", msg: "A valid GameLift player session is required." });
+            ws.close(1008, "Player session required");
+            return;
+          }
+          try {
+            await gameLift.acceptPlayerSession(message.playerSessionId);
+          } catch {
+            peer.send({ type: "err", code: "player_session_rejected", msg: "GameLift rejected this player session." });
+            ws.close(1008, "Player session rejected");
+            return;
+          }
+          acceptedPlayerSessionId = message.playerSessionId;
+        }
+        await rooms.handleMessage(peer, message);
+      } catch {
+        peer.send({ type: "err", code: "server_unavailable", msg: "The allocated game session is not ready." });
       }
     });
-    ws.on("close", () => rooms.disconnect(peer.id));
+    ws.on("close", () => {
+      rooms.disconnect(peer.id);
+      if (gameLift && acceptedPlayerSessionId) {
+        void gameLift.removePlayerSession(acceptedPlayerSessionId).catch((error) => {
+          app.log.warn({ err: error }, "failed to remove GameLift player session");
+        });
+      }
+    });
   });
 
   app.addHook("onReady", async () => rooms.start());
@@ -254,6 +337,70 @@ export async function createServer(options: CreateServerOptions = {}) {
   });
 
   return { app, rooms, persistence };
+}
+
+function loadTlsOptions(): { key: Buffer; cert: Buffer } | null {
+  const certificatePath = process.env.GAMELIFT_TLS_CERTIFICATE;
+  const chainPath = process.env.GAMELIFT_TLS_CERTIFICATE_CHAIN;
+  const keyPath = process.env.GAMELIFT_TLS_PRIVATE_KEY;
+  const configured = [certificatePath, chainPath, keyPath].filter(Boolean).length;
+  if (configured === 0) return null;
+  if (!certificatePath || !chainPath || !keyPath) {
+    throw new Error("All GameLift TLS certificate paths must be configured together.");
+  }
+  return {
+    key: readFileSync(keyPath),
+    cert: Buffer.concat([readFileSync(certificatePath), Buffer.from("\n"), readFileSync(chainPath)]),
+  };
+}
+
+function isLoopback(ip: string): boolean {
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+}
+
+function validRelaySignature(secret: string, timestamp: string | undefined, signature: string | undefined, body: string): boolean {
+  if (!timestamp || !signature || !/^\d{10,13}$/.test(timestamp) || !/^[a-f0-9]{64}$/i.test(signature)) return false;
+  const timestampMs = timestamp.length === 10 ? Number(timestamp) * 1000 : Number(timestamp);
+  if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > 30_000) return false;
+  const expected = createHmac("sha256", secret).update(`${timestamp}.${body}`).digest();
+  const received = Buffer.from(signature, "hex");
+  return received.length === expected.length && timingSafeEqual(received, expected);
+}
+
+async function dispatchPersistenceRelay(persistence: Persistence, payload: unknown): Promise<unknown> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid relay payload.");
+  const operation = (payload as { operation?: unknown }).operation;
+  const args = (payload as { args?: unknown }).args;
+  if (typeof operation !== "string" || !args || typeof args !== "object" || Array.isArray(args)) {
+    throw new Error("Invalid relay operation.");
+  }
+  const value = args as Record<string, unknown>;
+  switch (operation) {
+    case "resolveOrRegisterPlayer":
+      if (typeof value.token !== "string" || typeof value.offeredName !== "string") throw new Error("Invalid player identity payload.");
+      return persistence.resolveOrRegisterPlayer(value.token, value.offeredName);
+    case "getInsertionPreference":
+      if (typeof value.playerId !== "string") throw new Error("Invalid player id.");
+      return persistence.getInsertionPreference(value.playerId);
+    case "getMatchIntelObjects":
+      if (typeof value.playerId !== "string") throw new Error("Invalid player id.");
+      return persistence.getMatchIntelObjects(value.playerId);
+    case "consumeLoadout":
+      if (typeof value.playerId !== "string") throw new Error("Invalid player id.");
+      return persistence.consumeLoadout(value.playerId);
+    case "startMatch":
+      if (typeof value.matchId !== "string" || typeof value.roomCode !== "string" || typeof value.mapId !== "string" || typeof value.startedAt !== "string") throw new Error("Invalid match start payload.");
+      return persistence.startMatch({ matchId: value.matchId, roomCode: value.roomCode, mapId: value.mapId, startedAt: new Date(value.startedAt) });
+    case "recordExtraction":
+      return persistence.recordExtraction(value as Parameters<Persistence["recordExtraction"]>[0]);
+    case "recordOutcome":
+      return persistence.recordOutcome(value as Parameters<Persistence["recordOutcome"]>[0]);
+    case "finishMatch":
+      if (typeof value.matchId !== "string" || typeof value.endedAt !== "string") throw new Error("Invalid match finish payload.");
+      return persistence.finishMatch({ matchId: value.matchId, endedAt: new Date(value.endedAt), summary: value.summary });
+    default:
+      throw new Error("Persistence relay operation is not allowed.");
+  }
 }
 
 function sanitizeName(value: unknown): string {
