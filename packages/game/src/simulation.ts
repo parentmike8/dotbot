@@ -1,6 +1,6 @@
 import type RAPIER from "@dimforge/rapier2d-compat";
 import { separateCircleFromRect } from "./collision";
-import { integrateWithWalls, resolveAgainstSolids, separationPush } from "./kinematics";
+import { integrateWithWalls, pointSegmentDistance, resolveAgainstSolids, separationPush } from "./kinematics";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import {
@@ -52,10 +52,10 @@ import type {
 const NOISE_TTL_MS = 900;
 const CHANNEL_PING_MS = 700;
 
-/** Combat rewind window: 15 ticks ≈ 250ms covers the client's 125ms
- * interpolation buffer plus a generous half-RTT without letting laggy
- * attackers hit deep into the past. */
-const MAX_REWIND_TICKS = 15;
+/** Combat rewind window: 18 ticks ≈ 300ms covers the client's interpolation
+ * buffer plus a full round trip and the input queue wait, without letting
+ * badly lagged attackers hit deep into the past. */
+const MAX_REWIND_TICKS = 18;
 
 const NOISE_LOUDNESS = {
   dash: 0.8,
@@ -1286,8 +1286,13 @@ export class DotBotSimulation {
     }
   }
 
-  /** Alive bots shoulder past each other at a capped rate instead of trading
-   * solver impulses; downed and consumed bodies are walkable and immovable. */
+  /**
+   * Alive bots shoulder past each other at a capped rate instead of trading
+   * solver impulses; downed and consumed bodies are walkable and immovable.
+   * Responsibility is velocity-gated: the MOVER yields, a standing bot (or a
+   * channel-frozen looter) is an anchor that cannot be shoved. Both moving
+   * splits the overlap evenly.
+   */
   private resolveBotSeparation(dtMs: number): void {
     const maxPushPx = (this.config.botSeparationSpeed * dtMs) / 1000;
     const aliveBots = [...this.bots.values()]
@@ -1301,13 +1306,22 @@ export class DotBotSimulation {
         if (a.floorId !== b.floorId) {
           continue;
         }
-        const pushA = separationPush(a.position, a.radius, b.position, b.radius, maxPushPx);
-        if (pushA.x === 0 && pushA.y === 0) {
+        const aMoving = length(a.velocity) > 5;
+        const bMoving = length(b.velocity) > 5;
+        const yieldA = aMoving === bMoving ? 0.5 : aMoving ? 1 : 0;
+        const yieldB = aMoving === bMoving ? 0.5 : bMoving ? 1 : 0;
+        const pushA = separationPush(a.position, a.radius, b.position, b.radius, maxPushPx, yieldA);
+        const pushB = separationPush(b.position, b.radius, a.position, a.radius, maxPushPx, yieldB);
+        if (pushA.x === 0 && pushA.y === 0 && pushB.x === 0 && pushB.y === 0) {
           continue;
         }
-        const solidsA = this.solidRects.get(a.floorId) ?? [];
-        this.placeBot(a, resolveAgainstSolids(add(a.position, pushA), a.radius, solidsA));
-        this.placeBot(b, resolveAgainstSolids(add(b.position, { x: -pushA.x, y: -pushA.y }), b.radius, solidsA));
+        const solids = this.solidRects.get(a.floorId) ?? [];
+        if (pushA.x !== 0 || pushA.y !== 0) {
+          this.placeBot(a, resolveAgainstSolids(add(a.position, pushA), a.radius, solids));
+        }
+        if (pushB.x !== 0 || pushB.y !== 0) {
+          this.placeBot(b, resolveAgainstSolids(add(b.position, pushB), b.radius, solids));
+        }
       }
     }
   }
@@ -1381,14 +1395,38 @@ export class DotBotSimulation {
   }
 
   /** Contact test for a directed attack, lag-compensated to the attacker's
-   * view of the victim. The attacker's own position is always present-time —
-   * with client prediction it already matches what they see of themselves. */
+   * view of the victim and SWEPT along the attacker's full tick of travel so
+   * a 640px/s dash cannot step across the contact window between samples.
+   * The attacker's own position is always present-time — with client
+   * prediction it already matches what they see of themselves. */
   private attackConnects(attacker: InternalBot, victim: InternalBot): boolean {
     const perceived = this.perceivedTarget(attacker, victim);
     if (perceived.floorId !== attacker.floorId) {
       return false;
     }
-    return distance(attacker.position, perceived.position) - attacker.radius - victim.radius <= 4;
+    const sweep = pointSegmentDistance(perceived.position, attacker.prevPosition, attacker.position);
+    return sweep - attacker.radius - victim.radius <= 4;
+  }
+
+  /**
+   * A connecting dash ends at its target: the attack reads as an impact, not
+   * a ghost pass-through. If the attacker overlaps the victim's PRESENT body
+   * it recoils to just-touching (the victim never moves here — knockback
+   * handles that). The client predictor mirrors this against its rendered
+   * obstacles, so the stop is felt instantly.
+   */
+  private stopDashAtContact(attacker: InternalBot, victim: InternalBot): void {
+    attacker.dashActiveMs = 0;
+    const offset = subtract(attacker.position, victim.position);
+    const dist = length(offset);
+    const touching = attacker.radius + victim.radius;
+    if (dist >= touching) {
+      return;
+    }
+    const direction = dist > 0.001 ? scale(offset, 1 / dist) : { x: 1, y: 0 };
+    const separated = add(victim.position, scale(direction, touching));
+    const solids = this.solidRects.get(attacker.floorId) ?? [];
+    this.placeBot(attacker, resolveAgainstSolids(separated, attacker.radius, solids));
   }
 
   private resolveCombat(): void {
@@ -1413,11 +1451,12 @@ export class DotBotSimulation {
           // Dashes are the attack verb: each direction is tested against the
           // victim as the attacker saw them (lag compensated), so a dash
           // through the enemy on screen lands even though the wire is late.
-          if (aDashing && this.attackConnects(a, b)) {
-            this.damageBot(b, a);
+          // A connecting dash STOPS at its target instead of ghosting on.
+          if (aDashing && this.attackConnects(a, b) && this.damageBot(b, a)) {
+            this.stopDashAtContact(a, b);
           }
-          if (bDashing && this.attackConnects(b, a)) {
-            this.damageBot(a, b);
+          if (bDashing && this.attackConnects(b, a) && this.damageBot(a, b)) {
+            this.stopDashAtContact(b, a);
           }
           continue;
         }
@@ -1443,9 +1482,11 @@ export class DotBotSimulation {
     }
   }
 
-  private damageBot(target: InternalBot, source: InternalBot): void {
+  /** Applies one hit; returns whether damage actually landed (false while
+   * the target is invulnerable or already down). */
+  private damageBot(target: InternalBot, source: InternalBot): boolean {
     if (target.id === source.id || target.state !== "alive" || target.invulnerabilityMs > 0) {
-      return;
+      return false;
     }
 
     // A hit on a live plate shatters it; a hit on bare body cracks the
@@ -1462,13 +1503,14 @@ export class DotBotSimulation {
       target.velocity = zeroVec();
       target.knockbackMs = 0;
       this.events.push({ type: "downed", botId: target.id, byBotId: source.id });
-      return;
+      return true;
     }
 
     // Readable, bounded hit feedback replacing the solver shove.
     const away = { x: -Math.cos(impactAngle), y: -Math.sin(impactAngle) };
     target.knockbackVel = scale(away, this.config.knockbackSpeed);
     target.knockbackMs = this.config.knockbackDurationMs;
+    return true;
   }
 
   private resolveDotCapture(dtMs: number): void {

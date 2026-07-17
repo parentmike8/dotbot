@@ -1,5 +1,5 @@
 import { collectSolidRects } from "@dotbot/game/collision";
-import { integrateWithWalls, resolveAgainstSolids, separationPush } from "@dotbot/game/kinematics";
+import { integrateWithWalls, pointSegmentDistance, resolveAgainstSolids, separationPush } from "@dotbot/game/kinematics";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import type { DotBotEntity, GameConfig, InputCommand, MapDocument, Vec2 } from "@dotbot/game";
 
@@ -8,8 +8,10 @@ export type PredictedOwnBot = Pick<
   "id" | "position" | "radius" | "floorId" | "facing" | "dashCooldownMs" | "dashActiveMs"
 >;
 
-/** Another bot the predicted bot must shoulder past, from the latest snapshot. */
-export type PredictionObstacle = { position: Vec2; radius: number };
+/** Another bot the predicted bot must shoulder past, from the latest
+ * snapshot. Hostile obstacles also stop a predicted dash at contact,
+ * mirroring the server's stop-at-contact rule. */
+export type PredictionObstacle = { position: Vec2; radius: number; hostile: boolean };
 
 const cloneState = (bot: PredictedOwnBot): PredictedOwnBot => ({
   ...bot,
@@ -106,6 +108,7 @@ export class LitePredictor {
     const solids = this.solidsByFloor.get(state.floorId) ?? collectSolidRects(this.map, state.floorId);
     this.solidsByFloor.set(state.floorId, solids);
 
+    const previous = { ...state.position };
     let position = integrateWithWalls(
       state.position,
       { x: direction.x * speed, y: direction.y * speed },
@@ -114,13 +117,43 @@ export class LitePredictor {
       solids,
     );
 
-    // Shoulder past other bots exactly like the server's separation pass;
-    // only this bot yields here (the server moves both halves).
-    const maxPushPx = (this.config.botSeparationSpeed * elapsedMs) / 1000;
-    for (const obstacle of this.obstacles) {
-      const push = separationPush(position, state.radius, obstacle.position, obstacle.radius, maxPushPx);
-      if (push.x !== 0 || push.y !== 0) {
-        position = resolveAgainstSolids({ x: position.x + push.x, y: position.y + push.y }, state.radius, solids);
+    // Mirror the server's stop-at-contact: a dash that sweeps into a hostile
+    // body ends there and recoils to just-touching, so the impact is FELT the
+    // frame it happens instead of a ghost pass-through corrected later.
+    if (state.dashActiveMs > 0) {
+      for (const obstacle of this.obstacles) {
+        if (!obstacle.hostile) continue;
+        const sweep = pointSegmentDistance(obstacle.position, previous, position);
+        if (sweep - state.radius - obstacle.radius > 4) continue;
+        state.dashActiveMs = 0;
+        const dx = position.x - obstacle.position.x;
+        const dy = position.y - obstacle.position.y;
+        const dist = Math.hypot(dx, dy);
+        const touching = state.radius + obstacle.radius;
+        if (dist < touching) {
+          const nx = dist > 0.001 ? dx / dist : 1;
+          const ny = dist > 0.001 ? dy / dist : 0;
+          position = resolveAgainstSolids(
+            { x: obstacle.position.x + nx * touching, y: obstacle.position.y + ny * touching },
+            state.radius,
+            solids,
+          );
+        }
+        break;
+      }
+    }
+
+    // Shoulder past other bots like the server's separation pass. Mirror its
+    // anchor rule: when this bot is not moving it cannot be displaced, and
+    // when it is the mover it yields the full capped push.
+    const moving = this.channelFrozen ? false : state.dashActiveMs > 0 || Math.hypot(move.x, move.y) > 0.05;
+    if (moving) {
+      const maxPushPx = (this.config.botSeparationSpeed * elapsedMs) / 1000;
+      for (const obstacle of this.obstacles) {
+        const push = separationPush(position, state.radius, obstacle.position, obstacle.radius, maxPushPx, 1);
+        if (push.x !== 0 || push.y !== 0) {
+          position = resolveAgainstSolids({ x: position.x + push.x, y: position.y + push.y }, state.radius, solids);
+        }
       }
     }
 

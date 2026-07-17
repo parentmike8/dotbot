@@ -451,7 +451,9 @@ describe("DotBotSimulation", () => {
 
     let sawDash = false;
     let playerWasDowned = false;
-    for (let tick = 0; tick < 90; tick += 1) {
+    // Stop-at-contact makes each dash exactly one hit, so downing a target
+    // through its rear (half-crack) arc takes multiple dash cycles.
+    for (let tick = 0; tick < 240; tick += 1) {
       simulation.step();
       const snapshot = simulation.getSnapshot();
       sawDash ||= snapshot.noises.some((noise) => noise.kind === "dash");
@@ -1185,13 +1187,16 @@ describe("DotBotSimulation", () => {
   });
 
   it("drains downed, revived, and consumed events from a scripted fight", async () => {
+    // The player dashes WESTWARD into the enemy's forward plate (bots face
+    // east by default): one dash, one full shatter, one down — a rear
+    // approach would half-crack and need a second dash cycle.
     const simulation = await makeSimulation([
-      playerSpawn({ position: { x: 100, y: 180 }, bays: testBays(1), hold: [] }),
-      enemySpawn({ position: { x: 156, y: 180 }, maxShields: 1, shields: 1, bays: testBays(2), hold: [] }),
+      playerSpawn({ position: { x: 156, y: 180 }, bays: testBays(1), hold: [] }),
+      enemySpawn({ position: { x: 100, y: 180 }, maxShields: 1, shields: 1, bays: testBays(2), hold: [] }),
     ]);
     simulation.setController("enemy", "frozen");
 
-    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("player", { move: { x: -1, y: 0 }, dash: true });
     for (let tick = 0; tick < 18; tick += 1) {
       simulation.step();
       if (simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state === "downed") {
@@ -1224,7 +1229,6 @@ describe("DotBotSimulation", () => {
     "exercises ambient movement, combat, and stairs without looting through a two-minute neighborhood soak",
     async () => {
       const simulation = await DotBotSimulation.create({ map: downtownMap });
-      const initialActiveDots = simulation.getSnapshot().debug.activeDots;
       const spawnById = new Map(
         downtownMap.botSpawns.map((spawn) => [
           spawn.id,
@@ -1237,13 +1241,21 @@ describe("DotBotSimulation", () => {
       );
       const milestones = {
         movement: false,
-        capture: false,
         combat: false,
         floorChange: false,
       };
+      const ambientById = new Map(downtownMap.botSpawns.map((spawn) => [spawn.id, spawn.isAmbient ?? false]));
+      const ambientCaptors: string[] = [];
 
       for (let tick = 0; tick < 7_200; tick += 1) {
         simulation.step();
+        // Greys are dumb obstacles by design: they must never complete a dot
+        // capture. Non-ambient AI rivals looting is legitimate behavior.
+        for (const event of simulation.drainEvents()) {
+          if (event.type === "dotCaptured" && ambientById.get(event.botId)) {
+            ambientCaptors.push(event.botId);
+          }
+        }
 
         if (tick % 30 === 0) {
           const snapshot = simulation.getSnapshot();
@@ -1251,7 +1263,6 @@ describe("DotBotSimulation", () => {
             const spawn = spawnById.get(bot.id);
             return spawn !== undefined && spawn.controller !== "human" && Math.hypot(bot.position.x - spawn.position.x, bot.position.y - spawn.position.y) > 48;
           });
-          milestones.capture ||= snapshot.debug.activeDots < initialActiveDots;
           milestones.combat ||= snapshot.bots.some((bot) => bot.shields < bot.maxShields || bot.state !== "alive");
           milestones.floorChange ||= snapshot.bots.some((bot) => {
             const spawn = spawnById.get(bot.id);
@@ -1262,9 +1273,9 @@ describe("DotBotSimulation", () => {
 
       const snapshot = simulation.getSnapshot();
       expect(snapshot.timeMs).toBeGreaterThanOrEqual(119_000);
+      expect(ambientCaptors).toEqual([]);
       expect(milestones).toEqual({
         movement: true,
-        capture: false,
         combat: true,
         floorChange: true,
       });
@@ -1432,6 +1443,61 @@ describe("combat lag compensation", () => {
 
   it("without rewind the identical dash whiffs — the regression rewind exists to fix", async () => {
     expect(await crossingDashAtPerceivedPosition(0)).toBe(false);
+  });
+
+  it("a connecting dash stops at its target instead of passing through", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ id: "victim", isAmbient: false, controller: "frozen", squadId: "rival-1", position: { x: 260, y: 180 } }),
+    ]);
+
+    let dashed = false;
+    let crossed = false;
+    for (let tick = 0; tick < 90; tick += 1) {
+      const snapshot = simulation.getSnapshot();
+      const player = snapshot.bots.find((bot) => bot.id === "player")!;
+      const victim = snapshot.bots.find((bot) => bot.id === "victim")!;
+      const dash: boolean = !dashed && victim.position.x - player.position.x < 90;
+      dashed ||= dash;
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash });
+      simulation.step();
+      const after = simulation.getSnapshot();
+      const playerAfter = after.bots.find((bot) => bot.id === "player")!;
+      const victimAfter = after.bots.find((bot) => bot.id === "victim")!;
+      if (playerAfter.position.x > victimAfter.position.x) crossed = true;
+    }
+
+    const finalSnapshot = simulation.getSnapshot();
+    const victim = finalSnapshot.bots.find((bot) => bot.id === "victim")!;
+    expect(victim.shieldSegments.some((plate) => plate < 1)).toBe(true);
+    // The attacker approached from the west and must never end up east of
+    // the body it struck — the dash ends at contact.
+    expect(crossed).toBe(false);
+    simulation.dispose();
+  });
+
+  it("a standing bot is an anchor: pressure from a walker cannot displace it", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 260, y: 180 } }),
+      enemySpawn({ id: "presser", isAmbient: false, controller: "human", squadId: "rival-1", position: { x: 180, y: 180 } }),
+    ]);
+    simulation.setController("presser", "human");
+
+    for (let tick = 0; tick < 180; tick += 1) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
+      simulation.applyInput("presser", { move: { x: 1, y: 0 }, dash: false });
+      simulation.step();
+    }
+
+    const snapshot = simulation.getSnapshot();
+    const anchored = snapshot.bots.find((bot) => bot.id === "player")!;
+    const presser = snapshot.bots.find((bot) => bot.id === "presser")!;
+    expect(Math.hypot(anchored.position.x - 260, anchored.position.y - 180)).toBeLessThan(1);
+    // Firm body: the walker reaches at most a shallow kiss, never a grind-through.
+    const gap = Math.hypot(anchored.position.x - presser.position.x, anchored.position.y - presser.position.y)
+      - anchored.radius - presser.radius;
+    expect(gap).toBeGreaterThan(-4);
+    simulation.dispose();
   });
 
   it("a human coverer outranks an AI squadmate hovering the same body", async () => {

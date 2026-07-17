@@ -40,6 +40,9 @@ type Member = LobbyMember & {
    * high across a whole window; burst padding dips it back down. */
   backlogWindowMinDepth: number;
   backlogWindowTicks: number;
+  /** Smoothed queue depth in ticks — the input latency this server itself
+   * adds, folded into the member's combat rewind. */
+  queueDepthEma: number;
   handoffTimer: ReturnType<typeof setTimeout> | null;
   inRun: boolean;
   streaming: boolean;
@@ -175,6 +178,7 @@ export class Room {
       starveHoldTicks: 0,
       backlogWindowMinDepth: Number.POSITIVE_INFINITY,
       backlogWindowTicks: 0,
+      queueDepthEma: 0,
       handoffTimer: null,
       inRun: false,
       streaming: true,
@@ -248,8 +252,10 @@ export class Room {
       }
       case "ping":
         if (typeof message.viewDelayMs === "number" && member.botId && this.simulation) {
-          const clampedMs = Math.max(0, Math.min(250, message.viewDelayMs));
-          this.simulation.setViewDelayTicks(member.botId, clampedMs / this.tickDurationMs);
+          // Client reports what it sees (render delay + round trip); the
+          // queue wait is latency this server adds, so it joins the rewind.
+          const clampedMs = Math.max(0, Math.min(300, message.viewDelayMs));
+          this.simulation.setViewDelayTicks(member.botId, clampedMs / this.tickDurationMs + member.queueDepthEma);
         }
         member.peer?.send({ type: "pong", cts: message.cts, sts: this.now(), tick: this.latestServerTick });
         return;
@@ -406,6 +412,7 @@ export class Room {
    * frames first), so ordinary burst absorption never costs a correction.
    */
   private trimStandingBacklog(member: Member): void {
+    member.queueDepthEma += (member.inputQueue.length - member.queueDepthEma) * 0.05;
     member.backlogWindowMinDepth = Math.min(member.backlogWindowMinDepth, member.inputQueue.length);
     member.backlogWindowTicks += 1;
     if (member.backlogWindowTicks < 60) {
@@ -509,6 +516,7 @@ export class Room {
       member.starveHoldTicks = 0;
       member.backlogWindowMinDepth = Number.POSITIVE_INFINITY;
       member.backlogWindowTicks = 0;
+      member.queueDepthEma = 0;
       member.inRun = true;
       member.streaming = true;
       member.runOver = null;

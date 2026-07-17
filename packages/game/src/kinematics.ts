@@ -79,9 +79,10 @@ export function resolveAgainstSolids(position: Vec2, radius: number, solids: rea
 }
 
 /**
- * How far ONE side of an overlapping pair yields this tick. Soft and capped:
- * bots shoulder past each other instead of trading solver impulses, and a
- * standing bot can never be bulldozed across the map.
+ * How far ONE side of an overlapping pair yields this tick. Capped, and
+ * weighted by responsibility: the MOVER yields, a standing bot is an anchor
+ * (yieldFraction 0) — bodies feel firm, and nobody gets bulldozed off a loot
+ * channel by an AI shoulder.
  */
 export function separationPush(
   self: Vec2,
@@ -89,18 +90,32 @@ export function separationPush(
   other: Vec2,
   otherRadius: number,
   maxPushPx: number,
+  yieldFraction = 0.5,
 ): Vec2 {
   const dx = self.x - other.x;
   const dy = self.y - other.y;
   const dist = Math.hypot(dx, dy);
   const overlap = selfRadius + otherRadius - dist;
-  if (overlap <= 0) {
+  if (overlap <= 0 || yieldFraction <= 0) {
     return { x: 0, y: 0 };
   }
   // Perfectly stacked centers resolve along a fixed axis so both bots (and
   // the client predictor) agree on the direction deterministically.
   const nx = dist > 0.001 ? dx / dist : 1;
   const ny = dist > 0.001 ? dy / dist : 0;
-  const push = Math.min(overlap / 2, maxPushPx);
+  const push = Math.min(overlap * yieldFraction, maxPushPx);
   return { x: nx * push, y: ny * push };
+}
+
+/** Distance from a point to the segment [a, b]; the swept contact test for a
+ * fast mover is this against the victim's center, minus the radii. */
+export function pointSegmentDistance(point: Vec2, a: Vec2, b: Vec2): number {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const lengthSq = abx * abx + aby * aby;
+  if (lengthSq < 0.000001) {
+    return Math.hypot(point.x - a.x, point.y - a.y);
+  }
+  const t = Math.max(0, Math.min(1, ((point.x - a.x) * abx + (point.y - a.y) * aby) / lengthSq));
+  return Math.hypot(point.x - (a.x + abx * t), point.y - (a.y + aby * t));
 }

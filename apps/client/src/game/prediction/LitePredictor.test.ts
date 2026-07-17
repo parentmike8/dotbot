@@ -82,6 +82,35 @@ describe("LitePredictor", () => {
     expect(positions.at(-1)).toBeCloseTo(predictor.current.position.x, 5);
   });
 
+  it("stops a predicted dash at a hostile body and recoils to touching", () => {
+    const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    predictor.setObstacles([{ position: { x: 1260, y: 850 }, radius: 24, hostile: true }]);
+
+    predictor.step({ ...moveRight, dash: true });
+    for (let tick = 0; tick < 12; tick += 1) {
+      predictor.step(moveRight);
+    }
+
+    const state = predictor.current;
+    expect(state.dashActiveMs).toBe(0);
+    // Never through the body: stopped west of it, at most a hairline overlap.
+    expect(state.position.x).toBeLessThan(1260);
+    const gap = Math.hypot(state.position.x - 1260, state.position.y - 850) - 48;
+    expect(gap).toBeGreaterThanOrEqual(-0.5);
+  });
+
+  it("passes a predicted dash through friendly bodies untouched", () => {
+    const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    predictor.setObstacles([{ position: { x: 1260, y: 850 }, radius: 24, hostile: false }]);
+
+    predictor.step({ ...moveRight, dash: true });
+    for (let tick = 0; tick < 30; tick += 1) {
+      predictor.step(moveRight);
+    }
+
+    expect(predictor.current.position.x).toBeGreaterThan(1260);
+  });
+
   it("drops a dash press considered during cooldown instead of banking it", () => {
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot({ dashCooldownMs: 40 }));
 

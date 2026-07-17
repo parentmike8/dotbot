@@ -407,7 +407,14 @@ export class NetSession implements GameSession {
     // separation pass; feed it the freshest authoritative positions.
     const obstacles = snapshot.bots
       .filter((bot) => bot.id !== this.playerIdValue && bot.state === "alive" && bot.floorId === authoritative.floorId)
-      .map((bot) => ({ position: { ...bot.position }, radius: bot.radius }));
+      .map((bot) => ({
+        position: { ...bot.position },
+        radius: bot.radius,
+        // Hostile-and-vulnerable bodies stop a predicted dash at contact,
+        // exactly like the server's stop-at-contact rule; invulnerable ones
+        // phase through there too.
+        hostile: bot.squadId !== authoritative.squadId && bot.invulnerabilityMs <= 0,
+      }));
     // Mirror the server's stationary-channel rule so looting/reviving does
     // not rubber-band against held movement keys.
     const channelFrozen = snapshot.coverages.some((coverage) =>
@@ -516,8 +523,16 @@ export class NetSession implements GameSession {
     if (now - this.lastPingSentAtMs < 1000) return;
     this.lastPingSentAtMs = now;
     // Report how far in the past this client renders the world so the server
-    // can lag-compensate dash hits to what was actually on screen.
-    const viewDelayMs = interpolationDelayMs + (this.rttMs ?? 100) / 2;
+    // can lag-compensate dash hits to what was actually on screen: the
+    // MEASURED render delay (which can exceed the nominal buffer after
+    // stalls) plus a full round trip — the enemy state on screen aged one
+    // downlink before display, and the reacting input spends one uplink.
+    const tickMs = 1000 / this.tickHz;
+    const estimated = this.estimatedServerTick(now);
+    const renderDelayMs = estimated !== null && Number.isFinite(this.lastRenderTick)
+      ? Math.max(0, (estimated - this.lastRenderTick) * tickMs)
+      : interpolationDelayMs;
+    const viewDelayMs = Math.min(350, renderDelayMs + (this.rttMs ?? 100));
     this.send({ type: "ping", cts: Date.now(), viewDelayMs });
   }
 

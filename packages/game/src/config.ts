@@ -27,7 +27,10 @@ export const defaultGameConfig: GameConfig = {
   dashCooldownMs: 1300,
   damageSpeed: 360,
   /** Alive bots shoulder past each other at most this fast (px/s). */
-  botSeparationSpeed: 150,
+  // Must exceed playerSpeed so a walker cannot grind through a standing
+  // body; the anchor rule (movers yield, stationary bots don't) keeps this
+  // from ever shoving anyone.
+  botSeparationSpeed: 300,
   /** A qualifying hit knocks the target back at this speed, decaying… */
   knockbackSpeed: 320,
   /** …over this window. Bounded feedback replaces solver shoves. */
