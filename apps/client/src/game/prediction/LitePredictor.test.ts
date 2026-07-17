@@ -93,10 +93,13 @@ describe("LitePredictor", () => {
 
     const state = predictor.current;
     expect(state.dashActiveMs).toBe(0);
-    // Never through the body: stopped west of it, at most a hairline overlap.
+    // Never through the body, and magnetized to touching: no daylight.
     expect(state.position.x).toBeLessThan(1260);
     const gap = Math.hypot(state.position.x - 1260, state.position.y - 850) - 48;
     expect(gap).toBeGreaterThanOrEqual(-0.5);
+    expect(gap).toBeLessThanOrEqual(1.5);
+    expect(predictor.consumeDashContact()).not.toBeNull();
+    expect(predictor.consumeDashContact()).toBeNull();
   });
 
   it("passes a predicted dash through friendly bodies untouched", () => {

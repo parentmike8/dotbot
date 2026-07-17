@@ -29,6 +29,9 @@ export interface GameSession {
   giveUp(): void;
   /** Debug instrumentation; optional so NetSession can no-op it. */
   setMeasuredFps?(fps: number): void;
+  /** Predicted dash impacts to flash immediately (network sessions only —
+   * local sessions get authoritative feedback the same frame anyway). */
+  drainPredictedImpacts?(): Array<{ x: number; y: number }>;
   /** Permanent F3 network diagnostics for live sessions. */
   getNetworkDebug?(): NetworkDebugStats;
   dispose(): void;

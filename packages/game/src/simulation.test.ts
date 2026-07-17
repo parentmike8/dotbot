@@ -1453,6 +1453,7 @@ describe("combat lag compensation", () => {
 
     let dashed = false;
     let crossed = false;
+    let gapAtImpact: number | null = null;
     for (let tick = 0; tick < 90; tick += 1) {
       const snapshot = simulation.getSnapshot();
       const player = snapshot.bots.find((bot) => bot.id === "player")!;
@@ -1465,6 +1466,10 @@ describe("combat lag compensation", () => {
       const playerAfter = after.bots.find((bot) => bot.id === "player")!;
       const victimAfter = after.bots.find((bot) => bot.id === "victim")!;
       if (playerAfter.position.x > victimAfter.position.x) crossed = true;
+      if (gapAtImpact === null && victimAfter.shieldSegments.some((plate) => plate < 1)) {
+        gapAtImpact = Math.hypot(playerAfter.position.x - victimAfter.position.x, playerAfter.position.y - victimAfter.position.y)
+          - playerAfter.radius - victimAfter.radius;
+      }
     }
 
     const finalSnapshot = simulation.getSnapshot();
@@ -1473,6 +1478,10 @@ describe("combat lag compensation", () => {
     // The attacker approached from the west and must never end up east of
     // the body it struck — the dash ends at contact.
     expect(crossed).toBe(false);
+    // Hit magnetism: on the impact tick the bodies are TOUCHING — no
+    // daylight, no interpenetration (knockback opens the gap afterwards).
+    expect(gapAtImpact).not.toBeNull();
+    expect(Math.abs(gapAtImpact!)).toBeLessThanOrEqual(0.75);
     simulation.dispose();
   });
 

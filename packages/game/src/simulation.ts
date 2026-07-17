@@ -1408,19 +1408,26 @@ export class DotBotSimulation {
     return sweep - attacker.radius - victim.radius <= 4;
   }
 
+  /** Hit magnetism range: a connecting dash that ends slightly short of the
+   * victim's present body is pulled in to touching, so an impact never
+   * renders as two bots with daylight between them. Kept small so it can
+   * never read as a lunge across the screen. */
+  private static readonly DASH_CONTACT_PULL_PX = 16;
+
   /**
    * A connecting dash ends at its target: the attack reads as an impact, not
-   * a ghost pass-through. If the attacker overlaps the victim's PRESENT body
-   * it recoils to just-touching (the victim never moves here — knockback
-   * handles that). The client predictor mirrors this against its rendered
-   * obstacles, so the stop is felt instantly.
+   * a ghost pass-through. The attacker snaps to just-touching the victim's
+   * PRESENT body — out of an overlap, or inward across a small remaining gap
+   * (the victim never moves here; knockback handles that). The client
+   * predictor mirrors this against its rendered obstacles, so the stop is
+   * felt instantly.
    */
   private stopDashAtContact(attacker: InternalBot, victim: InternalBot): void {
     attacker.dashActiveMs = 0;
     const offset = subtract(attacker.position, victim.position);
     const dist = length(offset);
     const touching = attacker.radius + victim.radius;
-    if (dist >= touching) {
+    if (dist - touching > DotBotSimulation.DASH_CONTACT_PULL_PX) {
       return;
     }
     const direction = dist > 0.001 ? scale(offset, 1 / dist) : { x: 1, y: 0 };

@@ -30,6 +30,9 @@ export class LitePredictor {
   private lastAim: Vec2 = { x: 1, y: 0 };
   private obstacles: PredictionObstacle[] = [];
   private channelFrozen = false;
+  /** Contact point of the most recent predicted dash stop; a side channel
+   * (survives replay resets) so the session can flash impact FX instantly. */
+  private dashContact: Vec2 | null = null;
   private readonly solidsByFloor = new Map<string, ReturnType<typeof collectSolidRects>>();
 
   constructor(
@@ -58,6 +61,13 @@ export class LitePredictor {
    * loot/revive/consume, movement input is ignored (timers still run). */
   setChannelFrozen(frozen: boolean): void {
     this.channelFrozen = frozen;
+  }
+
+  /** One-shot read of the latest predicted dash impact (null when none). */
+  consumeDashContact(): Vec2 | null {
+    const contact = this.dashContact;
+    this.dashContact = null;
+    return contact;
   }
 
   step(input: InputCommand): PredictedOwnBot {
@@ -118,8 +128,9 @@ export class LitePredictor {
     );
 
     // Mirror the server's stop-at-contact: a dash that sweeps into a hostile
-    // body ends there and recoils to just-touching, so the impact is FELT the
-    // frame it happens instead of a ghost pass-through corrected later.
+    // body ends there and snaps to just-touching — out of an overlap or
+    // magnetized inward across a small gap — so the impact is FELT the frame
+    // it happens instead of a ghost pass-through corrected later.
     if (state.dashActiveMs > 0) {
       for (const obstacle of this.obstacles) {
         if (!obstacle.hostile) continue;
@@ -130,7 +141,7 @@ export class LitePredictor {
         const dy = position.y - obstacle.position.y;
         const dist = Math.hypot(dx, dy);
         const touching = state.radius + obstacle.radius;
-        if (dist < touching) {
+        if (dist - touching <= 16) {
           const nx = dist > 0.001 ? dx / dist : 1;
           const ny = dist > 0.001 ? dy / dist : 0;
           position = resolveAgainstSolids(
@@ -139,6 +150,10 @@ export class LitePredictor {
             solids,
           );
         }
+        this.dashContact = {
+          x: (position.x + obstacle.position.x) / 2,
+          y: (position.y + obstacle.position.y) / 2,
+        };
         break;
       }
     }

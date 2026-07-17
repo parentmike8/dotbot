@@ -178,6 +178,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           }
           setEvents((current) => [...current, ...frameEvents]);
         }
+        for (const impact of session.drainPredictedImpacts?.() ?? []) {
+          renderer.queueImpact(impact);
+        }
 
         if (!nextSnapshot) {
           frameRef.current = requestAnimationFrame(loop);

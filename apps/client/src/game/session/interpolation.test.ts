@@ -1,6 +1,6 @@
 import type { DotBotEntity, GameSnapshot } from "@dotbot/game/types";
 import { describe, expect, it } from "vitest";
-import { capRemoteRecovery, sampleTimeline } from "./interpolation";
+import { capRemoteRecovery, fastForwardCombatState, sampleTimeline } from "./interpolation";
 
 function bot(id: string, x: number): DotBotEntity {
   return {
@@ -48,5 +48,25 @@ describe("fixed-delay interpolation", () => {
     const target = snapshot(13, 40);
     const recovered = capRemoteRecovery(previous, target, "own", 16, 1000);
     expect(recovered.bots[0].position.x).toBe(104);
+  });
+
+  it("fast-forwards remote combat state onto delayed positions, never the own bot", () => {
+    const sampled = snapshot(6, 60);
+    sampled.bots.push({ ...bot("own", 500) });
+    const freshest = snapshot(9, 90);
+    freshest.bots[0] = { ...freshest.bots[0], state: "downed", shields: 0, shieldSegments: [0, 0, 0], invulnerabilityMs: 500 };
+    freshest.bots.push({ ...bot("own", 520), shields: 1, shieldSegments: [1, 0, 0] });
+
+    const merged = fastForwardCombatState(sampled, freshest, "own");
+    const remote = merged.bots.find(({ id }) => id === "remote")!;
+    // Plate state and downed/consumed arrive at freshest truth immediately…
+    expect(remote.state).toBe("downed");
+    expect(remote.shieldSegments).toEqual([0, 0, 0]);
+    expect(remote.invulnerabilityMs).toBe(500);
+    // …while the position stays on the smooth delayed timeline.
+    expect(remote.position.x).toBe(60);
+    // The own bot is prediction's job — untouched here.
+    const own = merged.bots.find(({ id }) => id === "own")!;
+    expect(own.shieldSegments).toEqual([1, 1, 1]);
   });
 });

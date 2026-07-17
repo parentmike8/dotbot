@@ -72,6 +72,32 @@ export function capRemoteRecovery(
   };
 }
 
+/**
+ * Overlays the FRESHEST known combat state (downed/consumed, shield plates,
+ * invulnerability) onto the interpolation-delayed remote bots. Positions must
+ * ride the smooth delayed timeline, but plate state is discrete and combat
+ * feedback that arrives a buffer-length late reads as "my hit didn't count" —
+ * a dash stops on the enemy NOW, so their arc must break NOW.
+ */
+export function fastForwardCombatState(sampled: GameSnapshot, freshest: GameSnapshot, ownBotId: string): GameSnapshot {
+  const freshBots = new Map(freshest.bots.map((bot) => [bot.id, bot]));
+  return {
+    ...sampled,
+    bots: sampled.bots.map((bot) => {
+      if (bot.id === ownBotId) return bot;
+      const fresh = freshBots.get(bot.id);
+      if (!fresh) return bot;
+      return {
+        ...bot,
+        state: fresh.state,
+        shields: fresh.shields,
+        shieldSegments: fresh.shieldSegments,
+        invulnerabilityMs: fresh.invulnerabilityMs,
+      };
+    }),
+  };
+}
+
 function interpolateSnapshot(older: GameSnapshot, newer: GameSnapshot, alpha: number, renderTick: number): GameSnapshot {
   const newerBots = new Map(newer.bots.map((bot) => [bot.id, bot]));
   const newerDots = new Map(newer.dots.map((dot) => [dot.id, dot]));

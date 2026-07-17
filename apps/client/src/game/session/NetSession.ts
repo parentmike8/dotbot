@@ -13,7 +13,7 @@ import {
 } from "../prediction/reconciliation";
 import type { GameSession, RunState } from "./GameSession";
 import { snapshotArrivalStats, type NetworkDebugStats } from "./netgraph";
-import { capRemoteRecovery, sampleTimeline, type TimelineSnapshot } from "./interpolation";
+import { capRemoteRecovery, fastForwardCombatState, sampleTimeline, type TimelineSnapshot } from "./interpolation";
 
 export type NetSessionOptions = {
   url: string;
@@ -79,6 +79,7 @@ export class NetSession implements GameSession {
   private serverClockClientMs = 0;
   private lastRenderTick = Number.NEGATIVE_INFINITY;
   private lastRenderedRemote: GameSnapshot | null = null;
+  private lastImpactFxAtMs = Number.NEGATIVE_INFINITY;
 
   constructor(options: NetSessionOptions) {
     this.options = options;
@@ -200,7 +201,25 @@ export class NetSession implements GameSession {
       maxRemoteCorrectionSpeedPxPerSecond,
     );
     this.lastRenderedRemote = remote;
-    return this.withPredictedOwnBot(remote, newest.snapshot);
+    return this.withPredictedOwnBot(
+      fastForwardCombatState(remote, newest.snapshot, this.playerIdValue),
+      newest.snapshot,
+    );
+  }
+
+  /**
+   * Predicted dash impacts since the last drain — the instant flash at the
+   * contact point, played the frame the predicted dash stops rather than a
+   * round trip later. Deduped by time: real contacts cannot repeat inside a
+   * dash cooldown, but reconciliation replays re-step the same frames.
+   */
+  drainPredictedImpacts(): Array<{ x: number; y: number }> {
+    const contact = this.predictor?.consumeDashContact() ?? null;
+    if (!contact) return [];
+    const now = performance.now();
+    if (now - this.lastImpactFxAtMs < 400) return [];
+    this.lastImpactFxAtMs = now;
+    return [contact];
   }
 
   drainEvents(): SimEvent[] {

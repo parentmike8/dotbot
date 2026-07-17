@@ -72,6 +72,7 @@ export class GameRenderer {
   private lastCameraAt = performance.now();
   private readonly pleaSignals = new Map<string, { event: Extract<SimEvent, { type: "plea" }>; startedAt: number }>();
   private readonly mineSignals = new Map<string, { event: Extract<SimEvent, { type: "mineSensor" }>; startedAt: number }>();
+  private readonly impactFlashes: Array<{ position: Vec2; startedAt: number }> = [];
   private readonly draftAnimations = new Map<string, DraftAnimation>();
 
   private constructor(app: Application, map: MapDocument) {
@@ -177,6 +178,12 @@ export class GameRenderer {
     this.pleaSignals.set(event.botId, { event, startedAt: this.lastTimeMs });
   }
 
+  /** Instant impact flash at a predicted dash contact — the hit must be seen
+   * the frame it is felt, a round trip before the authoritative arc breaks. */
+  queueImpact(position: { x: number; y: number }): void {
+    this.impactFlashes.push({ position: { ...position }, startedAt: performance.now() });
+  }
+
   queueMineSensor(event: Extract<SimEvent, { type: "mineSensor" }>): void {
     this.mineSignals.set(event.mineId, { event, startedAt: this.lastTimeMs });
   }
@@ -217,6 +224,7 @@ export class GameRenderer {
       this.drawMineSignals(player);
       this.drawDownedSquadmateArrow(snapshot, player);
     }
+    this.drawImpactFlashes(performance.now());
 
     this.drawStairOverlay(player ?? null);
   }
@@ -619,6 +627,10 @@ export class GameRenderer {
       g.circle(bot.position.x, bot.position.y, 6).stroke({ color: INK.structure, width: 1.2, alpha });
       g.circle(bot.position.x, bot.position.y, 3.5).stroke({ color: INK.structure, width: WEIGHT.hairline, alpha: 0.8 * fade });
     } else {
+      // Hairline hull at the true collision radius: bodies stop where this
+      // line is, so contact renders as contact instead of a 10px air gap
+      // between shield arcs.
+      g.circle(bot.position.x, bot.position.y, bot.radius - 0.5).stroke({ color: INK.structure, width: 1, alpha: 0.22 * fade });
       g.circle(bot.position.x, bot.position.y, coreRadius).fill({ color: INK.structure, alpha: 0.95 * fade });
       g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: INK.structure, width: 2, alpha });
     }
@@ -737,6 +749,33 @@ export class GameRenderer {
       const start = (Math.PI * 2 * i) / dashes;
       const end = start + (Math.PI * 2 * 0.55) / dashes;
       this.drawArcStroke(g, center, radius, start, end, { color: INK.opening, width: 2, alpha });
+    }
+  }
+
+  /** Sharp, short-lived contact burst: a heavy ring snapping outward with a
+   * four-tick star — distinct from the softer server noise ring that follows
+   * a round trip later. */
+  private drawImpactFlashes(nowMs: number): void {
+    const lifeMs = 240;
+    for (let index = this.impactFlashes.length - 1; index >= 0; index -= 1) {
+      const flash = this.impactFlashes[index];
+      const age = nowMs - flash.startedAt;
+      if (age > lifeMs) {
+        this.impactFlashes.splice(index, 1);
+        continue;
+      }
+      const progress = clamp01(age / lifeMs);
+      const alpha = (1 - progress) * 0.95;
+      const radius = 8 + progress * 20;
+      const { x, y } = flash.position;
+      this.dynamicGfx.circle(x, y, radius).stroke({ color: INK.structure, width: 3.5 - progress * 2.5, alpha });
+      const spike = 5 + progress * 7;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        this.dynamicGfx
+          .moveTo(x + dx * radius, y + dy * radius)
+          .lineTo(x + dx * (radius + spike), y + dy * (radius + spike))
+          .stroke({ color: INK.structure, width: 2, alpha });
+      }
     }
   }
 
