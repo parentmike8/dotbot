@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateRoomCode, secureWebSocketUrl } from "./handler";
+import { generateRoomCode, isClosedGameSessionError, isFleetWakingError, isFullGameSessionError, secureWebSocketUrl } from "./handler";
 
 describe("matchmaker endpoint helpers", () => {
   it("generates shareable room codes without ambiguous characters", () => {
@@ -12,5 +12,19 @@ describe("matchmaker endpoint helpers", () => {
     expect(secureWebSocketUrl("abc.ca-central-1.amazongamelift.com", 7001))
       .toBe("wss://abc.ca-central-1.amazongamelift.com:7001/ws");
     expect(() => secureWebSocketUrl("bad/path", 7001)).toThrow("Invalid GameLift endpoint");
+  });
+
+  it("only retries errors that indicate a zero-capacity fleet is waking", () => {
+    expect(isFleetWakingError({ name: "FleetCapacityExceededException" })).toBe(true);
+    expect(isFleetWakingError({ name: "NotReadyException" })).toBe(true);
+    expect(isFleetWakingError({ name: "InternalServiceException" })).toBe(false);
+    expect(isFleetWakingError(new Error("network failure"))).toBe(false);
+  });
+
+  it("maps closed and full sessions to stable client errors", () => {
+    expect(isClosedGameSessionError({ name: "NotFoundException" })).toBe(true);
+    expect(isClosedGameSessionError({ name: "InvalidGameSessionStatusException" })).toBe(true);
+    expect(isFullGameSessionError({ name: "GameSessionFullException" })).toBe(true);
+    expect(isClosedGameSessionError({ name: "InternalServiceException" })).toBe(false);
   });
 });

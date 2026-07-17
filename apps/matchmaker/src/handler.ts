@@ -1,9 +1,10 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   CreateGameSessionCommand,
   CreatePlayerSessionCommand,
   GameLiftClient,
+  TerminateGameSessionCommand,
 } from "@aws-sdk/client-gamelift";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -11,7 +12,7 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda
 
 const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const region = process.env.AWS_REGION ?? "us-east-1";
-const gameLift = new GameLiftClient({ region });
+const gameLift = new GameLiftClient({ region: process.env.GAMELIFT_REGION ?? region });
 const database = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
 const secrets = new SecretsManagerClient({ region });
 let relaySecretPromise: Promise<string> | null = null;
@@ -46,7 +47,10 @@ export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Pr
   } catch (error) {
     const status = error instanceof MatchmakerError ? error.status : 500;
     if (status >= 500) console.error("matchmaker request failed", error);
-    return response(status, { error: error instanceof Error ? error.message : "Matchmaking failed." });
+    return response(status, {
+      error: error instanceof MatchmakerError ? error.message : "Matchmaking is temporarily unavailable.",
+      retryable: error instanceof MatchmakerError && error.retryable,
+    });
   }
 }
 
@@ -75,16 +79,17 @@ async function createRoom(identity: Identity): Promise<ConnectionAllocation> {
   }
   if (!roomCode) throw new MatchmakerError(503, "Unable to allocate a room code.");
 
+  let gameSessionId: string | undefined;
   try {
     const created = await gameLift.send(new CreateGameSessionCommand({
       FleetId: fleetId,
-      Location: process.env.GAME_LOCATION ?? "ca-central-1",
+      Location: process.env.GAME_LOCATION || undefined,
       MaximumPlayerSessionCount: 9,
       Name: `DotBot ${roomCode}`,
       CreatorId: identity.playerId,
       GameProperties: [{ Key: "roomCode", Value: roomCode }],
     }));
-    const gameSessionId = created.GameSession?.GameSessionId;
+    gameSessionId = created.GameSession?.GameSessionId;
     if (!gameSessionId) throw new Error("GameLift returned no game session id.");
     await database.send(new UpdateCommand({
       TableName: tableName,
@@ -93,9 +98,18 @@ async function createRoom(identity: Identity): Promise<ConnectionAllocation> {
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: { ":session": gameSessionId, ":active": "active" },
     }));
-    return allocatePlayer(gameSessionId, roomCode, identity);
+    return await allocatePlayer(gameSessionId, roomCode, identity);
   } catch (error) {
     await database.send(new DeleteCommand({ TableName: tableName, Key: { pk: roomKey(roomCode) } })).catch(() => undefined);
+    if (gameSessionId) {
+      await gameLift.send(new TerminateGameSessionCommand({
+        GameSessionId: gameSessionId,
+        TerminationMode: "TRIGGER_ON_PROCESS_TERMINATE",
+      })).catch((cleanupError) => console.error("failed to terminate orphaned game session", cleanupError));
+    }
+    if (isFleetWakingError(error)) {
+      throw new MatchmakerError(503, "Dedicated game server is waking up. This can take about a minute.", true);
+    }
     throw error;
   }
 }
@@ -106,7 +120,16 @@ async function joinRoom(roomCode: string, identity: Identity): Promise<Connectio
   const room = result.Item as RoomRecord | undefined;
   if (!room || room.expiresAt <= Math.floor(Date.now() / 1000)) throw new MatchmakerError(404, "That room does not exist.");
   if (room.status !== "active" || !room.gameSessionId) throw new MatchmakerError(409, "That room is still starting. Try again in a moment.");
-  return allocatePlayer(room.gameSessionId, roomCode, identity);
+  try {
+    return await allocatePlayer(room.gameSessionId, roomCode, identity);
+  } catch (error) {
+    if (isClosedGameSessionError(error)) {
+      await database.send(new DeleteCommand({ TableName: tableName, Key: { pk: roomKey(roomCode) } })).catch(() => undefined);
+      throw new MatchmakerError(404, "That room is no longer active.");
+    }
+    if (isFullGameSessionError(error)) throw new MatchmakerError(409, "That room is full.");
+    throw error;
+  }
 }
 
 async function allocatePlayer(gameSessionId: string, roomCode: string, identity: Identity): Promise<ConnectionAllocation> {
@@ -145,12 +168,14 @@ async function relayPersistence(operation: string, args: unknown): Promise<unkno
   if (!/^[a-zA-Z]+$/.test(operation)) throw new Error("Invalid relay operation.");
   const body = JSON.stringify({ operation, args });
   const timestamp = Date.now().toString();
-  const signature = createHmac("sha256", await relaySecret()).update(`${timestamp}.${body}`).digest("hex");
+  const requestId = randomUUID();
+  const signature = createHmac("sha256", await relaySecret()).update(`${timestamp}.${requestId}.${body}`).digest("hex");
   const responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/game-persistence`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-dotbot-timestamp": timestamp,
+      "x-dotbot-request-id": requestId,
       "x-dotbot-signature": signature,
     },
     body,
@@ -179,6 +204,25 @@ export function secureWebSocketUrl(host: string, port: number): string {
 export function generateRoomCode(): string {
   const bytes = randomBytes(4);
   return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
+}
+
+export function isFleetWakingError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = "name" in error && typeof error.name === "string" ? error.name : "";
+  return name === "FleetCapacityExceededException" || name === "NotReadyException";
+}
+
+export function isClosedGameSessionError(error: unknown): boolean {
+  const name = awsErrorName(error);
+  return name === "NotFoundException" || name === "InvalidGameSessionStatusException";
+}
+
+export function isFullGameSessionError(error: unknown): boolean {
+  return awsErrorName(error) === "GameSessionFullException";
+}
+
+function awsErrorName(error: unknown): string {
+  return error && typeof error === "object" && "name" in error && typeof error.name === "string" ? error.name : "";
 }
 
 function normalizeRoomCode(value: string | undefined): string {
@@ -211,7 +255,7 @@ function requiredEnv(name: string): string {
 }
 
 class MatchmakerError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(readonly status: number, message: string, readonly retryable = false) { super(message); }
 }
 
 type ConnectionAllocation = {

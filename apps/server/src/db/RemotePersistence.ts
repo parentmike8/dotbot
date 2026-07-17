@@ -55,10 +55,10 @@ export class RemotePersistence implements Persistence {
   }
 
   consumeLoadout(playerId: string): Promise<WireItemCode[]> {
-    return this.invoke("consumeLoadout", { playerId });
+    return this.unsupported(`consumeLoadout:${playerId}`);
   }
 
-  startMatch(input: Parameters<Persistence["startMatch"]>[0]): Promise<void> {
+  startMatch(input: Parameters<Persistence["startMatch"]>[0]): ReturnType<Persistence["startMatch"]> {
     return this.invoke("startMatch", { ...input, startedAt: input.startedAt.toISOString() });
   }
 
@@ -74,20 +74,33 @@ export class RemotePersistence implements Persistence {
     return this.invoke("finishMatch", { ...input, endedAt: input.endedAt.toISOString() });
   }
 
+  claimRelayRequest(_requestId: string, _expiresAt: Date): Promise<boolean> {
+    return this.unsupported("claimRelayRequest");
+  }
+
   async close(): Promise<void> {
     this.lambda.destroy();
   }
 
   private async invoke<T>(operation: string, args: unknown): Promise<T> {
-    const response = await this.lambda.send(new InvokeCommand({
-      FunctionName: this.functionName,
-      InvocationType: "RequestResponse",
-      Payload: Buffer.from(JSON.stringify({ source: "dotbot-game-server", operation, args })),
-    }));
-    if (response.FunctionError || !response.Payload) throw new Error(`Persistence relay failed for ${operation}.`);
-    const payload = JSON.parse(Buffer.from(response.Payload).toString("utf8")) as RelayResponse<T>;
-    if ("error" in payload) throw new Error(payload.error);
-    return payload.result;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const response = await this.lambda.send(new InvokeCommand({
+          FunctionName: this.functionName,
+          InvocationType: "RequestResponse",
+          Payload: Buffer.from(JSON.stringify({ source: "dotbot-game-server", operation, args })),
+        }), { abortSignal: AbortSignal.timeout(7_000) });
+        if (response.FunctionError || !response.Payload) throw new Error(`Persistence relay failed for ${operation}.`);
+        const payload = JSON.parse(Buffer.from(response.Payload).toString("utf8")) as RelayResponse<T>;
+        if ("error" in payload) throw new Error(payload.error);
+        return payload.result;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 150 * 2 ** attempt));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(`Persistence relay failed for ${operation}.`);
   }
 
   private unsupported<T>(operation: string): Promise<T> {

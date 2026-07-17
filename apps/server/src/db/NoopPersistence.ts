@@ -7,7 +7,7 @@ import { contractDayStamp, generateContractOffers } from "@dotbot/game/contracts
 import { downtownMap } from "@dotbot/game/content/downtown";
 
 export class NoopPersistence implements Persistence {
-  readonly live = false;
+  readonly live: boolean = false;
 
   async registerPlayer(name: string): Promise<RegisteredPlayer> {
     const token = randomBytes(16).toString("hex");
@@ -44,12 +44,17 @@ export class NoopPersistence implements Persistence {
   async abandonContract(): Promise<void> {}
   async consumeLoadout(): Promise<WireItemCode[]> { return []; }
 
-  async startMatch(): Promise<void> {}
+  async startMatch(input: Parameters<Persistence["startMatch"]>[0]): ReturnType<Persistence["startMatch"]> {
+    return { loadouts: Object.fromEntries(input.playerIds.map((playerId) => [playerId, []])) };
+  }
   async recordExtraction(input: Parameters<Persistence["recordExtraction"]>[0]): Promise<{ manifest: import("./Persistence").RunManifest }> {
     return { manifest: input.manifest };
   }
   async recordOutcome(_input: Parameters<Persistence["recordOutcome"]>[0]): Promise<void> {}
   async finishMatch(): Promise<void> {}
+  async claimRelayRequest(_requestId: string, _expiresAt: Date): Promise<boolean> {
+    throw new Error("Replay protection requires live persistence.");
+  }
   async close(): Promise<void> {}
 }
 

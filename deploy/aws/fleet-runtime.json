@@ -9,18 +9,8 @@
       "LaunchPath": "/local/game/launch.sh",
       "Parameters": "-port 7001 -adapter-port 17001",
       "ConcurrentExecutions": 1
-    },
-    {
-      "LaunchPath": "/local/game/launch.sh",
-      "Parameters": "-port 7002 -adapter-port 17002",
-      "ConcurrentExecutions": 1
-    },
-    {
-      "LaunchPath": "/local/game/launch.sh",
-      "Parameters": "-port 7003 -adapter-port 17003",
-      "ConcurrentExecutions": 1
     }
   ],
-  "MaxConcurrentGameSessionActivations": 4,
+  "MaxConcurrentGameSessionActivations": 2,
   "GameSessionActivationTimeoutSeconds": 120
 }

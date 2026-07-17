@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/amazon-gamelift/amazon-gamelift-servers-go-server-sdk/v5/model"
+	"github.com/amazon-gamelift/amazon-gamelift-servers-go-server-sdk/v5/model/request"
 	"github.com/amazon-gamelift/amazon-gamelift-servers-go-server-sdk/v5/model/result"
 	"github.com/amazon-gamelift/amazon-gamelift-servers-go-server-sdk/v5/server"
 )
@@ -24,6 +26,7 @@ type gameLiftAPI interface {
 	ActivateGameSession() error
 	AcceptPlayerSession(string) error
 	RemovePlayerSession(string) error
+	DescribePlayerSessions(request.DescribePlayerSessionsRequest) (result.DescribePlayerSessionsResult, error)
 	ProcessEnding() error
 	GetComputeCertificate() (result.GetComputeCertificateResult, error)
 }
@@ -33,7 +36,10 @@ type awsGameLiftAPI struct{}
 func (awsGameLiftAPI) ActivateGameSession() error          { return server.ActivateGameSession() }
 func (awsGameLiftAPI) AcceptPlayerSession(id string) error { return server.AcceptPlayerSession(id) }
 func (awsGameLiftAPI) RemovePlayerSession(id string) error { return server.RemovePlayerSession(id) }
-func (awsGameLiftAPI) ProcessEnding() error                { return server.ProcessEnding() }
+func (awsGameLiftAPI) DescribePlayerSessions(value request.DescribePlayerSessionsRequest) (result.DescribePlayerSessionsResult, error) {
+	return server.DescribePlayerSessions(value)
+}
+func (awsGameLiftAPI) ProcessEnding() error { return server.ProcessEnding() }
 func (awsGameLiftAPI) GetComputeCertificate() (result.GetComputeCertificateResult, error) {
 	return server.GetComputeCertificate()
 }
@@ -85,28 +91,39 @@ func (s *sessionState) snapshot() any {
 	return s.session
 }
 
+func (s *sessionState) gameSessionID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.update != nil {
+		return s.update.GameSession.GameSessionID
+	}
+	return s.session.GameSessionID
+}
+
 type lifecycle struct {
-	api         gameLiftAPI
-	state       *sessionState
-	runtime     *runtimeState
-	httpClient  *http.Client
-	healthURL   string
-	drainURL    string
-	terminating chan struct{}
-	terminate   sync.Once
-	ending      sync.Once
-	endingErr   error
+	api            gameLiftAPI
+	state          *sessionState
+	runtime        *runtimeState
+	httpClient     *http.Client
+	healthURL      string
+	drainURL       string
+	drainStatusURL string
+	terminating    chan struct{}
+	terminate      sync.Once
+	ending         sync.Once
+	endingErr      error
 }
 
 func newLifecycle(api gameLiftAPI, healthURL, drainURL string) *lifecycle {
 	return &lifecycle{
-		api:         api,
-		state:       &sessionState{},
-		runtime:     &runtimeState{},
-		httpClient:  &http.Client{Timeout: time.Second},
-		healthURL:   healthURL,
-		drainURL:    drainURL,
-		terminating: make(chan struct{}),
+		api:            api,
+		state:          &sessionState{},
+		runtime:        &runtimeState{},
+		httpClient:     &http.Client{Timeout: time.Second},
+		healthURL:      healthURL,
+		drainURL:       drainURL,
+		drainStatusURL: drainStatusURL(drainURL),
+		terminating:    make(chan struct{}),
 	}
 }
 
@@ -139,16 +156,62 @@ func (l *lifecycle) onHealthCheck() bool {
 }
 
 func (l *lifecycle) onProcessTerminate() {
-	if l.drainURL != "" {
-		request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, l.drainURL, nil)
-		if err == nil {
-			response, requestErr := l.httpClient.Do(request)
-			if requestErr == nil {
-				response.Body.Close()
+	go l.drainAndTerminate()
+}
+
+func (l *lifecycle) drainAndTerminate() {
+	if l.drainURL == "" || l.drainStatusURL == "" {
+		l.signalTermination()
+		return
+	}
+	requestValue, err := http.NewRequestWithContext(context.Background(), http.MethodPost, l.drainURL, nil)
+	if err != nil {
+		l.signalTermination()
+		return
+	}
+	response, requestErr := l.httpClient.Do(requestValue)
+	if requestErr != nil {
+		log.Printf("game server drain request failed: %v", requestErr)
+		l.signalTermination()
+		return
+	}
+	response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		log.Printf("game server drain request returned status=%d", response.StatusCode)
+		l.signalTermination()
+		return
+	}
+
+	deadline := time.NewTimer(90 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			log.Print("game server drain deadline reached; terminating process")
+			l.signalTermination()
+			return
+		case <-ticker.C:
+			statusRequest, statusErr := http.NewRequestWithContext(context.Background(), http.MethodGet, l.drainStatusURL, nil)
+			if statusErr != nil {
+				continue
+			}
+			statusResponse, statusErr := l.httpClient.Do(statusRequest)
+			if statusErr != nil {
+				continue
+			}
+			var status struct {
+				Safe bool `json:"safe"`
+			}
+			decodeErr := json.NewDecoder(statusResponse.Body).Decode(&status)
+			statusResponse.Body.Close()
+			if decodeErr == nil && statusResponse.StatusCode >= 200 && statusResponse.StatusCode < 300 && status.Safe {
+				l.signalTermination()
+				return
 			}
 		}
 	}
-	l.signalTermination()
 }
 
 func (l *lifecycle) signalTermination() {
@@ -187,7 +250,7 @@ func (l *lifecycle) handler() http.Handler {
 			"computeName":     computeName,
 		})
 	})
-	mux.HandleFunc("POST /v1/player-sessions/accept", l.playerSessionHandler(l.api.AcceptPlayerSession))
+	mux.HandleFunc("POST /v1/player-sessions/accept", l.acceptPlayerSessionHandler)
 	mux.HandleFunc("POST /v1/player-sessions/remove", l.playerSessionHandler(l.api.RemovePlayerSession))
 	mux.HandleFunc("POST /v1/process/end", func(response http.ResponseWriter, _ *http.Request) {
 		if err := l.endProcess(); err != nil {
@@ -206,20 +269,54 @@ func (l *lifecycle) handler() http.Handler {
 	return mux
 }
 
+func (l *lifecycle) acceptPlayerSessionHandler(response http.ResponseWriter, requestValue *http.Request) {
+	playerSessionID, ok := decodePlayerSessionRequest(response, requestValue)
+	if !ok {
+		return
+	}
+	describeRequest := request.NewDescribePlayerSessions()
+	describeRequest.PlayerSessionID = playerSessionID
+	described, err := l.api.DescribePlayerSessions(describeRequest)
+	if err != nil || len(described.PlayerSessions) != 1 {
+		http.Error(response, "player session rejected", http.StatusUnauthorized)
+		return
+	}
+	playerSession := described.PlayerSessions[0]
+	if playerSession.PlayerSessionID != playerSessionID || playerSession.GameSessionID != l.state.gameSessionID() ||
+		playerSession.PlayerID == "" || playerSession.Status == nil || playerSession.GetStatus() != model.PlayerReserved {
+		http.Error(response, "player session rejected", http.StatusUnauthorized)
+		return
+	}
+	if err := l.api.AcceptPlayerSession(playerSessionID); err != nil {
+		http.Error(response, "player session rejected", http.StatusUnauthorized)
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(response).Encode(map[string]string{"playerId": playerSession.PlayerID})
+}
+
 func (l *lifecycle) playerSessionHandler(action func(string) error) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		request.Body = http.MaxBytesReader(response, request.Body, 4096)
-		var payload playerSessionRequest
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || strings.TrimSpace(payload.PlayerSessionID) == "" {
-			http.Error(response, "playerSessionId is required", http.StatusBadRequest)
+	return func(response http.ResponseWriter, requestValue *http.Request) {
+		playerSessionID, ok := decodePlayerSessionRequest(response, requestValue)
+		if !ok {
 			return
 		}
-		if err := action(payload.PlayerSessionID); err != nil {
+		if err := action(playerSessionID); err != nil {
 			http.Error(response, "player session rejected", http.StatusUnauthorized)
 			return
 		}
 		response.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func decodePlayerSessionRequest(response http.ResponseWriter, requestValue *http.Request) (string, bool) {
+	requestValue.Body = http.MaxBytesReader(response, requestValue.Body, 4096)
+	var payload playerSessionRequest
+	if err := json.NewDecoder(requestValue.Body).Decode(&payload); err != nil || strings.TrimSpace(payload.PlayerSessionID) == "" || len(payload.PlayerSessionID) > 2048 {
+		http.Error(response, "playerSessionId is required", http.StatusBadRequest)
+		return "", false
+	}
+	return strings.TrimSpace(payload.PlayerSessionID), true
 }
 
 func waitForHealthy(ctx context.Context, client *http.Client, healthURL string) error {
@@ -266,7 +363,7 @@ func run() error {
 		return err
 	}
 	healthURL := envOr("GAME_HEALTH_URL", fmt.Sprintf("http://127.0.0.1:%d/api/health", gamePort))
-	drainURL := os.Getenv("GAME_DRAIN_URL")
+	drainURL := envOr("GAME_DRAIN_URL", fmt.Sprintf("http://127.0.0.1:%d/api/gamelift/drain", gamePort))
 
 	api := awsGameLiftAPI{}
 	process := newLifecycle(api, healthURL, drainURL)
@@ -298,11 +395,20 @@ func run() error {
 		log.Printf("GameLift TLS certificate unavailable; continuing with configured health endpoint: %v", certificateErr)
 	} else {
 		process.runtime.set(certificate)
-		if os.Getenv("GAME_HEALTH_URL") == "" && requireTLS {
-			process.healthURL = fmt.Sprintf("https://%s:%d/api/health", certificate.ComputeName, gamePort)
-		}
-		if os.Getenv("GAME_DRAIN_URL") == "" && requireTLS {
-			process.drainURL = fmt.Sprintf("https://%s:%d/api/gamelift/drain", certificate.ComputeName, gamePort)
+		if requireTLS {
+			// The Node process exposes TLS only. Keep lifecycle traffic on loopback,
+			// while verifying the generated certificate against its GameLift DNS name.
+			process.httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				ServerName: certificate.ComputeName,
+			}}
+			if os.Getenv("GAME_HEALTH_URL") == "" {
+				process.healthURL = fmt.Sprintf("https://127.0.0.1:%d/api/health", gamePort)
+			}
+			if os.Getenv("GAME_DRAIN_URL") == "" {
+				process.drainURL = fmt.Sprintf("https://127.0.0.1:%d/api/gamelift/drain", gamePort)
+				process.drainStatusURL = drainStatusURL(process.drainURL)
+			}
 		}
 	}
 	healthContext, cancelHealth := context.WithTimeout(context.Background(), 30*time.Second)
@@ -343,6 +449,13 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func drainStatusURL(drainURL string) string {
+	if drainURL == "" {
+		return ""
+	}
+	return strings.TrimSuffix(drainURL, "/drain") + "/drain-status"
 }
 
 func main() {

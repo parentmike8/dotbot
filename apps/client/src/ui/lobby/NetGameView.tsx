@@ -11,9 +11,10 @@ type NetGameViewProps = {
   roomCode: string;
   onReturnToLobby: () => void;
   returnLabel?: string;
+  connectionMessage?: string;
 };
 
-export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "RETURN TO LOBBY" }: NetGameViewProps) {
+export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "RETURN TO LOBBY", connectionMessage = "" }: NetGameViewProps) {
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug,
     legendVisible, toggleLegend, joystick, joystickHandlers, queueDash, cycleSpectator, giveUp, selectDownedVerb, plea,
@@ -49,6 +50,12 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   return (
     <main className="app-shell net-game" data-room-code={roomCode} data-player-id={session.playerId}>
       <div ref={hostRef} className="game-canvas" />
+      {connectionMessage ? (
+        <aside className="net-game-connection" role="status" aria-live="polite">
+          <strong>{connectionMessage}</strong>
+          <button type="button" onClick={onReturnToLobby}>{returnLabel}</button>
+        </aside>
+      ) : null}
       <aside className="net-game-status" aria-label="Network game status">
         <span>Room {roomCode}</span>
         <strong>{player?.name ?? "Connecting"}</strong>

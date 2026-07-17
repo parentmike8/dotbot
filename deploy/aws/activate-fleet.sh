@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-region="us-east-1"
-home_location="us-east-1"
-game_location="ca-central-1"
-instance_type="c7i.xlarge"
-build_id="${BUILD_ID:-build-074d7f29-6003-457a-91b4-71f5042c9727}"
+region="ca-central-1"
+control_plane_region="us-east-1"
+instance_type="c7g.large"
+build_id="${BUILD_ID:-}"
 profile_args=()
 if [[ -n "${AWS_PROFILE:-}" ]]; then profile_args=(--profile "$AWS_PROFILE"); fi
+
+if [[ ! "$build_id" =~ ^build-[0-9a-f-]+$ ]]; then
+  echo "Set BUILD_ID to the READY Canada ARM64 GameLift build to activate." >&2
+  exit 64
+fi
 
 if [[ "${CONFIRM_PAID_ACTIVATION:-}" != "dotbot-one-instance" ]]; then
   echo "Set CONFIRM_PAID_ACTIVATION=dotbot-one-instance to cross the paid fleet boundary." >&2
@@ -20,15 +24,13 @@ if [[ "$account_id" != "380314682423" ]]; then
   exit 1
 fi
 
-for location in "$home_location" "$game_location"; do
-  quota=$(aws gamelift describe-ec2-instance-limits "${profile_args[@]}" \
-    --region "$region" --ec2-instance-type "$instance_type" --location "$location" \
-    --query 'EC2InstanceLimits[0].InstanceLimit' --output text)
-  if ((quota < 1)); then
-    echo "GameLift $instance_type quota is still $quota in $location; no fleet was created." >&2
-    exit 1
-  fi
-done
+quota=$(aws gamelift describe-ec2-instance-limits "${profile_args[@]}" \
+  --region "$region" --ec2-instance-type "$instance_type" \
+  --query 'EC2InstanceLimits[0].InstanceLimit' --output text)
+if ((quota < 1)); then
+  echo "GameLift $instance_type quota is still $quota in $region; no fleet was created." >&2
+  exit 1
+fi
 
 build_status=$(aws gamelift describe-build "${profile_args[@]}" --region "$region" \
   --build-id "$build_id" --query 'Build.Status' --output text)
@@ -50,7 +52,7 @@ fleet_id=$(aws gamelift create-fleet "${profile_args[@]}" \
   --description "DotBot production authoritative realtime fleet" \
   --build-id "$build_id" \
   --ec2-instance-type "$instance_type" \
-  --ec2-inbound-permissions FromPort=7000,ToPort=7003,IpRange=0.0.0.0/0,Protocol=TCP \
+  --ec2-inbound-permissions FromPort=7000,ToPort=7001,IpRange=0.0.0.0/0,Protocol=TCP \
   --new-game-session-protection-policy FullProtection \
   --runtime-configuration file://deploy/aws/fleet-runtime.json \
   --resource-creation-limit-policy NewGameSessionsPerCreator=2,PolicyPeriodInMinutes=1 \
@@ -58,23 +60,21 @@ fleet_id=$(aws gamelift create-fleet "${profile_args[@]}" \
   --instance-role-arn arn:aws:iam::380314682423:role/DotBotGameLiftFleetRole \
   --instance-role-credentials-provider SHARED_CREDENTIAL_FILE \
   --certificate-configuration CertificateType=GENERATED \
-  --locations Location="$game_location" \
   --log-paths /local/game/logs \
   --metric-groups DotBotProduction \
   --tags Key=Project,Value=DotBot Key=Environment,Value=production \
   --query 'FleetAttributes.FleetId' --output text)
 
-echo "Created $fleet_id; AWS temporarily starts one instance in each location during activation."
+echo "Created $fleet_id; AWS temporarily starts one instance while activating the fleet."
 aws gamelift wait fleet-active "${profile_args[@]}" --region "$region" --fleet-ids "$fleet_id"
 
-# The home/control region never serves players. Scale it to zero immediately,
-# then enforce the one-instance Canada ceiling.
+# Enforce a hard one-instance ceiling. Managed capacity can scale an idle fleet
+# to zero and wake one instance when a new game session is requested.
 aws gamelift update-fleet-capacity "${profile_args[@]}" --region "$region" \
-  --fleet-id "$fleet_id" --location "$home_location" --desired-instances 0 --min-size 0 --max-size 0 >/dev/null
-aws gamelift update-fleet-capacity "${profile_args[@]}" --region "$region" \
-  --fleet-id "$fleet_id" --location "$game_location" --desired-instances 1 --min-size 0 --max-size 1 >/dev/null
+  --fleet-id "$fleet_id" --desired-instances 1 --max-size 1 \
+  --managed-capacity-configuration ScaleInAfterInactivityMinutes=30,ZeroCapacityStrategy=SCALE_TO_AND_FROM_ZERO >/dev/null
 
-aws cloudformation update-stack "${profile_args[@]}" --region "$region" \
+aws cloudformation update-stack "${profile_args[@]}" --region "$control_plane_region" \
   --stack-name dotbot-production-control-plane \
   --use-previous-template \
   --role-arn arn:aws:iam::380314682423:role/DotBotCloudFormationExecutionRole \
@@ -82,7 +82,7 @@ aws cloudformation update-stack "${profile_args[@]}" --region "$region" \
     ParameterKey=FleetId,ParameterValue="$fleet_id" \
     ParameterKey=ControlPlaneUrl,UsePreviousValue=true \
     ParameterKey=RelaySecretArn,UsePreviousValue=true >/dev/null
-aws cloudformation wait stack-update-complete "${profile_args[@]}" --region "$region" \
+aws cloudformation wait stack-update-complete "${profile_args[@]}" --region "$control_plane_region" \
   --stack-name dotbot-production-control-plane
 
-echo "Fleet $fleet_id is active: us-east-1 max=0, ca-central-1 max=1. Gameplay cutover is still OFF."
+echo "Fleet $fleet_id is active in ca-central-1 on c7g.large: max=1 with idle scale-to-zero. Gameplay cutover is still OFF."

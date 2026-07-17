@@ -5,12 +5,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Socket } from "node:net";
 import { WebSocketServer } from "ws";
-import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
-import type { WireItemCode } from "@dotbot/protocol";
+import { itemFromCode, type ClientMessage, type ServerMessage, type WireItemCode } from "@dotbot/protocol";
 import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
-import type { BaseLayout, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
+import type { BaseLayout, Item, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import { createPersistence, type Persistence } from "./db";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
 import { GameLiftSessionGate } from "./GameLiftSessionGate";
@@ -19,6 +18,7 @@ export type CreateServerOptions = RoomManagerOptions & {
   databaseUrl?: string | null;
   persistence?: Persistence;
   gameLift?: GameLiftSessionGate;
+  playerSessionReconnectMs?: number;
 };
 
 export async function createServer(options: CreateServerOptions = {}) {
@@ -29,10 +29,17 @@ export async function createServer(options: CreateServerOptions = {}) {
   });
   const persistence = options.persistence ?? await createPersistence(options.databaseUrl);
   const gameLift = options.gameLift;
+  const playerSessionReconnectMs = options.playerSessionReconnectMs ?? 20_000;
+  const activePlayerSessions = new Map<string, {
+    playerId: string;
+    peerId: string | null;
+    removalTimer: ReturnType<typeof setTimeout> | null;
+  }>();
   let draining = false;
   const rooms = new RoomManager({
     ...options,
     persistence,
+    connectionHandoffMs: playerSessionReconnectMs,
     ...(gameLift ? {
       sessionRoomCode: () => gameLift.roomCode(),
       endedRoomTtlMs: 5_000,
@@ -55,18 +62,28 @@ export async function createServer(options: CreateServerOptions = {}) {
     return reply.code(204).send();
   });
 
+  app.get("/api/gamelift/drain-status", async (request, reply) => {
+    if (!isLoopback(request.ip)) return reply.code(404).send({ error: "Not found." });
+    return { safe: rooms.safeToTerminate };
+  });
+
   const relaySecret = process.env.DOTBOT_RELAY_SECRET;
   if (relaySecret) {
-    app.post<{ Headers: { "x-dotbot-timestamp"?: string; "x-dotbot-signature"?: string }; Body: unknown }>("/api/internal/game-persistence", async (request, reply) => {
+    app.post<{ Headers: { "x-dotbot-timestamp"?: string; "x-dotbot-request-id"?: string; "x-dotbot-signature"?: string }; Body: unknown }>("/api/internal/game-persistence", async (request, reply) => {
       const body = JSON.stringify(request.body);
-      if (!validRelaySignature(relaySecret, request.headers["x-dotbot-timestamp"], request.headers["x-dotbot-signature"], body)) {
+      const requestId = request.headers["x-dotbot-request-id"];
+      if (!validRelaySignature(relaySecret, request.headers["x-dotbot-timestamp"], requestId, request.headers["x-dotbot-signature"], body)) {
         return reply.code(401).send({ error: "Invalid persistence relay signature." });
       }
       try {
+        const claimed = await persistence.claimRelayRequest(requestId!, new Date(Date.now() + 5 * 60_000));
+        if (!claimed) return reply.code(409).send({ error: "Persistence relay request was already processed." });
         return { result: await dispatchPersistenceRelay(persistence, request.body) };
       } catch (error) {
         request.log.warn({ err: error }, "persistence relay operation failed");
-        return reply.code(400).send({ error: errorMessage(error) });
+        return reply.code(error instanceof RelayPayloadError ? 400 : 503).send({
+          error: error instanceof RelayPayloadError ? error.message : "Authoritative persistence is temporarily unavailable.",
+        });
       }
     });
   }
@@ -264,6 +281,24 @@ export async function createServer(options: CreateServerOptions = {}) {
     perMessageDeflate: { threshold: 512 },
   });
 
+  const removePlayerSession = async (playerSessionId: string, peerId: string, immediate: boolean): Promise<void> => {
+    if (!gameLift) return;
+    const entry = activePlayerSessions.get(playerSessionId);
+    if (!entry || entry.peerId !== peerId) return;
+    entry.peerId = null;
+    if (entry.removalTimer) clearTimeout(entry.removalTimer);
+    const remove = async () => {
+      const current = activePlayerSessions.get(playerSessionId);
+      if (!current || current.peerId !== null) return;
+      activePlayerSessions.delete(playerSessionId);
+      await gameLift.removePlayerSession(playerSessionId).catch((error) => {
+        app.log.warn({ err: error }, "failed to remove GameLift player session");
+      });
+    };
+    if (immediate) await remove();
+    else entry.removalTimer = setTimeout(() => void remove(), playerSessionReconnectMs);
+  };
+
   app.server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (url.pathname !== "/ws") {
@@ -306,13 +341,43 @@ export async function createServer(options: CreateServerOptions = {}) {
             return;
           }
           try {
-            await gameLift.acceptPlayerSession(message.playerSessionId);
+            const playerSessionId = message.playerSessionId.trim();
+            let session = activePlayerSessions.get(playerSessionId);
+            if (session?.peerId) {
+              peer.send({ type: "err", code: "player_session_in_use", msg: "This player session is already connected." });
+              ws.close(1008, "Player session already connected");
+              return;
+            }
+            if (session?.removalTimer) {
+              clearTimeout(session.removalTimer);
+              session.removalTimer = null;
+            }
+            if (!session) {
+              session = {
+                playerId: await gameLift.acceptPlayerSession(playerSessionId),
+                peerId: null,
+                removalTimer: null,
+              };
+              activePlayerSessions.set(playerSessionId, session);
+            }
+            session.peerId = peer.id;
+            acceptedPlayerSessionId = playerSessionId;
+            const joined = await rooms.handleMessage(peer, message, session.playerId);
+            if (!joined) {
+              await removePlayerSession(playerSessionId, peer.id, true);
+              acceptedPlayerSessionId = null;
+              ws.close(1008, "Player identity rejected");
+            }
+            return;
           } catch {
+            if (acceptedPlayerSessionId) {
+              await removePlayerSession(acceptedPlayerSessionId, peer.id, true);
+              acceptedPlayerSessionId = null;
+            }
             peer.send({ type: "err", code: "player_session_rejected", msg: "GameLift rejected this player session." });
             ws.close(1008, "Player session rejected");
             return;
           }
-          acceptedPlayerSessionId = message.playerSessionId;
         }
         await rooms.handleMessage(peer, message);
       } catch {
@@ -322,17 +387,21 @@ export async function createServer(options: CreateServerOptions = {}) {
     ws.on("close", () => {
       rooms.disconnect(peer.id);
       if (gameLift && acceptedPlayerSessionId) {
-        void gameLift.removePlayerSession(acceptedPlayerSessionId).catch((error) => {
-          app.log.warn({ err: error }, "failed to remove GameLift player session");
-        });
+        void removePlayerSession(acceptedPlayerSessionId, peer.id, false);
       }
     });
   });
 
   app.addHook("onReady", async () => rooms.start());
   app.addHook("onClose", async () => {
-    rooms.stop();
+    await rooms.stop();
     await new Promise<void>((resolve) => wss.close(() => resolve()));
+    if (gameLift) {
+      const sessions = [...activePlayerSessions.keys()];
+      for (const entry of activePlayerSessions.values()) if (entry.removalTimer) clearTimeout(entry.removalTimer);
+      activePlayerSessions.clear();
+      await Promise.allSettled(sessions.map((playerSessionId) => gameLift.removePlayerSession(playerSessionId)));
+    }
     await persistence.close();
   });
 
@@ -358,50 +427,157 @@ function isLoopback(ip: string): boolean {
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }
 
-function validRelaySignature(secret: string, timestamp: string | undefined, signature: string | undefined, body: string): boolean {
-  if (!timestamp || !signature || !/^\d{10,13}$/.test(timestamp) || !/^[a-f0-9]{64}$/i.test(signature)) return false;
+function validRelaySignature(secret: string, timestamp: string | undefined, requestId: string | undefined, signature: string | undefined, body: string): boolean {
+  if (!timestamp || !isUuid(requestId) || !signature || !/^\d{10,13}$/.test(timestamp) || !/^[a-f0-9]{64}$/i.test(signature)) return false;
   const timestampMs = timestamp.length === 10 ? Number(timestamp) * 1000 : Number(timestamp);
   if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > 30_000) return false;
-  const expected = createHmac("sha256", secret).update(`${timestamp}.${body}`).digest();
+  const expected = createHmac("sha256", secret).update(`${timestamp}.${requestId}.${body}`).digest();
   const received = Buffer.from(signature, "hex");
   return received.length === expected.length && timingSafeEqual(received, expected);
 }
 
 async function dispatchPersistenceRelay(persistence: Persistence, payload: unknown): Promise<unknown> {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid relay payload.");
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new RelayPayloadError("Invalid relay payload.");
   const operation = (payload as { operation?: unknown }).operation;
   const args = (payload as { args?: unknown }).args;
   if (typeof operation !== "string" || !args || typeof args !== "object" || Array.isArray(args)) {
-    throw new Error("Invalid relay operation.");
+    throw new RelayPayloadError("Invalid relay operation.");
   }
   const value = args as Record<string, unknown>;
   switch (operation) {
-    case "resolveOrRegisterPlayer":
-      if (typeof value.token !== "string" || typeof value.offeredName !== "string") throw new Error("Invalid player identity payload.");
-      return persistence.resolveOrRegisterPlayer(value.token, value.offeredName);
+    case "resolveOrRegisterPlayer": {
+      const name = sanitizeName(value.offeredName);
+      if (typeof value.token !== "string" || value.token.length < 16 || value.token.length > 512 || !name) {
+        throw new RelayPayloadError("Invalid player identity payload.");
+      }
+      return persistence.resolveOrRegisterPlayer(value.token, name);
+    }
     case "getInsertionPreference":
-      if (typeof value.playerId !== "string") throw new Error("Invalid player id.");
+      if (!isUuid(value.playerId)) throw new RelayPayloadError("Invalid player id.");
       return persistence.getInsertionPreference(value.playerId);
     case "getMatchIntelObjects":
-      if (typeof value.playerId !== "string") throw new Error("Invalid player id.");
+      if (!isUuid(value.playerId)) throw new RelayPayloadError("Invalid player id.");
       return persistence.getMatchIntelObjects(value.playerId);
-    case "consumeLoadout":
-      if (typeof value.playerId !== "string") throw new Error("Invalid player id.");
-      return persistence.consumeLoadout(value.playerId);
-    case "startMatch":
-      if (typeof value.matchId !== "string" || typeof value.roomCode !== "string" || typeof value.mapId !== "string" || typeof value.startedAt !== "string") throw new Error("Invalid match start payload.");
-      return persistence.startMatch({ matchId: value.matchId, roomCode: value.roomCode, mapId: value.mapId, startedAt: new Date(value.startedAt) });
-    case "recordExtraction":
-      return persistence.recordExtraction(value as Parameters<Persistence["recordExtraction"]>[0]);
+    case "startMatch": {
+      const startedAt = parseRelayDate(value.startedAt);
+      const playerIds = parsePlayerIds(value.playerIds);
+      if (!isUuid(value.matchId) || typeof value.roomCode !== "string" || !/^[A-HJ-NP-Z2-9]{4}$/.test(value.roomCode)
+        || value.mapId !== downtownMap.id || !startedAt || !playerIds) {
+        throw new RelayPayloadError("Invalid match start payload.");
+      }
+      return persistence.startMatch({ matchId: value.matchId, roomCode: value.roomCode, mapId: value.mapId, startedAt, playerIds });
+    }
+    case "recordExtraction": {
+      const manifest = parseRunManifest(value.manifest);
+      if (!isUuid(value.matchId) || !isUuid(value.playerId) || !manifest || manifest.reason !== "extracted"
+        || !Number.isInteger(value.blueprintLearningThreshold) || Number(value.blueprintLearningThreshold) < 1 || Number(value.blueprintLearningThreshold) > 100) {
+        throw new RelayPayloadError("Invalid extraction payload.");
+      }
+      return persistence.recordExtraction({
+        matchId: value.matchId,
+        playerId: value.playerId,
+        manifest,
+        blueprintLearningThreshold: Number(value.blueprintLearningThreshold),
+      });
+    }
     case "recordOutcome":
-      return persistence.recordOutcome(value as Parameters<Persistence["recordOutcome"]>[0]);
-    case "finishMatch":
-      if (typeof value.matchId !== "string" || typeof value.endedAt !== "string") throw new Error("Invalid match finish payload.");
-      return persistence.finishMatch({ matchId: value.matchId, endedAt: new Date(value.endedAt), summary: value.summary });
+      if (!isUuid(value.matchId) || !isUuid(value.playerId) || !isRunOutcome(value.outcome)) {
+        throw new RelayPayloadError("Invalid match outcome payload.");
+      }
+      return persistence.recordOutcome({ matchId: value.matchId, playerId: value.playerId, outcome: value.outcome });
+    case "finishMatch": {
+      const endedAt = parseRelayDate(value.endedAt);
+      if (!isUuid(value.matchId) || !endedAt || !isRelaySummary(value.summary)) throw new RelayPayloadError("Invalid match finish payload.");
+      return persistence.finishMatch({ matchId: value.matchId, endedAt, summary: value.summary });
+    }
     default:
-      throw new Error("Persistence relay operation is not allowed.");
+      throw new RelayPayloadError("Persistence relay operation is not allowed.");
   }
 }
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function parsePlayerIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 9 || !value.every(isUuid)) return null;
+  const unique = [...new Set(value)];
+  return unique.length === value.length ? unique : null;
+}
+
+function parseRelayDate(value: unknown): Date | null {
+  if (typeof value !== "string" || value.length > 64) return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && Math.abs(Date.now() - date.getTime()) <= 24 * 60 * 60_000 ? date : null;
+}
+
+function parseRunManifest(value: unknown): Parameters<Persistence["recordExtraction"]>[0]["manifest"] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const manifest = value as Record<string, unknown>;
+  const keptItems = parseWireItems(manifest.keptItems);
+  const lostItems = parseWireItems(manifest.lostItems);
+  if (!keptItems || !lostItems || (manifest.reason !== "extracted" && manifest.reason !== "died" && manifest.reason !== "timeout")) return null;
+  if (!Array.isArray(manifest.learnedBlueprints) || manifest.learnedBlueprints.length > 64
+    || !manifest.learnedBlueprints.every((entry) => typeof entry === "string" && isSafeIdentifier(entry))) return null;
+  if (manifest.contractCompletions !== undefined && (!Array.isArray(manifest.contractCompletions) || manifest.contractCompletions.length > 0)) return null;
+  let cargo: Item[] | undefined;
+  if (manifest.cargo !== undefined) {
+    if (!Array.isArray(manifest.cargo) || manifest.cargo.length > 128 || !manifest.cargo.every(isItem)) return null;
+    cargo = manifest.cargo;
+  }
+  return {
+    reason: manifest.reason,
+    keptItems,
+    lostItems,
+    learnedBlueprints: manifest.learnedBlueprints,
+    ...(cargo ? { cargo } : {}),
+  };
+}
+
+function parseWireItems(value: unknown): WireItemCode[] | null {
+  if (!Array.isArray(value) || value.length > 128 || !value.every(isWireItemCode)) return null;
+  return value;
+}
+
+function isWireItemCode(value: unknown): value is WireItemCode {
+  if (typeof value !== "string" || value.length > 66) return false;
+  if (value.startsWith("b:") && !isSafeIdentifier(value.slice(2))) return false;
+  try {
+    itemFromCode(value as WireItemCode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isSafeIdentifier(value: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value);
+}
+
+function isItem(value: unknown): value is Item {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  if (item.sourceBuildingId !== undefined && (typeof item.sourceBuildingId !== "string" || !isSafeIdentifier(item.sourceBuildingId))) return false;
+  if (item.kind === "mine") return Object.keys(item).every((key) => key === "kind" || key === "sourceBuildingId");
+  if (item.kind === "blueprint") return typeof item.blueprintId === "string" && isSafeIdentifier(item.blueprintId)
+    && Object.keys(item).every((key) => key === "kind" || key === "blueprintId" || key === "sourceBuildingId");
+  return item.kind === "powerup" && (item.type === "health" || item.type === "radar" || item.type === "dashOvercharge" || item.type === "incognito")
+    && Object.keys(item).every((key) => key === "kind" || key === "type" || key === "sourceBuildingId");
+}
+
+function isRunOutcome(value: unknown): value is "died" | "timeout" | "disconnected" {
+  return value === "died" || value === "timeout" || value === "disconnected";
+}
+
+function isRelaySummary(value: unknown): boolean {
+  try {
+    return JSON.stringify(value).length <= 64_000;
+  } catch {
+    return false;
+  }
+}
+
+class RelayPayloadError extends Error {}
 
 function sanitizeName(value: unknown): string {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, 24) : "";

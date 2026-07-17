@@ -64,6 +64,41 @@ describe("Room lobby squads", () => {
     expect(Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y)).toBeGreaterThanOrEqual(900);
     room.dispose();
   });
+
+  it("carries a disconnected lobby member into the live handoff window, then gives the bot to AI", async () => {
+    class HandoffPersistence extends NoopPersistence {
+      readonly outcomes: Array<{ playerId: string; outcome: string }> = [];
+      override async recordOutcome(input: Parameters<Persistence["recordOutcome"]>[0]): Promise<void> {
+        this.outcomes.push(input);
+      }
+    }
+    const persistence = new HandoffPersistence();
+    const room = new Room("HAND", {
+      countdownMs: 0,
+      persistence,
+      aiWingmates: false,
+      connectionHandoffMs: 20,
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000017",
+    });
+    const host = collectingPeer("handoff-host");
+    const mobile = collectingPeer("handoff-mobile");
+    const duplicate = collectingPeer("handoff-duplicate");
+    room.join(host.peer, "handoff-host-token", "Host", "handoff-host-player", "alpha");
+    room.join(mobile.peer, "handoff-mobile-token", "Mobile", "handoff-mobile-player", "bravo");
+    expect(room.join(duplicate.peer, "handoff-mobile-token", "Duplicate", "handoff-mobile-player", "bravo")).toBeNull();
+
+    room.disconnect(mobile.peer.id);
+    room.receive("handoff-host-player", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+    await waitFor(() => persistence.outcomes.some((entry) => entry.playerId === "handoff-mobile-player"));
+    expect(persistence.outcomes).toContainEqual({
+      matchId: "00000000-0000-4000-8000-000000000017",
+      playerId: "handoff-mobile-player",
+      outcome: "disconnected",
+    });
+    expect(room.join(duplicate.peer, "handoff-mobile-token", "Too Late", "handoff-mobile-player", "bravo")).toBeNull();
+    room.dispose();
+  });
 });
 
 describe("Room GIVE UP", () => {
@@ -296,6 +331,58 @@ describe("Room contract manifest", () => {
       reason: "extracted",
       contractCompletions: [{ contractId: "contract-test", title: "TEST HAUL", payout: ["r"] }],
     });
+    room.dispose();
+  });
+
+  it("reports a failed extraction save and does not become terminable until persistence settles", async () => {
+    let releaseFinish: (() => void) | undefined;
+    let finishStarted = false;
+    class FailingPersistence extends NoopPersistence {
+      override readonly live = true;
+      override async recordExtraction(): Promise<never> {
+        throw new Error("relay unavailable");
+      }
+      override async finishMatch(): Promise<void> {
+        finishStarted = true;
+        await new Promise<void>((resolve) => { releaseFinish = resolve; });
+      }
+    }
+    const room = new Room("FAIL", {
+      countdownMs: 0,
+      persistence: new FailingPersistence(),
+      aiWingmates: false,
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000100",
+    });
+    const peer = collectingPeer("failed-save-peer");
+    room.join(peer.peer, "failed-save-token", "Failed Save", "failed-save-player", "alpha");
+    room.receive("failed-save-player", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+    const internals = room as unknown as {
+      members: Map<string, { botId: string }>;
+      processRunEvents(events: Array<{ type: "extracted"; botId: string; squadId: string; items: Array<{ kind: "powerup"; type: "health" }> }>): void;
+      completeIfNoActiveMembers(): void;
+    };
+    const botId = internals.members.get("failed-save-player")!.botId;
+    internals.processRunEvents([{ type: "extracted", botId, squadId: "alpha", items: [{ kind: "powerup", type: "health" }] }]);
+    internals.completeIfNoActiveMembers();
+
+    await waitFor(() => finishStarted);
+    expect(room.safeToTerminate).toBe(false);
+    expect(room.readyForDisposal).toBe(false);
+    await waitFor(() => peer.messages.some((message) => message.type === "runOver"));
+    expect(peer.messages.find((message) => message.type === "err")).toMatchObject({ code: "save_failed" });
+    expect(peer.messages.find((message) => message.type === "runOver")).toMatchObject({
+      reason: "extracted",
+      keptItems: [],
+      lostItems: ["h"],
+      learnedBlueprints: [],
+      persistenceStatus: "failed",
+    });
+
+    releaseFinish?.();
+    await room.waitForPersistence();
+    expect(room.safeToTerminate).toBe(true);
+    expect(room.readyForDisposal).toBe(true);
     room.dispose();
   });
 });

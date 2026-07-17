@@ -45,8 +45,8 @@ Resources:
     Properties:
       StageName: prod
       DefaultRouteSettings:
-        ThrottlingBurstLimit: 5
-        ThrottlingRateLimit: 2
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
       CorsConfiguration:
         AllowOrigins:
           - "*"
@@ -63,7 +63,7 @@ Resources:
     Properties:
       FunctionName: dotbot-production-matchmaker
       Description: Allocates GameLift rooms and relays authoritative persistence
-      Runtime: nodejs22.x
+      Runtime: nodejs24.x
       Architectures:
         - arm64
       Handler: handler.handler
@@ -75,7 +75,7 @@ Resources:
         Variables:
           TABLE_NAME: !Ref SessionsTable
           FLEET_ID: !Ref FleetId
-          GAME_LOCATION: ca-central-1
+          GAMELIFT_REGION: ca-central-1
           CONTROL_PLANE_URL: !Ref ControlPlaneUrl
           RELAY_SECRET_ARN: !Ref RelaySecretArn
       Events:

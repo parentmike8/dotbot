@@ -2,9 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { NetSession } from "./NetSession";
+import type { ClientMessage, DeliveryClass } from "@dotbot/protocol";
+import type { GameTransport, GameTransportHandlers } from "../transport/GameTransport";
 
 describe("NetSession item edges", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
 
   it("cuts tick-aligned frames with one-shot edges and routes GIVE UP through leaveRun", () => {
     const sent: Array<Record<string, unknown>> = [];
@@ -90,4 +95,67 @@ describe("NetSession item edges", () => {
     expect(snapshots[0].snapshot.dots).toMatchObject([{ id: "outside", captureProgressMs: 500 }]);
     expect(snapshots[1].snapshot.dots).toMatchObject([{ id: "upper", captureProgressMs: 0 }]);
   });
+
+  it("reconnects with the same GameLift reservation after a brief mobile network handoff", async () => {
+    vi.useFakeTimers();
+    const transports: FakeTransport[] = [];
+    const session = new NetSession({
+      url: "wss://game.example/ws",
+      roomCode: "TEST",
+      name: "Ada",
+      token: "token",
+      playerSessionId: "psess-1",
+      transportFactory: () => {
+        const transport = new FakeTransport();
+        transports.push(transport);
+        return transport;
+      },
+    });
+    const started = session.start();
+    transports[0].handlers?.open();
+    expect(transports[0].sent[0]?.message).toMatchObject({ type: "hello", playerSessionId: "psess-1" });
+    transports[0].handlers?.message({
+      type: "welcome",
+      roomCode: "TEST",
+      playerId: "player-1",
+      phase: "live",
+      hostId: "player-1",
+      members: [{ playerId: "player-1", name: "Ada", squadId: "alpha" }],
+      locked: true,
+    });
+    transports[0].handlers?.message({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "player-1",
+      meta: [],
+      tickHz: 60,
+      endTick: 3600,
+      insertionName: "WEST GATE",
+      dotBaseline: [],
+    });
+    await started;
+
+    transports[0].handlers?.close();
+    expect((session as unknown as { pendingInputs: unknown[] }).pendingInputs).toEqual([]);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(transports).toHaveLength(2);
+    transports[1].handlers?.open();
+    expect(transports[1].sent[0]?.message).toMatchObject({
+      type: "hello",
+      token: "token",
+      roomCode: "TEST",
+      playerSessionId: "psess-1",
+    });
+    session.dispose();
+  });
 });
+
+class FakeTransport implements GameTransport {
+  handlers: GameTransportHandlers | null = null;
+  readonly sent: Array<{ message: ClientMessage; delivery: DeliveryClass }> = [];
+
+  connect(handlers: GameTransportHandlers): void { this.handlers = handlers; }
+  send(message: ClientMessage, delivery: DeliveryClass): void { this.sent.push({ message, delivery }); }
+  close(): void {}
+}

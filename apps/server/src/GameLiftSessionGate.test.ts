@@ -8,12 +8,12 @@ describe("GameLiftSessionGate", () => {
         GameSessionId: "session-1",
         GameProperties: { roomCode: "a2bc" },
       }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ playerId: "player-1" }), { status: 200 }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const gate = new GameLiftSessionGate({ adapterUrl: "http://127.0.0.1:18090", fetch: request });
 
     await expect(gate.roomCode()).resolves.toBe("A2BC");
-    await gate.acceptPlayerSession("psess-1");
+    await expect(gate.acceptPlayerSession("psess-1")).resolves.toBe("player-1");
     await gate.removePlayerSession("psess-1");
 
     expect(request.mock.calls.map(([url]) => String(url))).toEqual([

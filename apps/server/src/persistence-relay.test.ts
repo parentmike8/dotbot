@@ -1,47 +1,122 @@
-import { createHmac } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { createHmac, randomUUID } from "node:crypto";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "./app";
-import { NoopPersistence } from "./db/NoopPersistence";
+import { NoopPersistence } from "./db";
 
-const originalSecret = process.env.DOTBOT_RELAY_SECRET;
+class RelayTestPersistence extends NoopPersistence {
+  override readonly live = true;
+  readonly claims = new Set<string>();
+  readonly outcomes: unknown[] = [];
+
+  override async claimRelayRequest(requestId: string): Promise<boolean> {
+    if (this.claims.has(requestId)) return false;
+    this.claims.add(requestId);
+    return true;
+  }
+
+  override async recordOutcome(input: Parameters<NoopPersistence["recordOutcome"]>[0]): Promise<void> {
+    this.outcomes.push(input);
+  }
+}
+
+const relaySecret = "test-relay-secret-at-least-32-bytes";
 
 afterEach(() => {
-  if (originalSecret === undefined) delete process.env.DOTBOT_RELAY_SECRET;
-  else process.env.DOTBOT_RELAY_SECRET = originalSecret;
+  delete process.env.DOTBOT_RELAY_SECRET;
+  vi.restoreAllMocks();
 });
 
 describe("authoritative persistence relay", () => {
-  it("accepts a fresh HMAC-signed allow-listed operation", async () => {
+  it("requires a nonce-bound signature and rejects replayed request ids", async () => {
     process.env.NODE_ENV = "test";
-    process.env.DOTBOT_RELAY_SECRET = "test-relay-secret";
-    const { app } = await createServer({ persistence: new NoopPersistence() });
-    const payload = { operation: "resolveOrRegisterPlayer", args: { token: "token-abcdef123456", offeredName: "Ada" } };
-    const body = JSON.stringify(payload);
-    const timestamp = Date.now().toString();
-    const signature = createHmac("sha256", process.env.DOTBOT_RELAY_SECRET).update(`${timestamp}.${body}`).digest("hex");
+    process.env.DOTBOT_RELAY_SECRET = relaySecret;
+    const persistence = new RelayTestPersistence();
+    const { app } = await createServer({ persistence });
+    const body = {
+      operation: "recordOutcome",
+      args: {
+        matchId: randomUUID(),
+        playerId: randomUUID(),
+        outcome: "died",
+      },
+    };
+    const headers = signedHeaders(body);
 
-    const response = await app.inject({
+    const accepted = await app.inject({ method: "POST", url: "/api/internal/game-persistence", headers, payload: body });
+    expect(accepted.statusCode).toBe(200);
+    expect(persistence.outcomes).toEqual([body.args]);
+
+    const replayed = await app.inject({ method: "POST", url: "/api/internal/game-persistence", headers, payload: body });
+    expect(replayed.statusCode).toBe(409);
+    expect(persistence.outcomes).toHaveLength(1);
+
+    const tampered = await app.inject({
       method: "POST",
       url: "/api/internal/game-persistence",
-      headers: { "x-dotbot-timestamp": timestamp, "x-dotbot-signature": signature, "content-type": "application/json" },
-      payload: body,
+      headers,
+      payload: { ...body, args: { ...body.args, outcome: "timeout" } },
     });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ result: { playerId: "p-token-abcdef", name: "Ada" } });
+    expect(tampered.statusCode).toBe(401);
     await app.close();
   });
 
-  it("rejects unsigned relay traffic", async () => {
+  it("validates operation arguments before invoking persistence", async () => {
     process.env.NODE_ENV = "test";
-    process.env.DOTBOT_RELAY_SECRET = "test-relay-secret";
-    const { app } = await createServer({ persistence: new NoopPersistence() });
+    process.env.DOTBOT_RELAY_SECRET = relaySecret;
+    const persistence = new RelayTestPersistence();
+    const { app } = await createServer({ persistence });
+    const validBody = {
+      operation: "recordExtraction",
+      args: {
+        matchId: randomUUID(),
+        playerId: randomUUID(),
+        blueprintLearningThreshold: 3,
+        manifest: {
+          reason: "extracted",
+          keptItems: ["b:shelf"],
+          lostItems: [],
+          learnedBlueprints: [],
+          cargo: [{ kind: "blueprint", blueprintId: "shelf", sourceBuildingId: "lot6" }],
+        },
+      },
+    };
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/internal/game-persistence",
+      headers: signedHeaders(validBody),
+      payload: validBody,
+    });
+    expect(accepted.statusCode).toBe(200);
+
+    const invalidBody = {
+      operation: "recordExtraction",
+      args: {
+        matchId: randomUUID(),
+        playerId: randomUUID(),
+        blueprintLearningThreshold: 3,
+        manifest: { reason: "extracted", keptItems: ["forged-item"], lostItems: [], learnedBlueprints: [] },
+      },
+    };
     const response = await app.inject({
       method: "POST",
       url: "/api/internal/game-persistence",
-      payload: { operation: "consumeLoadout", args: { playerId: "p-1" } },
+      headers: signedHeaders(invalidBody),
+      payload: invalidBody,
     });
-    expect(response.statusCode).toBe(401);
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ error: string }>().error).toBe("Invalid extraction payload.");
     await app.close();
   });
 });
+
+function signedHeaders(body: unknown) {
+  const timestamp = Date.now().toString();
+  const requestId = randomUUID();
+  const serialized = JSON.stringify(body);
+  return {
+    "content-type": "application/json",
+    "x-dotbot-timestamp": timestamp,
+    "x-dotbot-request-id": requestId,
+    "x-dotbot-signature": createHmac("sha256", relaySecret).update(`${timestamp}.${requestId}.${serialized}`).digest("hex"),
+  };
+}

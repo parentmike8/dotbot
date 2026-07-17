@@ -43,6 +43,11 @@ export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun
           <span>DOTBOT / RUN MANIFEST</span>
           <strong>{outcomeLabels[result.outcome]}</strong>
         </header>
+        {result.persistenceStatus === "failed" ? (
+          <p className="manifest-save-failed" role="alert">
+            SAVE FAILED — NO EXTRACTED ITEMS WERE CREDITED. RETURN TO BASE BEFORE STARTING ANOTHER RUN.
+          </p>
+        ) : null}
         <dl className="manifest-grid">
           <div>
             <dt>Outcome</dt>

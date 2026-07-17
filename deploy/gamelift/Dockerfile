@@ -1,11 +1,11 @@
-FROM golang:1.24-bookworm AS adapter-build
+FROM golang:1.26.5-bookworm AS adapter-build
 WORKDIR /adapter
 COPY apps/gamelift-adapter/go.mod apps/gamelift-adapter/go.sum ./
 RUN go mod download
 COPY apps/gamelift-adapter/ ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/gamelift-adapter .
 
-FROM node:20-slim AS game-build
+FROM node:24.18.0-slim AS game-build
 WORKDIR /repo
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
@@ -17,7 +17,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build:all
 
-FROM node:20-slim
+FROM node:24.18.0-slim
 ENV NODE_ENV=production \
     PORT=8080 \
     GAME_PORT=8080 \

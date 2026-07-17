@@ -20,6 +20,9 @@ describe("multiplayer server", () => {
   it("runs extraction, spectator streams, AI events, timeout, and match end authoritatively", async () => {
     process.env.NODE_ENV = "test";
     const { app } = await createServer({
+      // This suite tests realtime simulation behavior, not Postgres. Keep it
+      // independent from an ambient DATABASE_URL used by persistence tests.
+      databaseUrl: null,
       countdownMs: 0,
       config: {
         botRadius: 5,

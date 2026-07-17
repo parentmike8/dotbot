@@ -44,6 +44,7 @@ type Member = LobbyMember & {
    * adds, folded into the member's combat rewind. */
   queueDepthEma: number;
   handoffTimer: ReturnType<typeof setTimeout> | null;
+  disconnectedAt: number | null;
   inRun: boolean;
   streaming: boolean;
   runOver: Extract<ServerMessage, { type: "runOver" }> | null;
@@ -69,10 +70,13 @@ type RoomOptions = {
   aiWingmates?: boolean;
   /** Test/replay hook; production uses random UUID match seeds. */
   matchIdFactory?: () => string;
+  /** Mobile network handoff grace. Production defaults to 20 seconds. */
+  connectionHandoffMs?: number;
 };
 
 const squads = LOBBY_SQUADS;
 const squadColors = ["#ff3b6b", "#2f80ed", "#9b51e0"] as const;
+const defaultConnectionHandoffMs = 20_000;
 
 export class Room {
   readonly code: string;
@@ -99,9 +103,12 @@ export class Room {
   private lastBytesPerSecond = 0;
   private matchId: string | null = null;
   private readonly pendingPersistence = new Set<Promise<void>>();
+  private persistenceSettled = true;
+  private endPromise: Promise<void> | null = null;
   private readonly matchOutcomes = new Map<string, string>();
   private readonly aiWingmates: boolean;
   private readonly matchIdFactory: () => string;
+  private readonly connectionHandoffMs: number;
   private readonly matchIntel = new Map<string, MatchIntel>();
   private latestServerTick = 0;
 
@@ -113,6 +120,7 @@ export class Room {
     this.persistence = options.persistence ?? new NoopPersistence();
     this.aiWingmates = options.aiWingmates ?? true;
     this.matchIdFactory = options.matchIdFactory ?? randomUUID;
+    this.connectionHandoffMs = options.connectionHandoffMs ?? defaultConnectionHandoffMs;
     this.createdAt = this.now();
     this.lastTickAt = this.createdAt;
     this.bandwidthWindowStartedAt = this.createdAt;
@@ -139,12 +147,29 @@ export class Room {
     };
   }
 
+  get safeToTerminate(): boolean {
+    return this.phase === "lobby" || (this.phase === "ended" && this.persistenceSettled);
+  }
+
+  get readyForDisposal(): boolean {
+    return this.phase === "ended" && this.persistenceSettled;
+  }
+
+  async waitForPersistence(): Promise<void> {
+    if (this.endPromise) await this.endPromise;
+    else await Promise.allSettled([...this.pendingPersistence]);
+  }
+
   join(peer: RoomPeer, token: string, requestedName: string, resolvedPlayerId?: string, preferredSquad?: LobbySquadId): Member | null {
     const existing = this.memberByToken.get(token);
     if (existing) {
+      if (existing.peer && existing.peer.id !== peer.id) return null;
       existing.peer = peer;
       existing.name = sanitizeName(requestedName);
       existing.streaming = true;
+      existing.disconnectedAt = null;
+      existing.inputQueue = [];
+      existing.heldInput = { move: { x: 0, y: 0 }, dash: false };
       if (existing.handoffTimer) {
         clearTimeout(existing.handoffTimer);
         existing.handoffTimer = null;
@@ -180,6 +205,7 @@ export class Room {
       backlogWindowTicks: 0,
       queueDepthEma: 0,
       handoffTimer: null,
+      disconnectedAt: null,
       inRun: false,
       streaming: true,
       runOver: null,
@@ -267,31 +293,44 @@ export class Room {
     const member = [...this.members.values()].find((candidate) => candidate.peer?.id === peerId);
     if (!member) return;
     member.peer = null;
+    member.disconnectedAt = Date.now();
 
     if (this.phase === "lobby") {
-      this.members.delete(member.playerId);
-      this.memberByToken.delete(member.token);
-      if (member.playerId === this.hostId) {
-        this.hostId = this.members.keys().next().value ?? "";
-      }
+      this.scheduleHandoff(member);
       this.broadcastLobby();
       return;
     }
 
     if (this.phase === "live" && member.botId && member.inRun) {
       this.simulation?.setController(member.botId, "frozen");
-      member.handoffTimer = setTimeout(() => {
-        member.handoffTimer = null;
-        if (!member.peer && member.botId && this.phase === "live") {
-          this.simulation?.setController(member.botId, "ai");
-          this.recordDisconnected(member);
-        }
-      }, 15_000);
-
-      if (this.connectedCount === 0) {
-        this.end("all_humans_disconnected");
-      }
+      this.scheduleHandoff(member);
     }
+  }
+
+  private scheduleHandoff(member: Member): void {
+    if (member.handoffTimer) clearTimeout(member.handoffTimer);
+    const disconnectedAt = member.disconnectedAt ?? Date.now();
+    member.disconnectedAt = disconnectedAt;
+    const remainingMs = Math.max(0, this.connectionHandoffMs - (Date.now() - disconnectedAt));
+    member.handoffTimer = setTimeout(() => this.expireHandoff(member), remainingMs);
+  }
+
+  private expireHandoff(member: Member): void {
+    member.handoffTimer = null;
+    if (member.peer) return;
+    if (this.phase === "lobby") {
+      this.members.delete(member.playerId);
+      this.memberByToken.delete(member.token);
+      if (member.playerId === this.hostId) this.hostId = this.members.keys().next().value ?? "";
+      this.broadcastLobby();
+      return;
+    }
+    if (this.phase !== "live" || !member.botId || !member.inRun) return;
+    this.memberByToken.delete(member.token);
+    this.simulation?.setController(member.botId, "ai");
+    this.recordDisconnected(member);
+    const allHandoffsExpired = [...this.members.values()].every((candidate) => candidate.peer || candidate.handoffTimer === null);
+    if (this.connectedCount === 0 && allHandoffsExpired) this.end("all_humans_disconnected");
   }
 
   tick(now = this.now()): number[] {
@@ -467,27 +506,34 @@ export class Room {
     this.matchId = assignmentSeed;
     this.matchOutcomes.clear();
     this.matchIntel.clear();
+    let loadouts = new Map<string, WireItemCode[]>();
     try {
-      await this.persistence.startMatch({
+      const started = await this.persistence.startMatch({
         matchId: this.matchId,
         roomCode: this.code,
         mapId: downtownMap.id,
         startedAt: new Date(this.now()),
+        playerIds: [...this.members.values()].filter((member) => member.persistenceEligible).map((member) => member.playerId),
       });
+      loadouts = new Map(Object.entries(started.loadouts));
     } catch (error) {
-      console.warn(`[persistence] failed to start match ${this.matchId}; continuing statelessly. ${errorMessage(error)}`);
+      console.warn(`[persistence] failed to start match ${this.matchId}. ${errorMessage(error)}`);
       this.matchId = null;
+      if (this.persistence.live) {
+        simulation.dispose();
+        this.phase = "lobby";
+        this.broadcast({ type: "err", code: "storage_unavailable", msg: "The match could not start safely. Your loadout was not consumed; try again." });
+        this.broadcastLobby();
+        for (const member of this.members.values()) {
+          if (!member.peer && !member.handoffTimer) this.scheduleHandoff(member);
+        }
+        return;
+      }
     }
 
-    const loadouts = new Map<string, WireItemCode[]>();
     const insertionPreferences = new Map<string, string | null>();
     const intelObjects = new Map<string, import("@dotbot/game/types").BaseObjectKind[]>();
     for (const member of this.members.values()) {
-      try {
-        loadouts.set(member.playerId, await this.persistence.consumeLoadout(member.playerId));
-      } catch (error) {
-        console.warn(`[persistence] failed to consume loadout for ${member.playerId}; using default spawn. ${errorMessage(error)}`);
-      }
       try {
         insertionPreferences.set(member.playerId, await this.persistence.getInsertionPreference(member.playerId));
       } catch (error) {
@@ -522,7 +568,10 @@ export class Room {
       const count = squadCounts.get(member.squadId) ?? 0;
       const insertion = insertionBySquad.get(member.squadId)!;
       const botId = `human-${member.playerId}`;
-      simulation.spawnBot(makeSpawn(botId, member.name, member.squadId, squadColors[squadIndex], insertion, count, loadouts.get(member.playerId) ?? [], this.config.botRadius), "human");
+      simulation.spawnBot(
+        makeSpawn(botId, member.name, member.squadId, squadColors[squadIndex], insertion, count, loadouts.get(member.playerId) ?? [], this.config.botRadius),
+        member.peer ? "human" : "frozen",
+      );
       member.botId = botId;
       member.inputQueue = [];
       member.heldInput = { move: { x: 0, y: 0 }, dash: false };
@@ -587,7 +636,10 @@ export class Room {
     this.accumulatorMs = 0;
     this.lastTickAt = this.now();
     this.phase = "live";
-    for (const member of this.members.values()) this.sendMatchStart(member);
+    for (const member of this.members.values()) {
+      if (!member.peer && !member.handoffTimer) this.scheduleHandoff(member);
+      this.sendMatchStart(member);
+    }
   }
 
   private sendWelcome(member: Member): void {
@@ -700,8 +752,9 @@ export class Room {
     }
     this.phase = "ended";
     this.endedAt = this.now();
+    this.persistenceSettled = false;
     const pending = [...this.pendingPersistence];
-    void Promise.allSettled(pending).then(async () => {
+    this.endPromise = Promise.allSettled(pending).then(async () => {
       this.broadcast({ type: "matchEnd", reason });
       if (!this.matchId) return;
       try {
@@ -716,6 +769,8 @@ export class Room {
       } catch (error) {
         console.warn(`[persistence] failed to finish match ${this.matchId}; teardown continued. ${errorMessage(error)}`);
       }
+    }).finally(() => {
+      this.persistenceSettled = true;
     });
   }
 
@@ -803,14 +858,27 @@ export class Room {
     member.inputQueue = [];
     member.heldInput = { move: { x: 0, y: 0 }, dash: false };
     member.runOver = message;
-    this.matchOutcomes.set(member.playerId, message.reason);
-    const persistenceWrite = this.persistRunOutcome(member, message, cargo).then((manifest) => {
-      message.keptItems = manifest.keptItems;
-      message.lostItems = manifest.lostItems;
-      message.learnedBlueprints = manifest.learnedBlueprints;
-      if (manifest.contractCompletions?.length) message.contractCompletions = manifest.contractCompletions;
-      member.runOver = message;
-    });
+    if (member.persistenceEligible) this.matchOutcomes.set(member.playerId, message.reason);
+    const persistenceRequired = Boolean(this.matchId && member.persistenceEligible && this.persistence.live);
+    const persistenceWrite = this.persistRunOutcome(member, message, cargo)
+      .then((manifest) => {
+        message.keptItems = manifest.keptItems;
+        message.lostItems = manifest.lostItems;
+        message.learnedBlueprints = manifest.learnedBlueprints;
+        if (manifest.contractCompletions?.length) message.contractCompletions = manifest.contractCompletions;
+        if (persistenceRequired) message.persistenceStatus = "saved";
+        member.runOver = message;
+      })
+      .catch((error) => {
+        console.warn(`[persistence] failed to record ${message.reason} for ${member.playerId}; extracted items were not credited. ${errorMessage(error)}`);
+        message.lostItems = [...message.lostItems, ...message.keptItems];
+        message.keptItems = [];
+        message.learnedBlueprints = [];
+        delete message.contractCompletions;
+        message.persistenceStatus = "failed";
+        member.runOver = message;
+        member.peer?.send({ type: "err", code: "save_failed", msg: "The run could not be saved. No extracted items were credited." });
+      });
     this.trackPersistence(persistenceWrite, () => member.peer?.send(message));
   }
 
@@ -867,31 +935,26 @@ export class Room {
       contractCompletions: message.contractCompletions ?? [],
     };
     if (!this.matchId || !member.persistenceEligible) return unchanged;
-    try {
-      if (message.reason === "extracted") {
-        const manifest: RunManifest = {
-          reason: message.reason,
-          keptItems: message.keptItems,
-          lostItems: message.lostItems,
-          learnedBlueprints: [],
-          cargo,
-          contractCompletions: [],
-        };
-        const result = await this.persistence.recordExtraction({
-          matchId: this.matchId,
-          playerId: member.playerId,
-          manifest,
-          blueprintLearningThreshold: this.config.blueprintLearningThreshold,
-        });
-        member.persistedOutcome = message.reason;
-        return result.manifest;
-      } else {
-        await this.persistence.recordOutcome({ matchId: this.matchId, playerId: member.playerId, outcome: message.reason });
-      }
+    if (message.reason === "extracted") {
+      const manifest: RunManifest = {
+        reason: message.reason,
+        keptItems: message.keptItems,
+        lostItems: message.lostItems,
+        learnedBlueprints: [],
+        cargo,
+        contractCompletions: [],
+      };
+      const result = await this.persistence.recordExtraction({
+        matchId: this.matchId,
+        playerId: member.playerId,
+        manifest,
+        blueprintLearningThreshold: this.config.blueprintLearningThreshold,
+      });
       member.persistedOutcome = message.reason;
-    } catch (error) {
-      console.warn(`[persistence] failed to record ${message.reason} for ${member.playerId}; run continued. ${errorMessage(error)}`);
+      return result.manifest;
     }
+    await this.persistence.recordOutcome({ matchId: this.matchId, playerId: member.playerId, outcome: message.reason });
+    member.persistedOutcome = message.reason;
     return unchanged;
   }
 

@@ -2,7 +2,7 @@
 # bundle is self-contained (esbuild, rapier2d-compat embeds its WASM), and in
 # production it also serves the client from ../../client/dist — so the image
 # preserves the apps/server/dist + apps/client/dist relative layout.
-FROM node:20-slim AS build
+FROM node:24.18.0-slim AS build
 WORKDIR /repo
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
@@ -14,7 +14,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build:all
 
-FROM node:20-slim
+FROM node:24.18.0-slim
 ENV NODE_ENV=production
 WORKDIR /repo
 COPY --from=build /repo/apps/server/dist apps/server/dist

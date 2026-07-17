@@ -4,7 +4,7 @@ import type { NetworkDebugStats } from "./netgraph";
 
 export type RunState =
   | { phase: "live" }
-  | { phase: "over"; reason: "extracted" | "died" | "timeout"; keptItems: Item[]; lostItems: Item[]; learnedBlueprints: string[]; contractCompletions?: Array<{ contractId: string; title: string; payout: Item[] }> };
+  | { phase: "over"; reason: "extracted" | "died" | "timeout"; keptItems: Item[]; lostItems: Item[]; learnedBlueprints: string[]; contractCompletions?: Array<{ contractId: string; title: string; payout: Item[] }>; persistenceStatus?: "saved" | "failed" };
 
 export interface GameSession {
   readonly map: MapDocument;

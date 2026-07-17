@@ -81,7 +81,8 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
     setError("");
     let allocation: MatchAllocation | null;
     try {
-      allocation = await allocateGameServer(code, token);
+      allocation = await allocateGameServer(code, token, setError);
+      setError("");
     } catch (allocationError) {
       setError(allocationError instanceof Error ? allocationError.message : "Unable to allocate a game server.");
       return;
@@ -117,6 +118,7 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
       <NetGameView
         session={session}
         roomCode={lobby.roomCode}
+        connectionMessage={error}
         returnLabel={onReturnToBase ? "LEAVE TO BASE" : "RETURN TO LOBBY"}
         onReturnToLobby={() => {
           if (onReturnToBase) {
@@ -217,7 +219,11 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
   );
 }
 
-async function allocateGameServer(roomCode: string, token: string): Promise<MatchAllocation | null> {
+async function allocateGameServer(
+  roomCode: string,
+  token: string,
+  onProgress?: (message: string) => void,
+): Promise<MatchAllocation | null> {
   const configResponse = await fetch("/api/game-config", { cache: "no-store" });
   if (!configResponse.ok) return null;
   const config = await configResponse.json() as { matchmakerUrl?: string | null };
@@ -225,20 +231,27 @@ async function allocateGameServer(roomCode: string, token: string): Promise<Matc
   const base = config.matchmakerUrl.endsWith("/") ? config.matchmakerUrl : `${config.matchmakerUrl}/`;
   const cleanRoomCode = roomCode.trim().toUpperCase();
   const endpoint = new URL(cleanRoomCode ? `rooms/${encodeURIComponent(cleanRoomCode)}/join` : "rooms", base);
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
-  const payload = await response.json() as Partial<MatchAllocation> & { error?: string };
-  if (!response.ok || !payload.roomCode || !payload.websocketUrl || !payload.playerSessionId) {
-    throw new Error(payload.error ?? "Unable to allocate a game server.");
+  const deadline = Date.now() + 120_000;
+  while (true) {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const payload = await response.json() as Partial<MatchAllocation> & { error?: string; retryable?: boolean };
+    if (response.ok && payload.roomCode && payload.websocketUrl && payload.playerSessionId) {
+      return {
+        roomCode: payload.roomCode,
+        websocketUrl: payload.websocketUrl,
+        playerSessionId: payload.playerSessionId,
+      };
+    }
+    if (response.status !== 503 || payload.retryable !== true || Date.now() >= deadline) {
+      throw new Error(payload.error ?? "Unable to allocate a game server.");
+    }
+    onProgress?.("DEDICATED SERVER WAKING · THIS CAN TAKE ABOUT A MINUTE");
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
   }
-  return {
-    roomCode: payload.roomCode,
-    websocketUrl: payload.websocketUrl,
-    playerSessionId: payload.playerSessionId,
-  };
 }
 
 function squadName(squadId: LobbySquadId): string {

@@ -32,7 +32,13 @@ export GAMELIFT_ADAPTER_PORT="$adapter_port"
 export GAMELIFT_ADAPTER_URL="http://127.0.0.1:${adapter_port}"
 export REQUIRE_GAMELIFT_TLS="true"
 export AWS_REGION="us-east-1"
+export AWS_DEFAULT_REGION="$AWS_REGION"
+export AWS_SHARED_CREDENTIALS_FILE="/local/credentials/credentials"
+export AWS_PROFILE="FleetRoleCredentials"
 export DOTBOT_MATCHMAKER_FUNCTION="dotbot-production-matchmaker"
+# Omit lifecycle URLs so the adapter can switch them to verified loopback TLS
+# after GameLift supplies the generated certificate and DNS identity.
+unset GAME_HEALTH_URL GAME_DRAIN_URL
 
 mkdir -p "$game_root/logs"
 log_file="$game_root/logs/process-${game_port}.log"

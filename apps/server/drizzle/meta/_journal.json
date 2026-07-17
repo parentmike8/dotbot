@@ -50,6 +50,13 @@
       "when": 1784158308956,
       "tag": "0006_lazy_franklin_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784261866213,
+      "tag": "0007_relay_hardening",
+      "breakpoints": true
     }
   ]
 }

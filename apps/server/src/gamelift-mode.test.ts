@@ -21,10 +21,19 @@ describe("GameLift dedicated server mode", () => {
           GameProperties: { roomCode: "A2BC" },
         }), { status: 200 });
       }
+      if (url.endsWith("/v1/player-sessions/accept")) {
+        return new Response(JSON.stringify({ playerId: "p-token-b" }), { status: 200 });
+      }
       return new Response(null, { status: 204 });
     });
     const gate = new GameLiftSessionGate({ fetch: request });
-    const { app } = await createServer({ gameLift: gate });
+    const { app } = await createServer({
+      // Player-session admission is isolated here; database identity matching
+      // has separate coverage and must not depend on an ambient DATABASE_URL.
+      databaseUrl: null,
+      gameLift: gate,
+      playerSessionReconnectMs: 50,
+    });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("Expected TCP address");
@@ -47,6 +56,18 @@ describe("GameLift dedicated server mode", () => {
 
     accepted.close();
     await new Promise<void>((resolve) => accepted.once("close", () => resolve()));
+    const resumed = await connect(url);
+    resumed.send(JSON.stringify({
+      type: "hello",
+      token: "token-b",
+      name: "Bob",
+      roomCode: "A2BC",
+      playerSessionId: "psess-1",
+    }));
+    expect(await waitForMessage(resumed, "welcome")).toMatchObject({ roomCode: "A2BC" });
+    expect(request.mock.calls.filter(([input]) => String(input).endsWith("/v1/player-sessions/accept"))).toHaveLength(1);
+    resumed.close();
+    await new Promise<void>((resolve) => resumed.once("close", () => resolve()));
     await vi.waitFor(() => expect(request.mock.calls.some(([input]) => String(input).endsWith("/v1/player-sessions/remove"))).toBe(true));
     await app.close();
   });

@@ -63,6 +63,11 @@ export type PresetApplyResult = {
   missing: Array<{ itemType: WireLoadoutCode; qty: number }>;
 };
 
+export type MatchStartResult = {
+  /** Loadouts are consumed once, in the same transaction that registers the match roster. */
+  loadouts: Record<string, WireItemCode[]>;
+};
+
 export interface Persistence {
   readonly live: boolean;
   registerPlayer(name: string): Promise<RegisteredPlayer>;
@@ -83,7 +88,7 @@ export interface Persistence {
   rerollContracts(token: string): Promise<void>;
   abandonContract(token: string, contractId: string): Promise<void>;
   consumeLoadout(playerId: string): Promise<WireItemCode[]>;
-  startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void>;
+  startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date; playerIds: string[] }): Promise<MatchStartResult>;
   recordExtraction(input: {
     matchId: string;
     playerId: string;
@@ -92,5 +97,7 @@ export interface Persistence {
   }): Promise<{ manifest: RunManifest }>;
   recordOutcome(input: { matchId: string; playerId: string; outcome: "died" | "timeout" | "disconnected" }): Promise<void>;
   finishMatch(input: { matchId: string; endedAt: Date; summary: unknown }): Promise<void>;
+  /** Atomically reserves a signed relay request id. False means it was already used. */
+  claimRelayRequest(requestId: string, expiresAt: Date): Promise<boolean>;
   close(): Promise<void>;
 }

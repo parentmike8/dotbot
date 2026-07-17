@@ -211,7 +211,7 @@ export type ServerMessage =
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }
   | { type: "ev"; events: WireSimEvent[] }
-  | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptItems: WireItemCode[]; lostItems: WireItemCode[]; learnedBlueprints: string[]; contractCompletions?: Array<{ contractId: string; title: string; payout: WireItemCode[] }> }
+  | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptItems: WireItemCode[]; lostItems: WireItemCode[]; learnedBlueprints: string[]; contractCompletions?: Array<{ contractId: string; title: string; payout: WireItemCode[] }>; persistenceStatus?: "saved" | "failed" }
   | { type: "matchEnd"; reason: string }
   | { type: "pong"; cts: number; sts: number; tick?: number }
   | { type: "err"; code: string; msg: string };

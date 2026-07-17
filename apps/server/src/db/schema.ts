@@ -39,8 +39,16 @@ export const matchParticipants = pgTable("match_participants", {
   matchId: uuid("match_id").notNull().references(() => matchResults.id, { onDelete: "cascade" }),
   playerId: uuid("player_id").notNull().references(() => players.id, { onDelete: "cascade" }),
   outcome: text("outcome").notNull(),
+  startingLoadout: jsonb("starting_loadout").$type<WireItemCode[]>().notNull().default([]),
   extractedManifest: jsonb("extracted_manifest"),
 }, (table) => [primaryKey({ columns: [table.matchId, table.playerId] })]);
+
+/** Short-lived replay ledger for signed AWS-to-control-plane persistence calls. */
+export const relayRequests = pgTable("relay_requests", {
+  id: uuid("id").primaryKey(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
 
 export const learnedBlueprints = pgTable("learned_blueprints", {
   playerId: uuid("player_id").notNull().references(() => players.id, { onDelete: "cascade" }),

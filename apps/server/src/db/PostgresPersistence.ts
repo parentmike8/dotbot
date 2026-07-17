@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { BASE_SLOT_DEFS, DEFAULT_BASE_SHELL, isObjectAllowedInSlot, starterBaseLayout, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById, SECOND_FLOOR_UPGRADE_ID } from "@dotbot/game/content/recipes";
@@ -14,8 +14,9 @@ import type {
   PlayerProfile,
   RegisteredPlayer,
   RunManifest,
+  MatchStartResult,
 } from "./Persistence";
-import { baseLayouts, baseUpgrades, contracts as contractRows, learnedBlueprints, matchParticipants, matchResults, players, stashItems } from "./schema";
+import { baseLayouts, baseUpgrades, contracts as contractRows, learnedBlueprints, matchParticipants, matchResults, players, relayRequests, stashItems } from "./schema";
 
 export class PostgresPersistence implements Persistence {
   readonly live = true;
@@ -369,12 +370,43 @@ export class PostgresPersistence implements Persistence {
     if (updated.length === 0) throw new Error("ACTIVE CONTRACT NOT FOUND.");
   }
 
-  async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date }): Promise<void> {
-    await this.db.insert(matchResults).values({
-      id: input.matchId,
-      roomCode: input.roomCode,
-      mapId: input.mapId,
-      startedAt: input.startedAt,
+  async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date; playerIds: string[] }): Promise<MatchStartResult> {
+    const playerIds = [...new Set(input.playerIds)];
+    if (playerIds.length === 0 || playerIds.length > 9) throw new Error("A match must register between one and nine players.");
+    return this.db.transaction(async (tx) => {
+      const created = await tx.insert(matchResults).values({
+        id: input.matchId,
+        roomCode: input.roomCode,
+        mapId: input.mapId,
+        startedAt: input.startedAt,
+      }).onConflictDoNothing().returning({ id: matchResults.id });
+      const [match] = await tx.select({ roomCode: matchResults.roomCode, mapId: matchResults.mapId })
+        .from(matchResults).where(eq(matchResults.id, input.matchId)).limit(1);
+      if (!match || match.roomCode !== input.roomCode || match.mapId !== input.mapId) {
+        throw new Error("Match id is already registered with different metadata.");
+      }
+      if (created.length === 1) {
+        const lockedPlayers = await tx.select({ id: players.id, loadout: players.loadout }).from(players)
+          .where(inArray(players.id, playerIds)).for("update");
+        if (lockedPlayers.length !== playerIds.length) throw new Error("Match roster contains an unknown player.");
+        const loadouts = Object.fromEntries(lockedPlayers.map((player) => [player.id, player.loadout]));
+        await tx.insert(matchParticipants).values(playerIds.map((playerId) => ({
+          matchId: input.matchId,
+          playerId,
+          outcome: "active",
+          startingLoadout: loadouts[playerId] ?? [],
+        })));
+        await tx.update(players).set({ loadout: [] }).where(inArray(players.id, playerIds));
+        return { loadouts };
+      }
+
+      const participants = await tx.select({ playerId: matchParticipants.playerId, loadout: matchParticipants.startingLoadout })
+        .from(matchParticipants).where(eq(matchParticipants.matchId, input.matchId));
+      const registeredIds = new Set(participants.map((participant) => participant.playerId));
+      if (registeredIds.size !== playerIds.length || playerIds.some((playerId) => !registeredIds.has(playerId))) {
+        throw new Error("Match id is already registered with a different player roster.");
+      }
+      return { loadouts: Object.fromEntries(participants.map((participant) => [participant.playerId, participant.loadout])) };
     });
   }
 
@@ -385,6 +417,19 @@ export class PostgresPersistence implements Persistence {
     blueprintLearningThreshold: number;
   }): Promise<{ manifest: RunManifest }> {
     return this.db.transaction(async (tx) => {
+      const [participant] = await tx.select({
+        outcome: matchParticipants.outcome,
+        manifest: matchParticipants.extractedManifest,
+      }).from(matchParticipants)
+        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, input.playerId)))
+        .limit(1)
+        .for("update");
+      if (!participant) throw new Error("Player is not registered for this match.");
+      if (participant.outcome === "extracted" && isRunManifest(participant.manifest)) {
+        return { manifest: participant.manifest };
+      }
+      if (participant.outcome !== "active") throw new Error(`Player match outcome is already ${participant.outcome}.`);
+
       const newlyLearned: string[] = [];
       const completedContracts: Array<{ contractId: string; title: string; payout: WireItemCode[] }> = [];
       const layout = await tx.select({ objectKind: baseLayouts.objectKind })
@@ -453,28 +498,43 @@ export class PostgresPersistence implements Persistence {
         learnedBlueprints: newlyLearned,
         ...(completedContracts.length > 0 ? { contractCompletions: completedContracts } : {}),
       };
-      await tx.insert(matchParticipants).values({
-        matchId: input.matchId,
-        playerId: input.playerId,
-        outcome: "extracted",
-        extractedManifest: manifest,
-      }).onConflictDoUpdate({
-        target: [matchParticipants.matchId, matchParticipants.playerId],
-        set: { outcome: "extracted", extractedManifest: manifest },
-      });
+      const updated = await tx.update(matchParticipants)
+        .set({ outcome: "extracted", extractedManifest: manifest })
+        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, input.playerId)))
+        .returning({ playerId: matchParticipants.playerId });
+      if (updated.length !== 1) throw new Error("Player match outcome could not be saved.");
       return { manifest };
     });
   }
 
   async recordOutcome(input: { matchId: string; playerId: string; outcome: "died" | "timeout" | "disconnected" }): Promise<void> {
-    await this.db.insert(matchParticipants).values(input).onConflictDoUpdate({
-      target: [matchParticipants.matchId, matchParticipants.playerId],
-      set: { outcome: input.outcome },
+    await this.db.transaction(async (tx) => {
+      const [participant] = await tx.select({ outcome: matchParticipants.outcome }).from(matchParticipants)
+        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, input.playerId)))
+        .limit(1)
+        .for("update");
+      if (!participant) throw new Error("Player is not registered for this match.");
+      if (participant.outcome === input.outcome) return;
+      if (participant.outcome !== "active") throw new Error(`Player match outcome is already ${participant.outcome}.`);
+      await tx.update(matchParticipants).set({ outcome: input.outcome })
+        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, input.playerId)));
     });
   }
 
   async finishMatch(input: { matchId: string; endedAt: Date; summary: unknown }): Promise<void> {
-    await this.db.update(matchResults).set({ endedAt: input.endedAt, summary: input.summary }).where(eq(matchResults.id, input.matchId));
+    const updated = await this.db.update(matchResults).set({ endedAt: input.endedAt, summary: input.summary })
+      .where(eq(matchResults.id, input.matchId)).returning({ id: matchResults.id });
+    if (updated.length !== 1) throw new Error("Match is not registered.");
+  }
+
+  async claimRelayRequest(requestId: string, expiresAt: Date): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      await tx.delete(relayRequests).where(lt(relayRequests.expiresAt, new Date()));
+      const claimed = await tx.insert(relayRequests).values({ id: requestId, expiresAt })
+        .onConflictDoNothing()
+        .returning({ id: relayRequests.id });
+      return claimed.length === 1;
+    });
   }
 
   async close(): Promise<void> {

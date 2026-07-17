@@ -5,7 +5,7 @@ import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { createServer } from "./app";
 import { Room, type RoomPeer } from "./Room";
 import { starterBaseLayout } from "@dotbot/game/content/base";
-import type { BaseLayout, ContractDefinition } from "@dotbot/game/types";
+import type { BaseLayout, ContractDefinition, SimEvent } from "@dotbot/game/types";
 
 const databaseUrl = process.env.DATABASE_URL;
 let databaseAvailable = false;
@@ -94,36 +94,21 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
 
       alice.send({ type: "startMatch" });
       const [aliceStart] = await Promise.all([alice.waitFor("matchStart", 10_000), bob.waitFor("matchStart", 10_000)]);
-      await alice.waitFor("snap");
-      let seq = 0;
-      const moveUntil = async (move: [number, number], predicate: (position: [number, number]) => boolean) => {
-        alice.send({ type: "input", seq: ++seq, move, dash: false });
-        await waitForBotPosition(alice, aliceStart.yourBotId, predicate);
-      };
-      // Deterministic seeds put Alpha at WEST GATE; enter Main St before the
-      // established depot fragment route.
-      await moveUntil([0, 1], ([, y]) => y >= 920);
-      await moveUntil([1, 0], ([x]) => x >= 340);
-      // Settle in the clear strip between the top wall and the first column;
-      // a coarse south predicate can overshoot into the column's radius.
-      seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 340, y: 1080 }, seq);
-      await moveUntil([0.2, 0], ([x]) => x >= 438);
-      // The health dot overlaps the blueprint approach. If health resolves
-      // first, consume the original health to make room, then hold the same
-      // settled position for the shelf fragment.
-      seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 440, y: 1270 }, seq, (bays) => bays.filter(Boolean).length === 2);
-      if (!latestBays(alice, aliceStart.yourBotId)?.includes("b:shelf")) {
-        alice.send({ type: "input", seq: ++seq, move: [0, 0], dash: false, useBay: 0 });
-        await waitForBays(alice, aliceStart.yourBotId, (bays) => bays.filter(Boolean).length === 1);
-        seq = await steerBotTo(alice, aliceStart.yourBotId, { x: 440, y: 1270 }, seq, (bays) => bays.includes("b:shelf"));
-      }
-
-      await moveUntil([0, -1], ([, y]) => y <= 1080);
-      await moveUntil([-1, 0], ([x]) => x <= 340);
-      await moveUntil([0, -1], ([, y]) => y <= 920);
-      await moveUntil([1, 0], ([x]) => x >= 1000);
-      await moveUntil([0, 1], ([, y]) => y >= 1160);
-      alice.send({ type: "input", seq: ++seq, move: [0, 0], dash: false });
+      // Simulation and websocket extraction have their own deterministic
+      // coverage. Inject the authoritative extraction event here so this
+      // integration test isolates the server-to-database transaction instead
+      // of depending on a long collision-sensitive route through the map.
+      const activeRoom = rooms.join(welcome.roomCode);
+      expect(activeRoom).toBeDefined();
+      (activeRoom as unknown as { processRunEvents(events: SimEvent[]): void }).processRunEvents([{
+        type: "extracted",
+        botId: aliceStart.yourBotId,
+        squadId: "alpha",
+        items: [
+          { kind: "powerup", type: "health", sourceBuildingId: "lot6" },
+          { kind: "blueprint", blueprintId: "shelf", sourceBuildingId: "lot6" },
+        ],
+      }]);
 
       const extracted = await alice.waitFor("runOver", 5000);
       expect(extracted).toMatchObject({
@@ -173,7 +158,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
 
     const diedAccount = await persistence.registerPlayer("Died Player");
     const diedMatchId = crypto.randomUUID();
-    await persistence.startMatch({ matchId: diedMatchId, roomCode: "DIED", mapId: "downtown", startedAt: new Date() });
+    await persistence.startMatch({ matchId: diedMatchId, roomCode: "DIED", mapId: "downtown", startedAt: new Date(), playerIds: [diedAccount.playerId] });
     await persistence.recordOutcome({ matchId: diedMatchId, playerId: diedAccount.playerId, outcome: "died" });
     const [died] = await sql!<Array<{ outcome: string }>>`
       select outcome from match_participants where match_id = ${diedMatchId} and player_id = ${diedAccount.playerId}
@@ -351,7 +336,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(mineLoadout.json<{ loadout: string[] }>().loadout).toEqual(["m"]);
     expect(await persistence.consumeLoadout(account.playerId)).toEqual(["m"]);
     const mineMatchId = crypto.randomUUID();
-    await persistence.startMatch({ matchId: mineMatchId, roomCode: "MINE", mapId: "downtown", startedAt: new Date() });
+    await persistence.startMatch({ matchId: mineMatchId, roomCode: "MINE", mapId: "downtown", startedAt: new Date(), playerIds: [account.playerId] });
     const mineManifest = await persistence.recordExtraction({
       matchId: mineMatchId,
       playerId: account.playerId,
@@ -447,7 +432,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     };
     await sql!`insert into contracts (id, player_id, contract, status) values (${exactContract.id}, ${account.playerId}, ${sql!.json(exactContract)}, 'active')`;
     const exactMatch = crypto.randomUUID();
-    await persistence.startMatch({ matchId: exactMatch, roomCode: "CNTR", mapId: "downtown", startedAt: new Date() });
+    await persistence.startMatch({ matchId: exactMatch, roomCode: "CNTR", mapId: "downtown", startedAt: new Date(), playerIds: [account.playerId] });
     const exact = await persistence.recordExtraction({
       matchId: exactMatch,
       playerId: account.playerId,
@@ -471,7 +456,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     const nearMiss: ContractDefinition = { ...exactContract, id: "contract-near-miss", title: "NEAR MISS" };
     await sql!`insert into contracts (id, player_id, contract, status) values (${nearMiss.id}, ${account.playerId}, ${sql!.json(nearMiss)}, 'active')`;
     const nearMatch = crypto.randomUUID();
-    await persistence.startMatch({ matchId: nearMatch, roomCode: "MISS", mapId: "downtown", startedAt: new Date() });
+    await persistence.startMatch({ matchId: nearMatch, roomCode: "MISS", mapId: "downtown", startedAt: new Date(), playerIds: [account.playerId] });
     const near = await persistence.recordExtraction({
       matchId: nearMatch,
       playerId: account.playerId,
@@ -484,7 +469,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     const diedContract: ContractDefinition = { ...exactContract, id: "contract-died", title: "DIED PATH" };
     await sql!`insert into contracts (id, player_id, contract, status) values (${diedContract.id}, ${account.playerId}, ${sql!.json(diedContract)}, 'active')`;
     const diedMatch = crypto.randomUUID();
-    await persistence.startMatch({ matchId: diedMatch, roomCode: "DEAD", mapId: "downtown", startedAt: new Date() });
+    await persistence.startMatch({ matchId: diedMatch, roomCode: "DEAD", mapId: "downtown", startedAt: new Date(), playerIds: [account.playerId] });
     await persistence.recordOutcome({ matchId: diedMatch, playerId: account.playerId, outcome: "died" });
     expect((await sql!<Array<{ status: string }>>`select status from contracts where id = ${diedContract.id}`)[0].status).toBe("active");
     await app.close();
@@ -497,7 +482,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     const account = await persistence.registerPlayer("Capacity Pilot");
     await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'h', 39)`;
     const matchId = crypto.randomUUID();
-    await persistence.startMatch({ matchId, roomCode: "CAP1", mapId: "downtown", startedAt: new Date() });
+    await persistence.startMatch({ matchId, roomCode: "CAP1", mapId: "downtown", startedAt: new Date(), playerIds: [account.playerId] });
     const banked = await persistence.recordExtraction({
       matchId,
       playerId: account.playerId,
@@ -514,7 +499,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'h', 2)`;
     const overCapBefore = Number((await sql!<Array<{ qty: number }>>`select sum(qty)::int as qty from hold_items where player_id = ${account.playerId}`)[0].qty);
     const secondMatchId = crypto.randomUUID();
-    await persistence.startMatch({ matchId: secondMatchId, roomCode: "CAP2", mapId: "downtown", startedAt: new Date() });
+    await persistence.startMatch({ matchId: secondMatchId, roomCode: "CAP2", mapId: "downtown", startedAt: new Date(), playerIds: [account.playerId] });
     const overCap = await persistence.recordExtraction({
       matchId: secondMatchId,
       playerId: account.playerId,
@@ -548,6 +533,49 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(appliedAgain.json<{ loadout: string[] }>().loadout).toEqual(["h", "r"]);
     expect((await app.inject({ method: "POST", url: "/api/base/presets", headers, payload: { presets: Array.from({ length: 4 }, (_, index) => ({ name: `P${index}`, items: [] })) } })).statusCode).toBe(400);
     expect((await app.inject({ method: "POST", url: "/api/base/presets", headers, payload: { presets: [{ name: "Cargo", items: ["b:shelf"] }] } })).statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("makes match start, loadout withdrawal, extraction, and relay claims idempotent", async () => {
+    await sql!`truncate table relay_requests, contracts, base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
+    process.env.NODE_ENV = "test";
+    const { app, persistence } = await createServer({ databaseUrl });
+    const player = await persistence.registerPlayer("Retry Pilot");
+    const outsider = await persistence.registerPlayer("Outsider");
+    await sql!`insert into hold_items(player_id, item_type, qty) values (${player.playerId}, 'h', 1)`;
+    await sql!`update players set loadout = '["h"]'::jsonb where id = ${player.playerId}`;
+
+    const matchId = crypto.randomUUID();
+    const startedAt = new Date();
+    const startInput = { matchId, roomCode: "SAFE", mapId: "downtown", startedAt, playerIds: [player.playerId] };
+    const firstStart = await persistence.startMatch(startInput);
+    const retriedStart = await persistence.startMatch(startInput);
+    expect(firstStart.loadouts[player.playerId]).toEqual(["h"]);
+    expect(retriedStart).toEqual(firstStart);
+    expect((await sql!<Array<{ loadout: string[] }>>`select loadout from players where id = ${player.playerId}`)[0].loadout).toEqual([]);
+    await expect(persistence.startMatch({ ...startInput, playerIds: [player.playerId, outsider.playerId] }))
+      .rejects.toThrow(/different player roster/i);
+
+    const extraction = {
+      matchId,
+      playerId: player.playerId,
+      blueprintLearningThreshold: 3,
+      manifest: { reason: "extracted" as const, keptItems: ["r" as const], lostItems: [], learnedBlueprints: [] },
+    };
+    const [firstExtraction, retriedExtraction] = await Promise.all([
+      persistence.recordExtraction(extraction),
+      persistence.recordExtraction(extraction),
+    ]);
+    expect(retriedExtraction).toEqual(firstExtraction);
+    expect((await sql!<Array<{ count: number }>>`
+      select count(*)::int as count from hold_items where player_id = ${player.playerId} and item_type = 'r' and acquired_match_id = ${matchId}
+    `)[0].count).toBe(1);
+    await expect(persistence.recordExtraction({ ...extraction, playerId: outsider.playerId }))
+      .rejects.toThrow(/not registered for this match/i);
+
+    const requestId = crypto.randomUUID();
+    expect(await persistence.claimRelayRequest(requestId, new Date(Date.now() + 60_000))).toBe(true);
+    expect(await persistence.claimRelayRequest(requestId, new Date(Date.now() + 60_000))).toBe(false);
     await app.close();
   });
 });
@@ -611,94 +639,6 @@ async function connect(url: string, clients: WebSocket[]): Promise<Inbox> {
       throw new Error(`Timed out waiting for ${type}; saw ${messages.map((message) => message.type).join(",")}`);
     },
   };
-}
-
-async function waitForBotPosition(inbox: Inbox, botId: string, predicate: (position: [number, number]) => boolean): Promise<void> {
-  const started = Date.now();
-  while (Date.now() - started < 10_000) {
-    const latest = inbox.messages
-      .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
-      .at(-1);
-    const position = latest?.bots.find((bot) => bot.i === botId)?.p;
-    if (position && predicate(position)) return;
-    await delay(5);
-  }
-  throw new Error(`Timed out waiting for ${botId}`);
-}
-
-async function waitForBays(
-  inbox: Inbox,
-  botId: string,
-  predicate: (bays: NonNullable<Extract<ServerMessage, { type: "snap" }>["bots"][number]["b"]>) => boolean,
-): Promise<void> {
-  const started = Date.now();
-  while (Date.now() - started < 5000) {
-    const latest = inbox.messages.filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap").at(-1);
-    const bays = latest?.bots.find((bot) => bot.i === botId)?.b;
-    if (bays && predicate(bays)) return;
-    await delay(5);
-  }
-  throw new Error(`Timed out waiting for ${botId} bays`);
-}
-
-function latestBays(inbox: Inbox, botId: string) {
-  return inbox.messages
-    .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
-    .at(-1)?.bots.find((bot) => bot.i === botId)?.b;
-}
-
-async function steerBotTo(
-  inbox: Inbox,
-  botId: string,
-  target: { x: number; y: number },
-  initialSeq: number,
-  doneWhen?: (bays: NonNullable<Extract<ServerMessage, { type: "snap" }>["bots"][number]["b"]>) => boolean,
-): Promise<number> {
-  let seq = initialSeq;
-  let settledAt: number | null = null;
-  const started = Date.now();
-  while (Date.now() - started < 5000) {
-    const latest = inbox.messages
-      .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
-      .at(-1);
-    const bot = latest?.bots.find((candidate) => candidate.i === botId);
-    // Capture (12px range, short channel) is the real goal; positional settle
-    // is only the fallback. A doneWhen hit ends the steer even mid-approach.
-    if (doneWhen && bot?.b && doneWhen(bot.b)) {
-      inbox.send({ type: "input", seq: ++seq, move: [0, 0], dash: false });
-      return seq;
-    }
-    const position = bot?.p;
-    if (position) {
-      const dx = target.x - position[0];
-      const dy = target.y - position[1];
-      if (Math.hypot(dx, dy) <= 8) {
-        inbox.send({ type: "input", seq: ++seq, move: [0, 0], dash: false });
-        settledAt ??= Date.now();
-        if (!doneWhen && Date.now() - settledAt >= 300) return seq;
-      } else {
-        settledAt = null;
-        inbox.send({
-          type: "input",
-          seq: ++seq,
-          // Keep the final approach below one capture radius per snapshot;
-          // faster steering can oscillate across adjacent 12px dots under
-          // full-workspace load without ever holding either channel.
-          move: [Math.max(-0.1, Math.min(0.1, dx / 160)), Math.max(-0.1, Math.min(0.1, dy / 160))],
-          dash: false,
-        });
-      }
-    }
-    await delay(30);
-  }
-  const latest = inbox.messages
-    .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
-    .at(-1);
-  const bot = latest?.bots.find((candidate) => candidate.i === botId);
-  const otherEvents = inbox.messages.filter((message) => message.type !== "snap").map((message) => message.type);
-  throw new Error(
-    `Timed out steering ${botId} to ${JSON.stringify(target)}; bot=${JSON.stringify(bot)} events=${otherEvents.join(",")}`,
-  );
 }
 
 async function waitForDatabase(predicate: () => Promise<boolean>): Promise<void> {

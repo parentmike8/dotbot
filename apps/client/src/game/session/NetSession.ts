@@ -39,6 +39,7 @@ const maxRemoteCorrectionSpeedPxPerSecond = 1000;
 const correctionBlendRate = 0.3;
 const correctionCapPxPerFrame = 6;
 const teleportSnapDistancePx = 150;
+const reconnectWindowMs = 20_000;
 
 export class NetSession implements GameSession {
   private readonly options: NetSessionOptions;
@@ -86,6 +87,12 @@ export class NetSession implements GameSession {
   private lastRenderTick = Number.NEGATIVE_INFINITY;
   private lastRenderedRemote: GameSnapshot | null = null;
   private lastImpactFxAtMs = Number.NEGATIVE_INFINITY;
+  private disposed = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectStartedAt: number | null = null;
+  private reconnectAttempt = 0;
+  private transportGeneration = 0;
 
   constructor(options: NetSessionOptions) {
     this.options = options;
@@ -119,28 +126,11 @@ export class NetSession implements GameSession {
 
   start(): Promise<void> {
     if (this.startPromise) return this.startPromise;
+    if (this.disposed) return Promise.reject(new Error("This game session has been closed."));
     this.startPromise = new Promise<void>((resolve, reject) => {
       this.resolveStart = resolve;
       this.rejectStart = reject;
-      const transport = (this.options.transportFactory ?? createWebSocketGameTransport)(this.options.url);
-      this.transport = transport;
-      transport.connect({
-        open: () => {
-          this.send({
-            type: "hello",
-            token: this.options.token,
-            name: this.options.name,
-            roomCode: this.options.roomCode.trim().toUpperCase(),
-            preferredSquad: this.options.preferredSquad,
-            playerSessionId: this.options.playerSessionId,
-          });
-        },
-        message: (message) => this.receive(message),
-        error: () => this.failStart("Unable to connect to the game server."),
-        close: () => {
-          if (!this.mapValue) this.failStart("The game server closed the connection.");
-        },
-      });
+      this.connectTransport();
     });
     return this.startPromise;
   }
@@ -244,6 +234,12 @@ export class NetSession implements GameSession {
   }
 
   dispose(): void {
+    this.disposed = true;
+    this.transportGeneration += 1;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.connectTimeoutTimer) clearTimeout(this.connectTimeoutTimer);
+    this.reconnectTimer = null;
+    this.connectTimeoutTimer = null;
     this.transport?.close();
     this.transport = null;
     this.snapshots = [];
@@ -256,6 +252,11 @@ export class NetSession implements GameSession {
   private receive(message: ServerMessage): void {
     switch (message.type) {
       case "welcome":
+        if (this.connectTimeoutTimer) clearTimeout(this.connectTimeoutTimer);
+        this.connectTimeoutTimer = null;
+        this.reconnectAttempt = 0;
+        this.reconnectStartedAt = null;
+        this.options.onError?.("");
         this.playerIdValue = message.playerId;
         this.roomCode = message.roomCode;
         this.options.onLobby?.({
@@ -276,6 +277,16 @@ export class NetSession implements GameSession {
         });
         return;
       case "matchStart":
+        this.snapshots = [];
+        this.serverClockTick = null;
+        this.lastRenderTick = Number.NEGATIVE_INFINITY;
+        this.lastRenderedRemote = null;
+        this.lastOwnRenderedPosition = null;
+        this.predictor = null;
+        this.predictionEnabled = false;
+        this.predictionAccumulatorMs = 0;
+        this.correctionOffset = { x: 0, y: 0 };
+        this.pendingInputs = [];
         this.mapValue = message.map;
         this.configValue = message.config;
         this.playerIdValue = message.yourBotId;
@@ -321,6 +332,7 @@ export class NetSession implements GameSession {
           keptItems: message.keptItems.map(itemFromCode),
           lostItems: message.lostItems.map(itemFromCode),
           learnedBlueprints: message.learnedBlueprints,
+          persistenceStatus: message.persistenceStatus,
           contractCompletions: (message.contractCompletions ?? []).map((completion) => ({
             ...completion,
             payout: completion.payout.map(itemFromCode),
@@ -345,6 +357,80 @@ export class NetSession implements GameSession {
 
   private send(message: ClientMessage, delivery: DeliveryClass = "reliable"): void {
     this.transport?.send(message, delivery);
+  }
+
+  private connectTransport(): void {
+    if (this.disposed) return;
+    const generation = ++this.transportGeneration;
+    const transport = (this.options.transportFactory ?? createWebSocketGameTransport)(this.options.url);
+    this.transport = transport;
+    const reconnectElapsed = this.reconnectStartedAt === null ? 0 : Date.now() - this.reconnectStartedAt;
+    const attemptTimeoutMs = Math.max(1, Math.min(5_000, reconnectWindowMs - reconnectElapsed));
+    this.connectTimeoutTimer = setTimeout(() => {
+      if (generation !== this.transportGeneration || this.disposed) return;
+      this.connectTimeoutTimer = null;
+      this.transportGeneration += 1;
+      transport.close();
+      this.transport = null;
+      this.clearInputsForHandoff();
+      this.scheduleReconnect();
+    }, attemptTimeoutMs);
+    transport.connect({
+      open: () => {
+        if (generation !== this.transportGeneration || this.disposed) return;
+        this.send({
+          type: "hello",
+          token: this.options.token,
+          name: this.options.name,
+          roomCode: this.options.roomCode.trim().toUpperCase(),
+          preferredSquad: this.options.preferredSquad,
+          playerSessionId: this.options.playerSessionId,
+        });
+      },
+      message: (message) => {
+        if (generation === this.transportGeneration && !this.disposed) this.receive(message);
+      },
+      error: () => {
+        // Browser WebSockets follow an error with close. The close handler owns
+        // retries so a single failure cannot schedule two replacement sockets.
+      },
+      close: () => {
+        if (generation !== this.transportGeneration || this.disposed) return;
+        if (this.connectTimeoutTimer) clearTimeout(this.connectTimeoutTimer);
+        this.connectTimeoutTimer = null;
+        this.transport = null;
+        this.clearInputsForHandoff();
+        this.scheduleReconnect();
+      },
+    });
+  }
+
+  private clearInputsForHandoff(): void {
+    this.predictionInput = { move: { x: 0, y: 0 }, dash: false };
+    this.predictionDashQueued = false;
+    this.queuedUseBay = undefined;
+    this.queuedSwapBay = undefined;
+    this.queuedPlea = false;
+    this.edgeAwaitingFlush = false;
+    this.pendingInputs = [];
+  }
+
+  private scheduleReconnect(): void {
+    if (this.disposed || this.reconnectTimer) return;
+    const now = Date.now();
+    this.reconnectStartedAt ??= now;
+    if (now - this.reconnectStartedAt >= reconnectWindowMs) {
+      this.disposed = true;
+      this.failStart("Connection to the game server was lost. Return to the lobby and rejoin.");
+      return;
+    }
+    this.options.onError?.("CONNECTION INTERRUPTED · RECONNECTING…");
+    const delay = Math.min(2_000, 250 * 2 ** this.reconnectAttempt);
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectTransport();
+    }, delay);
   }
 
   private advancePrediction(elapsedMs: number): void {

@@ -14,6 +14,8 @@ export type RoomManagerOptions = {
   aiWingmates?: boolean;
   /** Test/replay hook; production uses random UUID match seeds. */
   matchIdFactory?: () => string;
+  /** Mobile network handoff grace passed through to rooms. */
+  connectionHandoffMs?: number;
   /** Dedicated GameLift processes resolve exactly one externally allocated
    * room code. Cloud Run leaves this unset and keeps the legacy multi-room
    * behavior during migration. */
@@ -49,14 +51,19 @@ export class RoomManager {
     return [...this.roomMap.values()].map((room) => room.bandwidthHealth);
   }
 
+  get safeToTerminate(): boolean {
+    return [...this.roomMap.values()].every((room) => room.safeToTerminate);
+  }
+
   start(): void {
     if (this.interval) return;
     this.interval = setInterval(() => this.tick(), 4);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.interval) clearInterval(this.interval);
     this.interval = null;
+    await Promise.allSettled([...this.roomMap.values()].map((room) => room.waitForPersistence()));
     for (const room of this.roomMap.values()) room.dispose();
     this.roomMap.clear();
     this.peerRooms.clear();
@@ -80,45 +87,55 @@ export class RoomManager {
     return this.roomMap.get(code.trim().toUpperCase());
   }
 
-  async handleHello(peer: RoomPeer, message: Extract<ClientMessage, { type: "hello" }>): Promise<void> {
+  async handleHello(peer: RoomPeer, message: Extract<ClientMessage, { type: "hello" }>, expectedPlayerId?: string): Promise<boolean> {
     let identity;
     try {
       identity = await this.persistence.resolveOrRegisterPlayer(message.token, message.name);
     } catch (error) {
+      if (this.options.sessionRoomCode) {
+        console.warn(`[persistence] GameLift identity lookup failed; rejecting admission. ${errorMessage(error)}`);
+        peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
+        return false;
+      }
       console.warn(`[persistence] identity lookup failed; accepting stateless WebSocket identity. ${errorMessage(error)}`);
       identity = await new NoopPersistence().resolveOrRegisterPlayer(message.token, message.name);
+    }
+    if (expectedPlayerId && identity.playerId !== expectedPlayerId) {
+      peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
+      return false;
     }
     const assignedCode = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : undefined;
     if (assignedCode && message.roomCode && message.roomCode.trim().toUpperCase() !== assignedCode) {
       peer.send({ type: "err", code: "room_not_found", msg: "That room is hosted by a different game session." });
-      return;
+      return false;
     }
     const room = assignedCode
       ? this.join(assignedCode) ?? this.createRoom(assignedCode)
       : message.roomCode ? this.join(message.roomCode) : this.createRoom();
     if (!room) {
       peer.send({ type: "err", code: "room_not_found", msg: "That room does not exist." });
-      return;
+      return false;
     }
     const member = room.join(peer, message.token, identity.name, identity.playerId, message.preferredSquad);
     if (!member) {
       peer.send({ type: "err", code: "room_unavailable", msg: "That room cannot be joined." });
-      return;
+      return false;
     }
     this.peerRooms.set(peer.id, { room, playerId: member.playerId });
+    return true;
   }
 
-  async handleMessage(peer: RoomPeer, message: ClientMessage): Promise<void> {
+  async handleMessage(peer: RoomPeer, message: ClientMessage, expectedPlayerId?: string): Promise<boolean> {
     if (message.type === "hello") {
-      await this.handleHello(peer, message);
-      return;
+      return this.handleHello(peer, message, expectedPlayerId);
     }
     const binding = this.peerRooms.get(peer.id);
     if (!binding) {
       peer.send({ type: "err", code: "hello_required", msg: "Send hello before other messages." });
-      return;
+      return false;
     }
     binding.room.receive(binding.playerId, message);
+    return true;
   }
 
   disconnect(peerId: string): void {
@@ -134,7 +151,7 @@ export class RoomManager {
       this.tickSamples.push(...room.tick(now));
       if (this.tickSamples.length > 2000) this.tickSamples.splice(0, this.tickSamples.length - 2000);
       const emptyLobbyExpired = room.phase === "lobby" && room.connectedCount === 0 && now - room.createdAt >= 10 * 60_000;
-      const endedExpired = room.phase === "ended" && room.endedAt !== null && now - room.endedAt >= (this.options.endedRoomTtlMs ?? 30_000);
+      const endedExpired = room.readyForDisposal && room.endedAt !== null && now - room.endedAt >= (this.options.endedRoomTtlMs ?? 30_000);
       if (emptyLobbyExpired || endedExpired) {
         room.dispose();
         this.roomMap.delete(code);

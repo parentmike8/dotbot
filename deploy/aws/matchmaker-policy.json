@@ -19,7 +19,8 @@
         "gamelift:CreateGameSession",
         "gamelift:CreatePlayerSession",
         "gamelift:DescribeGameSessions",
-        "gamelift:DescribePlayerSessions"
+        "gamelift:DescribePlayerSessions",
+        "gamelift:TerminateGameSession"
       ],
       "Resource": "*"
     },

@@ -18,6 +18,7 @@ export type RunResult = {
   lostItems: Item[];
   learnedBlueprints: string[];
   contractCompletions: Array<{ contractId: string; title: string; payout: Item[] }>;
+  persistenceStatus?: "saved" | "failed";
   runTimeMs: number;
 };
 
@@ -198,6 +199,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             lostItems: runState.lostItems,
             learnedBlueprints: runState.learnedBlueprints,
             contractCompletions: runState.contractCompletions ?? [],
+            persistenceStatus: runState.persistenceStatus,
             runTimeMs: nextSnapshot.timeMs,
           };
           runEndedRef.current = true;

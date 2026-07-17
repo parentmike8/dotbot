@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: us-east-1
-  NODE_VERSION: 22.18.0
+  AWS_REGION: ca-central-1
+  NODE_VERSION: 24.18.0
   PNPM_VERSION: 9.15.0
 
 jobs:
@@ -45,7 +45,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.24.x"
+          go-version: "1.26.5"
           cache-dependency-path: apps/gamelift-adapter/go.sum
 
       - name: Build and test the production runtime
@@ -61,7 +61,7 @@ jobs:
             cd apps/gamelift-adapter
             go test ./...
             go vet ./...
-            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist-gamelift/gamelift-adapter .
+            CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ../../dist-gamelift/gamelift-adapter .
           )
 
       - name: Assemble immutable GameLift build
@@ -76,11 +76,25 @@ jobs:
           cp deploy/gamelift-ec2/launch.sh "$build_root/launch.sh"
           chmod 0555 "$build_root/install.sh" "$build_root/launch.sh" "$build_root/gamelift-adapter"
 
+          node_archive="node-v${NODE_VERSION}-linux-arm64.tar.xz"
           curl --fail --location --silent --show-error \
-            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
-            | tar -xJ --strip-components=1 -C "$build_root/node"
-          "$build_root/node/bin/node" --version
-          sha256sum "$build_root/server/index.js" "$build_root/gamelift-adapter" > "$build_root/SHA256SUMS"
+            --output "$RUNNER_TEMP/$node_archive" \
+            "https://nodejs.org/dist/v${NODE_VERSION}/$node_archive"
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/SHASUMS256.txt" \
+            "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
+          expected=$(awk -v archive="$node_archive" '$2 == archive { print $1 }' "$RUNNER_TEMP/SHASUMS256.txt")
+          test -n "$expected"
+          printf '%s  %s\n' "$expected" "$RUNNER_TEMP/$node_archive" | sha256sum --check --strict
+          tar -xJf "$RUNNER_TEMP/$node_archive" --strip-components=1 -C "$build_root/node"
+          file "$build_root/node/bin/node" "$build_root/gamelift-adapter" | tee "$build_root/ARCHITECTURES"
+          grep -q 'ARM aarch64' "$build_root/ARCHITECTURES"
+          sha256sum \
+            "$build_root/server/index.js" \
+            "$build_root/gamelift-adapter" \
+            "$build_root/install.sh" \
+            "$build_root/launch.sh" \
+            "$build_root/node/bin/node" > "$build_root/SHA256SUMS"
 
       - name: Upload immutable GameLift build
         shell: bash

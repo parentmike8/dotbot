@@ -41,8 +41,13 @@ export class GameLiftSessionGate {
     return roomCode;
   }
 
-  async acceptPlayerSession(playerSessionId: string): Promise<void> {
-    await this.playerSessionAction("accept", playerSessionId);
+  async acceptPlayerSession(playerSessionId: string): Promise<string> {
+    const response = await this.playerSessionAction("accept", playerSessionId);
+    const payload = await response.json().catch(() => null) as { playerId?: unknown } | null;
+    if (!payload || typeof payload.playerId !== "string" || !payload.playerId || payload.playerId.length > 1024) {
+      throw new Error("GameLift returned an invalid player identity.");
+    }
+    return payload.playerId;
   }
 
   async removePlayerSession(playerSessionId: string): Promise<void> {
@@ -64,7 +69,7 @@ export class GameLiftSessionGate {
     }
   }
 
-  private async playerSessionAction(action: "accept" | "remove", playerSessionId: string): Promise<void> {
+  private async playerSessionAction(action: "accept" | "remove", playerSessionId: string): Promise<Response> {
     const value = playerSessionId.trim();
     if (!value || value.length > 2048) throw new Error("A valid GameLift player session is required.");
     const response = await this.request(`${this.adapterUrl}/v1/player-sessions/${action}`, {
@@ -74,6 +79,7 @@ export class GameLiftSessionGate {
       signal: AbortSignal.timeout(1500),
     });
     if (!response.ok) throw new Error("GameLift rejected the player session.");
+    return response;
   }
 }
 

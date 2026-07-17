@@ -1,6 +1,6 @@
 module github.com/parentmike8/dotbot/apps/gamelift-adapter
 
-go 1.24
+go 1.26
 
 require github.com/amazon-gamelift/amazon-gamelift-servers-go-server-sdk/v5 v5.5.0
 
