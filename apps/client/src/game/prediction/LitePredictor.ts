@@ -8,10 +8,15 @@ export type PredictedOwnBot = Pick<
   "id" | "position" | "radius" | "floorId" | "facing" | "dashCooldownMs" | "dashActiveMs"
 >;
 
+export type PredictedDashContact = {
+  position: Vec2;
+  targetId: string;
+};
+
 /** Another bot the predicted bot must shoulder past, from the latest
  * snapshot. Hostile obstacles also stop a predicted dash at contact,
  * mirroring the server's stop-at-contact rule. */
-export type PredictionObstacle = { position: Vec2; radius: number; hostile: boolean };
+export type PredictionObstacle = { id: string; position: Vec2; radius: number; hostile: boolean };
 
 const cloneState = (bot: PredictedOwnBot): PredictedOwnBot => ({
   ...bot,
@@ -32,7 +37,7 @@ export class LitePredictor {
   private channelFrozen = false;
   /** Contact point of the most recent predicted dash stop; a side channel
    * (survives replay resets) so the session can flash impact FX instantly. */
-  private dashContact: Vec2 | null = null;
+  private dashContact: PredictedDashContact | null = null;
   private readonly solidsByFloor = new Map<string, ReturnType<typeof collectSolidRects>>();
 
   constructor(
@@ -64,7 +69,7 @@ export class LitePredictor {
   }
 
   /** One-shot read of the latest predicted dash impact (null when none). */
-  consumeDashContact(): Vec2 | null {
+  consumeDashContact(): PredictedDashContact | null {
     const contact = this.dashContact;
     this.dashContact = null;
     return contact;
@@ -151,8 +156,11 @@ export class LitePredictor {
           );
         }
         this.dashContact = {
-          x: (position.x + obstacle.position.x) / 2,
-          y: (position.y + obstacle.position.y) / 2,
+          targetId: obstacle.id,
+          position: {
+            x: (position.x + obstacle.position.x) / 2,
+            y: (position.y + obstacle.position.y) / 2,
+          },
         };
         break;
       }

@@ -170,6 +170,16 @@ export class Room {
       existing.disconnectedAt = null;
       existing.inputQueue = [];
       existing.heldInput = { move: { x: 0, y: 0 }, dash: false };
+      // A full page refresh creates a new NetSession whose input sequence
+      // starts at 1. Keeping the old acknowledgement would make every command
+      // from the refreshed page look stale until it counted all the way back
+      // up, leaving the reconnected bot effectively immovable.
+      existing.lastAppliedSeq = 0;
+      existing.inputStarved = true;
+      existing.starveHoldTicks = 0;
+      existing.backlogWindowMinDepth = Number.POSITIVE_INFINITY;
+      existing.backlogWindowTicks = 0;
+      existing.queueDepthEma = 0;
       if (existing.handoffTimer) {
         clearTimeout(existing.handoffTimer);
         existing.handoffTimer = null;

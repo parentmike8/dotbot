@@ -48,7 +48,14 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   }, [events, session]);
 
   return (
-    <main className="app-shell net-game" data-room-code={roomCode} data-player-id={session.playerId}>
+    <main
+      className="app-shell net-game"
+      data-room-code={roomCode}
+      data-player-id={session.playerId}
+      data-player-state={player?.state ?? "loading"}
+      data-player-x={player ? Math.round(player.position.x) : undefined}
+      data-player-y={player ? Math.round(player.position.y) : undefined}
+    >
       <div ref={hostRef} className="game-canvas" />
       {connectionMessage ? (
         <aside className="net-game-connection" role="status" aria-live="polite">

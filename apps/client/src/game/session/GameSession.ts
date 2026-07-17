@@ -1,10 +1,12 @@
-import type { GameSnapshot, InputCommand, Item, MapDocument, SimEvent } from "@dotbot/game/types";
+import type { GameSnapshot, InputCommand, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { MatchIntel } from "@dotbot/protocol";
 import type { NetworkDebugStats } from "./netgraph";
 
 export type RunState =
   | { phase: "live" }
   | { phase: "over"; reason: "extracted" | "died" | "timeout"; keptItems: Item[]; lostItems: Item[]; learnedBlueprints: string[]; contractCompletions?: Array<{ contractId: string; title: string; payout: Item[] }>; persistenceStatus?: "saved" | "failed" };
+
+export type PredictedImpact = Vec2 & { targetId: string };
 
 export interface GameSession {
   readonly map: MapDocument;
@@ -31,7 +33,7 @@ export interface GameSession {
   setMeasuredFps?(fps: number): void;
   /** Predicted dash impacts to flash immediately (network sessions only —
    * local sessions get authoritative feedback the same frame anyway). */
-  drainPredictedImpacts?(): Array<{ x: number; y: number }>;
+  drainPredictedImpacts?(): PredictedImpact[];
   /** Permanent F3 network diagnostics for live sessions. */
   getNetworkDebug?(): NetworkDebugStats;
   dispose(): void;

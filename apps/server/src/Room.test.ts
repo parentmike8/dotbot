@@ -294,6 +294,23 @@ describe("Room input stream", () => {
     step();
     step();
     expect(member.lastAppliedSeq).toBe(21);
+
+    // A browser refresh creates a brand-new client input stream beginning at
+    // seq 1. Rejoining during the handoff window must reset the old ack or the
+    // server will discard the refreshed player's movement for many seconds.
+    room.disconnect(peer.peer.id);
+    const refreshed = collectingPeer("stream-peer-refreshed");
+    expect(room.join(refreshed.peer, "stream-token", "Streamer", "stream-player", "alpha")).toBe(member);
+    expect(member.lastAppliedSeq).toBe(0);
+    room.receive("stream-player", {
+      type: "input", seq: 2, move: [1, 0], dash: false,
+      frames: [
+        { seq: 1, move: [1, 0], dash: false },
+        { seq: 2, move: [1, 0], dash: false },
+      ],
+    });
+    step();
+    expect(member.lastAppliedSeq).toBe(1);
     room.dispose();
   });
 });

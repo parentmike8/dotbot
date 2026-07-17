@@ -84,7 +84,7 @@ describe("LitePredictor", () => {
 
   it("stops a predicted dash at a hostile body and recoils to touching", () => {
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
-    predictor.setObstacles([{ position: { x: 1260, y: 850 }, radius: 24, hostile: true }]);
+    predictor.setObstacles([{ id: "target", position: { x: 1260, y: 850 }, radius: 24, hostile: true }]);
 
     predictor.step({ ...moveRight, dash: true });
     for (let tick = 0; tick < 12; tick += 1) {
@@ -98,13 +98,13 @@ describe("LitePredictor", () => {
     const gap = Math.hypot(state.position.x - 1260, state.position.y - 850) - 48;
     expect(gap).toBeGreaterThanOrEqual(-0.5);
     expect(gap).toBeLessThanOrEqual(1.5);
-    expect(predictor.consumeDashContact()).not.toBeNull();
+    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target" });
     expect(predictor.consumeDashContact()).toBeNull();
   });
 
   it("passes a predicted dash through friendly bodies untouched", () => {
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
-    predictor.setObstacles([{ position: { x: 1260, y: 850 }, radius: 24, hostile: false }]);
+    predictor.setObstacles([{ id: "friendly", position: { x: 1260, y: 850 }, radius: 24, hostile: false }]);
 
     predictor.step({ ...moveRight, dash: true });
     for (let tick = 0; tick < 30; tick += 1) {

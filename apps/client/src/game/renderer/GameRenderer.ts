@@ -13,8 +13,10 @@ import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { MatchIntel } from "@dotbot/protocol";
 import { shieldArcSpan } from "@dotbot/game/shields";
+import type { PredictedImpact } from "../session/GameSession";
 import { buildMapArt, drawStair, drawStairExitHalf, type MapArt } from "./mapArt";
 import { drawObjectDraftLayers } from "./glyphs";
+import { applyPredictedImpactOverlays, type QueuedPredictedImpact } from "./impactPrediction";
 import { DOT_COLOR, INK, WEIGHT } from "./style";
 
 const SQUAD_CYAN = 0x15aabf;
@@ -72,7 +74,7 @@ export class GameRenderer {
   private lastCameraAt = performance.now();
   private readonly pleaSignals = new Map<string, { event: Extract<SimEvent, { type: "plea" }>; startedAt: number }>();
   private readonly mineSignals = new Map<string, { event: Extract<SimEvent, { type: "mineSensor" }>; startedAt: number }>();
-  private readonly impactFlashes: Array<{ position: Vec2; startedAt: number }> = [];
+  private readonly impactFlashes: QueuedPredictedImpact[] = [];
   private readonly draftAnimations = new Map<string, DraftAnimation>();
 
   private constructor(app: Application, map: MapDocument) {
@@ -180,8 +182,8 @@ export class GameRenderer {
 
   /** Instant impact flash at a predicted dash contact — the hit must be seen
    * the frame it is felt, a round trip before the authoritative arc breaks. */
-  queueImpact(position: { x: number; y: number }): void {
-    this.impactFlashes.push({ position: { ...position }, startedAt: performance.now() });
+  queueImpact(impact: PredictedImpact): void {
+    this.impactFlashes.push({ ...impact, startedAt: performance.now() });
   }
 
   queueMineSensor(event: Extract<SimEvent, { type: "mineSensor" }>): void {
@@ -189,8 +191,10 @@ export class GameRenderer {
   }
 
   render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null, intel?: MatchIntel): void {
+    const nowMs = performance.now();
+    snapshot = applyPredictedImpactOverlays(snapshot, this.impactFlashes, nowMs);
     this.lastTimeMs = snapshot.timeMs;
-    this.updateDraftAnimations(performance.now());
+    this.updateDraftAnimations(nowMs);
     const overview = preserveMissingViewer;
     const currentPlayer = overview ? undefined : snapshot.bots.find((bot) => bot.id === playerId);
     const player = overview ? undefined : currentPlayer ?? snapshot.bots[0];
@@ -224,7 +228,7 @@ export class GameRenderer {
       this.drawMineSignals(player);
       this.drawDownedSquadmateArrow(snapshot, player);
     }
-    this.drawImpactFlashes(performance.now());
+    this.drawImpactFlashes(snapshot, nowMs);
 
     this.drawStairOverlay(player ?? null);
   }
@@ -755,7 +759,7 @@ export class GameRenderer {
   /** Sharp, short-lived contact burst: a heavy ring snapping outward with a
    * four-tick star — distinct from the softer server noise ring that follows
    * a round trip later. */
-  private drawImpactFlashes(nowMs: number): void {
+  private drawImpactFlashes(snapshot: GameSnapshot, nowMs: number): void {
     const lifeMs = 240;
     for (let index = this.impactFlashes.length - 1; index >= 0; index -= 1) {
       const flash = this.impactFlashes[index];
@@ -767,7 +771,7 @@ export class GameRenderer {
       const progress = clamp01(age / lifeMs);
       const alpha = (1 - progress) * 0.95;
       const radius = 8 + progress * 20;
-      const { x, y } = flash.position;
+      const { x, y } = flash;
       this.dynamicGfx.circle(x, y, radius).stroke({ color: INK.structure, width: 3.5 - progress * 2.5, alpha });
       const spike = 5 + progress * 7;
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
@@ -775,6 +779,21 @@ export class GameRenderer {
           .moveTo(x + dx * radius, y + dy * radius)
           .lineTo(x + dx * (radius + spike), y + dy * (radius + spike))
           .stroke({ color: INK.structure, width: 2, alpha });
+      }
+
+      // A short white-black pulse on the victim makes the contact readable on
+      // a busy floor plan while the speculative shield break above conveys
+      // the actual damage result without waiting for a network round trip.
+      const target = snapshot.bots.find((bot) => bot.id === flash.targetId);
+      if (target && age <= 110) {
+        const targetProgress = age / 110;
+        const targetAlpha = (1 - targetProgress) * 0.95;
+        this.dynamicGfx
+          .circle(target.position.x, target.position.y, target.radius * (0.5 + targetProgress * 0.32))
+          .stroke({ color: 0xffffff, width: 6 - targetProgress * 3, alpha: targetAlpha });
+        this.dynamicGfx
+          .circle(target.position.x, target.position.y, target.radius * (0.72 + targetProgress * 0.4))
+          .stroke({ color: INK.structure, width: 2.5, alpha: targetAlpha });
       }
     }
   }

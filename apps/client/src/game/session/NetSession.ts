@@ -11,7 +11,7 @@ import {
   replayPendingInputs,
   type PendingInput,
 } from "../prediction/reconciliation";
-import type { GameSession, RunState } from "./GameSession";
+import type { GameSession, PredictedImpact, RunState } from "./GameSession";
 import { snapshotArrivalStats, type NetworkDebugStats } from "./netgraph";
 import { capRemoteRecovery, fastForwardCombatState, sampleTimeline, type TimelineSnapshot } from "./interpolation";
 import type { GameTransport, GameTransportFactory } from "../transport/GameTransport";
@@ -199,15 +199,15 @@ export class NetSession implements GameSession {
       maxRemoteCorrectionSpeedPxPerSecond,
     );
     this.lastRenderedRemote = remote;
+    const combatReadyRemote = fastForwardCombatState(remote, newest.snapshot, this.playerIdValue);
     // Prediction must collide with the enemy bodies the player can actually
     // see, not the freshest snapshot hidden 125ms ahead of the render
-    // timeline. Otherwise a dash stops on an invisible leading collider.
-    this.setPredictionObstacles(remote);
+    // timeline. Otherwise a dash stops on an invisible leading collider. Its
+    // discrete combat state still comes from the freshest truth so a target
+    // already inside invulnerability never produces a false local hit flash.
+    this.setPredictionObstacles(combatReadyRemote);
     this.advancePrediction(elapsedMs);
-    return this.withPredictedOwnBot(
-      fastForwardCombatState(remote, newest.snapshot, this.playerIdValue),
-      newest.snapshot,
-    );
+    return this.withPredictedOwnBot(combatReadyRemote, newest.snapshot);
   }
 
   /**
@@ -216,13 +216,13 @@ export class NetSession implements GameSession {
    * round trip later. Deduped by time: real contacts cannot repeat inside a
    * dash cooldown, but reconciliation replays re-step the same frames.
    */
-  drainPredictedImpacts(): Array<{ x: number; y: number }> {
+  drainPredictedImpacts(): PredictedImpact[] {
     const contact = this.predictor?.consumeDashContact() ?? null;
     if (!contact) return [];
     const now = performance.now();
     if (now - this.lastImpactFxAtMs < 400) return [];
     this.lastImpactFxAtMs = now;
-    return [contact];
+    return [{ ...contact.position, targetId: contact.targetId }];
   }
 
   drainEvents(): SimEvent[] {
@@ -591,6 +591,7 @@ export class NetSession implements GameSession {
     this.predictor.setObstacles(rendered.bots
       .filter((bot) => bot.id !== this.playerIdValue && bot.state === "alive" && bot.floorId === floorId)
       .map((bot) => ({
+        id: bot.id,
         position: { ...bot.position },
         radius: bot.radius,
         hostile: own !== undefined && bot.squadId !== own.squadId && bot.invulnerabilityMs <= 0,
