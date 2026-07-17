@@ -12,6 +12,12 @@ import {
   type PendingInput,
 } from "../prediction/reconciliation";
 import type { GameSession, PredictedImpact, RunState } from "./GameSession";
+import {
+  createImpactTelemetry,
+  expireUnconfirmedHits,
+  recordAuthoritativeHit,
+  recordPredictedHit,
+} from "./impactTelemetry";
 import { snapshotArrivalStats, type NetworkDebugStats } from "./netgraph";
 import { capRemoteRecovery, fastForwardCombatState, sampleTimeline, type TimelineSnapshot } from "./interpolation";
 import type { GameTransport, GameTransportFactory } from "../transport/GameTransport";
@@ -87,6 +93,7 @@ export class NetSession implements GameSession {
   private lastRenderTick = Number.NEGATIVE_INFINITY;
   private lastRenderedRemote: GameSnapshot | null = null;
   private lastImpactFxAtMs = Number.NEGATIVE_INFINITY;
+  private impactTelemetry = createImpactTelemetry();
   private disposed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connectTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -169,6 +176,7 @@ export class NetSession implements GameSession {
   getNetworkDebug(): NetworkDebugStats {
     const now = performance.now();
     this.pruneCorrections(now);
+    expireUnconfirmedHits(this.impactTelemetry, now);
     return {
       snapshotIntervalsMs: this.snapshotIntervalsMs.slice(-64),
       ...snapshotArrivalStats(this.snapshotIntervalsMs),
@@ -177,6 +185,11 @@ export class NetSession implements GameSession {
       bufferDepthSnapshots: this.bufferDepthSnapshots,
       predictionErrorPx: this.predictionErrorPx,
       correctionsPerSecond: this.correctionTimesMs.length,
+      hitConfirmationMs: this.impactTelemetry.lastConfirmationMs,
+      hitPredictedCount: this.impactTelemetry.predictedCount,
+      hitConfirmedCount: this.impactTelemetry.confirmedCount,
+      hitUnconfirmedCount: this.impactTelemetry.unconfirmedCount,
+      hitPendingCount: this.impactTelemetry.pending.length,
     };
   }
 
@@ -222,6 +235,7 @@ export class NetSession implements GameSession {
     const now = performance.now();
     if (now - this.lastImpactFxAtMs < 400) return [];
     this.lastImpactFxAtMs = now;
+    recordPredictedHit(this.impactTelemetry, contact.targetId, now);
     return [{ ...contact.position, targetId: contact.targetId }];
   }
 
@@ -286,6 +300,7 @@ export class NetSession implements GameSession {
         this.predictionEnabled = false;
         this.predictionAccumulatorMs = 0;
         this.correctionOffset = { x: 0, y: 0 };
+        this.impactTelemetry = createImpactTelemetry();
         this.pendingInputs = [];
         this.mapValue = message.map;
         this.configValue = message.config;
@@ -323,7 +338,14 @@ export class NetSession implements GameSession {
         for (const meta of message.add) this.metaIndex.set(meta.id, meta);
         return;
       case "ev":
-        this.events.push(...message.events.map(fromWireEvent));
+        for (const wireEvent of message.events) {
+          const event = fromWireEvent(wireEvent);
+          if (event.type === "hit") {
+            recordAuthoritativeHit(this.impactTelemetry, event, this.playerIdValue, performance.now());
+            continue;
+          }
+          this.events.push(event);
+        }
         return;
       case "runOver":
         this.runState = {

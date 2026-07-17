@@ -125,6 +125,7 @@ export type MatchIntel = {
 };
 
 export type WireSimEvent =
+  | { type: "hit"; botId: string; byBotId: string }
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "consumed"; botId: string; byBotId: string; lostItems: WireItemCode[] }
   | { type: "revived"; botId: string; byBotId: string }

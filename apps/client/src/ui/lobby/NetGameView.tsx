@@ -55,6 +55,11 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       data-player-state={player?.state ?? "loading"}
       data-player-x={player ? Math.round(player.position.x) : undefined}
       data-player-y={player ? Math.round(player.position.y) : undefined}
+      data-hit-confirm-ms={networkDebug?.hitConfirmationMs === null ? undefined : networkDebug?.hitConfirmationMs}
+      data-hit-predicted={networkDebug?.hitPredictedCount}
+      data-hit-confirmed={networkDebug?.hitConfirmedCount}
+      data-hit-unconfirmed={networkDebug?.hitUnconfirmedCount}
+      data-hit-pending={networkDebug?.hitPendingCount}
     >
       <div ref={hostRef} className="game-canvas" />
       {connectionMessage ? (
@@ -92,6 +97,8 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
               <div>Buffer {networkDebug.bufferDepthSnapshots} @ {networkDebug.interpolationDelayMs}ms</div>
               <div>Error {networkDebug.predictionErrorPx.toFixed(1)}px</div>
               <div>Corrections {networkDebug.correctionsPerSecond}/s</div>
+              <div>Hit confirm {networkDebug.hitConfirmationMs === null ? "—" : `${Math.round(networkDebug.hitConfirmationMs)}ms`}</div>
+              <div>Contacts {networkDebug.hitPredictedCount} predicted · {networkDebug.hitConfirmedCount} confirmed · {networkDebug.hitUnconfirmedCount} unconfirmed · {networkDebug.hitPendingCount} pending</div>
             </div>
           ) : null}
         </aside>

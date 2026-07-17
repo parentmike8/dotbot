@@ -1516,6 +1516,10 @@ export class DotBotSimulation {
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     this.emitNoise("impact", target.position, target.floorId, NOISE_LOUDNESS.impact);
+    // A dedicated acknowledgement lets the attacking client correlate its
+    // instant predicted contact with the exact authoritative result. This is
+    // diagnostic data, not another source of combat truth.
+    this.events.push({ type: "hit", botId: target.id, byBotId: source.id });
 
     if (target.shields <= 0) {
       target.state = "downed";

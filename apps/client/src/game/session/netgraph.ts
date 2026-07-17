@@ -8,6 +8,11 @@ export type NetworkDebugStats = {
   bufferDepthSnapshots: number;
   predictionErrorPx: number;
   correctionsPerSecond: number;
+  hitConfirmationMs: number | null;
+  hitPredictedCount: number;
+  hitConfirmedCount: number;
+  hitUnconfirmedCount: number;
+  hitPendingCount: number;
 };
 
 export function percentile(values: readonly number[], fraction: number): number {

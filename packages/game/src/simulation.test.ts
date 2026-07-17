@@ -1482,6 +1482,7 @@ describe("combat lag compensation", () => {
     // daylight, no interpenetration (knockback opens the gap afterwards).
     expect(gapAtImpact).not.toBeNull();
     expect(Math.abs(gapAtImpact!)).toBeLessThanOrEqual(0.75);
+    expect(simulation.drainEvents()).toContainEqual({ type: "hit", botId: "victim", byBotId: "player" });
     simulation.dispose();
   });
 

@@ -62,6 +62,7 @@ export type MineEntity = GameEntity & {
 };
 
 export type SimEvent =
+  | { type: "hit"; botId: string; byBotId: string }
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "consumed"; botId: string; byBotId: string; lostItems: Item[] }
   | { type: "revived"; botId: string; byBotId: string }

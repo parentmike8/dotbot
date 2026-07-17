@@ -65,6 +65,41 @@ describe("NetSession item edges", () => {
     });
   });
 
+  it("correlates a predicted contact with the explicit server hit acknowledgement", () => {
+    let nowMs = 100;
+    vi.stubGlobal("performance", { now: () => nowMs });
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    let contact: { targetId: string; position: { x: number; y: number } } | null = {
+      targetId: "target",
+      position: { x: 10, y: 20 },
+    };
+    Object.assign(session as unknown as object, {
+      playerIdValue: "player",
+      predictor: {
+        consumeDashContact: () => {
+          const next = contact;
+          contact = null;
+          return next;
+        },
+      },
+    });
+
+    expect(session.drainPredictedImpacts()).toEqual([{ targetId: "target", x: 10, y: 20 }]);
+    nowMs = 146;
+    (session as unknown as { receive(message: unknown): void }).receive({
+      type: "ev",
+      events: [{ type: "hit", botId: "target", byBotId: "player" }],
+    });
+
+    expect(session.getNetworkDebug()).toMatchObject({
+      hitConfirmationMs: 46,
+      hitPredictedCount: 1,
+      hitConfirmedCount: 1,
+      hitUnconfirmedCount: 0,
+      hitPendingCount: 0,
+    });
+  });
+
   it("seeds dots once, applies ordered deltas, and replaces floor contexts", () => {
     const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
     const receive = (message: unknown) => (session as unknown as { receive(message: unknown): void }).receive(message);

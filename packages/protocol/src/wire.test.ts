@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DotBotEntity, GameSnapshot } from "@dotbot/game/types";
 import type { ClientMessage, ServerMessage, WireDot } from "./messages";
 import { assertNever } from "./messages";
-import { applyWireDotFrame, fromWireSnapshot, toEntityMeta, toViewerSnapshot, toWireSnapshot } from "./wire";
+import { applyWireDotFrame, fromWireEvent, fromWireSnapshot, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot } from "./wire";
 import { itemFromCode, itemToCode } from "./items";
 
 const bot: DotBotEntity = {
@@ -156,6 +156,13 @@ describe("compact item codes", () => {
     ] as const;
     expect(items.map(itemToCode)).toEqual(["h", "r", "d", "i", "m", "b:serverRack"]);
     expect(items.map(itemToCode).map(itemFromCode)).toEqual(items);
+  });
+});
+
+describe("event wire mapping", () => {
+  it("preserves the source and target of an authoritative hit acknowledgement", () => {
+    const hit = { type: "hit", botId: "target", byBotId: "attacker" } as const;
+    expect(fromWireEvent(toWireEvent(hit))).toEqual(hit);
   });
 });
 

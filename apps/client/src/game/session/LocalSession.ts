@@ -63,7 +63,10 @@ export class LocalSession implements GameSession {
       simulation.applyInput(this.playerId, this.input);
       simulation.step();
       const frameEvents = simulation.drainEvents();
-      this.events.push(...frameEvents);
+      // Hit acknowledgements are network diagnostics, not presentation
+      // events. Keeping them out of React state avoids needless per-hit HUD
+      // updates and an ever-growing local event history.
+      this.events.push(...frameEvents.filter((event) => event.type !== "hit"));
       this.applyRunEvents(frameEvents);
       this.accumulator -= tickSeconds;
     }
