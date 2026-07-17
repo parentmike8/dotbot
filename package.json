@@ -11,6 +11,7 @@
     "db:up": "docker compose up -d postgres",
     "db:migrate": "drizzle-kit migrate --config apps/server/drizzle.config.ts",
     "dev:db": "pnpm db:up && pnpm db:migrate && pnpm dev:all",
+    "lab": "./deploy/local-parity/lab.sh",
     "build": "pnpm -r build",
     "build:all": "pnpm --filter @dotbot/client build && pnpm --filter @dotbot/server build:bundle",
     "test": "pnpm -r test",

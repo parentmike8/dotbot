@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: dotbot
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dotbot"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: build
+    command: ["pnpm", "db:migrate"]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/dotbot
+    volumes:
+      - ./.state/certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/dotbot
+      GAMELIFT_TLS_CERTIFICATE: /certs/server.crt
+      GAMELIFT_TLS_CERTIFICATE_CHAIN: /certs/ca.crt
+      GAMELIFT_TLS_PRIVATE_KEY: /certs/server.key
+    volumes:
+      - ./.state/certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('node:https').get({hostname:'127.0.0.1',port:8080,path:'/api/health',rejectUnauthorized:false},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    ports:
+      - "0.0.0.0:8443:8443"
+      - "127.0.0.1:8474:8474"
+    depends_on:
+      app:
+        condition: service_healthy
+
+  certshare:
+    image: busybox:1.37.0
+    command: ["httpd", "-f", "-p", "8080", "-h", "/public"]
+    ports:
+      - "0.0.0.0:8088:8080"
+    volumes:
+      - ./.state/public:/public:ro
+
+volumes:
+  postgres-data:

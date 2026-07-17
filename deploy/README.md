@@ -11,6 +11,21 @@ Until `DOTBOT_MATCHMAKER_URL` is set on Cloud Run, gameplay continues to use
 the current Cloud Run websocket path. That makes deployment and gameplay
 cutover separate, reversible operations.
 
+## Run the production build locally
+
+The isolated production-parity lab builds the root production `Dockerfile`,
+serves direct HTTPS/WSS, applies the real schema to a private local database,
+and can switch between repeatable Wi-Fi/mobile network conditions:
+
+```bash
+pnpm lab start wifi
+pnpm lab trust
+pnpm lab open
+```
+
+See [`deploy/local-parity/README.md`](local-parity/README.md) for phone setup,
+network interruptions, delivery probes, and the remaining cloud-only limits.
+
 ## Deploy the Google control plane
 
 ```

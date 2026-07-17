@@ -149,6 +149,57 @@ describe("NetSession item edges", () => {
     });
     session.dispose();
   });
+
+  it("reconnects to the server-assigned room after creating a new room", async () => {
+    vi.useFakeTimers();
+    const transports: FakeTransport[] = [];
+    const session = new NetSession({
+      url: "/ws",
+      roomCode: "",
+      name: "Ada",
+      token: "token",
+      transportFactory: () => {
+        const transport = new FakeTransport();
+        transports.push(transport);
+        return transport;
+      },
+    });
+    const started = session.start();
+    transports[0].handlers?.open();
+    expect(transports[0].sent[0]?.message).toMatchObject({ type: "hello", roomCode: "" });
+    transports[0].handlers?.message({
+      type: "welcome",
+      roomCode: "NEW1",
+      playerId: "player-1",
+      phase: "live",
+      hostId: "player-1",
+      members: [{ playerId: "player-1", name: "Ada", squadId: "alpha" }],
+      locked: true,
+    });
+    transports[0].handlers?.message({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "player-1",
+      meta: [],
+      tickHz: 60,
+      endTick: 3600,
+      insertionName: "WEST GATE",
+      dotBaseline: [],
+    });
+    await started;
+
+    transports[0].handlers?.close();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(transports).toHaveLength(2);
+    transports[1].handlers?.open();
+    expect(transports[1].sent[0]?.message).toMatchObject({
+      type: "hello",
+      token: "token",
+      roomCode: "NEW1",
+    });
+    session.dispose();
+  });
 });
 
 class FakeTransport implements GameTransport {

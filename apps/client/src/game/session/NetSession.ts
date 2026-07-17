@@ -382,7 +382,10 @@ export class NetSession implements GameSession {
           type: "hello",
           token: this.options.token,
           name: this.options.name,
-          roomCode: this.options.roomCode.trim().toUpperCase(),
+          // A create-room request starts with an empty code. Once the server
+          // assigns one, every reconnect must target that room rather than
+          // accidentally creating a second room during a network handoff.
+          roomCode: (this.roomCode || this.options.roomCode).trim().toUpperCase(),
           preferredSquad: this.options.preferredSquad,
           playerSessionId: this.options.playerSessionId,
         });
