@@ -23,10 +23,10 @@ import {
   stairGuardRects,
   stairHalves,
 } from "./mapModel";
-import { interactionDotReach, withinDownedCoverRange, withinInteractionDotRange } from "./interactions";
+import { canTakeFromBody, interactionDotReach, withinDownedCoverRange, withinInteractionDotRange } from "./interactions";
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
-import { carriedCount, carriedItems, insertItem } from "./inventory";
+import { carriedCount, carriedItems, hasRoom, insertItem, removeCarriedAt } from "./inventory";
 import { applyShieldHit, platesForCount, plateSum, restoreShieldPlate, shatterNearestIntactPlate } from "./shields";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import { hasLineOfSight } from "./visibility";
@@ -54,6 +54,7 @@ import type {
   SimEvent,
   Solid,
   StairLink,
+  TakeCommand,
   Vec2,
 } from "./types";
 
@@ -169,7 +170,6 @@ export class DotBotSimulation {
   private rngState = 481516234;
   private noises: NoiseEvent[] = [];
   private noiseSeq = 0;
-  private spillSeq = 0;
   private mineSeq = 0;
 
   private constructor(map: MapDocument, config: GameConfig) {
@@ -320,6 +320,7 @@ export class DotBotSimulation {
       bays: normalizedBays(spawn, this.config),
       hold: spawn.isAmbient ? [] : (spawn.hold ?? []).slice(0, this.config.holdSlots),
       carriedCount: 0,
+      searched: false,
       radarActiveMs: 0,
       radarPings: [],
       radarPingElapsedMs: 0,
@@ -371,6 +372,7 @@ export class DotBotSimulation {
       useBay: current?.useBay ?? input.useBay,
       swapBay: current?.swapBay ?? input.swapBay,
       downedVerb: input.downedVerb,
+      take: current?.take ?? input.take,
       plea: (current?.plea ?? false) || input.plea,
     });
   }
@@ -697,6 +699,10 @@ export class DotBotSimulation {
         }
       }
 
+      if (input.take) {
+        this.takeFromBody(bot, input.take);
+      }
+
       if (input.dash && !bot.activeSwap) {
         const overcharged = bot.dashOverchargeCharges > 0;
         if ((overcharged || bot.dashCooldownMs <= 0) && bot.dashActiveMs <= 0) {
@@ -709,8 +715,8 @@ export class DotBotSimulation {
         // A press is consumed on the tick it is considered, fired or not.
         // Pressing during cooldown must never bank a dash for later.
       }
-      if (input.dash || input.useBay !== undefined || input.swapBay || input.plea) {
-        this.inputs.set(bot.id, { ...input, dash: false, useBay: undefined, swapBay: undefined, plea: false });
+      if (input.dash || input.useBay !== undefined || input.swapBay || input.take || input.plea) {
+        this.inputs.set(bot.id, { ...input, dash: false, useBay: undefined, swapBay: undefined, take: undefined, plea: false });
       }
     }
   }
@@ -1765,8 +1771,16 @@ export class DotBotSimulation {
       if (progressMs >= durationMs) {
         // Looting leaves the body where it is. Wanting both is two channels, which
         // is what the compound verb used to hide.
-        if (kind === "loot") this.lootBot(downed, coveringBot);
-        else this.reviveBot(downed, coveringBot);
+        if (kind === "loot") {
+          this.searchBody(downed, coveringBot);
+          // An AI does not browse a body. A player gets a picker; an AI sweeps
+          // what fits and walks away, which is the same behaviour it always had.
+          if (this.controllers.get(coveringBot.id) !== "human") {
+            this.takeFromBody(coveringBot, { fromBotId: downed.id, index: "all" });
+          }
+        } else {
+          this.reviveBot(downed, coveringBot);
+        }
 
         this.coverages.delete(coverageKey);
       }
@@ -1853,6 +1867,8 @@ export class DotBotSimulation {
 
   private reviveBot(target: InternalBot, reviver: InternalBot): void {
     target.state = "alive";
+    // Back on its feet, and closed back up: whatever is left is its own again.
+    target.searched = false;
     target.shieldSegments = platesForCount(target.maxShields, 0);
     if (target.shieldSegments.length > 0) {
       target.shieldSegments[0] = 0.5;
@@ -1870,28 +1886,52 @@ export class DotBotSimulation {
   }
 
   /**
-   * Strip a body of everything it carries. The body stays exactly where it is, in
-   * the state it was in: being looted is not an ending.
+   * Open a body up. Nothing moves: the channel buys sight of what is there, and
+   * every item after that is a deliberate take.
+   *
+   * This used to strip the body in one go and spill whatever would not fit onto
+   * the floor — which meant the looter's own inventory decided what got thrown
+   * away, sight unseen. A searched body holds what it holds until someone chooses.
    */
-  private lootBot(target: InternalBot, looter: InternalBot): Item[] {
-    const taken = carriedItems(target);
-    const overflow = taken.filter((item) => !insertItem(looter, item, this.config.holdSlots));
-    overflow.forEach((item, index) => {
-      const angle = (index * Math.PI * 2) / Math.max(1, overflow.length);
-      const id = `spill-${this.spillSeq++}`;
-      this.dots.set(id, {
-        id,
-        item: { ...item },
-        position: add(target.position, { x: Math.cos(angle) * 8, y: Math.sin(angle) * 8 }),
-        radius: this.config.dotRadius,
-        floorId: target.floorId,
-        active: true,
-        captureProgressMs: 0,
-      });
-    });
-    target.bays = Array.from({ length: this.config.baySlots }, () => null);
-    target.hold = [];
-    this.events.push({ type: "looted", botId: target.id, byBotId: looter.id, items: taken });
+  private searchBody(target: InternalBot, searcher: InternalBot): void {
+    target.searched = true;
+    this.events.push({ type: "searched", botId: target.id, byBotId: searcher.id });
+  }
+
+  /**
+   * Move one item — or everything that fits — off an open body.
+   *
+   * Every field here arrives from a client, so nothing is trusted: the body has to
+   * exist, be open, be a rival's, and be underfoot. A take that does not fit is
+   * refused rather than spilled, because the taker chose that slot.
+   */
+  private takeFromBody(taker: InternalBot, command: TakeCommand): Item[] {
+    const body = this.bots.get(command.fromBotId);
+    if (!body || !canTakeFromBody(taker, body, this.config.coverCenterTolerance)) return [];
+
+    // Room is checked before the item leaves the body, never after: a take that
+    // has to be undone is a take that can lose the item somewhere in between.
+    const taken: Item[] = [];
+    if (command.index === "all") {
+      // Front of the body's list first, so "take all" and the picker's own order
+      // agree about which items a full inventory leaves behind.
+      while (carriedCount(body) > 0 && hasRoom(taker, this.config.holdSlots)) {
+        const item = removeCarriedAt(body, 0);
+        if (!item) break;
+        insertItem(taker, item, this.config.holdSlots);
+        taken.push(item);
+      }
+    } else {
+      if (!hasRoom(taker, this.config.holdSlots)) return [];
+      const item = removeCarriedAt(body, command.index);
+      if (!item) return [];
+      insertItem(taker, item, this.config.holdSlots);
+      taken.push(item);
+    }
+
+    if (taken.length > 0) {
+      this.events.push({ type: "looted", botId: body.id, byBotId: taker.id, items: taken });
+    }
     return taken;
   }
 
@@ -1936,6 +1976,7 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     bays: bot.bays.map((item) => item && { ...item }),
     hold: bot.hold.map((item) => ({ ...item })),
     carriedCount: carriedCount(bot),
+    searched: bot.searched,
     radarActiveMs: bot.radarActiveMs,
     radarPings: bot.radarPings.map((ping) => ({ ...ping })),
     dashOverchargeCharges: bot.dashOverchargeCharges,

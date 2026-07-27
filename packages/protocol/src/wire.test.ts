@@ -23,6 +23,7 @@ const bot: DotBotEntity = {
   bays: [{ kind: "powerup", type: "health" }, { kind: "powerup", type: "radar" }, null, null],
   hold: [],
   carriedCount: 2,
+  searched: false,
   radarActiveMs: 0,
   radarPings: [],
   dashOverchargeCharges: 0,
@@ -102,6 +103,7 @@ describe("snapshot wire mapping", () => {
       shields: 3,
       bays: emptyBays,
       carriedCount: 0,
+      searched: false,
       dashCooldownMs: 0,
       dashActiveMs: 0,
       invulnerabilityMs: 0,
@@ -122,6 +124,7 @@ describe("snapshot wire mapping", () => {
       shieldSegments: [1, 1, 1],
       bays: emptyBays,
       carriedCount: 0,
+      searched: false,
     });
   });
 

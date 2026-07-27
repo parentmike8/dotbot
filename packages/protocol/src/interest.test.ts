@@ -68,6 +68,24 @@ describe("filterForViewer", () => {
     expect(enemy.h).toBeUndefined();
   });
 
+  it("opens a rival's inventory once their body has been searched, and not before", () => {
+    // The loot channel is what buys sight of a body's contents, so the reveal has
+    // to happen here too: the picker cannot offer a slot the viewer was never sent.
+    const viewerCtx = {
+      map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor", "lot6:B1"]),
+    };
+    const down = (overrides: Partial<WireBot>) => filterForViewer(
+      { ...wire, bots: bots.map((entry) => entry.i === "street-enemy" ? { ...entry, ...overrides } : entry) },
+      meta,
+      viewerCtx,
+    ).bots.find((entry) => entry.i === "street-enemy")!;
+
+    expect(down({ s: "downed" }).b).toBeUndefined();
+    // Searched, but on its feet again — a revive closes the body back up.
+    expect(down({ sr: true }).b).toBeUndefined();
+    expect(down({ s: "downed", sr: true })).toMatchObject({ b: ["d", null, null, null], h: ["b:bed"], c: 2 });
+  });
+
   it("ships radar pings only for the viewer's own bot", () => {
     const filtered = filterForViewer(wire, meta, {
       map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor", "lot6:B1"]),

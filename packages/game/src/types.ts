@@ -55,13 +55,27 @@ export type Controller = "human" | "ai" | "frozen";
 
 export type PowerupType = "health" | "radar" | "dashOvercharge" | "incognito";
 /**
- * What you may do to a body: take what it carries, or put it back on its feet.
+ * What you may do to a body: search what it carries, or put it back on its feet.
  *
  * There were three, and the third was a compound — loot *then* revive — which is
  * just the two in sequence and did not need its own channel. The verb that used to
  * finish a bot off has no replacement, by design.
+ *
+ * `loot` is the channel that *opens* a body. It moves nothing on its own: what
+ * leaves the body leaves one item at a time, by `TakeCommand`, once you can see
+ * what is there.
  */
 export type DownedVerb = "loot" | "revive";
+
+/**
+ * Take one item off a searched body, or everything that fits.
+ *
+ * `index` is a flat index into `carriedItems(body)` — bays in order, then hold —
+ * because that is the order the body's contents are shown in. `"all"` is not a
+ * loop the client runs: one input takes what fits and leaves the rest, so a full
+ * inventory cannot silently drop items on the floor.
+ */
+export type TakeCommand = { fromBotId: string; index: number | "all" };
 
 /** Compact persistence/wire codes for powerups. Blueprint cargo is excluded. */
 export type WirePowerupCode = "h" | "r" | "d" | "i";
@@ -123,6 +137,9 @@ export type SimEvent =
       tick: number;
     }
   | { type: "downed"; botId: string; byBotId?: string }
+  /** A loot channel finished: this body is open, and everyone can see it is. */
+  | { type: "searched"; botId: string; byBotId: string }
+  /** Items actually left this body. One event per take, `items` is what moved. */
   | { type: "looted"; botId: string; byBotId: string; items: Item[] }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "plea"; botId: string; squadId: string; position: Vec2; floorId: string }
@@ -527,6 +544,12 @@ export type DotBotEntity = GameEntity & {
   hold: Item[];
   /** Total carried items, authoritative even when a remote inventory is privacy-redacted. */
   carriedCount: number;
+  /**
+   * A loot channel has finished on this body, so its contents are public and can
+   * be taken without channelling again. Only ever true while downed — a revive
+   * closes the body back up.
+   */
+  searched: boolean;
   radarActiveMs: number;
   radarPings: RadarPing[];
   dashOverchargeCharges: number;
@@ -580,6 +603,7 @@ export type InputCommand = {
   useBay?: BayIndex;
   swapBay?: { bayIndex: BayIndex; holdIndex: number };
   downedVerb?: DownedVerb;
+  take?: TakeCommand;
   plea?: boolean;
 };
 

@@ -74,6 +74,7 @@ describe("LocalSession run-state ownership", () => {
         bays: [health, health, health],
         hold: [],
         carriedCount: 3,
+        searched: false,
         radarActiveMs: 0,
         radarPings: [],
         dashOverchargeCharges: 0,
@@ -96,6 +97,7 @@ describe("LocalSession run-state ownership", () => {
       position: { x: 10, y: 10 }, radius: 24, state: "downed", floorId: "outdoor", facing: 0,
       maxShields: 3, shields: 0, shieldSegments: [0, 0, 0], bays: [health, null, null], hold: [],
       carriedCount: 1,
+      searched: false,
       radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0, incognitoMs: 0,
       dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
     }]);

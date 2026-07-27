@@ -1,5 +1,5 @@
 import { distance } from "./math";
-import type { Vec2 } from "./types";
+import type { DotBotEntity, Vec2 } from "./types";
 
 /**
  * Center-to-center reach at which the visible bot and interaction-dot circles
@@ -34,4 +34,34 @@ export function withinDownedCoverRange(
 ): boolean {
   const downedFootprintRadius = targetRadius * 0.55;
   return distance(actorPosition, targetPosition) <= Math.max(minimumTolerance, actorRadius + downedFootprintRadius);
+}
+
+type BodyReach = Pick<DotBotEntity, "id" | "squadId" | "state" | "position" | "radius" | "floorId">;
+
+/**
+ * Is this body open to that bot's hands right now?
+ *
+ * A searched body stays open, so a taker who steps away and comes back does not
+ * channel again — but it is only open to a rival. You do not take from your own
+ * squad; you pick them up.
+ *
+ * The same predicate gates the simulation, the picker UI, and which inventories
+ * cross the wire, so the client can never show a slot the server will refuse.
+ */
+export function canTakeFromBody(
+  actor: BodyReach,
+  body: BodyReach & Pick<DotBotEntity, "searched">,
+  minimumTolerance: number,
+): boolean {
+  return actor.id !== body.id
+    && actor.state === "alive"
+    && bodyContentsPublic(body)
+    && actor.squadId !== body.squadId
+    && actor.floorId === body.floorId
+    && withinDownedCoverRange(actor.position, actor.radius, body.position, body.radius, minimumTolerance);
+}
+
+/** A searched body's contents are known to everyone: it is lying open on the floor. */
+export function bodyContentsPublic(body: Pick<DotBotEntity, "state" | "searched">): boolean {
+  return body.state === "downed" && body.searched;
 }

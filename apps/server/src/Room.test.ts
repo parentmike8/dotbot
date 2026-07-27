@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ServerMessage } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence } from "./db";
 import type { BaseObjectKind } from "@dotbot/game/types";
-import { Room, type RoomPeer } from "./Room";
+import { Room, carriesAction, type RoomPeer } from "./Room";
 import { buildingContaining, buildingOfFloor } from "@dotbot/game/mapModel";
 import { downtownMap } from "@dotbot/game/content/downtown";
 
@@ -222,6 +222,23 @@ describe("Room owner-private match intel", () => {
 });
 
 describe("Room input stream", () => {
+  it("treats every one-shot edge as an action the jitter buffer must not shed", () => {
+    // Shedding picks the first frame that carries no press. That rule lived twice,
+    // written out field by field, so a new action had to be remembered in two
+    // places — and one of them would eventually be forgotten. It is one function
+    // now, and this pins each edge it has to know about.
+    const move = { seq: 1, move: [1, 0] as [number, number], dash: false };
+    expect(carriesAction(move)).toBe(false);
+    expect(carriesAction({ ...move, dash: true })).toBe(true);
+    expect(carriesAction({ ...move, useBay: 0 })).toBe(true);
+    expect(carriesAction({ ...move, swapBay: { bayIndex: 0, holdIndex: 0 } })).toBe(true);
+    expect(carriesAction({ ...move, take: { fromBotId: "enemy", index: "all" } })).toBe(true);
+    expect(carriesAction({ ...move, plea: true })).toBe(true);
+    // A verb is standing state, not an edge: it repeats every frame while a key is
+    // held, so shedding one costs nothing.
+    expect(carriesAction({ ...move, downedVerb: "loot" })).toBe(false);
+  });
+
   it("consumes one frame per tick in seq order, acks only applied frames, and sheds stall backlogs", async () => {
     let clock = 0;
     const room = new Room("TICK", { countdownMs: 0, persistence: new NoopPersistence(), aiWingmates: false, now: () => clock });

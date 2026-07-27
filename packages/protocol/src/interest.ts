@@ -43,11 +43,19 @@ export function filterForViewer(
     metaById.get(bot.i)?.squadId === viewerCtx.squadId
       || visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor")),
   ).map((bot) => {
-    const squadDetail = metaById.get(bot.i)?.squadId === viewerCtx.squadId;
+    /**
+     * What a rival carries is private right up until their body is searched.
+     *
+     * A loot channel is what buys that sight, and the picker cannot offer a slot
+     * the viewer was never sent — so the reveal has to happen here, on the same
+     * `searched` flag the simulation gates the take on.
+     */
+    const openBody = bot.sr === true && bot.s === "downed";
+    const inventoryVisible = metaById.get(bot.i)?.squadId === viewerCtx.squadId || openBody;
     return {
       ...bot,
-      b: squadDetail ? bot.b : undefined,
-      h: squadDetail ? bot.h : undefined,
+      b: inventoryVisible ? bot.b : undefined,
+      h: inventoryVisible ? bot.h : undefined,
       r: bot.i === viewerCtx.viewerBotId ? bot.r : undefined,
     };
   });

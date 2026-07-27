@@ -1,4 +1,4 @@
-import type { BayIndex, DownedVerb, GameConfig, MapDocument, PowerupType, RadarPing } from "@dotbot/game/types";
+import type { BayIndex, DownedVerb, GameConfig, MapDocument, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
@@ -44,6 +44,8 @@ export type WireBot = {
   h?: WireItemCode[];
   /** Always present, including privacy-redacted rivals. */
   c?: number;
+  /** Searched: this body is open, so `b`/`h` are sent to everyone who can see it. */
+  sr?: true;
   d?: [number, number];
   iv?: number;
   r?: [number, RadarPing[]?];
@@ -138,6 +140,7 @@ export type WireSimEvent =
       tick?: number;
     }
   | { type: "downed"; botId: string; byBotId?: string }
+  | { type: "searched"; botId: string; byBotId: string }
   | { type: "looted"; botId: string; byBotId: string; items: WireItemCode[] }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "plea"; botId: string; squadId: string; position: { x: number; y: number }; floorId: string }
@@ -162,6 +165,7 @@ export type WireInputFrame = {
   useBay?: BayIndex;
   swapBay?: { bayIndex: BayIndex; holdIndex: number };
   downedVerb?: DownedVerb;
+  take?: TakeCommand;
   plea?: boolean;
 };
 
@@ -188,6 +192,7 @@ export type ClientMessage =
       useBay?: BayIndex;
       swapBay?: { bayIndex: BayIndex; holdIndex: number };
       downedVerb?: DownedVerb;
+      take?: TakeCommand;
       plea?: boolean;
       /** Tick-stamped frame batch (newest last), including redundant copies
        * of recent frames so a dropped packet cannot lose an input. When

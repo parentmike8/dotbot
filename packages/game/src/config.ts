@@ -11,7 +11,12 @@ export const defaultGameConfig: GameConfig = {
    * thing a player drives, and a fourth slot bought nothing a third does not.
    */
   baySlots: 3,
-  holdSlots: 12,
+  /**
+   * Six, so the reserve is twice the bank rather than four times it. Twelve made
+   * every full body a wall of slots to read and meant a run's whole haul lived
+   * somewhere the player never looked. Three you can reach, six you are carrying.
+   */
+  holdSlots: 6,
   radarDurationMs: 8000,
   radarPingIntervalMs: 2000,
   radarRadius: 600,

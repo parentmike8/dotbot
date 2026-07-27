@@ -770,7 +770,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("loots a downed hostile bot after coverage", async () => {
+  it("opens a downed hostile bot without moving anything the player did not pick", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
       enemySpawn({
@@ -778,24 +778,43 @@ describe("DotBotSimulation", () => {
         position: { x: 100, y: 180 },
         state: "downed",
         shields: 0,
-        bays: testBays(2), hold: [],
+        bays: [healthItem, radarItem, null], hold: [],
       }),
     ]);
 
     simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
     runTicks(simulation, 12);
 
-    const snapshot = simulation.getSnapshot();
-    // Stripped, and still lying there: nothing eliminates a bot.
-    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(2);
+    const opened = simulation.getSnapshot();
+    const body = opened.bots.find((bot) => bot.id === "enemy")!;
+    // Open, still lying there, and still holding everything: the channel bought
+    // sight of the body, not its contents.
+    expect(body.state).toBe("downed");
+    expect(body.searched).toBe(true);
+    expect(body.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
+    expect(opened.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean)).toEqual([]);
+    expect(simulation.drainEvents()).toContainEqual({ type: "searched", botId: "enemy", byBotId: "player" });
+
+    // Take the second item only. The first stays where it is.
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, take: { fromBotId: "enemy", index: 1 } });
+    simulation.step();
+
+    const after = simulation.getSnapshot();
+    expect(after.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean)).toEqual([radarItem]);
+    expect(after.bots.find((bot) => bot.id === "enemy")?.bays.filter(Boolean)).toEqual([healthItem]);
+    expect(simulation.drainEvents()).toContainEqual({
+      type: "looted", botId: "enemy", byBotId: "player", items: [radarItem],
+    });
     simulation.dispose();
   });
 
-  it("spills loot overflow back onto the ground as typed dots", async () => {
+  it("leaves what the taker cannot carry on the body instead of on the floor", async () => {
+    // Overflow used to spill onto the ground as dots, which let the looter's own
+    // full inventory throw away items it had never seen. Take-all now stops at the
+    // last slot that fits and the rest stays on the body, for the next player.
     const simulation = await DotBotSimulation.create({
       map: makeMap([
-        playerSpawn({ position: { x: 100, y: 180 }, bays: [healthItem], hold: [radarItem] }),
+        playerSpawn({ position: { x: 100, y: 180 }, bays: [healthItem], hold: [] }),
         enemySpawn({
           isAmbient: false,
           position: { x: 100, y: 180 },
@@ -809,14 +828,74 @@ describe("DotBotSimulation", () => {
     });
     simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
     runTicks(simulation, 12);
-    const spills = simulation.getSnapshot().dots.filter((dot) => dot.id.startsWith("spill-") && dot.active);
-    expect(spills.map((dot) => dot.item)).toEqual(expect.arrayContaining([overchargeItem, incognitoItem]));
+    simulation.drainEvents();
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, take: { fromBotId: "enemy", index: "all" } });
+    simulation.step();
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.dots.filter((dot) => dot.active)).toEqual([]);
+    // One bay, one hold slot, one item already carried: exactly one more fits.
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.hold).toEqual([overchargeItem]);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.hold).toEqual([incognitoItem]);
     expect(simulation.drainEvents()).toContainEqual({
       type: "looted",
       botId: "enemy",
       byBotId: "player",
-      items: [overchargeItem, incognitoItem],
+      items: [overchargeItem],
     });
+    simulation.dispose();
+  });
+
+  it("refuses a take before the channel that paid for it, and after walking off the body", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ isAmbient: false, position: { x: 100, y: 180 }, state: "downed", shields: 0, bays: [healthItem, null, null], hold: [] }),
+    ]);
+
+    // Underfoot but unsearched: the channel is the price of the picker.
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, take: { fromBotId: "enemy", index: 0 } });
+    simulation.step();
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.bays.filter(Boolean)).toEqual([]);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
+    runTicks(simulation, 12);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.searched).toBe(true);
+
+    // Walk clear of the body. An open body stays open, but your hands still have
+    // to be on it — a stale picker cannot reach across the room.
+    for (let tick = 0; tick < 40; tick += 1) {
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+      simulation.step();
+    }
+    const walked = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(walked.position.x - 100).toBeGreaterThan(defaultGameConfig.botRadius * 2);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, take: { fromBotId: "enemy", index: 0 } });
+    simulation.step();
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean)).toEqual([]);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.bays.filter(Boolean)).toEqual([healthItem]);
+    simulation.dispose();
+  });
+
+  it("closes a searched body back up when it is revived", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ isAmbient: false, controller: "frozen", position: { x: 100, y: 180 }, state: "downed", shields: 0, bays: [healthItem, null, null], hold: [] }),
+    ]);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
+    runTicks(simulation, 12);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.searched).toBe(true);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "revive" });
+    runTicks(simulation, Math.ceil((testConfig.coverDurationMs ?? 0) / (1000 / defaultGameConfig.tickHz)) + 2);
+
+    const revived = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")!;
+    expect(revived.state).toBe("alive");
+    // On its feet and no longer an open container, with what nobody took.
+    expect(revived.searched).toBe(false);
+    expect(revived.bays.filter(Boolean)).toEqual([healthItem]);
     simulation.dispose();
   });
 
@@ -824,7 +903,7 @@ describe("DotBotSimulation", () => {
     const cases = [
       { verb: "loot" as const, durationMs: testConfig.lootDurationMs, finalState: "downed" as const },
       { verb: "revive" as const, durationMs: testConfig.coverDurationMs, finalState: "alive" as const },
-    ];
+    ] as const;
 
     for (const { verb, durationMs, finalState } of cases) {
       const simulation = await makeSimulation([
@@ -859,10 +938,10 @@ describe("DotBotSimulation", () => {
         expect(target.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
         expect(actor.bays.filter(Boolean)).toEqual([]);
       } else {
-        // Looting moves the carry across and leaves the body down.
-        expect(target.bays.filter(Boolean)).toEqual([]);
-        expect(target.hold).toEqual([]);
-        expect(actor.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
+        // Looting opens the body and leaves it down, holding what it held.
+        expect(target.searched).toBe(true);
+        expect(target.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
+        expect(actor.bays.filter(Boolean)).toEqual([]);
       }
       simulation.dispose();
     }
@@ -894,7 +973,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("loots a downed hostile bot when standing over its footprint", async () => {
+  it("opens a downed hostile bot when standing over its footprint", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 122, y: 180 } }),
       enemySpawn({
@@ -911,11 +990,11 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.searched).toBe(true);
     simulation.dispose();
   });
 
-  it("loots a downed hostile bot from a forgiving hover overlap", async () => {
+  it("opens a downed hostile bot from a forgiving hover overlap", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 135, y: 180 } }),
       enemySpawn({
@@ -932,7 +1011,7 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.searched).toBe(true);
     simulation.dispose();
   });
 
@@ -1486,9 +1565,13 @@ describe("kinematic bot physics (solver-free)", () => {
     const snapshot = simulation.getSnapshot();
     const victim = snapshot.bots.find((bot) => bot.id === "victim")!;
     const player = snapshot.bots.find((bot) => bot.id === "player")!;
-    // Looted from zero distance, and still lying there.
+    // Opened from zero distance, and still lying there.
     expect(victim.state).toBe("downed");
-    expect(player.bays.filter(Boolean).length).toBeGreaterThan(0);
+    expect(victim.searched).toBe(true);
+    // And the take that the open body allows lands from the same zero distance.
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, take: { fromBotId: "victim", index: "all" } });
+    simulation.step();
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.bays.filter(Boolean).length).toBeGreaterThan(0);
     simulation.dispose();
   });
 

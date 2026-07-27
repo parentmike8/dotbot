@@ -282,6 +282,7 @@ export class Room {
           useBay: message.useBay,
           swapBay: message.swapBay,
           downedVerb: message.downedVerb,
+          take: message.take,
           plea: message.plea,
         }];
         this.enqueueInputFrames(member, frames);
@@ -421,8 +422,7 @@ export class Room {
       // Preserve real actions when shedding stale continuous movement. A
       // redundant datagram burst must never discard the only dash/bay/plea
       // edge merely because it was older than newer movement samples.
-      const droppable = member.inputQueue.findIndex((queued) =>
-        !queued.dash && queued.useBay === undefined && !queued.swapBay && !queued.plea);
+      const droppable = member.inputQueue.findIndex((queued) => !carriesAction(queued));
       const dropAt = droppable === -1 ? 0 : droppable;
       const dropped = member.inputQueue.splice(dropAt, 1)[0];
       if (dropAt === 0 && dropped) member.lastAppliedSeq = dropped.seq;
@@ -462,6 +462,7 @@ export class Room {
       useBay: frame.useBay,
       swapBay: frame.swapBay,
       downedVerb: frame.downedVerb,
+      take: frame.take,
       plea: frame.plea,
     };
     member.heldInput = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
@@ -486,9 +487,7 @@ export class Room {
     member.backlogWindowTicks = 0;
     member.backlogWindowMinDepth = Number.POSITIVE_INFINITY;
     for (let index = 0; index < surplus; index += 1) {
-      const candidate = member.inputQueue.findIndex(
-        (queued) => !queued.dash && queued.useBay === undefined && !queued.swapBay && !queued.plea,
-      );
+      const candidate = member.inputQueue.findIndex((queued) => !carriesAction(queued));
       const dropAt = candidate === -1 ? 0 : candidate;
       const dropped = member.inputQueue.splice(dropAt, 1)[0];
       if (!dropped) {
@@ -1030,6 +1029,22 @@ function makeSpawn(
       : [defaultHealth, null, null, null],
     hold: [],
   };
+}
+
+/**
+ * Does this frame carry a one-shot edge, rather than just movement?
+ *
+ * The jitter buffer sheds frames in two places, and both must shed continuous
+ * movement in preference to a press. That list lived twice, so a new action had to
+ * be remembered twice — and a list that has to be remembered is a list that goes
+ * stale. Adding a field to `WireInputFrame` means adding it here, once.
+ */
+export function carriesAction(frame: WireInputFrame): boolean {
+  return frame.dash
+    || frame.useBay !== undefined
+    || frame.swapBay !== undefined
+    || frame.take !== undefined
+    || frame.plea === true;
 }
 
 function sanitizeName(name: string): string {
