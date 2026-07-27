@@ -19,16 +19,19 @@ describe("LocalSession run-state ownership", () => {
     expect(session.drainEvents()).toEqual([{ type: "extracted", botId: "player", squadId: "alpha", items: [health, health, health] }]);
   });
 
-  it("derives died state and loss from the consumed event payload", async () => {
+  it("keeps the run live when the player is looted", async () => {
+    // Losing everything you carry used to end the run, by way of the `consumed`
+    // event. A looted bot is a downed bot with empty bays — still in the match,
+    // waiting on a squadmate, a plea, or its own decision to leave.
     const { session } = scriptedSession({
-      events: [{ type: "consumed", botId: "player", byBotId: "enemy", lostItems: [health, health] }],
+      events: [{ type: "looted", botId: "player", byBotId: "enemy", items: [health, health] }],
       snapshot: snapshot(50, []),
     });
 
     await session.start();
     session.update(100);
 
-    expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptItems: [], lostItems: [health, health], learnedBlueprints: [] });
+    expect(session.getRunState()).toEqual({ phase: "live" });
   });
 
   it("delivers authoritative hit presentation events in local mode", async () => {
@@ -68,9 +71,9 @@ describe("LocalSession run-state ownership", () => {
         maxShields: 3,
         shields: 3,
         shieldSegments: [1, 1, 1],
-        bays: [health, health, health, health],
+        bays: [health, health, health],
         hold: [],
-        carriedCount: 4,
+        carriedCount: 3,
         radarActiveMs: 0,
         radarPings: [],
         dashOverchargeCharges: 0,
@@ -84,14 +87,14 @@ describe("LocalSession run-state ownership", () => {
     await session.start();
     session.update(100);
 
-    expect(session.getRunState()).toEqual({ phase: "over", reason: "timeout", keptItems: [], lostItems: [health, health, health, health], learnedBlueprints: [] });
+    expect(session.getRunState()).toEqual({ phase: "over", reason: "timeout", keptItems: [], lostItems: [health, health, health], learnedBlueprints: [] });
   });
 
   it("ends a downed solo run through GIVE UP with an itemized loss", async () => {
     const downed = snapshot(50, [{
       id: "player", name: "Player", squadId: "alpha", isAmbient: false, color: "#fff",
       position: { x: 10, y: 10 }, radius: 24, state: "downed", floorId: "outdoor", facing: 0,
-      maxShields: 3, shields: 0, shieldSegments: [0, 0, 0], bays: [health, null, null, null], hold: [],
+      maxShields: 3, shields: 0, shieldSegments: [0, 0, 0], bays: [health, null, null], hold: [],
       carriedCount: 1,
       radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0, incognitoMs: 0,
       dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,

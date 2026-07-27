@@ -383,7 +383,7 @@ async function scenarioCombat() {
         type: "input", seq: ++atkSeq.seq,
         move: dist > 6 ? [(dx / norm) * 0.5, (dy / norm) * 0.5] : [0, 0],
         dash: false,
-        downedVerb: "lootThenRevive",
+        downedVerb: "loot",
       });
       await delay(33);
     }

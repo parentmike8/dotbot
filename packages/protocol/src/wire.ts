@@ -149,7 +149,7 @@ export function fromWireSnapshot(
       tickHz: 60,
       tickCount: wire.tick,
       fps: 0,
-      activeBodies: wire.bots.filter((bot) => bot.s !== "consumed").length,
+      activeBodies: wire.bots.length,
       activeDots: dots.filter((dot) => dot.active).length,
     },
   };
@@ -222,7 +222,7 @@ function toWireRadarPing(ping: RadarPing): RadarPing {
 }
 
 export function toWireEvent(event: SimEvent): WireSimEvent {
-  if (event.type === "consumed") return { ...event, lostItems: event.lostItems.map(itemToCode) };
+  if (event.type === "looted") return { ...event, items: event.items.map(itemToCode) };
   if (event.type === "extracted") return { ...event, items: event.items.map(itemToCode) };
   return event;
 }
@@ -237,7 +237,7 @@ export function fromWireEvent(event: WireSimEvent): SimEvent {
       tick: event.tick ?? 0,
     };
   }
-  if (event.type === "consumed") return { ...event, lostItems: event.lostItems.map(itemFromCode) };
+  if (event.type === "looted") return { ...event, items: event.items.map(itemFromCode) };
   if (event.type === "extracted") return { ...event, items: event.items.map(itemFromCode) };
   return event;
 }

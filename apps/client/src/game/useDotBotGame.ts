@@ -15,7 +15,7 @@ import {
 import { selectSpectatedBot } from "./spectate";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
-import type { BayIndex, DotBotEntity, DownedHostileVerb, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { BayIndex, DotBotEntity, DownedVerb, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { NetworkDebugStats } from "./session/netgraph";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
@@ -74,7 +74,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const dashQueuedRef = useRef(false);
   const useBayQueuedRef = useRef<BayIndex | undefined>(undefined);
   const swapQueuedRef = useRef<{ bayIndex: BayIndex; holdIndex: number } | undefined>(undefined);
-  const downedVerbRef = useRef<DownedHostileVerb | undefined>(undefined);
+  const downedVerbRef = useRef<DownedVerb | undefined>(undefined);
   const pleaQueuedRef = useRef(false);
   const spectateCycleQueuedRef = useRef(false);
   const spectatedBotIdRef = useRef<string | null>(null);
@@ -309,10 +309,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         return;
       }
 
-      const verbByCode: Partial<Record<string, DownedHostileVerb>> = {
-        KeyC: "consume",
-        KeyR: "reviveClean",
-        KeyF: "lootThenRevive",
+      const verbByCode: Partial<Record<string, DownedVerb>> = {
+        KeyF: "loot",
+        KeyR: "revive",
       };
       if (verbByCode[event.code]) {
         event.preventDefault();
@@ -443,7 +442,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     sessionRef.current?.giveUp();
   }, []);
 
-  const selectDownedVerb = useCallback((verb: DownedHostileVerb) => {
+  const selectDownedVerb = useCallback((verb: DownedVerb) => {
     if (!runEndedRef.current) downedVerbRef.current = verb;
   }, []);
 

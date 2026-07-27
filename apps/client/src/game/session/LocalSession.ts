@@ -122,10 +122,7 @@ export class LocalSession implements GameSession {
         this.runState = { phase: "over", reason: "extracted", keptItems: event.items, lostItems: [], learnedBlueprints: [] };
         return;
       }
-      if (event.type === "consumed") {
-        this.runState = { phase: "over", reason: "died", keptItems: [], lostItems: event.lostItems, learnedBlueprints: [] };
-        return;
-      }
+      // Being looted does not end a run. Only extracting does, or leaving.
     }
   }
 }

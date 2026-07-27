@@ -37,12 +37,12 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   const mineRotated = [...events].reverse().find((event) => event.type === "mineRotated");
   const spectateMode = runResult?.outcome === "died";
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / session.config.dashCooldownMs) : 1;
-  const killCounts = useMemo(() => {
+  const downCounts = useMemo(() => {
     const viewerSquadId = session.getEntityMeta(session.playerId)?.squadId;
     let ai = 0;
     let players = 0;
     for (const event of events) {
-      if (event.type !== "consumed" || session.getEntityMeta(event.byBotId)?.squadId !== viewerSquadId) continue;
+      if (event.type !== "downed" || !event.byBotId || session.getEntityMeta(event.byBotId)?.squadId !== viewerSquadId) continue;
       if (session.getEntityMeta(event.botId)?.isAmbient) ai += 1;
       else players += 1;
     }
@@ -201,18 +201,17 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       {hostileDowned && !runResult ? (
         <div className="hostile-verb-strip" aria-label="Downed hostile actions">
           <strong>
-            {hostileChannel ? verbLabel(hostileChannel.kind) : hostileInRange ? "DOWNED HOSTILE · PICK A VERB" : "STAND ON THE BODY"}
+            {hostileChannel ? verbLabel(hostileChannel.kind) : hostileInRange ? "DOWNED BOT" : "STAND ON THE BODY"}
           </strong>
-          <button type="button" onClick={() => selectDownedVerb("consume")}>C · CONSUME</button>
-          <button type="button" onClick={() => selectDownedVerb("reviveClean")}>R · REVIVE CLEAN</button>
-          <button type="button" onClick={() => selectDownedVerb("lootThenRevive")}>F · LOOT + REVIVE</button>
+          <button type="button" onClick={() => selectDownedVerb("loot")}>F · LOOT</button>
+          <button type="button" onClick={() => selectDownedVerb("revive")}>R · REVIVE</button>
         </div>
       ) : null}
       {runResult && !spectateMode ? (
         <ManifestScreen
           result={runResult}
-          aiKills={killCounts.ai}
-          playerKills={killCounts.players}
+          aiKills={downCounts.ai}
+          playerKills={downCounts.players}
           runTime={formatRunTime(runResult.runTimeMs)}
           onNewRun={() => {
             session.leaveRun();
@@ -226,7 +225,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
 }
 
 function verbLabel(kind: string): string {
-  return kind === "consume" ? "CONSUMING" : kind === "reviveClean" ? "REVIVING CLEAN" : kind === "lootThenRevive" ? "LOOTING + REVIVING" : "DOWNED HOSTILE";
+  return kind === "loot" ? "LOOTING" : kind === "revive" ? "REVIVING" : "DOWNED BOT";
 }
 
 function formatRunTime(timeMs: number): string {

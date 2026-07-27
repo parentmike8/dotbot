@@ -40,12 +40,28 @@ export type Barrier = {
   solids: Solid[];
 };
 
-export type BotState = "alive" | "downed" | "consumed";
+/**
+ * Two states, because nothing in this world is ever eliminated.
+ *
+ * There used to be a third, `consumed`: a bot another bot had finished off, which
+ * for a real player meant the run was over and for an ambient grey meant a respawn
+ * timer. Both are gone. A downed bot stays down until somebody revives it, so the
+ * choices belong to the player who is down — wait for a squadmate, plea to be
+ * picked up by another squad, or leave — rather than to whoever stood over them.
+ */
+export type BotState = "alive" | "downed";
 
 export type Controller = "human" | "ai" | "frozen";
 
 export type PowerupType = "health" | "radar" | "dashOvercharge" | "incognito";
-export type DownedHostileVerb = "consume" | "reviveClean" | "lootThenRevive";
+/**
+ * What you may do to a body: take what it carries, or put it back on its feet.
+ *
+ * There were three, and the third was a compound — loot *then* revive — which is
+ * just the two in sequence and did not need its own channel. The verb that used to
+ * finish a bot off has no replacement, by design.
+ */
+export type DownedVerb = "loot" | "revive";
 
 /** Compact persistence/wire codes for powerups. Blueprint cargo is excluded. */
 export type WirePowerupCode = "h" | "r" | "d" | "i";
@@ -107,7 +123,7 @@ export type SimEvent =
       tick: number;
     }
   | { type: "downed"; botId: string; byBotId?: string }
-  | { type: "consumed"; botId: string; byBotId: string; lostItems: Item[] }
+  | { type: "looted"; botId: string; byBotId: string; items: Item[] }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "plea"; botId: string; squadId: string; position: Vec2; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
@@ -563,11 +579,11 @@ export type InputCommand = {
   dash: boolean;
   useBay?: BayIndex;
   swapBay?: { bayIndex: BayIndex; holdIndex: number };
-  downedVerb?: DownedHostileVerb;
+  downedVerb?: DownedVerb;
   plea?: boolean;
 };
 
-export type CoverageKind = "capture" | "consume" | "revive" | "reviveClean" | "lootThenRevive" | "extract" | "swap";
+export type CoverageKind = "capture" | "loot" | "revive" | "extract" | "swap";
 
 export type NoiseKind = "dash" | "impact" | "stairs" | "channel" | "door" | "mineDetonation";
 
@@ -623,13 +639,12 @@ export type GameConfig = {
   knockbackDurationMs: number;
   shieldInvulnerabilityMs: number;
   dotCaptureDurationMs: number;
+  /** Reviving a body, friendly or not. */
   coverDurationMs: number;
-  consumeDurationMs: number;
-  reviveCleanDurationMs: number;
-  lootThenReviveDurationMs: number;
+  /** Stripping a body of what it carries. */
+  lootDurationMs: number;
   pleaCooldownMs: number;
   minInsertionSpacing: number;
-  respawnDelayMs: number;
   coverCenterTolerance: number;
   extractionDurationMs: number;
   runDurationMs: number;

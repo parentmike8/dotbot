@@ -828,7 +828,8 @@ export class Room {
 
   private includedBotIds(member: Member, snapshot: GameSnapshot): Set<string> {
     const own = snapshot.bots.find((bot) => bot.id === member.botId);
-    const spectator = !own || own.state === "consumed";
+    // Downed is when a member starts watching their squad instead of themselves.
+    const spectator = !own || own.state === "downed";
     const floors = spectator
       ? this.squadPhysicsFloorIds(member, snapshot)
       : new Set([physicsFloorId(downtownMap, own.floorId)]);
@@ -853,13 +854,22 @@ export class Room {
 
   private processRunEvents(events: SimEvent[]): void {
     for (const event of events) {
-      if (event.type !== "extracted" && event.type !== "consumed") continue;
+      /**
+       * Extraction is the only event that ends a run.
+       *
+       * Being looted used to end it, by way of the `consumed` event — which is why
+       * losing a fight took you out of the match. It no longer does: a looted bot is
+       * a downed bot with empty bays, still on the floor, and the run ends only when
+       * that player extracts or leaves.
+       */
+      if (event.type !== "extracted") continue;
       const member = [...this.members.values()].find((candidate) => candidate.botId === event.botId);
       if (!member?.inRun) continue;
-      this.sendRunOver(member, event.type === "extracted"
-        ? { type: "runOver", reason: "extracted", keptItems: event.items.map(itemToCode), lostItems: [], learnedBlueprints: [] }
-        : { type: "runOver", reason: "died", keptItems: [], lostItems: event.lostItems.map(itemToCode), learnedBlueprints: [] },
-      event.type === "extracted" ? event.items : []);
+      this.sendRunOver(
+        member,
+        { type: "runOver", reason: "extracted", keptItems: event.items.map(itemToCode), lostItems: [], learnedBlueprints: [] },
+        event.items,
+      );
     }
   }
 

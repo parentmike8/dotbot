@@ -1,4 +1,4 @@
-import type { BayIndex, DownedHostileVerb, GameConfig, MapDocument, PowerupType, RadarPing } from "@dotbot/game/types";
+import type { BayIndex, DownedVerb, GameConfig, MapDocument, PowerupType, RadarPing } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
@@ -37,7 +37,7 @@ export type WireBot = {
   p: [number, number];
   f?: number;
   fl?: string;
-  s?: "downed" | "consumed";
+  s?: "downed";
   sh?: number[];
   /** Detailed inventory is present only for the viewer's squad. */
   b?: (WireItemCode | null)[];
@@ -138,7 +138,7 @@ export type WireSimEvent =
       tick?: number;
     }
   | { type: "downed"; botId: string; byBotId?: string }
-  | { type: "consumed"; botId: string; byBotId: string; lostItems: WireItemCode[] }
+  | { type: "looted"; botId: string; byBotId: string; items: WireItemCode[] }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "plea"; botId: string; squadId: string; position: { x: number; y: number }; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
@@ -161,7 +161,7 @@ export type WireInputFrame = {
   viewTick?: number;
   useBay?: BayIndex;
   swapBay?: { bayIndex: BayIndex; holdIndex: number };
-  downedVerb?: DownedHostileVerb;
+  downedVerb?: DownedVerb;
   plea?: boolean;
 };
 
@@ -187,7 +187,7 @@ export type ClientMessage =
       viewTick?: number;
       useBay?: BayIndex;
       swapBay?: { bayIndex: BayIndex; holdIndex: number };
-      downedVerb?: DownedHostileVerb;
+      downedVerb?: DownedVerb;
       plea?: boolean;
       /** Tick-stamped frame batch (newest last), including redundant copies
        * of recent frames so a dropped packet cannot lose an input. When

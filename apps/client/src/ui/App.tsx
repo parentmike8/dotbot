@@ -92,14 +92,14 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
     };
   }, [map, player, snapshot]);
   const currentLocation = player ? locationLabel(map, player.floorId, player.position) : map.name.toUpperCase();
-  const killCounts = useMemo(() => {
+  const downCounts = useMemo(() => {
     const spawnById = new Map(map.botSpawns.map((spawn) => [spawn.id, spawn]));
     const viewerSquadId = spawnById.get(playerId)?.squadId;
     let ai = 0;
     let players = 0;
 
     for (const event of events) {
-      if (event.type !== "consumed" || spawnById.get(event.byBotId)?.squadId !== viewerSquadId) {
+      if (event.type !== "downed" || !event.byBotId || spawnById.get(event.byBotId)?.squadId !== viewerSquadId) {
         continue;
       }
 
@@ -119,10 +119,6 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
       return "Starting";
     }
 
-    if (player.state === "consumed") {
-      return "Respawning";
-    }
-
     if (player.state === "downed") {
       return "Downed";
     }
@@ -135,8 +131,8 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
       return "Extracting";
     }
 
-    if (playerCoverage?.kind === "consume") {
-      return playerCoverage.actorId === player.id ? "Consuming" : "Being consumed";
+    if (playerCoverage?.kind === "loot") {
+      return playerCoverage.actorId === player.id ? "Looting" : "Being looted";
     }
 
     if (playerCoverage?.kind === "revive") {
@@ -307,10 +303,9 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
 
       {hostileDowned && !runResult ? (
         <div className="hostile-verb-strip" aria-label="Downed hostile actions">
-          <strong>{hostileChannel?.kind === "consume" ? "CONSUMING" : hostileChannel?.kind === "reviveClean" ? "REVIVING CLEAN" : hostileChannel?.kind === "lootThenRevive" ? "LOOTING + REVIVING" : hostileInRange ? "DOWNED HOSTILE · PICK A VERB" : "STAND ON THE BODY"}</strong>
-          <button type="button" onClick={() => selectDownedVerb("consume")}>C · CONSUME</button>
-          <button type="button" onClick={() => selectDownedVerb("reviveClean")}>R · REVIVE CLEAN</button>
-          <button type="button" onClick={() => selectDownedVerb("lootThenRevive")}>F · LOOT + REVIVE</button>
+          <strong>{hostileChannel?.kind === "loot" ? "LOOTING" : hostileChannel?.kind === "revive" ? "REVIVING" : hostileInRange ? "DOWNED BOT" : "STAND ON THE BODY"}</strong>
+          <button type="button" onClick={() => selectDownedVerb("loot")}>F · LOOT</button>
+          <button type="button" onClick={() => selectDownedVerb("revive")}>R · REVIVE</button>
         </div>
       ) : null}
 
@@ -403,8 +398,8 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
       {runResult ? (
         <ManifestScreen
           result={runResult}
-          aiKills={killCounts.ai}
-          playerKills={killCounts.players}
+          aiKills={downCounts.ai}
+          playerKills={downCounts.players}
           runTime={formatRunClock(runResult.runTimeMs)}
           onNewRun={onRestart}
         />

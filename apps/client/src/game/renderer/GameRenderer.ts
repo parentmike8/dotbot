@@ -489,7 +489,7 @@ export class GameRenderer {
     this.fogGfx.clear();
     this.foregroundFogGfx.clear();
 
-    if (!player || player.state === "consumed") {
+    if (!player) {
       this.visionMaskGfx.rect(0, 0, this.map.width, this.map.height).fill({ color: 0xffffff });
       return;
     }
@@ -762,10 +762,6 @@ export class GameRenderer {
     for (const view of this.botViews.values()) view.root.visible = false;
 
     for (const bot of sorted) {
-      if (bot.state === "consumed") {
-        continue;
-      }
-
       const squad = viewerSquadId !== undefined && bot.squadId === viewerSquadId;
       const sameArena = this.contextKey(bot.floorId, bot.position) === playerContext;
 
@@ -789,7 +785,7 @@ export class GameRenderer {
       }
     }
 
-    const presentIds = new Set(snapshot.bots.filter((bot) => bot.state !== "consumed").map((bot) => bot.id));
+    const presentIds = new Set(snapshot.bots.map((bot) => bot.id));
     for (const [botId, view] of this.botViews) {
       if (presentIds.has(botId)) continue;
       view.root.destroy({ children: true });

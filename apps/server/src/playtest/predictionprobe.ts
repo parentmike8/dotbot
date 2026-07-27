@@ -127,7 +127,7 @@ async function main(): Promise<void> {
     const nearestOther = Math.min(
       Number.POSITIVE_INFINITY,
       ...message.bots
-        .filter((bot) => bot.i !== yourBotId && (bot.fl ?? "outdoor") === (own.fl ?? "outdoor") && bot.s !== "consumed")
+        .filter((bot) => bot.i !== yourBotId && (bot.fl ?? "outdoor") === (own.fl ?? "outdoor") && bot.s !== "downed")
         .map((bot) => Math.hypot(bot.p[0] - own.p[0], bot.p[1] - own.p[1])),
     );
     errors.push({ error, clear: nearestOther > 120 });

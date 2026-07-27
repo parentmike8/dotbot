@@ -111,7 +111,7 @@ describe("filterForViewer", () => {
   it("uses living squad floors when the viewer is a spectator", () => {
     const spectatorWire = {
       ...wire,
-      bots: wire.bots.map((entry) => entry.i === "viewer" ? { ...entry, s: "consumed" as const } : entry),
+      bots: wire.bots.map((entry) => entry.i === "viewer" ? { ...entry, s: "downed" as const } : entry),
     };
     const filtered = filterForViewer(spectatorWire, meta, {
       map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["lot6:B1"]), spectatedBotId: "mate",
@@ -123,7 +123,7 @@ describe("filterForViewer", () => {
   it("includes events tied to an included bot or the viewer squad", () => {
     const events = filterEventsForViewer([
       { type: "downed", botId: "street-enemy", byBotId: "viewer" },
-      { type: "consumed", botId: "upper-enemy", byBotId: "street-enemy", lostItems: [] },
+      { type: "looted", botId: "upper-enemy", byBotId: "street-enemy", items: [] },
       { type: "revived", botId: "mate", byBotId: "mate" },
     ], meta, new Set(["viewer", "mate"]), "a");
     expect(events.map((event) => event.type)).toEqual(["downed", "revived"]);

@@ -21,11 +21,8 @@ const emptyBays = () => testBays(0);
 const testConfig: Partial<GameConfig> = {
   dotCaptureDurationMs: 120,
   coverDurationMs: 150,
-  consumeDurationMs: 150,
-  reviveCleanDurationMs: 120,
-  lootThenReviveDurationMs: 210,
+  lootDurationMs: 150,
   pleaCooldownMs: 150,
-  respawnDelayMs: 120,
   dashCooldownMs: 300,
   shieldInvulnerabilityMs: 120,
   extractionDurationMs: 200,
@@ -635,14 +632,14 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("never lets an ambient grey consume a downed bot", async () => {
+  it("never lets a frozen bot open a channel on a body it is standing on", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 100 }, state: "downed", shields: 0 }),
       enemySpawn({ controller: "frozen", position: { x: 100, y: 100 } }),
     ]);
     runTicks(simulation, 30);
     expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.state).toBe("downed");
-    expect(simulation.getSnapshot().coverages.some((coverage) => coverage.kind === "consume")).toBe(false);
+    expect(simulation.getSnapshot().coverages.some((coverage) => coverage.kind === "loot")).toBe(false);
     simulation.dispose();
   });
 
@@ -738,7 +735,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("consumes a downed hostile bot after coverage", async () => {
+  it("loots a downed hostile bot after coverage", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
       enemySpawn({
@@ -750,16 +747,17 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
-    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("consumed");
+    // Stripped, and still lying there: nothing eliminates a bot.
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
     expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(2);
     simulation.dispose();
   });
 
-  it("spills consume overflow back onto the ground as typed dots", async () => {
+  it("spills loot overflow back onto the ground as typed dots", async () => {
     const simulation = await DotBotSimulation.create({
       map: makeMap([
         playerSpawn({ position: { x: 100, y: 180 }, bays: [healthItem], hold: [radarItem] }),
@@ -774,24 +772,23 @@ describe("DotBotSimulation", () => {
       ]),
       config: { ...testConfig, baySlots: 1, holdSlots: 1 },
     });
-    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
     runTicks(simulation, 12);
     const spills = simulation.getSnapshot().dots.filter((dot) => dot.id.startsWith("spill-") && dot.active);
     expect(spills.map((dot) => dot.item)).toEqual(expect.arrayContaining([overchargeItem, incognitoItem]));
     expect(simulation.drainEvents()).toContainEqual({
-      type: "consumed",
+      type: "looted",
       botId: "enemy",
       byBotId: "player",
-      lostItems: [overchargeItem, incognitoItem],
+      items: [overchargeItem, incognitoItem],
     });
     simulation.dispose();
   });
 
   it("uses the configured hostile channel durations and applies each verb outcome", async () => {
     const cases = [
-      { verb: "consume" as const, durationMs: testConfig.consumeDurationMs, finalState: "consumed" as const },
-      { verb: "reviveClean" as const, durationMs: testConfig.reviveCleanDurationMs, finalState: "alive" as const },
-      { verb: "lootThenRevive" as const, durationMs: testConfig.lootThenReviveDurationMs, finalState: "alive" as const },
+      { verb: "loot" as const, durationMs: testConfig.lootDurationMs, finalState: "downed" as const },
+      { verb: "revive" as const, durationMs: testConfig.coverDurationMs, finalState: "alive" as const },
     ];
 
     for (const { verb, durationMs, finalState } of cases) {
@@ -803,7 +800,7 @@ describe("DotBotSimulation", () => {
           position: { x: 100, y: 180 },
           state: "downed",
           shields: 0,
-          bays: [healthItem, radarItem, null, null],
+          bays: [healthItem, radarItem],
           hold: [],
         }),
       ]);
@@ -821,16 +818,15 @@ describe("DotBotSimulation", () => {
       const actor = snapshot.bots.find((bot) => bot.id === "player")!;
       const target = snapshot.bots.find((bot) => bot.id === "enemy")!;
       expect(target.state).toBe(finalState);
-      if (verb === "reviveClean") {
+      if (verb === "revive") {
+        // Revived on half a plate, and keeps everything it was carrying.
         expect(target.shieldSegments).toEqual([0.5, 0, 0]);
         expect(target.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
         expect(actor.bays.filter(Boolean)).toEqual([]);
-      } else if (verb === "lootThenRevive") {
-        expect(target.shieldSegments).toEqual([0.5, 0, 0]);
+      } else {
+        // Looting moves the carry across and leaves the body down.
         expect(target.bays.filter(Boolean)).toEqual([]);
         expect(target.hold).toEqual([]);
-        expect(actor.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
-      } else {
         expect(actor.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
       }
       simulation.dispose();
@@ -863,7 +859,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("consumes a downed hostile bot when standing over its footprint", async () => {
+  it("loots a downed hostile bot when standing over its footprint", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 122, y: 180 } }),
       enemySpawn({
@@ -875,16 +871,16 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
-    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("consumed");
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
     expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
     simulation.dispose();
   });
 
-  it("consumes a downed hostile bot from a forgiving hover overlap", async () => {
+  it("loots a downed hostile bot from a forgiving hover overlap", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 135, y: 180 } }),
       enemySpawn({
@@ -896,16 +892,16 @@ describe("DotBotSimulation", () => {
       }),
     ]);
 
-    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
-    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("consumed");
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
     expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
     simulation.dispose();
   });
 
-  it("does not consume a downed hostile bot from merely nearby", async () => {
+  it("does not loot a downed hostile bot from merely nearby", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 146, y: 180 } }),
       enemySpawn({
@@ -1201,7 +1197,7 @@ describe("DotBotSimulation", () => {
     expect(classifyNoise(downtownMap, "mercy:F1", clinicWardF1, "lot6:B1", depotB1, 1)).toBeNull();
   });
 
-  it("does not respawn a non-ambient player after being consumed", async () => {
+  it("never takes a downed player out of the run, whatever stands over it", async () => {
     const simulation = await makeSimulation([
       playerSpawn({
         position: { x: 100, y: 180 },
@@ -1214,8 +1210,10 @@ describe("DotBotSimulation", () => {
     simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 24);
 
+    // An AI standing on a body loots it. There is no verb that ends a run, so the
+    // player is still downed and still there — free to wait, plea, or leave.
     const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
-    expect(player?.state).toBe("consumed");
+    expect(player?.state).toBe("downed");
     expect(player?.shields).toBe(0);
     expect(player?.bays.filter(Boolean).length).toBe(0);
     simulation.dispose();
@@ -1292,7 +1290,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("drains downed, revived, and consumed events from a scripted fight", async () => {
+  it("drains downed, revived, and looted events from a scripted fight", async () => {
     // The player dashes WESTWARD into the enemy's forward plate (bots face
     // east by default): one dash, one full shatter, one down — a rear
     // approach would half-crack and need a second dash cycle.
@@ -1313,7 +1311,7 @@ describe("DotBotSimulation", () => {
     simulation.setController("player", "frozen");
     const playerPosition = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position;
     simulation.spawnBot(
-      enemySpawn({ id: "consumable", isAmbient: false, position: playerPosition, state: "downed", shields: 0, bays: testBays(2), hold: [] }),
+      enemySpawn({ id: "lootable", isAmbient: false, position: playerPosition, state: "downed", shields: 0, bays: testBays(2), hold: [] }),
       "frozen",
     );
     runTicks(simulation, 12);
@@ -1323,7 +1321,7 @@ describe("DotBotSimulation", () => {
     expect(simulation.drainEvents()).toEqual(
       expect.arrayContaining([
         { type: "downed", botId: "enemy", byBotId: "player" },
-        { type: "consumed", botId: "consumable", byBotId: "player", lostItems: [healthItem, healthItem] },
+        { type: "looted", botId: "lootable", byBotId: "player", items: [healthItem, healthItem] },
         { type: "revived", botId: "downed-ally", byBotId: "player" },
       ]),
     );
@@ -1438,7 +1436,7 @@ describe("kinematic bot physics (solver-free)", () => {
   it("lets the looter stand ON the body: hostile channels run from zero distance", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
-      enemySpawn({ id: "victim", isAmbient: false, controller: "frozen", squadId: "rival-1", position: { x: 160, y: 180 }, state: "downed", bays: [{ kind: "powerup", type: "health" }, null, null, null] }),
+      enemySpawn({ id: "victim", isAmbient: false, controller: "frozen", squadId: "rival-1", position: { x: 160, y: 180 }, state: "downed", bays: [{ kind: "powerup", type: "health" }] }),
     ]);
 
     // Walk THROUGH the corpse onto its center, then channel.
@@ -1446,15 +1444,15 @@ describe("kinematic bot physics (solver-free)", () => {
       const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
       const dx = 160 - player.position.x;
       const done = Math.abs(dx) < 2;
-      simulation.applyInput("player", { move: { x: done ? 0 : 1, y: 0 }, dash: false, downedVerb: "lootThenRevive" });
+      simulation.applyInput("player", { move: { x: done ? 0 : 1, y: 0 }, dash: false, downedVerb: "loot" });
       simulation.step();
     }
 
     const snapshot = simulation.getSnapshot();
     const victim = snapshot.bots.find((bot) => bot.id === "victim")!;
     const player = snapshot.bots.find((bot) => bot.id === "player")!;
-    expect(victim.state).toBe("alive");
-    expect(victim.shieldSegments[0]).toBe(0.5);
+    // Looted from zero distance, and still lying there.
+    expect(victim.state).toBe("downed");
     expect(player.bays.filter(Boolean).length).toBeGreaterThan(0);
     simulation.dispose();
   });
@@ -1634,13 +1632,13 @@ describe("combat lag compensation", () => {
     ]);
 
     for (let tick = 0; tick < 5; tick += 1) {
-      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "consume" });
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
       simulation.step();
     }
 
     const coverage = simulation.getSnapshot().coverages.find((entry) => entry.targetId === "victim");
     expect(coverage?.actorId).toBe("player");
-    expect(coverage?.kind).toBe("consume");
+    expect(coverage?.kind).toBe("loot");
     simulation.dispose();
   });
 });

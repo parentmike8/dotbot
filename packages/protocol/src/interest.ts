@@ -21,7 +21,16 @@ export function filterForViewer(
 ): FullWireSnapshot {
   const metaById = new Map(meta.map((entry) => [entry.id, entry]));
   const ownBot = viewerCtx.viewerBotId ? wire.bots.find((bot) => bot.i === viewerCtx.viewerBotId) : undefined;
-  const isSpectating = !ownBot || ownBot.s === "consumed";
+  /**
+   * Downed is when you start watching your squad.
+   *
+   * This has always been the DMZ shape — a viewer with no live bot of their own
+   * gets their squad's floors and follows a squadmate — but it keyed on the
+   * `consumed` state, which meant it only engaged once a bot had been finished
+   * off. Nothing finishes a bot off any more, so it keys on the state a player is
+   * actually in while they wait: down, and watching.
+   */
+  const isSpectating = !ownBot || ownBot.s === "downed";
   const squadBots = wire.bots.filter((bot) => metaById.get(bot.i)?.squadId === viewerCtx.squadId);
   const spectatedBot = isSpectating
     ? squadBots.find((bot) => bot.i === viewerCtx.spectatedBotId && (bot.s ?? "alive") === "alive")
@@ -88,7 +97,7 @@ export function visiblePhysicsFloors(
   viewerCtx: ViewerContext,
 ): Set<string> {
   const metaOwn = viewerCtx.viewerBotId ? wire.bots.find((bot) => bot.i === viewerCtx.viewerBotId) : undefined;
-  const isSpectating = !metaOwn || metaOwn.s === "consumed";
+  const isSpectating = !metaOwn || metaOwn.s === "downed";
   if (isSpectating) return new Set(viewerCtx.squadPhysicsFloorIds);
   return new Set([physicsFloorId(viewerCtx.map, metaOwn.fl ?? "outdoor")]);
 }

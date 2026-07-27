@@ -103,7 +103,6 @@ type InternalBot = DotBotEntity & {
   aiRepathMs: number;
   aiPathProjected: boolean;
   aiAvoidTargets: Map<string, number>;
-  consumedRespawnMs: number;
   pleaCooldownMs: number;
   radarPingElapsedMs: number;
   activeSwap?: { bayIndex: BayIndex; holdIndex: number; progressMs: number };
@@ -123,7 +122,8 @@ type InternalDoor = DoorEntity & {
   holdRemainingMs: number;
 };
 
-type AiIntent = "loot" | "hunt" | "revive" | "consume" | "extract" | "investigate" | "escort" | "wander";
+/** `loot` is a Dot on the ground; `strip` is a body. */
+type AiIntent = "loot" | "hunt" | "revive" | "strip" | "extract" | "investigate" | "escort" | "wander";
 
 type AiTarget = {
   position: Vec2;
@@ -346,7 +346,6 @@ export class DotBotSimulation {
       aiRepathMs: 0,
       aiPathProjected: false,
       aiAvoidTargets: new Map(),
-      consumedRespawnMs: 0,
       pleaCooldownMs: 0,
     };
 
@@ -471,7 +470,6 @@ export class DotBotSimulation {
     this.resolveDownedCoverage(dtMs);
     this.resolveExtraction(dtMs);
     this.resolveSwaps(dtMs);
-    this.respawnConsumedBots(dtMs);
   }
 
   getSnapshot(): GameSnapshot {
@@ -503,7 +501,7 @@ export class DotBotSimulation {
         tickHz: this.config.tickHz,
         tickCount: this.tickCount,
         fps: this.fps,
-        activeBodies: bots.filter((bot) => bot.state !== "consumed").length,
+        activeBodies: bots.length,
         activeDots: dots.filter((dot) => dot.active).length,
       },
     };
@@ -630,7 +628,7 @@ export class DotBotSimulation {
         while (bot.radarPingElapsedMs >= this.config.radarPingIntervalMs) {
           bot.radarPingElapsedMs -= this.config.radarPingIntervalMs;
           for (const target of this.bots.values()) {
-            if (target.id !== bot.id && target.state !== "consumed" && target.floorId === bot.floorId && distance(bot.position, target.position) <= this.config.radarRadius) {
+            if (target.id !== bot.id && target.floorId === bot.floorId && distance(bot.position, target.position) <= this.config.radarRadius) {
               bot.radarPings.push({ ...target.position, ageMs: 0 });
             }
           }
@@ -886,7 +884,7 @@ export class DotBotSimulation {
     );
 
     if (hostileDowned && this.strategicDistance(bot, hostileDowned) < 760) {
-      return makeAiTarget(hostileDowned.position, hostileDowned.floorId, bot.radius * 0.42, bot.radius * 3, "consume", hostileDowned.id);
+      return makeAiTarget(hostileDowned.position, hostileDowned.floorId, bot.radius * 0.42, bot.radius * 3, "strip", hostileDowned.id);
     }
 
     const visibleHostile = rank(
@@ -1239,7 +1237,7 @@ export class DotBotSimulation {
     const maximumRadius =
       target.intent === "loot"
         ? target.stopDistance
-        : target.intent === "revive" || target.intent === "consume"
+        : target.intent === "revive" || target.intent === "strip"
           ? Math.max(target.stopDistance, bot.radius * 1.35)
           : 0;
 
@@ -1346,7 +1344,7 @@ export class DotBotSimulation {
             ? this.config.playerSpeed
             : this.config.botSpeed;
       const stationaryChannel = [...this.coverages.values()].some((coverage) =>
-        coverage.actorId === bot.id && ["consume", "revive", "reviveClean", "lootThenRevive"].includes(coverage.kind),
+        coverage.actorId === bot.id && (coverage.kind === "loot" || coverage.kind === "revive"),
       );
       const direction = frozen || stationaryChannel ? zeroVec() : bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
       let velocity = scale(direction, speed);
@@ -1371,7 +1369,7 @@ export class DotBotSimulation {
 
   /**
    * Alive bots shoulder past each other at a capped rate instead of trading
-   * solver impulses; downed and consumed bodies are walkable and immovable.
+   * solver impulses; a downed body is walkable and immovable.
    * Responsibility is velocity-gated: the MOVER yields, a standing bot (or a
    * channel-frozen looter) is an anchor that cannot be shoved. Both moving
    * splits the overlap evenly.
@@ -1721,24 +1719,21 @@ export class DotBotSimulation {
       }
 
       let kind: CoverageKind;
-      let durationMs: number;
       if (areFriendly(coveringBot, downed)) {
+        // A squadmate is here to pick you up. There is nothing to choose.
         kind = "revive";
-        durationMs = this.config.coverDurationMs;
       } else {
         const controller = this.controllers.get(coveringBot.id);
-        const verb = controller === "human" ? this.inputs.get(coveringBot.id)?.downedVerb : "consume";
+        // An AI standing over a body strips it and moves on. It cannot finish the
+        // body off, because nothing can.
+        const verb = controller === "human" ? this.inputs.get(coveringBot.id)?.downedVerb : "loot";
         if (!verb) {
           this.coverages.delete(coverageKey);
           continue;
         }
         kind = verb;
-        durationMs = verb === "consume"
-          ? this.config.consumeDurationMs
-          : verb === "reviveClean"
-            ? this.config.reviveCleanDurationMs
-            : this.config.lootThenReviveDurationMs;
       }
+      const durationMs = kind === "loot" ? this.config.lootDurationMs : this.config.coverDurationMs;
 
       const existing = this.coverages.get(coverageKey);
       const progressMs = existing?.actorId === coveringBot.id && existing.kind === kind ? existing.progressMs + dtMs : dtMs;
@@ -1756,16 +1751,10 @@ export class DotBotSimulation {
       });
 
       if (progressMs >= durationMs) {
-        if (kind === "revive") {
-          this.reviveBot(downed, coveringBot);
-        } else if (kind === "consume") {
-          this.consumeBot(downed, coveringBot);
-        } else if (kind === "reviveClean") {
-          this.reviveBot(downed, coveringBot);
-        } else {
-          this.lootBot(downed, coveringBot);
-          this.reviveBot(downed, coveringBot);
-        }
+        // Looting leaves the body where it is. Wanting both is two channels, which
+        // is what the compound verb used to hide.
+        if (kind === "loot") this.lootBot(downed, coveringBot);
+        else this.reviveBot(downed, coveringBot);
 
         this.coverages.delete(coverageKey);
       }
@@ -1868,20 +1857,13 @@ export class DotBotSimulation {
     this.events.push({ type: "revived", botId: target.id, byBotId: reviver.id });
   }
 
-  private consumeBot(target: InternalBot, consumer: InternalBot): void {
-    const lostItems = this.lootBot(target, consumer);
-    target.state = "consumed";
-    target.shieldSegments = platesForCount(target.maxShields, 0);
-    target.shields = 0;
-    target.consumedRespawnMs = this.config.respawnDelayMs;
-    target.velocity = zeroVec();
-    target.knockbackMs = 0;
-    this.events.push({ type: "consumed", botId: target.id, byBotId: consumer.id, lostItems });
-  }
-
-  private lootBot(target: InternalBot, consumer: InternalBot): Item[] {
-    const lostItems = carriedItems(target);
-    const overflow = lostItems.filter((item) => !insertItem(consumer, item, this.config.holdSlots));
+  /**
+   * Strip a body of everything it carries. The body stays exactly where it is, in
+   * the state it was in: being looted is not an ending.
+   */
+  private lootBot(target: InternalBot, looter: InternalBot): Item[] {
+    const taken = carriedItems(target);
+    const overflow = taken.filter((item) => !insertItem(looter, item, this.config.holdSlots));
     overflow.forEach((item, index) => {
       const angle = (index * Math.PI * 2) / Math.max(1, overflow.length);
       const id = `spill-${this.spillSeq++}`;
@@ -1897,51 +1879,8 @@ export class DotBotSimulation {
     });
     target.bays = Array.from({ length: this.config.baySlots }, () => null);
     target.hold = [];
-    return lostItems;
-  }
-
-  private respawnConsumedBots(dtMs: number): void {
-    for (const bot of this.bots.values()) {
-      if (bot.state !== "consumed" || !bot.isAmbient) {
-        continue;
-      }
-
-      bot.consumedRespawnMs -= dtMs;
-
-      if (bot.consumedRespawnMs > 0) {
-        continue;
-      }
-
-      bot.state = "alive";
-      bot.shieldSegments = platesForCount(bot.maxShields, bot.maxShields);
-      bot.shields = plateSum(bot.shieldSegments);
-      bot.bays = bot.isAmbient
-        ? Array.from({ length: this.config.baySlots }, () => null)
-        : [{ kind: "powerup", type: "health" }, ...Array.from({ length: this.config.baySlots - 1 }, () => null)];
-      bot.hold = [];
-      bot.dashActiveMs = 0;
-      bot.dashCooldownMs = 0;
-      bot.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
-      bot.radarActiveMs = 0;
-      bot.radarPingElapsedMs = 0;
-      bot.radarPings = [];
-      bot.dashOverchargeCharges = 0;
-      bot.incognitoMs = 0;
-      bot.activeSwap = undefined;
-      bot.floorId = bot.spawnFloorId;
-      bot.position = { ...bot.spawn };
-      bot.prevPosition = { ...bot.spawn };
-      bot.aiPath = [];
-      bot.aiPathTarget = { ...bot.spawn };
-      bot.aiPathFloorId = bot.spawnFloorId;
-      bot.aiRepathMs = 0;
-      bot.aiPathProjected = false;
-      bot.aiAvoidTargets.clear();
-      bot.aiRetargetMs = 0;
-      bot.velocity = zeroVec();
-      bot.knockbackMs = 0;
-      this.placeBot(bot, { ...bot.spawn });
-    }
+    this.events.push({ type: "looted", botId: target.id, byBotId: looter.id, items: taken });
+    return taken;
   }
 
   private nextRandom(): number {
@@ -2019,7 +1958,7 @@ function makeAiTarget(
     stopDistance,
     slowDistance: Math.max(slowDistance, stopDistance + 1),
     intent,
-    projectionAllowed: intent === "loot" || intent === "revive" || intent === "consume",
+    projectionAllowed: intent === "loot" || intent === "revive" || intent === "strip",
     targetId,
   };
 }
