@@ -31,6 +31,7 @@ import { applyShieldHit, platesForCount, plateSum, restoreShieldPlate, shatterNe
 import { OUTDOOR_FLOOR_ID } from "./types";
 import { hasLineOfSight } from "./visibility";
 import type {
+  BayIndex,
   BotSpawn,
   BotState,
   Building,
@@ -105,7 +106,7 @@ type InternalBot = DotBotEntity & {
   consumedRespawnMs: number;
   pleaCooldownMs: number;
   radarPingElapsedMs: number;
-  activeSwap?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number; progressMs: number };
+  activeSwap?: { bayIndex: BayIndex; holdIndex: number; progressMs: number };
 };
 
 type InternalDot = DotEntity;
@@ -687,12 +688,12 @@ export class DotBotSimulation {
         bot.lastAim = input.move;
       }
 
-      if (input.useBay !== undefined) {
+      if (input.useBay !== undefined && isSlot(bot.bays, input.useBay)) {
         this.fireBay(bot, input.useBay);
       }
       if (input.swapBay && !bot.activeSwap) {
         const { bayIndex, holdIndex } = input.swapBay;
-        if (bayIndex < bot.bays.length && holdIndex >= 0 && holdIndex < bot.hold.length) {
+        if (isSlot(bot.bays, bayIndex) && isSlot(bot.hold, holdIndex)) {
           bot.activeSwap = { bayIndex, holdIndex, progressMs: 0 };
           bot.desiredMove = zeroVec();
         }
@@ -716,7 +717,7 @@ export class DotBotSimulation {
     }
   }
 
-  private fireBay(bot: InternalBot, bayIndex: 0 | 1 | 2 | 3): void {
+  private fireBay(bot: InternalBot, bayIndex: BayIndex): void {
     const item = bot.bays[bayIndex];
     if (!item || item.kind === "blueprint") return;
     bot.bays[bayIndex] = null;
@@ -1951,6 +1952,19 @@ export class DotBotSimulation {
 
 function areFriendly(a: Pick<DotBotEntity, "squadId">, b: Pick<DotBotEntity, "squadId">): boolean {
   return a.squadId === b.squadId;
+}
+
+/**
+ * Does this index name a slot the bot actually has?
+ *
+ * Every index a client sends has to pass through here. The old guard was
+ * `index < slots.length`, which admits a negative and a fraction, and neither one
+ * fails loudly: `bays[-1] = item` sets a string key rather than a slot, and
+ * `hold.splice(-1, 1)` counts from the end and removes the *last* held item — so a
+ * client could destroy one of its own items by asking to swap into bay -1.
+ */
+function isSlot(slots: unknown[], index: number): boolean {
+  return Number.isInteger(index) && index >= 0 && index < slots.length;
 }
 
 function toBotSnapshot(bot: InternalBot): DotBotEntity {

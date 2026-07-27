@@ -13,7 +13,10 @@ const radarItem = { kind: "powerup", type: "radar" } as const;
 const overchargeItem = { kind: "powerup", type: "dashOvercharge" } as const;
 const incognitoItem = { kind: "powerup", type: "incognito" } as const;
 const mineItem = { kind: "mine" } as const;
-const testBays = (count: number) => Array.from({ length: 4 }, (_, index) => index < count ? healthItem : null);
+/** `count` health items, then empties out to however many bays the game has. */
+const testBays = (count: number) =>
+  Array.from({ length: defaultGameConfig.baySlots }, (_, index) => index < count ? healthItem : null);
+const emptyBays = () => testBays(0);
 
 const testConfig: Partial<GameConfig> = {
   dotCaptureDurationMs: 120,
@@ -335,16 +338,18 @@ describe("DotBotSimulation", () => {
 
   it("places mines silently, consumes bays, and rotates the oldest at the active cap", async () => {
     const simulation = await DotBotSimulation.create({
-      map: makeMap([playerSpawn({ bays: [mineItem, mineItem, mineItem, mineItem] })]),
-      config: { ...testConfig, maxActiveMines: 3 },
+      // One placement past the cap is what proves rotation, so the cap sits one
+      // below the bay count rather than at it.
+      map: makeMap([playerSpawn({ bays: Array.from({ length: defaultGameConfig.baySlots }, () => mineItem) })]),
+      config: { ...testConfig, maxActiveMines: defaultGameConfig.baySlots - 1 },
     });
-    for (const bay of [0, 1, 2, 3] as const) {
+    for (let bay = 0; bay < defaultGameConfig.baySlots; bay += 1) {
       simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: bay });
       simulation.step();
     }
     const snapshot = simulation.getSnapshot();
-    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays).toEqual([null, null, null, null]);
-    expect(snapshot.mines.map((mine) => mine.id)).toEqual(["mine-player-1", "mine-player-2", "mine-player-3"]);
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.bays).toEqual(emptyBays());
+    expect(snapshot.mines.map((mine) => mine.id)).toEqual(["mine-player-1", "mine-player-2"]);
     expect(snapshot.noises).toEqual([]);
     expect(simulation.drainEvents()).toContainEqual({ type: "mineRotated", botId: "player", mineId: "mine-player-0" });
     simulation.dispose();
@@ -426,7 +431,7 @@ describe("DotBotSimulation", () => {
   });
 
   it("suppresses both firing and dash noise under incognito", async () => {
-    const simulation = await makeSimulation([playerSpawn({ bays: [incognitoItem, null, null, null] })]);
+    const simulation = await makeSimulation([playerSpawn({ bays: [incognitoItem] })]);
     simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true, useBay: 0 });
     simulation.step();
     const snapshot = simulation.getSnapshot();
@@ -449,7 +454,7 @@ describe("DotBotSimulation", () => {
 
   it("runs a stationary noisy hold-to-bay swap channel", async () => {
     const simulation = await DotBotSimulation.create({
-      map: makeMap([playerSpawn({ bays: [healthItem, null, null, null], hold: [radarItem] })]),
+      map: makeMap([playerSpawn({ bays: [healthItem], hold: [radarItem] })]),
       config: { ...testConfig, swapDurationMs: 800 },
     });
     const start = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position;
@@ -462,6 +467,29 @@ describe("DotBotSimulation", () => {
     expect(player.bays[0]).toEqual(radarItem);
     expect(player.hold).toEqual([healthItem]);
     expect(simulation.getSnapshot().noises.some((noise) => noise.kind === "channel")).toBe(true);
+    simulation.dispose();
+  });
+
+  it("ignores a swap into a bay the bot does not have", async () => {
+    /**
+     * The bay index arrives from a client and is untrusted. It used to be typed as
+     * a literal union, which checks nothing across a JSON boundary, and the only
+     * guard was `bayIndex < bays.length` — so a negative index passed. Downstream,
+     * `bays[-1] = held` sets a stray string key rather than a slot, and
+     * `hold.splice(-1, 1)` removes the *last* hold item, so a client could destroy
+     * one of its own items and put it nowhere.
+     */
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([playerSpawn({ bays: [healthItem], hold: [radarItem, incognitoItem] })]),
+      config: { ...testConfig, swapDurationMs: 800 },
+    });
+    for (const bayIndex of [-1, 99, 1.5]) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, swapBay: { bayIndex, holdIndex: 0 } });
+      runTicks(simulation, 50);
+    }
+    const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(player.bays[0]).toEqual(healthItem);
+    expect(player.hold).toEqual([radarItem, incognitoItem]);
     simulation.dispose();
   });
 

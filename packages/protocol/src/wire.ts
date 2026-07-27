@@ -1,3 +1,4 @@
+import { defaultGameConfig } from "@dotbot/game/config";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, DotEntity, GameSnapshot, MineEntity, NoiseEvent, CoverageSnapshot, RadarPing } from "@dotbot/game/types";
 import type { SimEvent } from "@dotbot/game/types";
@@ -174,7 +175,9 @@ function fromWireBot(bot: WireBot, metaIndex: ReadonlyMap<string, EntityMeta>): 
     state: bot.s ?? "alive",
     shieldSegments,
     shields: shieldSegments.reduce((sum, segment) => sum + segment, 0),
-    bays: (bot.b ?? [null, null, null, null]).map((code) => code ? itemFromCode(code) : null),
+    // `b` is omitted when every bay is empty, so its absence still has a length.
+    bays: (bot.b ?? Array.from({ length: defaultGameConfig.baySlots }, () => null))
+      .map((code) => code ? itemFromCode(code) : null),
     hold: (bot.h ?? []).map(itemFromCode),
     carriedCount: bot.c ?? 0,
     dashCooldownMs: bot.d?.[0] ?? 0,

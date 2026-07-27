@@ -4,6 +4,7 @@ import type { ClientMessage, ServerMessage, WireDot } from "./messages";
 import { assertNever } from "./messages";
 import { applyWireDotFrame, fromWireEvent, fromWireSnapshot, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot } from "./wire";
 import { itemFromCode, itemToCode } from "./items";
+import { defaultGameConfig } from "@dotbot/game/config";
 
 const bot: DotBotEntity = {
   id: "bot-a",
@@ -56,6 +57,10 @@ const snapshot: GameSnapshot = {
   debug: { tickHz: 60, tickCount: 12, fps: 60, activeBodies: 1, activeDots: 1 },
 };
 
+/** An all-empty bank: the case where the encoder omits `b` and the decoder has
+ * to rebuild the length from the bay count both sides share. */
+const emptyBays = Array.from({ length: defaultGameConfig.baySlots }, () => null);
+
 describe("snapshot wire mapping", () => {
   it("round-trips entity dynamics through JSON with bounded rounding", () => {
     const full = toWireSnapshot(snapshot);
@@ -95,7 +100,7 @@ describe("snapshot wire mapping", () => {
       floorId: "outdoor",
       shieldSegments: [1, 1, 1],
       shields: 3,
-      bays: [null, null, null, null],
+      bays: emptyBays,
       carriedCount: 0,
       dashCooldownMs: 0,
       dashActiveMs: 0,
@@ -115,7 +120,7 @@ describe("snapshot wire mapping", () => {
       floorId: "outdoor",
       state: "alive",
       shieldSegments: [1, 1, 1],
-      bays: [null, null, null, null],
+      bays: emptyBays,
       carriedCount: 0,
     });
   });

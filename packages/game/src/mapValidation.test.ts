@@ -403,7 +403,7 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map val
     expect(map.buildings.flatMap((building) => building.floors.flatMap((floor) => floor.dotSpawns))).toEqual([]);
     expect(map.interactionDots).toHaveLength(map.buildings[0].floors.flatMap((floor) => floor.objects).length + 1);
     expect(map.botSpawns).toEqual([
-      expect.objectContaining({ id: "player", controller: "human", bays: [null, null, null, null], hold: [] }),
+      expect.objectContaining({ id: "player", controller: "human", bays: Array.from({ length: defaultGameConfig.baySlots }, () => null), hold: [] }),
     ]);
   });
 

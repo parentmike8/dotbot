@@ -557,7 +557,7 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
       color: "#ff3b6b",
       position: { ...shell.spawn },
       floorId: OUTDOOR_FLOOR_ID,
-      bays: [null, null, null, null],
+      bays: Array.from({ length: defaultGameConfig.baySlots }, () => null),
       hold: [],
     }],
     placementSlots: [...shell.slots, ...(options.expanded ? shell.upper.slots : [])].map((slot) => ({

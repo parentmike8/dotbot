@@ -546,11 +546,23 @@ export type DoorEntity = {
   blocking: boolean;
 };
 
+/**
+ * Which bay an input refers to.
+ *
+ * Deliberately not a literal union of the current bay count. `0 | 1 | 2 | 3` looked
+ * like a guard and was not one: it hardcoded a count that `GameConfig.baySlots`
+ * owns, every call site had to cast into it — a digit parsed out of a keycode, an
+ * array index — and it means nothing at all across the wire, where input arrives as
+ * JSON. The range check belongs where untrusted input lands, and `Simulation` does
+ * it there.
+ */
+export type BayIndex = number;
+
 export type InputCommand = {
   move: Vec2;
   dash: boolean;
-  useBay?: 0 | 1 | 2 | 3;
-  swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
+  useBay?: BayIndex;
+  swapBay?: { bayIndex: BayIndex; holdIndex: number };
   downedVerb?: DownedHostileVerb;
   plea?: boolean;
 };

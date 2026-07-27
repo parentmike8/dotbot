@@ -1,4 +1,4 @@
-import type { DownedHostileVerb, GameConfig, MapDocument, PowerupType, RadarPing } from "@dotbot/game/types";
+import type { BayIndex, DownedHostileVerb, GameConfig, MapDocument, PowerupType, RadarPing } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
@@ -159,8 +159,8 @@ export type WireInputFrame = {
    * was cut. Dash lag compensation uses this exact combat timeline instead
    * of guessing from a periodically sampled RTT. */
   viewTick?: number;
-  useBay?: 0 | 1 | 2 | 3;
-  swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
+  useBay?: BayIndex;
+  swapBay?: { bayIndex: BayIndex; holdIndex: number };
   downedVerb?: DownedHostileVerb;
   plea?: boolean;
 };
@@ -185,8 +185,8 @@ export type ClientMessage =
       move: [number, number];
       dash: boolean;
       viewTick?: number;
-      useBay?: 0 | 1 | 2 | 3;
-      swapBay?: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number };
+      useBay?: BayIndex;
+      swapBay?: { bayIndex: BayIndex; holdIndex: number };
       downedVerb?: DownedHostileVerb;
       plea?: boolean;
       /** Tick-stamped frame batch (newest last), including redundant copies

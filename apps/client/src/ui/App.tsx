@@ -26,6 +26,11 @@ function itemLabel(item: Item): string {
   return ({ health: "Health", radar: "Radar", dashOvercharge: "Dash overcharge", incognito: "Incognito" } as const)[item.type];
 }
 
+/** The bank always shows every bay, so an empty one still reads as a slot. */
+function bayStrip(bays: (Item | null)[] | undefined): (Item | null)[] {
+  return Array.from({ length: defaultGameConfig.baySlots }, (_, index) => bays?.[index] ?? null);
+}
+
 function itemGlyph(item: Item | null): string {
   if (!item) return "·";
   if (item.kind === "blueprint") return "⌑";
@@ -47,7 +52,7 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, giveUp, selectDownedVerb, plea,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ map: requestedMap });
-  const [swapBay, setSwapBay] = useState<0 | 1 | 2 | 3 | null>(null);
+  const [swapBay, setSwapBay] = useState<number | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
   const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === playerId) ?? false;
@@ -204,12 +209,12 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
             <button type="button" onClick={toggleLegend}>L / Key</button>
           </div>
           <div className="bay-strip">
-            {(player?.bays ?? [null, null, null, null]).map((item, index) => (
+            {bayStrip(player?.bays).map((item, index) => (
               <div className="bay-slot" key={index}>
                 <button
                   type="button"
                   className={`bay-button ${item?.kind ?? "empty"}`}
-                  onClick={() => useBay(index as 0 | 1 | 2 | 3)}
+                  onClick={() => useBay(index)}
                   disabled={!item || player?.state !== "alive"}
                   aria-label={`Bay ${index + 1}${item ? `: ${itemLabel(item)}` : ": empty"}`}
                 >
@@ -218,7 +223,7 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
                 <button
                   type="button"
                   className="swap-control"
-                  onClick={() => setSwapBay(index as 0 | 1 | 2 | 3)}
+                  onClick={() => setSwapBay(index)}
                   disabled={!player?.hold.length || player.state !== "alive"}
                 >SWAP</button>
               </div>

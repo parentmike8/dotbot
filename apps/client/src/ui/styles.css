@@ -223,7 +223,10 @@ button {
 
 .bay-strip {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* One column per bay because there is one child per bay, not because a number
+     here says so. `repeat(4, 1fr)` left a dead column the day the count changed. */
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   gap: 5px;
   margin-top: 7px;
 }

@@ -15,7 +15,7 @@ import {
 import { selectSpectatedBot } from "./spectate";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
-import type { DotBotEntity, DownedHostileVerb, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { BayIndex, DotBotEntity, DownedHostileVerb, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { NetworkDebugStats } from "./session/netgraph";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
@@ -72,8 +72,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const keysRef = useRef(new Set<string>());
   const joystickRef = useRef<JoystickState>(emptyJoystick);
   const dashQueuedRef = useRef(false);
-  const useBayQueuedRef = useRef<0 | 1 | 2 | 3 | undefined>(undefined);
-  const swapQueuedRef = useRef<{ bayIndex: 0 | 1 | 2 | 3; holdIndex: number } | undefined>(undefined);
+  const useBayQueuedRef = useRef<BayIndex | undefined>(undefined);
+  const swapQueuedRef = useRef<{ bayIndex: BayIndex; holdIndex: number } | undefined>(undefined);
   const downedVerbRef = useRef<DownedHostileVerb | undefined>(undefined);
   const pleaQueuedRef = useRef(false);
   const spectateCycleQueuedRef = useRef(false);
@@ -325,9 +325,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         return;
       }
 
-      if (["Digit1", "Digit2", "Digit3", "Digit4"].includes(event.code)) {
+      // One digit per bay, derived rather than listed, so the keys and the bank
+      // cannot disagree about how many bays there are.
+      const digit = /^Digit([1-9])$/.exec(event.code);
+      if (digit && Number(digit[1]) <= defaultGameConfig.baySlots) {
         event.preventDefault();
-        if (!runEndedRef.current && !event.repeat) useBayQueuedRef.current = Number(event.code.slice(-1)) - 1 as 0 | 1 | 2 | 3;
+        if (!runEndedRef.current && !event.repeat) useBayQueuedRef.current = Number(digit[1]) - 1;
         return;
       }
 
@@ -420,12 +423,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     }
   }, []);
 
-  const useBay = useCallback((bayIndex: 0 | 1 | 2 | 3) => {
+  const useBay = useCallback((bayIndex: BayIndex) => {
     void feedbackRef.current?.unlock();
     if (!runEndedRef.current) useBayQueuedRef.current = bayIndex;
   }, []);
 
-  const swapBayItem = useCallback((bayIndex: 0 | 1 | 2 | 3, holdIndex: number) => {
+  const swapBayItem = useCallback((bayIndex: BayIndex, holdIndex: number) => {
     void feedbackRef.current?.unlock();
     if (!runEndedRef.current) swapQueuedRef.current = { bayIndex, holdIndex };
   }, []);

@@ -5,7 +5,12 @@ export const defaultGameConfig: GameConfig = {
   botRadius: 24,
   dotRadius: 10,
   maxShields: 3,
-  baySlots: 4,
+  /**
+   * Three, so the whole bank is one thumb's reach on a phone and one glance
+   * anywhere. The controls are a stick and a dash; the bays are the only other
+   * thing a player drives, and a fourth slot bought nothing a third does not.
+   */
+  baySlots: 3,
   holdSlots: 12,
   radarDurationMs: 8000,
   radarPingIntervalMs: 2000,

@@ -1,4 +1,4 @@
-import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
+import type { BayIndex, GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { physicsFloorId } from "@dotbot/game/mapModel";
 import { applyWireDotFrame, assertNever, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
 import type { ClientMessage, DeliveryClass, EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot, WireInputFrame } from "@dotbot/protocol";
@@ -65,8 +65,8 @@ export class NetSession implements GameSession {
   private pendingInputs: PendingInput[] = [];
   private predictionInput: InputCommand = { move: { x: 0, y: 0 }, dash: false };
   private predictionDashQueued = false;
-  private queuedUseBay: 0 | 1 | 2 | 3 | undefined;
-  private queuedSwapBay: { bayIndex: 0 | 1 | 2 | 3; holdIndex: number } | undefined;
+  private queuedUseBay: BayIndex | undefined;
+  private queuedSwapBay: { bayIndex: BayIndex; holdIndex: number } | undefined;
   private stagedDownedVerb: InputCommand["downedVerb"];
   private queuedPlea = false;
   private edgeAwaitingFlush = false;
