@@ -4,8 +4,14 @@
 .base-title-block strong { font-size: 14px; letter-spacing: .08em; }
 .base-title-block small { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--hairline); }
 .base-instruction { position: absolute; z-index: 7; right: 14px; bottom: 14px; max-width: calc(100vw - 28px); padding: 8px 10px; border: 1px solid var(--hairline); background: var(--paper-glass); color: var(--muted); font: 800 8px/1.25 ui-monospace, monospace; letter-spacing: .1em; }
-.base-settings-button { margin-top: 6px; min-height: 26px; border: 1px solid var(--ink); background: var(--paper); padding: 0 8px; font: 900 8px/1 ui-monospace, monospace; letter-spacing: .12em; text-transform: uppercase; text-align: left; cursor: pointer; }
-.base-settings-button:disabled { color: var(--muted); border-color: var(--hairline); cursor: default; }
+.base-onboarding { position: absolute; z-index: 9; bottom: 18px; left: 50%; display: grid; width: max-content; max-width: calc(100vw - 32px); justify-items: center; gap: 5px; padding: 11px 16px; border: 1.5px solid var(--ink); background: rgba(255,255,255,.96); box-shadow: 4px 4px 0 var(--ink); transform: translateX(-50%); text-align: center; text-transform: uppercase; pointer-events: none; }
+.base-onboarding > span { color: var(--muted); font-size: 8px; font-weight: 850; letter-spacing: .16em; }
+.base-onboarding > strong { font-size: 15px; letter-spacing: .09em; }
+.base-onboarding p { margin: 0; color: var(--muted); font: 850 8px/1.4 ui-monospace, monospace; letter-spacing: .09em; }
+.base-onboarding kbd { display: inline-grid; min-width: 18px; height: 18px; margin: 0 2px; place-items: center; border: 1px solid var(--ink); border-bottom-width: 2px; background: var(--paper); color: var(--ink); font: 900 9px/1 ui-monospace, monospace; }
+.base-onboarding-touch { display: none; }
+@keyframes base-control-pulse { 0%, 100% { filter: drop-shadow(0 0 0 rgba(17,17,17,0)); } 50% { filter: drop-shadow(0 0 7px rgba(17,17,17,.35)); } }
+.base-shell[data-onboarding="move"] .base-touch-controls .joystick { animation: base-control-pulse 1.4s ease-in-out infinite; }
 .shell-panel { width: min(520px, calc(100vw - 28px)); }
 .shell-choices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
 .shell-choices .shell-choice { display: grid; gap: 6px; padding: 8px; border: 1.5px solid var(--hairline); background: var(--paper); text-align: left; cursor: pointer; }
@@ -79,4 +85,24 @@
 .deployment-shell .lobby-card { position: relative; width: min(470px,100%); padding: clamp(20px,4vw,34px); box-shadow: 7px 7px 0 var(--ink); }
 .deployment-shell .lobby-card h1 { font-size: clamp(34px,7vw,54px); }
 .deployment-close { position: absolute; z-index: 2; top: 10px; right: 10px; width: 36px; min-height: 36px !important; padding: 0 !important; border: 0 !important; font-size: 22px; }
-@media (max-width: 620px) { .base-title-block { min-width: 0; max-width: calc(100vw - 28px); } .base-instruction { left: 14px; right: auto; } }
+@media (max-width: 620px), (hover: none), (pointer: coarse) {
+  .base-title-block { min-width: 0; max-width: calc(100vw - 28px); }
+  .base-onboarding {
+    bottom: max(136px, calc(env(safe-area-inset-bottom) + 128px));
+  }
+  .base-onboarding-keyboard { display: none; }
+  .base-onboarding-touch { display: block; }
+  .base-instruction {
+    right: auto;
+    bottom: max(136px, calc(env(safe-area-inset-bottom) + 128px));
+    left: 50%;
+    width: max-content;
+    max-width: calc(100vw - 28px);
+    transform: translateX(-50%);
+    text-align: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .base-shell[data-onboarding="move"] .base-touch-controls .joystick { animation: none; }
+}

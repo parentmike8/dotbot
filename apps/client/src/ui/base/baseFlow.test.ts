@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { createBaseMap, starterBaseLayout } from "@dotbot/game/content/base";
+import { defaultGameConfig } from "@dotbot/game/config";
+import { interactionDotReach } from "@dotbot/game/interactions";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import { selectClientSurface } from "../../routing";
-import { advanceBaseChannel, findBaseTarget } from "./baseFlow";
+import { advanceBaseChannel, findBaseTarget, hasMovedForBaseOnboarding } from "./baseFlow";
 
 describe("base boot and deployment seams", () => {
+  it("advances first-entry guidance only after the player actually moves", () => {
+    const origin = { x: 100, y: 100 };
+    expect(hasMovedForBaseOnboarding(origin, { x: 127.9, y: 100 })).toBe(false);
+    expect(hasMovedForBaseOnboarding(origin, { x: 128, y: 100 })).toBe(true);
+  });
+
   it("boots to the base while preserving explicit solo and studio development surfaces", () => {
     expect(selectClientSurface("")).toBe("base");
     expect(selectClientSurface("?solo")).toBe("solo");
@@ -48,19 +56,20 @@ describe("base boot and deployment seams", () => {
   });
 
   it("uses world-dot capture range and resolves nearest ties by stable dot id", () => {
-    const map = createBaseMap({});
-    const [first, second] = map.interactionDots!.filter((dot) => dot.kind === "emptySlot").slice(0, 2);
+    const map = createBaseMap(starterBaseLayout);
+    const [first, second] = map.interactionDots!.filter((dot) => dot.kind === "object").slice(0, 2);
     const position = { x: 400, y: 400 };
-    first.position = { x: position.x + 12, y: position.y };
-    second.position = { x: position.x - 12, y: position.y };
+    const reach = interactionDotReach(defaultGameConfig.botRadius, defaultGameConfig.dotRadius);
+    first.position = { x: position.x + reach, y: position.y };
+    second.position = { x: position.x - reach, y: position.y };
 
     const expected = [first, second].sort((a, b) => a.id.localeCompare(b.id))[0].id;
     expect(findBaseTarget(map, position)?.id).toBe(expected);
     map.interactionDots!.reverse();
     expect(findBaseTarget(map, position)?.id).toBe(expected);
 
-    first.position = { x: position.x + 12.01, y: position.y };
-    second.position = { x: position.x - 12.01, y: position.y };
+    first.position = { x: position.x + reach + 0.01, y: position.y };
+    second.position = { x: position.x - reach - 0.01, y: position.y };
     expect(findBaseTarget(map, position)).toBeNull();
   });
 });

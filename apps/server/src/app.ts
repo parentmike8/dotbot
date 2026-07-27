@@ -4,7 +4,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Socket } from "node:net";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type RawData } from "ws";
 import { itemFromCode, type ClientMessage, type ServerMessage, type WireItemCode } from "@dotbot/protocol";
 import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById } from "@dotbot/game/content/recipes";
@@ -140,9 +140,13 @@ export async function createServer(options: CreateServerOptions = {}) {
     const shell = request.body?.shell;
     if (!isBaseShellId(shell)) return reply.code(400).send({ error: "Unknown base shell." });
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
-    const base = await persistence.setBaseShell(token, shell);
-    if (!base) return reply.code(404).send({ error: "Unknown device token." });
-    return { storageLinked: true, ...base };
+    try {
+      const base = await persistence.setBaseShell(token, shell);
+      if (!base) return reply.code(404).send({ error: "Unknown device token." });
+      return { storageLinked: true, ...base };
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
   });
 
   app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { loadout?: unknown } }>("/api/base/loadout", async (request, reply) => {
@@ -321,7 +325,7 @@ export async function createServer(options: CreateServerOptions = {}) {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
       },
     };
-    ws.on("message", async (data) => {
+    const processMessage = async (data: RawData) => {
       let message: ClientMessage;
       try {
         message = JSON.parse(data.toString()) as ClientMessage;
@@ -383,6 +387,13 @@ export async function createServer(options: CreateServerOptions = {}) {
       } catch {
         peer.send({ type: "err", code: "server_unavailable", msg: "The allocated game session is not ready." });
       }
+    };
+    // ws emits messages in wire order, but async identity/GameLift admission
+    // can otherwise let the next callback overtake hello. Preserve that order
+    // for each peer so no gameplay message can race its own handshake.
+    let inbound = Promise.resolve();
+    ws.on("message", (data) => {
+      inbound = inbound.then(() => processMessage(data));
     });
     ws.on("close", () => {
       rooms.disconnect(peer.id);

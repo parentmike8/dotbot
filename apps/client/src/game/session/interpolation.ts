@@ -104,6 +104,7 @@ function interpolateSnapshot(older: GameSnapshot, newer: GameSnapshot, alpha: nu
   const newerMines = new Map(newer.mines.map((mine) => [mine.id, mine]));
   const newerCoverages = new Map(newer.coverages.map((coverage) => [coverageKey(coverage), coverage]));
   const newerNoises = new Map(newer.noises.map((noise) => [noise.id, noise]));
+  const newerDoors = new Map((newer.doors ?? []).map((door) => [door.id, door]));
 
   return {
     ...older,
@@ -119,6 +120,10 @@ function interpolateSnapshot(older: GameSnapshot, newer: GameSnapshot, alpha: nu
       return next ? { ...coverage, progressMs: lerp(coverage.progressMs, next.progressMs, alpha) } : coverage;
     }),
     noises: older.noises.map((noise) => interpolateNoise(noise, newerNoises.get(noise.id), alpha)),
+    doors: (older.doors ?? []).map((door) => {
+      const next = newerDoors.get(door.id);
+      return next ? { ...next, openness: lerp(door.openness, next.openness, alpha) } : door;
+    }),
     debug: { ...older.debug, tickCount: Math.round(renderTick) },
   };
 }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { createServer } from "./app";
+import { NoopPersistence } from "./db";
 
 type Inbox = {
   ws: WebSocket;
@@ -65,13 +66,20 @@ describe("multiplayer server", () => {
 
     // The deterministic insertion test seed puts Alpha at WEST GATE. Enter
     // the Main St corridor, move east beyond the depot wall, then south into
-    // the 960..1070 x 1150..1260 extraction rectangle.
+    // the 910..1020 x 1150..1260 extraction rectangle. The east target is set
+    // short of the pad's centre on purpose: the drive loop polls every 33ms, so
+    // the bot coasts roughly 56 units past whatever it is told to stop at.
     a.send({ type: "input", seq: 1, move: [0, 1], dash: false });
-    await waitForBotPosition(a, startA.yourBotId, ([, y]) => y >= 918);
-    const seqAfterLane = await driveEastAlongLane(a, startA.yourBotId, 920, 1000, 1);
-    a.send({ type: "input", seq: seqAfterLane + 1, move: [0, 1], dash: false });
-    await waitForBotPosition(a, startA.yourBotId, ([, y]) => y >= 1160);
-    a.send({ type: "input", seq: seqAfterLane + 2, move: [0, 0], dash: false });
+    await waitForBotPosition(a, startA.yourBotId, ([, y]) => y >= 948);
+    // Lane at 950, not 920: street trees now collide, and their canopies occupy
+    // y 862..898 in the south footway's furniture strip, so 920 is 2 units inside
+    // them. 950 keeps a bot's full radius clear of the kerb-side planting.
+    const seqAfterLane = await driveEastAlongLane(a, startA.yourBotId, 950, 910, 1);
+    // Then steer onto the pad instead of coasting into it. Coasting depended on
+    // how often the 33ms poll loop actually ran, so under full-suite load the bot
+    // could sail straight past a 110-wide rectangle — a flake with nothing to do
+    // with the behaviour under test.
+    await steerTo(a, startA.yourBotId, { x: 965, y: 1205 }, seqAfterLane + 1);
 
     const runOverA = await a.waitFor("runOver", 5000);
     expect(runOverA).toEqual({ type: "runOver", reason: "extracted", keptItems: ["h"], lostItems: [], learnedBlueprints: [] });
@@ -109,6 +117,45 @@ describe("multiplayer server", () => {
     await Promise.all([onceClosed(a.ws), onceClosed(b.ws)]);
     await app.close();
   }, 20_000);
+
+  it("preserves hello admission order when identity lookup is slow", async () => {
+    let releaseIdentity: () => void = () => {};
+    const identityGate = new Promise<void>((resolve) => {
+      releaseIdentity = resolve;
+    });
+    class DelayedIdentityPersistence extends NoopPersistence {
+      override async resolveOrRegisterPlayer(token: string, offeredName: string) {
+        await identityGate;
+        return super.resolveOrRegisterPlayer(token, offeredName);
+      }
+    }
+
+    const { app } = await createServer({
+      persistence: new DelayedIdentityPersistence(),
+      aiWingmates: false,
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP address");
+    const client = await connect(`ws://127.0.0.1:${address.port}/ws`);
+
+    try {
+      client.send({ type: "hello", token: "slow-identity-token", name: "Ada", roomCode: "" });
+      client.send({ type: "joinSquad", squadId: "crew-3" });
+      await delay(25);
+      expect(client.messages).toEqual([]);
+
+      releaseIdentity();
+      await client.waitFor("welcome");
+      await delay(25);
+      expect(client.messages.filter((message) => message.type === "err")).toEqual([]);
+    } finally {
+      releaseIdentity();
+      client.ws.close();
+      await onceClosed(client.ws);
+      await app.close();
+    }
+  });
 });
 
 async function connect(url: string): Promise<Inbox> {
@@ -165,6 +212,49 @@ async function driveEastAlongLane(
     await delay(33);
   }
   throw new Error(`Timed out driving ${botId} east to ${untilX}`);
+}
+
+/** The bot's position in the most recent snapshot, if there is one. */
+function latestPosition(inbox: Inbox, botId: string): [number, number] | undefined {
+  return inbox.messages
+    .filter((message): message is Extract<ServerMessage, { type: "snap" }> => message.type === "snap")
+    .at(-1)?.bots.find((bot) => bot.i === botId)?.p;
+}
+
+/**
+ * Steer to a point and stop on it.
+ *
+ * Proportional on both axes, so an overshoot corrects itself rather than failing
+ * the run. Only safe once the bot is already in open ground — it drives straight
+ * at the target and will happily press into a wall between here and there.
+ */
+async function steerTo(
+  inbox: Inbox,
+  botId: string,
+  target: { x: number; y: number },
+  seqStart: number,
+): Promise<number> {
+  let seq = seqStart;
+  const started = Date.now();
+  while (Date.now() - started < 8000) {
+    // Arriving *is* the goal, and extraction can complete while we are still
+    // nudging — at which point the bot stops being simulated and its position
+    // freezes, so a loop that only watched distance would spin until it timed out.
+    if (inbox.messages.some((message) => message.type === "runOver")) return seq;
+    const position = latestPosition(inbox, botId);
+    if (position) {
+      const dx = target.x - position[0];
+      const dy = target.y - position[1];
+      if (Math.hypot(dx, dy) <= 18) {
+        inbox.send({ type: "input", seq: ++seq, move: [0, 0], dash: false });
+        return seq;
+      }
+      const scale = Math.max(Math.abs(dx), Math.abs(dy), 1);
+      inbox.send({ type: "input", seq: ++seq, move: [dx / scale, dy / scale], dash: false });
+    }
+    await delay(33);
+  }
+  throw new Error(`Timed out steering ${botId} to ${target.x},${target.y}`);
 }
 
 async function waitForBotPosition(inbox: Inbox, botId: string, predicate: (position: [number, number]) => boolean): Promise<void> {

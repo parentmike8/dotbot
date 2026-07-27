@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Item } from "@dotbot/game/types";
+import type { Item, MapDocument } from "@dotbot/game/types";
 import { defaultGameConfig } from "@dotbot/game";
 import { withinDownedCoverRange } from "@dotbot/game/interactions";
 import { floorHeight, locationLabel, resolvePlan } from "@dotbot/game/mapModel";
@@ -7,6 +7,8 @@ import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
 import { ManifestScreen } from "./ManifestScreen";
 import { arrivalSparkline } from "../game/session/netgraph";
+import { FeedbackControls } from "./FeedbackControls";
+import { selectMapDocument } from "../mapSelection";
 
 const coachFadeAtMs = 12_000;
 const coachDismissAtMs = 15_000;
@@ -35,14 +37,16 @@ export function App() {
   // Remounting the session tears down and rebuilds the simulation and
   // renderer — a full fresh run without reloading the page.
   const [session, setSession] = useState(0);
-  return <GameSession key={session} onRestart={() => setSession((run) => run + 1)} />;
+  const map = useMemo(() => selectMapDocument(window.location.search), []);
+  return <GameSession key={session} map={map} onRestart={() => setSession((run) => run + 1)} />;
 }
 
-function GameSession({ onRestart }: { onRestart: () => void }) {
+function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRestart: () => void }) {
   const {
     hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, legendVisible, toggleLegend,
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, giveUp, selectDownedVerb, plea,
-  } = useDotBotGame();
+    feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
+  } = useDotBotGame({ map: requestedMap });
   const [swapBay, setSwapBay] = useState<0 | 1 | 2 | 3 | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
@@ -254,6 +258,14 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
             <div><dt>×</dt><dd>Squad mine / radar-revealed mine</dd></div>
             <div><dt className="powerup-mark">◜</dt><dd>Some dots are not dots — watch for the hairline seam</dd></div>
           </dl>
+          <FeedbackControls
+            preferences={feedbackPreferences}
+            audioStatus={audioStatus}
+            onToggleSound={toggleSound}
+            onToggleHaptics={toggleHaptics}
+            onToggleReducedMotion={toggleReducedMotion}
+            onTestSound={testSound}
+          />
           <small>Press L to close</small>
         </aside>
       ) : null}
@@ -352,7 +364,12 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
 
       {debugVisible && snapshot ? (
         <aside className="debug-panel" aria-label="Debug panel">
-          <div>FPS {snapshot.debug.fps}</div>
+          <div>
+            FPS{" "}
+            {networkDebug?.frameP50Ms
+              ? Math.round(1_000 / networkDebug.frameP50Ms)
+              : snapshot.debug.fps}
+          </div>
           <div>Tick {snapshot.debug.tickCount}</div>
           <div>Bodies {snapshot.debug.activeBodies}</div>
           <div>Dots {snapshot.debug.activeDots}</div>
@@ -366,9 +383,13 @@ function GameSession({ onRestart }: { onRestart: () => void }) {
               </div>
               <div>Snap {Math.round(networkDebug.snapshotP50Ms)}/{Math.round(networkDebug.snapshotP90Ms)}/{Math.round(networkDebug.snapshotP99Ms)}ms p50/90/99</div>
               <div>RTT {networkDebug.rttMs === null ? "—" : `${Math.round(networkDebug.rttMs)}ms`}</div>
-              <div>Buffer {networkDebug.bufferDepthSnapshots} @ {networkDebug.interpolationDelayMs}ms</div>
+              <div>Buffer {networkDebug.bufferDepthSnapshots} @ {networkDebug.interpolationDelayMs}→{networkDebug.interpolationTargetMs}ms</div>
               <div>Error {networkDebug.predictionErrorPx.toFixed(1)}px</div>
               <div>Corrections {networkDebug.correctionsPerSecond}/s</div>
+              <div>Frame {Math.round(networkDebug.frameP50Ms)}/{Math.round(networkDebug.frameP90Ms)}/{Math.round(networkDebug.frameP99Ms)}ms p50/90/99 · max {Math.round(networkDebug.frameMaxMs)}</div>
+              <div>Work {networkDebug.frameWorkP90Ms.toFixed(1)}ms p90 · max {networkDebug.frameWorkMaxMs.toFixed(1)} · long {networkDebug.longFrameCount}</div>
+              <div>Hit draw {networkDebug.hitPresentationP50Ms.toFixed(1)}/{networkDebug.hitPresentationP90Ms.toFixed(1)}/{networkDebug.hitPresentationP99Ms.toFixed(1)}ms p50/90/99</div>
+              <div>Hit ack {Math.round(networkDebug.hitConfirmationP50Ms)}/{Math.round(networkDebug.hitConfirmationP90Ms)}/{Math.round(networkDebug.hitConfirmationP99Ms)}ms p50/90/99 · max {Math.round(networkDebug.hitConfirmationMaxMs)}</div>
             </div>
           ) : null}
         </aside>

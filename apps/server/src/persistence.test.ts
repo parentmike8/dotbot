@@ -201,12 +201,16 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     const clearedInsertion = await app.inject({ method: "POST", url: "/api/base/insertion", headers, payload: { insertionPointId: null } });
     expect(clearedInsertion.json<{ insertionPreference: string | null }>().insertionPreference).toBeNull();
 
-    // Shell choice is cosmetic: it round-trips per player and never touches
-    // the layout (identical slot roster across shells).
+    // Shell choice remains cosmetic, but is an earned in-world ability rather
+    // than a free settings toggle.
+    const lockedReshell = await app.inject({ method: "POST", url: "/api/base/shell", headers, payload: { shell: "berths" } });
+    expect(lockedReshell.statusCode).toBe(409);
+    expect(lockedReshell.json<{ error: string }>().error).toMatch(/DRAFTING TABLE/);
+    await sql!`insert into base_layouts (player_id, slot_id, object_kind) values (${account.playerId}, 'floor-nw', 'draftingTable')`;
     const reshelled = await app.inject({ method: "POST", url: "/api/base/shell", headers, payload: { shell: "berths" } });
     expect(reshelled.statusCode).toBe(200);
     expect(reshelled.json<{ shell: string; layout: BaseLayout }>().shell).toBe("berths");
-    expect(reshelled.json<{ layout: BaseLayout }>().layout).toEqual(starterBaseLayout);
+    expect(reshelled.json<{ layout: BaseLayout }>().layout).toEqual({ ...starterBaseLayout, "floor-nw": "draftingTable" });
     expect((await app.inject({ method: "GET", url: "/api/base", headers })).json<{ shell: string }>().shell).toBe("berths");
     expect((await app.inject({ method: "POST", url: "/api/base/shell", headers, payload: { shell: "mansion" } })).statusCode).toBe(400);
     expect((await app.inject({ method: "POST", url: "/api/base/shell", headers: { "x-device-token": "0".repeat(32) }, payload: { shell: "hangar" } })).statusCode).toBe(404);

@@ -5,6 +5,7 @@ import { useDotBotGame } from "../../game/useDotBotGame";
 import type { NetSession } from "../../game/session/NetSession";
 import { arrivalSparkline } from "../../game/session/netgraph";
 import { ManifestScreen } from "../ManifestScreen";
+import { FeedbackControls } from "../FeedbackControls";
 
 type NetGameViewProps = {
   session: NetSession;
@@ -18,6 +19,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug,
     legendVisible, toggleLegend, joystick, joystickHandlers, queueDash, cycleSpectator, giveUp, selectDownedVerb, plea,
+    feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ session, spectate: true });
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
   const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === session.playerId) ?? false;
@@ -60,6 +62,10 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       data-hit-confirmed={networkDebug?.hitConfirmedCount}
       data-hit-unconfirmed={networkDebug?.hitUnconfirmedCount}
       data-hit-pending={networkDebug?.hitPendingCount}
+      data-hit-present-p90={networkDebug?.hitPresentationP90Ms}
+      data-hit-confirm-p90={networkDebug?.hitConfirmationP90Ms}
+      data-frame-p99={networkDebug?.frameP99Ms}
+      data-buffer-ms={networkDebug?.interpolationDelayMs}
     >
       <div ref={hostRef} className="game-canvas" />
       {connectionMessage ? (
@@ -83,7 +89,12 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       </aside>
       {debugVisible && snapshot ? (
         <aside className="debug-panel" aria-label="Debug panel">
-          <div>FPS {snapshot.debug.fps}</div>
+          <div>
+            FPS{" "}
+            {networkDebug?.frameP50Ms
+              ? Math.round(1_000 / networkDebug.frameP50Ms)
+              : snapshot.debug.fps}
+          </div>
           <div>Tick {snapshot.debug.tickCount}</div>
           <div>Bodies {snapshot.debug.activeBodies}</div>
           <div>Dots {snapshot.debug.activeDots}</div>
@@ -94,10 +105,14 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
               </div>
               <div>Snap {Math.round(networkDebug.snapshotP50Ms)}/{Math.round(networkDebug.snapshotP90Ms)}/{Math.round(networkDebug.snapshotP99Ms)}ms p50/90/99</div>
               <div>RTT {networkDebug.rttMs === null ? "—" : `${Math.round(networkDebug.rttMs)}ms`}</div>
-              <div>Buffer {networkDebug.bufferDepthSnapshots} @ {networkDebug.interpolationDelayMs}ms</div>
+              <div>Buffer {networkDebug.bufferDepthSnapshots} @ {networkDebug.interpolationDelayMs}→{networkDebug.interpolationTargetMs}ms</div>
               <div>Error {networkDebug.predictionErrorPx.toFixed(1)}px</div>
               <div>Corrections {networkDebug.correctionsPerSecond}/s</div>
               <div>Hit confirm {networkDebug.hitConfirmationMs === null ? "—" : `${Math.round(networkDebug.hitConfirmationMs)}ms`}</div>
+              <div>Frame {Math.round(networkDebug.frameP50Ms)}/{Math.round(networkDebug.frameP90Ms)}/{Math.round(networkDebug.frameP99Ms)}ms p50/90/99 · max {Math.round(networkDebug.frameMaxMs)}</div>
+              <div>Work {networkDebug.frameWorkP90Ms.toFixed(1)}ms p90 · max {networkDebug.frameWorkMaxMs.toFixed(1)} · long {networkDebug.longFrameCount}</div>
+              <div>Hit draw {networkDebug.hitPresentationP50Ms.toFixed(1)}/{networkDebug.hitPresentationP90Ms.toFixed(1)}/{networkDebug.hitPresentationP99Ms.toFixed(1)}ms p50/90/99</div>
+              <div>Hit ack {Math.round(networkDebug.hitConfirmationP50Ms)}/{Math.round(networkDebug.hitConfirmationP90Ms)}/{Math.round(networkDebug.hitConfirmationP99Ms)}ms p50/90/99 · max {Math.round(networkDebug.hitConfirmationMaxMs)}</div>
               <div>Contacts {networkDebug.hitPredictedCount} predicted · {networkDebug.hitConfirmedCount} confirmed · {networkDebug.hitUnconfirmedCount} unconfirmed · {networkDebug.hitPendingCount} pending</div>
             </div>
           ) : null}
@@ -122,6 +137,14 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
               <dl>{session.intel.greyDensity.map((row) => <div key={row.buildingId}><dt>{row.buildingName}</dt><dd>{row.count}</dd></div>)}</dl>
             </section>
           ) : null}
+          <FeedbackControls
+            preferences={feedbackPreferences}
+            audioStatus={audioStatus}
+            onToggleSound={toggleSound}
+            onToggleHaptics={toggleHaptics}
+            onToggleReducedMotion={toggleReducedMotion}
+            onTestSound={testSound}
+          />
         </aside>
       ) : null}
       <aside className="net-game-bays" aria-label="In-run bays">

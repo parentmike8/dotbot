@@ -1,7 +1,10 @@
-import { collectSolidRects } from "@dotbot/game/collision";
+import { collectSolids } from "@dotbot/game/collision";
+import { buildSolidIndex, withExtraSolids, type SolidIndex } from "@dotbot/game/solidIndex";
+import { rectSolid } from "@dotbot/game/geometry";
+import { doorEntityCollisionRect } from "@dotbot/game/mapModel";
 import { integrateWithWalls, pointSegmentDistance, resolveAgainstSolids, separationPush } from "@dotbot/game/kinematics";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
-import type { DotBotEntity, GameConfig, InputCommand, MapDocument, Vec2 } from "@dotbot/game";
+import type { DoorEntity, DotBotEntity, GameConfig, InputCommand, MapDocument, Solid, Vec2 } from "@dotbot/game";
 
 export type PredictedOwnBot = Pick<
   DotBotEntity,
@@ -38,7 +41,13 @@ export class LitePredictor {
   /** Contact point of the most recent predicted dash stop; a side channel
    * (survives replay resets) so the session can flash impact FX instantly. */
   private dashContact: PredictedDashContact | null = null;
-  private readonly solidsByFloor = new Map<string, ReturnType<typeof collectSolidRects>>();
+  /**
+   * Gridded per floor, matching the server. Prediction runs the same resolver over
+   * the same geometry every frame, so it pays the same cost and has to produce the
+   * same answer — see `solidIndex.ts`.
+   */
+  private readonly solidsByFloor = new Map<string, SolidIndex>();
+  private readonly doorSolidsByFloor = new Map<string, Solid[]>();
 
   constructor(
     private readonly map: MapDocument,
@@ -60,6 +69,17 @@ export class LitePredictor {
   /** Latest known other bots (alive, same floor); refreshed per snapshot. */
   setObstacles(obstacles: PredictionObstacle[]): void {
     this.obstacles = obstacles;
+  }
+
+  /** Authoritative moving-door collision from the latest rendered snapshot. */
+  setDoors(doors: readonly DoorEntity[]): void {
+    this.doorSolidsByFloor.clear();
+    for (const door of doors) {
+      if (!door.blocking) continue;
+      const solids = this.doorSolidsByFloor.get(door.floorId) ?? [];
+      solids.push(rectSolid(doorEntityCollisionRect(door)));
+      this.doorSolidsByFloor.set(door.floorId, solids);
+    }
   }
 
   /** Mirrors the server's stationary-channel rule: while this bot channels a
@@ -120,8 +140,12 @@ export class LitePredictor {
       state.facing = Math.atan2(direction.y, direction.x);
     }
 
-    const solids = this.solidsByFloor.get(state.floorId) ?? collectSolidRects(this.map, state.floorId);
-    this.solidsByFloor.set(state.floorId, solids);
+    let index = this.solidsByFloor.get(state.floorId);
+    if (!index) {
+      index = buildSolidIndex(collectSolids(this.map, state.floorId));
+      this.solidsByFloor.set(state.floorId, index);
+    }
+    const solids = withExtraSolids(index, this.doorSolidsByFloor.get(state.floorId) ?? []);
 
     const previous = { ...state.position };
     let position = integrateWithWalls(

@@ -1,13 +1,18 @@
 export const hitConfirmationTimeoutMs = 750;
 
-type PendingHit = {
+export type PendingHit = {
+  predictionId: string;
   targetId: string;
   predictedAtMs: number;
+  presentedAtMs?: number;
 };
 
 export type ImpactTelemetry = {
   pending: PendingHit[];
   lastConfirmationMs: number | null;
+  lastPresentationMs: number | null;
+  confirmationSamplesMs: number[];
+  presentationSamplesMs: number[];
   predictedCount: number;
   confirmedCount: number;
   unconfirmedCount: number;
@@ -17,6 +22,9 @@ export function createImpactTelemetry(): ImpactTelemetry {
   return {
     pending: [],
     lastConfirmationMs: null,
+    lastPresentationMs: null,
+    confirmationSamplesMs: [],
+    presentationSamplesMs: [],
     predictedCount: 0,
     confirmedCount: 0,
     unconfirmedCount: 0,
@@ -28,10 +36,25 @@ export function recordPredictedHit(
   telemetry: ImpactTelemetry,
   targetId: string,
   nowMs: number,
-): void {
+  predictionId = `impact-${telemetry.predictedCount + 1}`,
+): string {
   expireUnconfirmedHits(telemetry, nowMs);
-  telemetry.pending.push({ targetId, predictedAtMs: nowMs });
+  telemetry.pending.push({ predictionId, targetId, predictedAtMs: nowMs });
   telemetry.predictedCount += 1;
+  return predictionId;
+}
+
+export function recordPresentedHit(
+  telemetry: ImpactTelemetry,
+  predictionId: string,
+  nowMs: number,
+): void {
+  const pending = telemetry.pending.find((candidate) => candidate.predictionId === predictionId);
+  if (!pending || pending.presentedAtMs !== undefined) return;
+  pending.presentedAtMs = nowMs;
+  const duration = Math.max(0, nowMs - pending.predictedAtMs);
+  telemetry.lastPresentationMs = duration;
+  pushBounded(telemetry.presentationSamplesMs, duration);
 }
 
 /** Correlates an explicit server hit acknowledgement with the oldest local
@@ -42,14 +65,16 @@ export function recordAuthoritativeHit(
   event: { botId: string; byBotId: string },
   playerId: string,
   nowMs: number,
-): void {
+): PendingHit | null {
   expireUnconfirmedHits(telemetry, nowMs);
-  if (event.byBotId !== playerId) return;
+  if (event.byBotId !== playerId) return null;
   const index = telemetry.pending.findIndex((pending) => pending.targetId === event.botId);
-  if (index < 0) return;
+  if (index < 0) return null;
   const [pending] = telemetry.pending.splice(index, 1);
   telemetry.lastConfirmationMs = Math.max(0, nowMs - pending.predictedAtMs);
+  pushBounded(telemetry.confirmationSamplesMs, telemetry.lastConfirmationMs);
   telemetry.confirmedCount += 1;
+  return pending;
 }
 
 /** "Unconfirmed" means no acknowledgement arrived inside the bounded
@@ -64,4 +89,9 @@ export function expireUnconfirmedHits(telemetry: ImpactTelemetry, nowMs: number)
     }
   }
   telemetry.pending = stillPending;
+}
+
+function pushBounded(values: number[], value: number): void {
+  values.push(value);
+  if (values.length > 128) values.splice(0, values.length - 128);
 }

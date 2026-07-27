@@ -1,4 +1,5 @@
 import { defaultGameConfig } from "@dotbot/game/config";
+import { interactionDotReach } from "@dotbot/game/interactions";
 import type { InteractionDot, MapDocument, MapObject, PlacementSlot, Rect, Vec2 } from "@dotbot/game/types";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import { physicsFloorId } from "@dotbot/game/mapModel";
@@ -15,11 +16,15 @@ export type BaseChannelState = {
   completedId: string | null;
 };
 
+export function hasMovedForBaseOnboarding(origin: Vec2, position: Vec2, requiredDistance = 28): boolean {
+  return distance(origin, position) >= requiredDistance;
+}
+
 export function findBaseTarget(
   map: MapDocument,
   position: Vec2,
   floorId = OUTDOOR_FLOOR_ID,
-  interactionReach = defaultGameConfig.botRadius - defaultGameConfig.dotRadius - 2,
+  interactionReach = interactionDotReach(defaultGameConfig.botRadius, defaultGameConfig.dotRadius),
 ): BaseTarget | null {
   const dot = (map.interactionDots ?? [])
     .filter((candidate) => physicsFloorId(map, candidate.floorId) === floorId)

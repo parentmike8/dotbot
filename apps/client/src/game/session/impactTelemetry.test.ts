@@ -4,6 +4,7 @@ import {
   expireUnconfirmedHits,
   hitConfirmationTimeoutMs,
   recordAuthoritativeHit,
+  recordPresentedHit,
   recordPredictedHit,
 } from "./impactTelemetry";
 
@@ -20,6 +21,16 @@ describe("impact confirmation telemetry", () => {
       unconfirmedCount: 0,
       pending: [],
     });
+  });
+
+  it("measures prediction-to-render submission once per contact", () => {
+    const telemetry = createImpactTelemetry();
+    const predictionId = recordPredictedHit(telemetry, "target", 100, "prediction-1");
+    recordPresentedHit(telemetry, predictionId, 104.5);
+    recordPresentedHit(telemetry, predictionId, 120);
+
+    expect(telemetry.lastPresentationMs).toBe(4.5);
+    expect(telemetry.presentationSamplesMs).toEqual([4.5]);
   });
 
   it("does not mistake another player's hit for local confirmation", () => {

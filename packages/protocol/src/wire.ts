@@ -29,6 +29,11 @@ export function toWireSnapshot(snapshot: GameSnapshot): FullWireSnapshot {
     mines: snapshot.mines.map(toWireMine),
     coverages: snapshot.coverages.map(toWireCoverage),
     noises: snapshot.noises.map(toWireNoise),
+    doors: (snapshot.doors ?? []).map((door) => ({
+      ...door,
+      position: { x: roundPosition(door.position.x), y: roundPosition(door.position.y) },
+      openness: roundFloat(door.openness),
+    })),
   };
 }
 
@@ -46,6 +51,7 @@ export function toViewerSnapshot(
     ...(wire.mines.length ? { mines: wire.mines } : {}),
     ...(wire.coverages.length ? { coverages: wire.coverages } : {}),
     ...(wire.noises.length ? { noises: wire.noises } : {}),
+    ...(wire.doors?.length ? { doors: wire.doors } : {}),
     ...(wire.intel === undefined ? {} : { intel: wire.intel }),
   };
 }
@@ -137,6 +143,7 @@ export function fromWireSnapshot(
     })),
     coverages: wire.coverages ?? [],
     noises: wire.noises ?? [],
+    doors: (wire.doors ?? []).map((door) => ({ ...door, position: { ...door.position } })),
     debug: {
       tickHz: 60,
       tickCount: wire.tick,
@@ -218,6 +225,15 @@ export function toWireEvent(event: SimEvent): WireSimEvent {
 }
 
 export function fromWireEvent(event: WireSimEvent): SimEvent {
+  if (event.type === "hit") {
+    return {
+      ...event,
+      result: event.result ?? "bodyHit",
+      position: event.position ?? { x: 0, y: 0 },
+      direction: event.direction ?? { x: 0, y: 0 },
+      tick: event.tick ?? 0,
+    };
+  }
   if (event.type === "consumed") return { ...event, lostItems: event.lostItems.map(itemFromCode) };
   if (event.type === "extracted") return { ...event, items: event.items.map(itemFromCode) };
   return event;

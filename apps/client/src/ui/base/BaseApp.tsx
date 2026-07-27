@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { defaultGameConfig } from "@dotbot/game/config";
 import {
   BASE_SHELL_IDS,
@@ -22,11 +22,12 @@ import { createSession } from "../../game/session/createSession";
 import { LobbyApp } from "../lobby/LobbyApp";
 import { deviceTokenKey, ensureAccountToken, playerNameKey } from "../identity";
 import "./base.css";
-import { advanceBaseChannel, findBaseTarget, type BaseChannelState, type BaseTarget } from "./baseFlow";
+import { advanceBaseChannel, findBaseTarget, hasMovedForBaseOnboarding, type BaseChannelState, type BaseTarget } from "./baseFlow";
 
 const localLayoutKey = "dotbot.baseLayout";
 const localShellKey = "dotbot.baseShell";
 const seedDraftedKey = "dotbot.baseSeedDrafted";
+const baseOnboardingKey = "dotbot.baseOnboarding.v1";
 const channelDurationMs = 1000;
 
 export type BasePayload = {
@@ -45,12 +46,13 @@ export type BasePayload = {
 };
 
 type Panel =
-  | { type: "locker" | "bayConsole" | "fabricator" | "planningTable"; slotId: string }
+  | { type: "locker" | "bayConsole" | "fabricator" | "planningTable" | "draftingTable"; slotId: string }
   | { type: "move"; fromSlotId?: string; toSlotId?: string }
   | { type: "fabricateSlot"; recipeId: string }
   | { type: "object"; slotId: string; kind: BaseObjectKind }
-  | { type: "settings" }
   | null;
+
+type BaseOnboardingStep = "move" | "station" | "done";
 
 const offlinePayload: BasePayload = {
   storageLinked: false,
@@ -141,6 +143,11 @@ export function BaseApp() {
   }, []);
 
   const updateShell = useCallback(async (shell: BaseShellId) => {
+    if (!Object.values(base.layout).includes("draftingTable")) {
+      setNotice("REQUIRES DRAFTING TABLE");
+      return;
+    }
+    const previousShell = base.shell;
     localStorage.setItem(localShellKey, shell);
     if (shell !== base.shell) {
       // Moving shells re-drafts the whole base: every placed object queues
@@ -150,18 +157,25 @@ export function BaseApp() {
       setPanel(null);
     }
     const token = localStorage.getItem(deviceTokenKey);
-    if (!token) return;
+    if (!token) {
+      localStorage.setItem(localShellKey, previousShell);
+      setBase((current) => ({ ...current, shell: previousShell }));
+      setNotice("STORAGE LINK REQUIRED");
+      return;
+    }
     try {
       const response = await fetch("/api/base/shell", {
         method: "POST",
         headers: { "content-type": "application/json", "x-device-token": token },
         body: JSON.stringify({ shell }),
       });
-      if (!response.ok) throw new Error(`Shell update failed (${response.status})`);
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? `Base layout update failed (${response.status})`);
       setNotice("");
-    } catch {
-      setBase((current) => ({ ...current, storageLinked: false }));
-      setNotice("SHELL SAVED TO THIS DEVICE");
+    } catch (error) {
+      localStorage.setItem(localShellKey, previousShell);
+      setBase((current) => ({ ...current, shell: previousShell }));
+      setNotice(error instanceof Error ? error.message.toUpperCase() : "BASE LAYOUT NOT SAVED");
     }
   }, [base.shell, base.layout]);
 
@@ -372,9 +386,25 @@ function BaseSession(props: BaseSessionProps) {
     config: { ...defaultGameConfig, runDurationMs: Number.MAX_SAFE_INTEGER },
     playerId: "player",
   }), [map]);
-  const { hostRef, snapshot, playerId, setInteractionChannel, draftObjects } = useDotBotGame({ session });
+  const {
+    hostRef,
+    snapshot,
+    playerId,
+    setInteractionChannel,
+    draftObjects,
+    joystick,
+    joystickHandlers,
+    queueDash,
+  } = useDotBotGame({ session });
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
+  const dashProgress = player
+    ? 1 - Math.max(0, Math.min(1, player.dashCooldownMs / defaultGameConfig.dashCooldownMs))
+    : 1;
   const channelRef = useRef<BaseChannelState | null>(null);
+  const onboardingOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const [onboardingStep, setOnboardingStep] = useState<BaseOnboardingStep>(() =>
+    localStorage.getItem(baseOnboardingKey) === "complete" ? "done" : "move",
+  );
 
   useEffect(() => {
     if (props.draftObjectIds.length === 0) return;
@@ -382,7 +412,25 @@ function BaseSession(props: BaseSessionProps) {
     props.onDraftQueued();
   }, [draftObjects, props]);
 
+  useEffect(() => {
+    if (!props.identityReady || !player || onboardingStep !== "move") return;
+    const origin = onboardingOriginRef.current;
+    if (!origin) {
+      onboardingOriginRef.current = { ...player.position };
+      return;
+    }
+    if (hasMovedForBaseOnboarding(origin, player.position)) {
+      setOnboardingStep("station");
+    }
+  }, [onboardingStep, player, props.identityReady]);
+
+  const completeOnboarding = useCallback(() => {
+    localStorage.setItem(baseOnboardingKey, "complete");
+    setOnboardingStep("done");
+  }, []);
+
   const openTarget = useCallback((target: BaseTarget) => {
+    completeOnboarding();
     if (target.type === "deployment") {
       props.openDeployment();
       return;
@@ -392,12 +440,12 @@ function BaseSession(props: BaseSessionProps) {
       return;
     }
     const kind = target.object.kind;
-    if (kind === "locker" || kind === "bayConsole" || kind === "fabricator" || kind === "planningTable") {
+    if (kind === "locker" || kind === "bayConsole" || kind === "fabricator" || kind === "planningTable" || kind === "draftingTable") {
       props.setPanel({ type: kind, slotId: target.object.slotId! });
     } else if (target.object.slotId && isBaseObjectKind(kind)) {
       props.setPanel({ type: "object", slotId: target.object.slotId, kind });
     }
-  }, [props]);
+  }, [completeOnboarding, props]);
 
   useEffect(() => {
     if (!snapshot || !player || !props.identityReady || props.panel) {
@@ -434,22 +482,53 @@ function BaseSession(props: BaseSessionProps) {
       data-player-y={player ? Math.round(player.position.y) : undefined}
       data-player-floor={player?.floorId}
       data-panel={props.panel?.type ?? "none"}
+      data-onboarding={onboardingStep}
     >
       <div ref={hostRef} className="game-canvas" />
       <header className="base-title-block">
         <span>DOTBOT / HOME BAY</span>
         <strong>{props.name || "UNCOMMISSIONED"}</strong>
         <small>{props.base.storageLinked ? "STORAGE LINK ACTIVE" : "OFFLINE — NO STORAGE LINK"}</small>
-        <button
-          type="button"
-          className="base-settings-button"
-          disabled={!props.identityReady}
-          onClick={() => props.setPanel(props.panel?.type === "settings" ? null : { type: "settings" })}
-        >
-          SHELL PLAN: {baseShellDef(props.base.shell).name} ▾
-        </button>
       </header>
-      <div className="base-instruction">STAND ON A GREY DOT TO INTERACT · DEPLOYMENT DOT TO LEAVE</div>
+      {props.identityReady && !props.panel && onboardingStep !== "done" ? (
+        <aside className="base-onboarding" role="status" aria-live="polite">
+          <span>{onboardingStep === "move" ? "FIRST STEP" : "NEXT STEP"}</span>
+          <strong>{onboardingStep === "move" ? "MOVE YOUR DOTBOT" : "VISIT A STATION"}</strong>
+          {onboardingStep === "move" ? <>
+            <p className="base-onboarding-keyboard">USE <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> OR THE ARROW KEYS</p>
+            <p className="base-onboarding-touch">DRAG THE JOYSTICK</p>
+          </> : <p>FOLLOW A LABELED MARKER · STAND STILL ON IT</p>}
+        </aside>
+      ) : null}
+      {onboardingStep === "done" ? <div className="base-instruction">STAND STILL ON A LABELED MARKER TO INTERACT</div> : null}
+      {props.identityReady && !props.panel ? (
+        <div className="touch-controls base-touch-controls" aria-label="Touch controls">
+          <div
+            className={`joystick ${joystick.active ? "active" : ""}`}
+            role="application"
+            aria-label="Movement joystick"
+            {...joystickHandlers}
+          >
+            <span
+              className="joystick-knob"
+              style={{ transform: `translate(${joystick.knob.x}px, ${joystick.knob.y}px)` }}
+            />
+          </div>
+          <button
+            className="dash-button"
+            type="button"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              queueDash();
+            }}
+            style={{ "--dash-progress": dashProgress } as CSSProperties}
+            disabled={!player || player.state !== "alive" || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)}
+            aria-label="Dash"
+          >
+            Dash
+          </button>
+        </div>
+      ) : null}
       {props.notice ? <div className="base-notice">{props.notice}</div> : null}
       {!props.identityReady ? (
         <section className="base-panel identity-panel" aria-label="Choose callsign">
@@ -499,8 +578,15 @@ function BasePanel({ panel, base, close, move, chooseMove, updateLoadout, update
   if (panel.type === "move") {
     return <MovePanel panel={panel} base={base} close={close} move={move} />;
   }
-  if (panel.type === "settings") {
-    return <ShellPanel current={base.shell} expanded={ownsSecondFloor(base)} storageLinked={base.storageLinked} close={close} updateShell={updateShell} />;
+  if (panel.type === "draftingTable") {
+    return <ShellPanel
+      current={base.shell}
+      expanded={ownsSecondFloor(base)}
+      storageLinked={base.storageLinked}
+      close={close}
+      updateShell={updateShell}
+      move={() => chooseMove({ type: "move", fromSlotId: panel.slotId })}
+    />;
   }
   if (panel.type === "fabricateSlot") {
     return <FabricationSlotPanel panel={panel} base={base} close={close} fabricate={fabricate} />;
@@ -720,17 +806,18 @@ function MovePanel({ panel, base, close, move }: {
   );
 }
 
-function ShellPanel({ current, expanded, storageLinked, close, updateShell }: {
+function ShellPanel({ current, expanded, storageLinked, close, updateShell, move }: {
   current: BaseShellId;
   expanded: boolean;
   storageLinked: boolean;
   close: () => void;
   updateShell: (shell: BaseShellId) => Promise<void>;
+  move: () => void;
 }) {
   return (
-    <section className="base-panel shell-panel" aria-label="Shell plan picker">
-      <header><span>HOME BAY / SETTINGS</span><strong>SHELL PLAN</strong><button type="button" onClick={close}>×</button></header>
-      <p>SAME SLOTS, SAME CAPACITY, EVERY PLAN — LAYOUT AND AESTHETICS ONLY.</p>
+    <section className="base-panel shell-panel" aria-label="Base layout picker">
+      <header><span>HOME BAY / DRAFTING TABLE</span><strong>BASE LAYOUT</strong><button type="button" onClick={close}>×</button></header>
+      <p>SAME SLOTS AND CAPACITY IN EVERY LAYOUT. CHOOSE THE SPACE THAT FEELS LIKE HOME.</p>
       <div className="shell-choices">
         {BASE_SHELL_IDS.map((shellId) => {
           const def = baseShellDef(shellId);
@@ -749,7 +836,8 @@ function ShellPanel({ current, expanded, storageLinked, close, updateShell }: {
           );
         })}
       </div>
-      {!storageLinked ? <p className="offline-hint">OFFLINE — CHOICE SAVED TO THIS DEVICE</p> : null}
+      {!storageLinked ? <p className="offline-hint">STORAGE LINK REQUIRED TO CHANGE THE BASE LAYOUT</p> : null}
+      <footer><button type="button" onClick={move}>MOVE DRAFTING TABLE</button></footer>
     </section>
   );
 }

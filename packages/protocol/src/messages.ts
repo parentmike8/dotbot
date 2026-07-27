@@ -95,6 +95,7 @@ export type FullWireSnapshot = {
   mines: WireMine[];
   coverages: import("@dotbot/game/types").CoverageSnapshot[];
   noises: import("@dotbot/game/types").NoiseEvent[];
+  doors?: import("@dotbot/game/types").DoorEntity[];
   /** Viewer-private match intel; omitted for players without an intel object. */
   intel?: MatchIntel;
 };
@@ -109,6 +110,7 @@ export type WireSnapshot = {
   mines?: WireMine[];
   coverages?: import("@dotbot/game/types").CoverageSnapshot[];
   noises?: import("@dotbot/game/types").NoiseEvent[];
+  doors?: import("@dotbot/game/types").DoorEntity[];
   /** Viewer-private match intel; omitted for players without an intel object. */
   intel?: MatchIntel;
 };
@@ -125,7 +127,16 @@ export type MatchIntel = {
 };
 
 export type WireSimEvent =
-  | { type: "hit"; botId: string; byBotId: string }
+  | {
+      type: "hit";
+      botId: string;
+      byBotId: string;
+      /** Optional on the wire for rolling compatibility with older rooms. */
+      result?: import("@dotbot/game/types").HitResult;
+      position?: { x: number; y: number };
+      direction?: { x: number; y: number };
+      tick?: number;
+    }
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "consumed"; botId: string; byBotId: string; lostItems: WireItemCode[] }
   | { type: "revived"; botId: string; byBotId: string }

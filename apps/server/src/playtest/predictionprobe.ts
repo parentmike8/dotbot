@@ -14,7 +14,7 @@
 import WebSocket from "ws";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
-import { collectSolidRects } from "@dotbot/game/collision";
+import { collectSolids } from "@dotbot/game/collision";
 import { integrateWithWalls } from "@dotbot/game/kinematics";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import type { Vec2 } from "@dotbot/game/types";
@@ -30,7 +30,7 @@ type MirrorState = {
 
 const config = defaultGameConfig;
 const tickMs = 1000 / config.tickHz;
-const solids = collectSolidRects(downtownMap, "outdoor");
+const solids = collectSolids(downtownMap, "outdoor");
 let lastAim: Vec2 = { x: 1, y: 0 };
 
 /** Same math as LitePredictor.advance (walls only; the probe route stays in

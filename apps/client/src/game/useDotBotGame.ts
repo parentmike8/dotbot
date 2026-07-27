@@ -4,10 +4,18 @@ import { downtownMap } from "@dotbot/game/content/downtown";
 import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer, type InteractionChannelVisual } from "./renderer/GameRenderer";
+import {
+  ImpactFeedback,
+  loadFeedbackPreferences,
+  saveFeedbackPreferences,
+  type AudioFeedbackStatus,
+  type FeedbackPreferences,
+  type ImpactPerspective,
+} from "./feedback/ImpactFeedback";
 import { selectSpectatedBot } from "./spectate";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
-import type { DotBotEntity, DownedHostileVerb, GameSnapshot, Item, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, DownedHostileVerb, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { NetworkDebugStats } from "./session/netgraph";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
@@ -49,15 +57,18 @@ const emptyJoystick: JoystickState = {
 
 type UseDotBotGameOptions = {
   session?: GameSession;
+  map?: MapDocument;
   spectate?: boolean;
 };
 
 export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const providedSession = options.session;
+  const requestedMap = options.map ?? downtownMap;
   const spectateEnabled = options.spectate ?? false;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<GameSession | null>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
+  const feedbackRef = useRef<ImpactFeedback | null>(null);
   const keysRef = useRef(new Set<string>());
   const joystickRef = useRef<JoystickState>(emptyJoystick);
   const dashQueuedRef = useRef(false);
@@ -81,6 +92,11 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const [networkDebug, setNetworkDebug] = useState<NetworkDebugStats | null>(null);
   const [legendVisible, setLegendVisible] = useState(false);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
+  const [feedbackPreferences, setFeedbackPreferences] = useState(loadFeedbackPreferences);
+  const [audioStatus, setAudioStatus] = useState<AudioFeedbackStatus>(
+    () => feedbackPreferences.sound ? "idle" : "off",
+  );
+  const feedbackPreferencesRef = useRef(feedbackPreferences);
 
   const resetJoystick = useCallback(() => {
     joystickRef.current = emptyJoystick;
@@ -101,6 +117,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     let fps = 0;
     let playerSquadId: string | null = null;
     let resizeObserver: ResizeObserver | undefined;
+    const feedback = new ImpactFeedback(feedbackPreferencesRef.current, {
+      onAudioStatusChange: (status) => {
+        if (!disposed) setAudioStatus(status);
+      },
+    });
+    feedbackRef.current = feedback;
 
     async function start() {
       const host = hostRef.current;
@@ -110,14 +132,16 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       }
 
       const session = providedSession ?? createSession("local", {
-        map: downtownMap,
+        map: requestedMap,
         config: defaultGameConfig,
         playerId: "player",
       });
       await session.start();
       const renderer = await GameRenderer.create(host, session.map);
+      renderer.setReducedMotion(feedbackPreferencesRef.current.reducedMotion);
 
       if (disposed) {
+        feedback.destroy();
         renderer.destroy();
         session.dispose();
         return;
@@ -140,6 +164,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           return;
         }
 
+        const frameWorkStartedAt = performance.now();
         const elapsedMs = now - lastFrame;
         lastFrame = now;
         frameCounter += 1;
@@ -171,21 +196,40 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
         const frameEvents = session.drainEvents();
-
-        if (frameEvents.length > 0) {
-          for (const event of frameEvents) {
-            if (event.type === "plea") renderer.queuePlea(event);
-            if (event.type === "mineSensor") renderer.queueMineSensor(event);
-          }
-          setEvents((current) => [...current, ...frameEvents]);
-        }
-        for (const impact of session.drainPredictedImpacts?.() ?? []) {
-          renderer.queueImpact(impact);
-        }
+        const uiEvents = frameEvents.filter((event) => event.type !== "hit");
+        if (uiEvents.length > 0) setEvents((current) => [...current, ...uiEvents]);
 
         if (!nextSnapshot) {
+          session.recordClientFrame?.(elapsedMs, performance.now() - frameWorkStartedAt);
           frameRef.current = requestAnimationFrame(loop);
           return;
+        }
+
+        const predictedImpacts = session.drainPredictedImpacts?.() ?? [];
+        for (const impact of predictedImpacts) {
+          const result = renderer.queueImpact(impact, nextSnapshot);
+          feedback.playPredicted(result, impactPan(nextSnapshot, session.playerId, { x: impact.x, y: impact.y }));
+        }
+        for (const event of frameEvents) {
+          if (event.type === "plea") renderer.queuePlea(event);
+          if (event.type === "mineSensor") renderer.queueMineSensor(event);
+          if (event.type === "hit") {
+            const alreadyPredicted = renderer.confirmImpact(event, nextSnapshot, session.playerId);
+            const perspective: ImpactPerspective = event.byBotId === session.playerId
+              ? "attacker"
+              : event.botId === session.playerId
+                ? "victim"
+                : "observer";
+            const worldPoint = event.tick > 0 || event.position.x !== 0 || event.position.y !== 0
+              ? event.position
+              : nextSnapshot.bots.find((bot) => bot.id === event.botId)?.position ?? event.position;
+            feedback.playConfirmed(
+              event.result,
+              perspective,
+              alreadyPredicted,
+              impactPan(nextSnapshot, session.playerId, worldPoint),
+            );
+          }
         }
 
         const currentPlayer = nextSnapshot.bots.find((bot) => bot.id === session.playerId);
@@ -216,7 +260,17 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         spectateCycleQueuedRef.current = false;
         spectatedBotIdRef.current = spectator?.id ?? null;
         const renderPlayerId = spectator?.id ?? session.playerId;
-        renderer.render(nextSnapshot, renderPlayerId, spectateEnabled && runState.phase === "over" && spectator === null, interactionChannelRef.current, session.intel);
+        const presentedAt = renderer.render(
+          nextSnapshot,
+          renderPlayerId,
+          spectateEnabled && runState.phase === "over" && spectator === null,
+          interactionChannelRef.current,
+          session.intel,
+        );
+        for (const impact of predictedImpacts) {
+          session.recordImpactPresented?.(impact.predictionId, presentedAt);
+        }
+        session.recordClientFrame?.(elapsedMs, performance.now() - frameWorkStartedAt);
 
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);
@@ -241,6 +295,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       // Never capture game hotkeys while the player is typing in a form
       // field (callsign, preset names, room codes).
       if (isEditableTarget(event)) return;
+      void feedback.unlock();
 
       if (event.code === "F3") {
         event.preventDefault();
@@ -282,6 +337,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           spectateCycleQueuedRef.current = true;
         } else if (!runEndedRef.current) {
           dashQueuedRef.current = true;
+          if (!event.repeat) feedback.playDash();
         }
         return;
       }
@@ -308,6 +364,10 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       }
     };
 
+    const onAudioGesture = () => {
+      void feedback.unlock();
+    };
+
     const onWindowBlur = () => {
       clearMovementInput();
     };
@@ -315,11 +375,14 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
         clearMovementInput();
+      } else {
+        feedback.recover();
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("pointerdown", onAudioGesture, true);
     window.addEventListener("pointerup", onPointerRelease);
     window.addEventListener("pointercancel", onPointerRelease);
     window.addEventListener("blur", onWindowBlur);
@@ -329,6 +392,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       disposed = true;
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("pointerdown", onAudioGesture, true);
       window.removeEventListener("pointerup", onPointerRelease);
       window.removeEventListener("pointercancel", onPointerRelease);
       window.removeEventListener("blur", onWindowBlur);
@@ -340,23 +404,29 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       }
 
       rendererRef.current?.destroy();
+      feedbackRef.current?.destroy();
       sessionRef.current?.dispose();
       rendererRef.current = null;
+      feedbackRef.current = null;
       sessionRef.current = null;
     };
-  }, [clearMovementInput, providedSession, resetJoystick, spectateEnabled]);
+  }, [clearMovementInput, providedSession, requestedMap, resetJoystick, spectateEnabled]);
 
   const queueDash = useCallback(() => {
+    void feedbackRef.current?.unlock();
     if (!runEndedRef.current) {
       dashQueuedRef.current = true;
+      feedbackRef.current?.playDash();
     }
   }, []);
 
   const useBay = useCallback((bayIndex: 0 | 1 | 2 | 3) => {
+    void feedbackRef.current?.unlock();
     if (!runEndedRef.current) useBayQueuedRef.current = bayIndex;
   }, []);
 
   const swapBayItem = useCallback((bayIndex: 0 | 1 | 2 | 3, holdIndex: number) => {
+    void feedbackRef.current?.unlock();
     if (!runEndedRef.current) swapQueuedRef.current = { bayIndex, holdIndex };
   }, []);
 
@@ -375,6 +445,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   }, []);
 
   const plea = useCallback(() => {
+    void feedbackRef.current?.unlock();
     if (!runEndedRef.current) pleaQueuedRef.current = true;
   }, []);
 
@@ -417,6 +488,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     () => ({
       onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
         event.preventDefault();
+        void feedbackRef.current?.unlock();
         event.currentTarget.setPointerCapture(event.pointerId);
         const origin = {
           x: event.clientX,
@@ -465,18 +537,41 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     [resetJoystick, updateJoystick],
   );
 
+  const toggleFeedbackPreference = useCallback((key: keyof FeedbackPreferences) => {
+    const next = {
+      ...feedbackPreferencesRef.current,
+      [key]: !feedbackPreferencesRef.current[key],
+    };
+    feedbackPreferencesRef.current = next;
+    feedbackRef.current?.setPreferences(next);
+    rendererRef.current?.setReducedMotion(next.reducedMotion);
+    saveFeedbackPreferences(next);
+    setFeedbackPreferences(next);
+    if (key === "sound" && next.sound) void feedbackRef.current?.unlock();
+  }, []);
+
+  const testSound = useCallback(() => {
+    feedbackRef.current?.playTest();
+  }, []);
+
   return {
     hostRef,
     snapshot,
     events,
     runResult,
-    map: providedSession?.map ?? downtownMap,
+    map: providedSession?.map ?? requestedMap,
     playerId: providedSession?.playerId ?? "player",
     spectating,
     debugVisible,
     networkDebug,
     legendVisible,
     toggleLegend: () => setLegendVisible((visible) => !visible),
+    feedbackPreferences,
+    audioStatus,
+    toggleSound: () => toggleFeedbackPreference("sound"),
+    toggleHaptics: () => toggleFeedbackPreference("haptics"),
+    toggleReducedMotion: () => toggleFeedbackPreference("reducedMotion"),
+    testSound,
     joystick: joystickView,
     joystickHandlers,
     queueDash,
@@ -489,4 +584,10 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     setInteractionChannel,
     draftObjects,
   };
+}
+
+function impactPan(snapshot: GameSnapshot, playerId: string, point: Vec2): number {
+  const player = snapshot.bots.find((bot) => bot.id === playerId);
+  if (!player) return 0;
+  return clamp((point.x - player.position.x) / 320, -1, 1);
 }

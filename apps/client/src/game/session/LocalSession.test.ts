@@ -31,6 +31,24 @@ describe("LocalSession run-state ownership", () => {
     expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptItems: [], lostItems: [health, health], learnedBlueprints: [] });
   });
 
+  it("delivers authoritative hit presentation events in local mode", async () => {
+    const hit: Extract<SimEvent, { type: "hit" }> = {
+      type: "hit",
+      botId: "target",
+      byBotId: "player",
+      result: "plateBreak",
+      position: { x: 120, y: 90 },
+      direction: { x: 1, y: 0 },
+      tick: 4,
+    };
+    const { session } = scriptedSession({ events: [hit], snapshot: snapshot(50, []) });
+
+    await session.start();
+    session.update(100);
+
+    expect(session.drainEvents()).toEqual([hit]);
+  });
+
   it("derives timeout state from local time and current inventory", async () => {
     const config = { ...defaultGameConfig, tickHz: 10, runDurationMs: 100 };
     const { session } = scriptedSession({

@@ -16,10 +16,16 @@ import {
   createImpactTelemetry,
   expireUnconfirmedHits,
   recordAuthoritativeHit,
+  recordPresentedHit,
   recordPredictedHit,
 } from "./impactTelemetry";
-import { snapshotArrivalStats, type NetworkDebugStats } from "./netgraph";
+import { metricStats, snapshotArrivalStats, type NetworkDebugStats } from "./netgraph";
 import { capRemoteRecovery, fastForwardCombatState, sampleTimeline, type TimelineSnapshot } from "./interpolation";
+import {
+  advanceInterpolationDelayMs,
+  maximumInterpolationDelayMs,
+  targetInterpolationDelayMs,
+} from "./adaptiveBuffer";
 import type { GameTransport, GameTransportFactory } from "../transport/GameTransport";
 import { createWebSocketGameTransport } from "../transport/WebSocketGameTransport";
 
@@ -39,7 +45,6 @@ export type NetSessionOptions = {
 
 type BufferedSnapshot = TimelineSnapshot;
 
-const interpolationDelayMs = 125;
 const snapshotIntervalMs = 50;
 const maxRemoteCorrectionSpeedPxPerSecond = 1000;
 const correctionBlendRate = 0.3;
@@ -93,13 +98,19 @@ export class NetSession implements GameSession {
   private lastRenderTick = Number.NEGATIVE_INFINITY;
   private lastRenderedRemote: GameSnapshot | null = null;
   private lastImpactFxAtMs = Number.NEGATIVE_INFINITY;
+  private impactPredictionSeq = 0;
   private impactTelemetry = createImpactTelemetry();
+  private interpolationDelayMs = maximumInterpolationDelayMs;
+  private readonly frameIntervalsMs: number[] = [];
+  private readonly frameWorkMs: number[] = [];
+  private longFrameCount = 0;
   private disposed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connectTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectStartedAt: number | null = null;
   private reconnectAttempt = 0;
   private transportGeneration = 0;
+  private handshakeReady = false;
 
   constructor(options: NetSessionOptions) {
     this.options = options;
@@ -177,28 +188,66 @@ export class NetSession implements GameSession {
     const now = performance.now();
     this.pruneCorrections(now);
     expireUnconfirmedHits(this.impactTelemetry, now);
+    const confirmations = metricStats(this.impactTelemetry.confirmationSamplesMs);
+    const presentations = metricStats(this.impactTelemetry.presentationSamplesMs);
+    const frames = metricStats(this.frameIntervalsMs);
+    const frameWork = metricStats(this.frameWorkMs);
     return {
       snapshotIntervalsMs: this.snapshotIntervalsMs.slice(-64),
       ...snapshotArrivalStats(this.snapshotIntervalsMs),
       rttMs: this.rttMs,
-      interpolationDelayMs,
+      interpolationDelayMs: Math.round(this.interpolationDelayMs),
+      interpolationTargetMs: Math.round(targetInterpolationDelayMs(this.snapshotIntervalsMs, snapshotIntervalMs)),
       bufferDepthSnapshots: this.bufferDepthSnapshots,
       predictionErrorPx: this.predictionErrorPx,
       correctionsPerSecond: this.correctionTimesMs.length,
       hitConfirmationMs: this.impactTelemetry.lastConfirmationMs,
+      hitConfirmationP50Ms: confirmations.p50,
+      hitConfirmationP90Ms: confirmations.p90,
+      hitConfirmationP99Ms: confirmations.p99,
+      hitConfirmationMaxMs: confirmations.max,
+      hitPresentationP50Ms: presentations.p50,
+      hitPresentationP90Ms: presentations.p90,
+      hitPresentationP99Ms: presentations.p99,
+      hitPresentationMaxMs: presentations.max,
       hitPredictedCount: this.impactTelemetry.predictedCount,
       hitConfirmedCount: this.impactTelemetry.confirmedCount,
       hitUnconfirmedCount: this.impactTelemetry.unconfirmedCount,
       hitPendingCount: this.impactTelemetry.pending.length,
+      frameIntervalsMs: this.frameIntervalsMs.slice(-64),
+      frameP50Ms: frames.p50,
+      frameP90Ms: frames.p90,
+      frameP99Ms: frames.p99,
+      frameMaxMs: frames.max,
+      frameWorkP90Ms: frameWork.p90,
+      frameWorkMaxMs: frameWork.max,
+      longFrameCount: this.longFrameCount,
     };
+  }
+
+  recordImpactPresented(predictionId: string, presentedAtMs: number): void {
+    recordPresentedHit(this.impactTelemetry, predictionId, presentedAtMs);
+  }
+
+  recordClientFrame(frameIntervalMs: number, frameWorkMs: number): void {
+    // Browser suspension is not gameplay frame pacing. Ignore intervals over
+    // 250ms so a tab switch does not poison the next several F3 percentile
+    // windows, while still counting real visible stalls above 50ms.
+    if (Number.isFinite(frameIntervalMs) && frameIntervalMs > 0 && frameIntervalMs <= 250) {
+      pushBounded(this.frameIntervalsMs, frameIntervalMs, 240);
+      if (frameIntervalMs > 50) this.longFrameCount += 1;
+    }
+    if (Number.isFinite(frameWorkMs) && frameWorkMs >= 0) pushBounded(this.frameWorkMs, frameWorkMs, 240);
   }
 
   update(elapsedMs: number): GameSnapshot | null {
     if (this.snapshots.length === 0) return null;
     this.maybePing();
     const newest = this.snapshots[this.snapshots.length - 1];
+    const bufferTargetMs = targetInterpolationDelayMs(this.snapshotIntervalsMs, snapshotIntervalMs);
+    this.interpolationDelayMs = advanceInterpolationDelayMs(this.interpolationDelayMs, bufferTargetMs, elapsedMs);
     const estimatedServerTick = this.estimatedServerTick(performance.now()) ?? newest.tick;
-    const desiredRenderTick = estimatedServerTick - interpolationDelayMs / (1000 / this.tickHz);
+    const desiredRenderTick = estimatedServerTick - this.interpolationDelayMs / (1000 / this.tickHz);
     const renderTick = Math.max(this.lastRenderTick, desiredRenderTick);
     this.lastRenderTick = renderTick;
     const sampled = sampleTimeline(this.snapshots, renderTick, snapshotIntervalMs / (1000 / this.tickHz));
@@ -235,8 +284,15 @@ export class NetSession implements GameSession {
     const now = performance.now();
     if (now - this.lastImpactFxAtMs < 400) return [];
     this.lastImpactFxAtMs = now;
-    recordPredictedHit(this.impactTelemetry, contact.targetId, now);
-    return [{ ...contact.position, targetId: contact.targetId }];
+    const predictionId = `${this.playerIdValue || "player"}-${++this.impactPredictionSeq}`;
+    recordPredictedHit(this.impactTelemetry, contact.targetId, now, predictionId);
+    return [{
+      ...contact.position,
+      targetId: contact.targetId,
+      sourceId: this.playerIdValue,
+      predictionId,
+      predictedAtMs: now,
+    }];
   }
 
   drainEvents(): SimEvent[] {
@@ -249,6 +305,7 @@ export class NetSession implements GameSession {
 
   dispose(): void {
     this.disposed = true;
+    this.handshakeReady = false;
     this.transportGeneration += 1;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.connectTimeoutTimer) clearTimeout(this.connectTimeoutTimer);
@@ -268,6 +325,7 @@ export class NetSession implements GameSession {
       case "welcome":
         if (this.connectTimeoutTimer) clearTimeout(this.connectTimeoutTimer);
         this.connectTimeoutTimer = null;
+        this.handshakeReady = true;
         this.reconnectAttempt = 0;
         this.reconnectStartedAt = null;
         this.options.onError?.("");
@@ -301,6 +359,8 @@ export class NetSession implements GameSession {
         this.predictionAccumulatorMs = 0;
         this.correctionOffset = { x: 0, y: 0 };
         this.impactTelemetry = createImpactTelemetry();
+        this.impactPredictionSeq = 0;
+        this.interpolationDelayMs = maximumInterpolationDelayMs;
         this.pendingInputs = [];
         this.mapValue = message.map;
         this.configValue = message.config;
@@ -328,6 +388,7 @@ export class NetSession implements GameSession {
         snapshot.timeMs = message.tick * (1000 / this.tickHz);
         snapshot.debug.tickHz = this.tickHz;
         this.checkClockSanity(message.tick, snapshot.timeMs);
+        this.predictor?.setDoors(snapshot.doors ?? []);
         this.reconcileOwnBot(snapshot, message.ack);
         this.snapshots.push({ tick: message.tick, snapshot });
         if (this.snapshots.length > 20) this.snapshots.splice(0, this.snapshots.length - 20);
@@ -342,7 +403,6 @@ export class NetSession implements GameSession {
           const event = fromWireEvent(wireEvent);
           if (event.type === "hit") {
             recordAuthoritativeHit(this.impactTelemetry, event, this.playerIdValue, performance.now());
-            continue;
           }
           this.events.push(event);
         }
@@ -370,6 +430,13 @@ export class NetSession implements GameSession {
         }
         return;
       case "err":
+        if (message.code === "hello_required") {
+          // Older or rolling servers can report this transiently while an
+          // asynchronous identity lookup is still admitting a reconnect.
+          // It is an internal protocol condition, not actionable player copy.
+          this.options.onError?.("CONNECTION INTERRUPTED · RECONNECTING…");
+          return;
+        }
         this.failStart(message.msg);
         return;
       default:
@@ -378,11 +445,13 @@ export class NetSession implements GameSession {
   }
 
   private send(message: ClientMessage, delivery: DeliveryClass = "reliable"): void {
+    if (!this.handshakeReady) return;
     this.transport?.send(message, delivery);
   }
 
   private connectTransport(): void {
     if (this.disposed) return;
+    this.handshakeReady = false;
     const generation = ++this.transportGeneration;
     const transport = (this.options.transportFactory ?? createWebSocketGameTransport)(this.options.url);
     this.transport = transport;
@@ -392,6 +461,7 @@ export class NetSession implements GameSession {
       if (generation !== this.transportGeneration || this.disposed) return;
       this.connectTimeoutTimer = null;
       this.transportGeneration += 1;
+      this.handshakeReady = false;
       transport.close();
       this.transport = null;
       this.clearInputsForHandoff();
@@ -400,7 +470,9 @@ export class NetSession implements GameSession {
     transport.connect({
       open: () => {
         if (generation !== this.transportGeneration || this.disposed) return;
-        this.send({
+        // Hello deliberately bypasses the admitted-traffic gate. Every other
+        // client message waits for this connection's welcome acknowledgement.
+        transport.send({
           type: "hello",
           token: this.options.token,
           name: this.options.name,
@@ -410,7 +482,7 @@ export class NetSession implements GameSession {
           roomCode: (this.roomCode || this.options.roomCode).trim().toUpperCase(),
           preferredSquad: this.options.preferredSquad,
           playerSessionId: this.options.playerSessionId,
-        });
+        }, "reliable");
       },
       message: (message) => {
         if (generation === this.transportGeneration && !this.disposed) this.receive(message);
@@ -423,6 +495,7 @@ export class NetSession implements GameSession {
         if (generation !== this.transportGeneration || this.disposed) return;
         if (this.connectTimeoutTimer) clearTimeout(this.connectTimeoutTimer);
         this.connectTimeoutTimer = null;
+        this.handshakeReady = false;
         this.transport = null;
         this.clearInputsForHandoff();
         this.scheduleReconnect();
@@ -608,6 +681,7 @@ export class NetSession implements GameSession {
 
   private setPredictionObstacles(rendered: GameSnapshot): void {
     if (!this.predictor) return;
+    this.predictor.setDoors(rendered.doors ?? []);
     const own = rendered.bots.find((bot) => bot.id === this.playerIdValue);
     const floorId = this.predictor.current.floorId;
     this.predictor.setObstacles(rendered.bots
@@ -684,7 +758,7 @@ export class NetSession implements GameSession {
     const estimated = this.estimatedServerTick(now);
     const renderDelayMs = estimated !== null && Number.isFinite(this.lastRenderTick)
       ? Math.max(0, (estimated - this.lastRenderTick) * tickMs)
-      : interpolationDelayMs;
+      : this.interpolationDelayMs;
     const viewDelayMs = Math.min(350, renderDelayMs + (this.rttMs ?? 100));
     this.send({ type: "ping", cts: Date.now(), viewDelayMs });
   }
@@ -740,4 +814,9 @@ export class NetSession implements GameSession {
       });
     }
   }
+}
+
+function pushBounded(values: number[], value: number, maximum: number): void {
+  values.push(value);
+  if (values.length > maximum) values.splice(0, values.length - maximum);
 }

@@ -6,7 +6,12 @@ export type RunState =
   | { phase: "live" }
   | { phase: "over"; reason: "extracted" | "died" | "timeout"; keptItems: Item[]; lostItems: Item[]; learnedBlueprints: string[]; contractCompletions?: Array<{ contractId: string; title: string; payout: Item[] }>; persistenceStatus?: "saved" | "failed" };
 
-export type PredictedImpact = Vec2 & { targetId: string };
+export type PredictedImpact = Vec2 & {
+  targetId: string;
+  sourceId: string;
+  predictionId: string;
+  predictedAtMs: number;
+};
 
 export interface GameSession {
   readonly map: MapDocument;
@@ -34,6 +39,11 @@ export interface GameSession {
   /** Predicted dash impacts to flash immediately (network sessions only —
    * local sessions get authoritative feedback the same frame anyway). */
   drainPredictedImpacts?(): PredictedImpact[];
+  /** Records the frame where a predicted contact was actually submitted to
+   * Pixi, separate from the later server acknowledgement. */
+  recordImpactPresented?(predictionId: string, presentedAtMs: number): void;
+  /** Client-side frame pacing, including update + renderer submission work. */
+  recordClientFrame?(frameIntervalMs: number, frameWorkMs: number): void;
   /** Permanent F3 network diagnostics for live sessions. */
   getNetworkDebug?(): NetworkDebugStats;
   dispose(): void;

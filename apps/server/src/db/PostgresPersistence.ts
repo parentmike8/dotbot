@@ -139,9 +139,17 @@ export class PostgresPersistence implements Persistence {
 
   async setBaseShell(token: string, shell: BaseShellId) {
     const tokenHash = hashToken(token);
-    const updated = await this.db.update(players).set({ baseShell: shell })
-      .where(eq(players.deviceTokenHash, tokenHash)).returning({ id: players.id });
-    if (updated.length === 0) return null;
+    const playerId = await this.db.transaction(async (tx) => {
+      const [player] = await tx.select({ id: players.id }).from(players)
+        .where(eq(players.deviceTokenHash, tokenHash)).for("update");
+      if (!player) return null;
+      const [draftingTable] = await tx.select({ slotId: baseLayouts.slotId }).from(baseLayouts)
+        .where(and(eq(baseLayouts.playerId, player.id), eq(baseLayouts.objectKind, "draftingTable")));
+      if (!draftingTable) throw new Error("REQUIRES DRAFTING TABLE");
+      await tx.update(players).set({ baseShell: shell }).where(eq(players.id, player.id));
+      return player.id;
+    });
+    if (!playerId) return null;
     return this.getBase(token);
   }
 

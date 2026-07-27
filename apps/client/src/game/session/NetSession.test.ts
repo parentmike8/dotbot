@@ -21,6 +21,7 @@ describe("NetSession item edges", () => {
       configValue: defaultGameConfig,
       tickHz: 60,
       lastRenderTick: 120,
+      handshakeReady: true,
     });
     const advance = (ms: number) =>
       (session as unknown as { advancePrediction(ms: number): void }).advancePrediction(ms);
@@ -84,7 +85,14 @@ describe("NetSession item edges", () => {
       },
     });
 
-    expect(session.drainPredictedImpacts()).toEqual([{ targetId: "target", x: 10, y: 20 }]);
+    expect(session.drainPredictedImpacts()).toEqual([{
+      targetId: "target",
+      sourceId: "player",
+      predictionId: "player-1",
+      predictedAtMs: 100,
+      x: 10,
+      y: 20,
+    }]);
     nowMs = 146;
     (session as unknown as { receive(message: unknown): void }).receive({
       type: "ev",
@@ -182,6 +190,43 @@ describe("NetSession item edges", () => {
       roomCode: "TEST",
       playerSessionId: "psess-1",
     });
+    session.requestSquad("crew-3");
+    expect(transports[1].sent.map(({ message }) => message.type)).toEqual(["hello"]);
+    transports[1].handlers?.message({
+      type: "welcome",
+      roomCode: "TEST",
+      playerId: "player-1",
+      phase: "live",
+      hostId: "player-1",
+      members: [{ playerId: "player-1", name: "Ada", squadId: "alpha" }],
+      locked: true,
+    });
+    session.requestSquad("crew-3");
+    expect(transports[1].sent.map(({ message }) => message.type)).toEqual(["hello", "joinSquad"]);
+    session.dispose();
+  });
+
+  it("keeps an internal hello race out of player-facing reconnect copy", () => {
+    const errors: string[] = [];
+    const transport = new FakeTransport();
+    const session = new NetSession({
+      url: "/ws",
+      roomCode: "TEST",
+      name: "Ada",
+      token: "token",
+      transportFactory: () => transport,
+      onError: (message) => errors.push(message),
+    });
+    void session.start();
+    transport.handlers?.open();
+    transport.handlers?.message({
+      type: "err",
+      code: "hello_required",
+      msg: "Send hello before other messages.",
+    });
+
+    expect(errors).toEqual(["CONNECTION INTERRUPTED · RECONNECTING…"]);
+    expect(errors.join(" ")).not.toContain("hello");
     session.dispose();
   });
 

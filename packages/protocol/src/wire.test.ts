@@ -41,6 +41,18 @@ const snapshot: GameSnapshot = {
   mines: [],
   coverages: [],
   noises: [],
+  doors: [{
+    id: "shop:entry",
+    doorwayId: "entry",
+    buildingId: "shop",
+    floorId: "outdoor",
+    position: { x: 420.123, y: 688.456 },
+    width: 72,
+    dir: "h",
+    phase: "opening",
+    openness: 0.4567,
+    blocking: true,
+  }],
   debug: { tickHz: 60, tickCount: 12, fps: 60, activeBodies: 1, activeDots: 1 },
 };
 
@@ -67,6 +79,13 @@ describe("snapshot wire mapping", () => {
       dashActiveMs: Math.round(bot.dashActiveMs * 100) / 100,
       invulnerabilityMs: Math.round(bot.invulnerabilityMs),
     });
+    expect(restored.doors).toEqual([expect.objectContaining({
+      id: "shop:entry",
+      position: { x: 420.12, y: 688.46 },
+      openness: 0.46,
+      phase: "opening",
+      blocking: true,
+    })]);
   });
 
   it("omits empty collections and default bot fields while preserving round-trip defaults", () => {
@@ -82,13 +101,14 @@ describe("snapshot wire mapping", () => {
       dashActiveMs: 0,
       invulnerabilityMs: 0,
     } satisfies DotBotEntity;
-    const full = toWireSnapshot({ ...snapshot, bots: [defaultBot], dots: [], mines: [], coverages: [], noises: [] });
+    const full = toWireSnapshot({ ...snapshot, bots: [defaultBot], dots: [], mines: [], coverages: [], noises: [], doors: [] });
     const payload = toViewerSnapshot(full, 0);
     expect(payload).not.toHaveProperty("dotDeltas");
     expect(payload).not.toHaveProperty("dotSync");
     expect(payload).not.toHaveProperty("mines");
     expect(payload).not.toHaveProperty("coverages");
     expect(payload).not.toHaveProperty("noises");
+    expect(payload).not.toHaveProperty("doors");
     expect(payload.bots[0]).toEqual({ i: defaultBot.id, p: [123.46, 987.65] });
     expect(fromWireSnapshot(payload, new Map([[defaultBot.id, toEntityMeta(defaultBot)]]), []).bots[0]).toMatchObject({
       facing: 0,
@@ -161,7 +181,15 @@ describe("compact item codes", () => {
 
 describe("event wire mapping", () => {
   it("preserves the source and target of an authoritative hit acknowledgement", () => {
-    const hit = { type: "hit", botId: "target", byBotId: "attacker" } as const;
+    const hit = {
+      type: "hit",
+      botId: "target",
+      byBotId: "attacker",
+      result: "plateBreak",
+      position: { x: 12, y: 18 },
+      direction: { x: 1, y: 0 },
+      tick: 42,
+    } as const;
     expect(fromWireEvent(toWireEvent(hit))).toEqual(hit);
   });
 });
