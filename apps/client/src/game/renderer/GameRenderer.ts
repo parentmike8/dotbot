@@ -26,6 +26,7 @@ import {
 } from "./impactPrediction";
 import { drawDotDisc } from "./dotArt";
 import { drawCatchLight, drawGroundShadow } from "./grounding";
+import { drawDownedBody } from "./bodies";
 import { DOT_COLOR, INK, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
 
@@ -896,30 +897,32 @@ export class GameRenderer {
 
   private drawBotBody(g: Graphics, bot: DotBotEntity, viewerSquadId: string | undefined): void {
     const color = this.relationshipColor(bot, viewerSquadId);
-    const coreRadius = bot.state === "downed" ? bot.radius * 0.34 : bot.radius * 0.4;
-    const alpha = bot.state === "downed" ? 0.72 : 1;
     const serrated = !bot.isAmbient && viewerSquadId !== undefined && bot.squadId !== viewerSquadId;
 
-    drawGroundShadow(g, bot.position, bot.radius, alpha);
-    this.drawShieldSegments(g, bot, color, serrated, 1);
-
     if (bot.state === "downed") {
-      g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color, width: 2.5, alpha });
-      // A downed body is a stand-on interaction (revive/consume/loot), so it
-      // carries the same engraved interaction mark as every dot in the world.
-      g.circle(bot.position.x, bot.position.y, 6).fill({ color: DOT_COLOR.interaction, alpha: 0.9 });
-      g.circle(bot.position.x, bot.position.y, 6).stroke({ color: INK.structure, width: 1.2, alpha });
-      g.circle(bot.position.x, bot.position.y, 3.5).stroke({ color: INK.structure, width: WEIGHT.hairline, alpha: 0.8 });
-    } else {
-      // Hairline hull at the true collision radius: bodies stop where this
-      // line is, so contact renders as contact instead of a 10px air gap
-      // between shield arcs.
-      g.circle(bot.position.x, bot.position.y, bot.radius - 0.5).stroke({ color: INK.structure, width: 1, alpha: 0.22 });
-      g.circle(bot.position.x, bot.position.y, coreRadius).fill({ color: INK.structure, alpha: 0.95 });
-      g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: INK.structure, width: 2, alpha });
-      // Catch light on the core, so the body reads as a sphere under the plates.
-      drawCatchLight(g, bot.position, coreRadius);
+      // A body is its own drawing, not a standing bot with the contrast turned
+      // down: no cast shadow, no facing, no plate ring.
+      drawDownedBody(g, {
+        at: bot.position,
+        radius: bot.radius,
+        color,
+        carriedCount: bot.carriedCount,
+        searched: bot.searched,
+      });
+      return;
     }
+
+    const coreRadius = bot.radius * 0.4;
+    drawGroundShadow(g, bot.position, bot.radius);
+    this.drawShieldSegments(g, bot, color, serrated, 1);
+    // Hairline hull at the true collision radius: bodies stop where this
+    // line is, so contact renders as contact instead of a 10px air gap
+    // between shield arcs.
+    g.circle(bot.position.x, bot.position.y, bot.radius - 0.5).stroke({ color: INK.structure, width: 1, alpha: 0.22 });
+    g.circle(bot.position.x, bot.position.y, coreRadius).fill({ color: INK.structure, alpha: 0.95 });
+    g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: INK.structure, width: 2 });
+    // Catch light on the core, so the body reads as a sphere under the plates.
+    drawCatchLight(g, bot.position, coreRadius);
 
     if (bot.dashActiveMs > 0) {
       g.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color: INK.structure, width: 3, alpha: 0.45 });

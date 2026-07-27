@@ -18,6 +18,7 @@ import { buildFloorModel } from "../game/renderer/model/modelFloor";
 import { buildGeometryProof } from "../game/renderer/model/geometryProof";
 import { drawDotDisc } from "../game/renderer/dotArt";
 import { drawCatchLight, drawGroundShadow } from "../game/renderer/grounding";
+import { drawDownedBody, type DownedBody } from "../game/renderer/bodies";
 import { V } from "../game/renderer/model/tone";
 
 /**
@@ -231,6 +232,7 @@ function modelWorld(building: Building, floor: FloorPlan, params: LabParams): Co
     drawDotDisc(actors, spawn.position, spawn.radius ?? 11, powerupColor(spawn));
   }
   for (const bot of labBots(floor)) drawLabBot(actors, bot);
+  for (const body of labBodies(floor)) drawDownedBody(actors, body);
   world.addChild(actors);
   return world;
 }
@@ -296,6 +298,21 @@ function baseWorld(floorLabel: string): Container {
   return world;
 }
 
+
+/**
+ * Bodies next to the bots that are still standing, because that is the only
+ * comparison that matters: down has to read as down at a glance, and the three
+ * states a body can be in — holding something and unsearched, open with something
+ * left, open and stripped — have to be told apart without stopping to look.
+ */
+function labBodies(floor: FloorPlan): DownedBody[] {
+  if (floor.label !== "GROUND") return [];
+  return [
+    { at: { x: 513, y: 1245 }, radius: 24, color: RIVAL, carriedCount: 4, searched: false },
+    { at: { x: 513, y: 1310 }, radius: 24, color: AMBIENT, carriedCount: 2, searched: true },
+    { at: { x: 513, y: 1375 }, radius: 24, color: SQUAD, carriedCount: 0, searched: true },
+  ];
+}
 
 /**
  * Three bots placed to test the thing that matters: can you find your own bot,
