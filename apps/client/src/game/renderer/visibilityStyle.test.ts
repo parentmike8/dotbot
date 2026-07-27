@@ -2,18 +2,12 @@ import { describe, expect, it } from "vitest";
 import { visibilityFogStyle } from "./visibilityStyle";
 
 describe("visibilityFogStyle", () => {
-  it("uses the same strong hidden-space treatment across Pixel City", () => {
-    expect(visibilityFogStyle("pixel-city", false)).toEqual(
-      visibilityFogStyle("pixel-city", true),
-    );
-    expect(visibilityFogStyle("pixel-city", false)).toEqual({
-      color: 0x090c12,
-      alpha: 0.62,
-    });
-  });
-
-  it("preserves the quieter plan-map treatments", () => {
-    expect(visibilityFogStyle("plan", true).alpha).toBe(0.18);
-    expect(visibilityFogStyle("plan", false).alpha).toBe(0.035);
+  it("veils an unseen room but only hints at unseen street", () => {
+    const indoors = visibilityFogStyle(true);
+    const outdoors = visibilityFogStyle(false);
+    expect(indoors.alpha).toBe(0.18);
+    expect(outdoors.alpha).toBe(0.035);
+    // Same ink either way: only the weight carries the meaning.
+    expect(indoors.color).toBe(outdoors.color);
   });
 });

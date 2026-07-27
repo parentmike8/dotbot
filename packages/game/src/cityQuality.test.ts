@@ -17,6 +17,7 @@ import type { Building, Doorway, MapDocument, Surface } from "./types";
 const bare = (overrides: Partial<MapDocument> = {}): MapDocument => ({
   id: "t",
   name: "T",
+  visualTheme: "lit-model",
   width: 1200,
   height: 900,
   outdoor: { roads: [], parks: [], surfaces: [], walls: [], objects: [], dotSpawns: [] },

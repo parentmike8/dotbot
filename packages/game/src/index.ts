@@ -6,13 +6,10 @@ export { auditCity, MAX_SETBACK, MIN_FOOTWAY, MIN_UNASSIGNED_AREA } from "./city
 export type { CityIssue } from "./cityQuality";
 export { compileCityPlan, CityPlanError, MIN_APPROACH } from "./cityPlan";
 export type { ApproachSpec, CityPlan, PatchSpec, StreetSpec } from "./cityPlan";
-export { cloneMapDocument, validateEditableMap } from "./mapEditor";
-export type { MapEditorIssue } from "./mapEditor";
 export { assignSquadInsertions, squadPreference, squadSpawnPosition, validateInsertionMap } from "./insertion";
 export type { InsertionAssignment, InsertionMemberPreference, InsertionSquad } from "./insertion";
 export { CONTRACT_ACTIVE_CAP, CONTRACT_OFFER_COUNT, contractDayStamp, contractObjectiveLabel, contractSatisfied, deriveContractTemplates, generateContractOffers } from "./contracts";
 export { downtownMap } from "./content/downtown";
-export { pixelCityBlockMap } from "./content/pixelCityBlock";
 export {
   BASE_OBJECT_KINDS,
   BASE_KIND_ZONES,

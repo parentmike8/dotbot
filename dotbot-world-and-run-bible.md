@@ -236,7 +236,7 @@ Level must not directly increase:
 
 Important locked doors have a grey Interaction Dot.
 
-Indoor doors use a simple sliding-door format. Exterior entrances normally remain open wall gaps, but Pixel City storefronts may use their matching purchased opening animation when the door is a real authoritative entity. Public automatic doors can open on proximity. Secured doors still use the Interaction Dot flow below.
+Indoor doors use a simple sliding-door format. Exterior entrances are open wall gaps. Public automatic doors can open on proximity. Secured doors still use the Interaction Dot flow below.
 
 The requirement should be obvious, for example `LEVEL 5`.
 

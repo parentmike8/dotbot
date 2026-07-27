@@ -38,35 +38,6 @@ function rectSegments(rect: Rect): Segment[] {
   ];
 }
 
-function exteriorBuildingSegments(rect: Rect, viewer: Vec2): Segment[] {
-  const segments = rectSegments(rect);
-  const omitted = new Set<number>();
-
-  // The near edge is the visible facade. Let the visual fog polygon travel
-  // through that art and stop on the far silhouette instead. Gameplay LOS
-  // continues to use all four footprint edges through visionContext().
-  if (viewer.y <= rect.y) omitted.add(0);
-  else if (viewer.y >= rect.y + rect.h) omitted.add(2);
-  if (viewer.x >= rect.x + rect.w) omitted.add(1);
-  else if (viewer.x <= rect.x) omitted.add(3);
-
-  return segments.filter((_, index) => !omitted.has(index));
-}
-
-/** Visual-only street context that exposes the face of each building while
- * preserving its far silhouette. Never use this for entity visibility. */
-export function exteriorVisualVisionContext(map: MapDocument, viewer: Vec2): VisionContext {
-  const boundsRect = { x: 0, y: 0, w: map.width, h: map.height };
-  return {
-    walls: [
-      ...map.outdoor.walls.flatMap(rectSegments),
-      ...map.buildings.flatMap((building) => exteriorBuildingSegments(building.footprint, viewer)),
-    ],
-    bounds: rectSegments(boundsRect),
-    boundsRect,
-  };
-}
-
 /**
  * Occluders and bounds for an arena context key (see mapModel.contextKey):
  * "outdoor:street", "outdoor:<buildingId>", or an interior floor id.

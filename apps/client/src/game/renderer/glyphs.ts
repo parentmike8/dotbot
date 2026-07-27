@@ -2,13 +2,6 @@ import type { Graphics } from "pixi.js";
 import { planningTableSurfaceRect } from "@dotbot/game/mapModel";
 import type { Facing, MapObject, ObjectKind } from "@dotbot/game/types";
 import { INK, PAPER, strokes, type StrokeStyle } from "./style";
-import {
-  drawRetailCooler,
-  drawRetailCounter,
-  drawRetailKiosk,
-  drawRetailProduceDisplay,
-  drawRetailShelf,
-} from "./retailGlyphs";
 
 /**
  * Object glyph library: orthographic plan symbols drawn in pure line work.
@@ -321,10 +314,6 @@ function deskGlyph(g: Graphics, o: MapObject): void {
 }
 
 function counterGlyph(g: Graphics, o: MapObject): void {
-  if (o.visualStyle === "retail") {
-    drawRetailCounter(g, o);
-    return;
-  }
   body(g, o.x, o.y, o.w, o.h, T3);
   // Front edge line — counters read as built-in millwork, not tables.
   if (o.w >= o.h) {
@@ -359,10 +348,6 @@ function receptionDeskGlyph(g: Graphics, o: MapObject): void {
 }
 
 function shelfGlyph(g: Graphics, o: MapObject): void {
-  if (o.visualStyle === "retail") {
-    drawRetailShelf(g, o);
-    return;
-  }
   body(g, o.x, o.y, o.w, o.h, T3);
 
   // Center spine + bay divisions along the run.
@@ -394,10 +379,6 @@ function shelfGlyph(g: Graphics, o: MapObject): void {
 /** Open produce bins with one shallow front-panel band. The contents are
  * diagrammatic top-down marks; no line extends beyond the solid footprint. */
 function produceDisplayGlyph(g: Graphics, o: MapObject): void {
-  if (o.visualStyle === "retail") {
-    drawRetailProduceDisplay(g, o);
-    return;
-  }
   body(g, o.x, o.y, o.w, o.h, T3, 3);
   const horizontal = o.w >= o.h;
   const frontDepth = Math.max(12, (horizontal ? o.h : o.w) * 0.18);
@@ -619,10 +600,6 @@ function vendingGlyph(g: Graphics, o: MapObject): void {
 }
 
 function fridgeGlyph(g: Graphics, o: MapObject): void {
-  if (o.visualStyle === "retail") {
-    drawRetailCooler(g, o);
-    return;
-  }
   body(g, o.x, o.y, o.w, o.h, T3);
   const hinge = o.facing ?? "N";
 
@@ -963,10 +940,6 @@ function ivStandGlyph(g: Graphics, o: MapObject): void {
 }
 
 function medicalCartGlyph(g: Graphics, o: MapObject): void {
-  if (o.visualStyle === "retail") {
-    drawRetailShelf(g, o);
-    return;
-  }
   body(g, o.x, o.y, o.w, o.h, T4, 1);
   line(g, o.x + 2, o.y + o.h / 2, o.x + o.w - 2, o.y + o.h / 2, T5);
   for (const [cx, cy] of [
@@ -1122,10 +1095,6 @@ function bollardGlyph(g: Graphics, o: MapObject): void {
 }
 
 function kioskGlyph(g: Graphics, o: MapObject): void {
-  if (o.visualStyle === "retail") {
-    drawRetailKiosk(g, o);
-    return;
-  }
   body(g, o.x, o.y, o.w, o.h, T4, 2);
   g.roundRect(o.x + 4, o.y + 4, o.w - 8, o.h - 8, 2).fill({ color: INK.plate, alpha: 0.45 });
   g.roundRect(o.x + 4, o.y + 4, o.w - 8, o.h - 8, 2).stroke(T4);

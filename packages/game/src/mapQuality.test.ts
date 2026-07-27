@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { cornerShopMap } from "./content/cornerShop";
 import { auditBuildingFloorQuality } from "./mapQuality";
 import type { MapDocument, MapObject } from "./types";
 
@@ -7,6 +6,7 @@ function testMap(objects: MapObject[]): MapDocument {
   return {
     id: "quality-test",
     name: "Quality test",
+    visualTheme: "lit-model",
     width: 420,
     height: 320,
     outdoor: { roads: [], parks: [], walls: [], objects: [], dotSpawns: [] },
@@ -112,7 +112,23 @@ describe("floor authoring quality audit", () => {
     expect(issues.some((issue) => issue.kind === "parallel-banks")).toBe(true);
   });
 
-  it("keeps every Mercer Parts floor free of structural authoring failures", () => {
-    expect(auditBuildingFloorQuality(cornerShopMap, "corner-shop")).toEqual([]);
+  /**
+   * Traversal resolves a stair's destination only when a bot crosses it, so a
+   * bad `toFloorId` used to be invisible until someone walked it. Previously
+   * caught by the editor's JSON save validator; that path is gone, so the
+   * invariant lives here with the other map audits.
+   */
+  it("rejects a stair whose destination floor does not exist", () => {
+    const broken = testMap([]);
+    broken.buildings[0].floors[0].stairs.push({
+      id: "nowhere", rect: { x: 60, y: 60, w: 40, h: 80 },
+      direction: "up", bottom: "S", toFloorId: "test:F9",
+    });
+    const issues = auditBuildingFloorQuality(broken, "test-building");
+    expect(issues.some((issue) => issue.kind === "stair-target-missing")).toBe(true);
   });
 });
+
+// The shipped map is audited in mapValidation.test.ts, which holds an exact
+// per-building debt ledger rather than a pass/fail — paying debt down has to
+// edit that ledger, so what is left stays visible. This file tests the rules.

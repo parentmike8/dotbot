@@ -22,28 +22,3 @@ export function doorwayOnPerimeter(doorway: Doorway, footprint: Rect): boolean {
   return Math.abs(doorway.x - footprint.x) <= tolerance ||
     Math.abs(doorway.x - (footprint.x + footprint.w)) <= tolerance;
 }
-
-/** Visible passable strip replacing the interior side of an exterior door.
- * The facade can animate independently; an active interior floor always sees
- * this opening rather than a closed leaf or the dark interior-floor tile. */
-export function perimeterDoorThresholdRect(doorway: Doorway, footprint: Rect, depth = 16): Rect | null {
-  if (!doorwayOnPerimeter(doorway, footprint)) return null;
-
-  if (doorway.dir === "h") {
-    const north = Math.abs(doorway.y - footprint.y) <= 10;
-    return {
-      x: doorway.x - doorway.width / 2,
-      y: north ? footprint.y : footprint.y + footprint.h - depth,
-      w: doorway.width,
-      h: depth,
-    };
-  }
-
-  const west = Math.abs(doorway.x - footprint.x) <= 10;
-  return {
-    x: west ? footprint.x : footprint.x + footprint.w - depth,
-    y: doorway.y - doorway.width / 2,
-    w: depth,
-    h: doorway.width,
-  };
-}

@@ -26,6 +26,7 @@ export type FloorQualityIssue = {
     | "blocked-stair-approach"
     | "blocked-stair-side"
     | "stair-unreachable"
+    | "stair-target-missing"
     | "object-off-floor"
     | "dot-unreachable"
     | "dot-crowded";
@@ -313,6 +314,27 @@ function offFloorIssues(building: Building, floor: FloorPlan): FloorQualityIssue
 }
 
 /**
+ * A stair whose destination does not exist.
+ *
+ * Traversal resolves `toFloorId` at the moment a bot crosses the break line, so
+ * a typo here is invisible until someone walks it — and then the bot changes
+ * floor to nowhere. Cheap to check statically, so it is checked statically.
+ */
+function stairTargetIssues(map: MapDocument, building: Building, floor: FloorPlan): FloorQualityIssue[] {
+  const known = new Set<string>([OUTDOOR_FLOOR_ID, ...building.floors.map((plan) => plan.id)]);
+  // A stair may also lead into another building's floor, so check the whole map.
+  for (const other of map.buildings) for (const plan of other.floors) known.add(plan.id);
+
+  return floor.stairs
+    .filter((stair) => !known.has(stair.toFloorId))
+    .map((stair) => ({
+      floorId: floor.id,
+      kind: "stair-target-missing" as const,
+      message: `${floor.id}: ${stair.id} leads to ${stair.toFloorId}, which is not a floor on this map`,
+    }));
+}
+
+/**
  * Rejects common authoring failures before visual review. This is deliberately
  * map-generic: flagship buildings must pass it on every floor, not just at a
  * small list of named destinations.
@@ -455,6 +477,7 @@ export function auditBuildingFloorQuality(
       ...(floor.barriers ?? []).flatMap((barrier) => barrier.solids),
     ];
     issues.push(...offFloorIssues(building, floor));
+    issues.push(...stairTargetIssues(map, building, floor));
     issues.push(...connectivityIssues(map, building, floor, blocking, radius));
 
     /**

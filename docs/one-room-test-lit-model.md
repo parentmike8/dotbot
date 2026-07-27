@@ -165,13 +165,9 @@ absent rather than faked. Recorded as rule 4 in `tone.ts`.
 
 ## Still to do
 
-- **Map Studio rebuild.** The editor only ever saw *generated* wall segments and
-  could only save the pixel-city JSON map, so edits to downtown or Mercer Parts
-  were silently discarded. `packages/game/src/mapSource.ts` is the replacement
-  format — wall runs with inline openings, building-level paired stairs, a per-floor
-  brief — written and typechecked but **not yet wired to any map**.
-- Object kinds still falling through to `genericBox`: beds, medical, retail,
-  residential seating and tables.
+- Object kinds still falling through to `genericBox`: beds, medical, residential
+  seating and tables. Fourteen of them are the player base's, which is why the base
+  is still drawn in the retired `plan` language.
 - Downed DotBot state, and the in-run HUD and controls, still use the old language.
 - A systematic sweep of the remaining surfaces: base/menu, lobby, manifest, mines,
   noise rings, impact feedback, fog.

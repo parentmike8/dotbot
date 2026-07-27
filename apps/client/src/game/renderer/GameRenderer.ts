@@ -1,4 +1,4 @@
-import { Application, Container, Graphics, Sprite } from "pixi.js";
+import { Application, Container, Graphics } from "pixi.js";
 import { clamp, clamp01, colorToNumber, normalize } from "@dotbot/game/math";
 import {
   buildingContaining,
@@ -9,14 +9,13 @@ import {
   isGroundFloor,
   resolvePlan,
 } from "@dotbot/game/mapModel";
-import { exteriorVisualVisionContext, hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/visibility";
+import { hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { MatchIntel } from "@dotbot/protocol";
 import { shieldArcSpan } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
 import { buildMapArt, drawStair, drawStairExitHalf, type MapArt } from "./mapArt";
-import { cityTexture, dotbotShieldTexture, dotbotTexture, dotItemTexture, loadProductionPixelAssets } from "./pixelAssets";
 import { drawObjectDraftLayers } from "./glyphs";
 import {
   applyPredictedImpactOverlays,
@@ -55,8 +54,6 @@ type DraftAnimation = {
 type BotView = {
   root: Container;
   body: Graphics;
-  shields: Sprite;
-  sprite: Sprite;
   progress: Graphics;
   signature: string;
   lastPosition: Vec2 | null;
@@ -88,7 +85,6 @@ export class GameRenderer {
   /** Entities subject to line-of-sight: enemies, dots, their rings. */
   private readonly maskedLayer = new Container();
   private readonly maskedGfx = new Graphics();
-  private readonly maskedDotsLayer = new Container();
   private readonly maskedBotsLayer = new Container();
   private readonly visionMaskGfx = new Graphics();
   /** Always-visible layer: player, squad, noise rings, extraction pulse. */
@@ -116,7 +112,6 @@ export class GameRenderer {
   private readonly mineSignals = new Map<string, { event: Extract<SimEvent, { type: "mineSensor" }>; startedAt: number }>();
   private readonly impactFlashes: QueuedPredictedImpact[] = [];
   private readonly botViews = new Map<string, BotView>();
-  private readonly dotViews = new Map<string, Sprite>();
   private readonly impactViews = new Map<string, ImpactView>();
   private readonly draftAnimations = new Map<string, DraftAnimation>();
 
@@ -127,7 +122,7 @@ export class GameRenderer {
     this.app.stage.addChild(this.worldLayer, this.screenGfx);
     this.maskedBotsLayer.sortableChildren = true;
     this.dynamicBotsLayer.sortableChildren = true;
-    this.maskedLayer.addChild(this.maskedGfx, this.maskedDotsLayer, this.maskedBotsLayer, this.visionMaskGfx);
+    this.maskedLayer.addChild(this.maskedGfx, this.maskedBotsLayer, this.visionMaskGfx);
     this.maskedLayer.mask = this.visionMaskGfx;
     this.foregroundFogGfx.mask = this.art.foreground;
     this.worldLayer.addChild(
@@ -145,8 +140,6 @@ export class GameRenderer {
 
   static async create(host: HTMLElement, map: MapDocument): Promise<GameRenderer> {
     const app = new Application();
-
-    await loadProductionPixelAssets(map);
 
     await app.init({
       antialias: true,
@@ -329,7 +322,6 @@ export class GameRenderer {
     this.worldLayer.position.set(camera.x, camera.y);
 
     const playerContext = player ? this.contextKey(player.floorId, player.position) : "outdoor:street";
-    this.updateDoorViews(snapshot);
     this.updateVisibility(player ?? null, playerContext);
     this.updateLineOfSight(snapshot, player ?? null, playerContext);
 
@@ -501,7 +493,6 @@ export class GameRenderer {
     const plan = planRef ? floorPlanById(this.map, planRef.planId) : null;
 
     for (const stair of plan?.stairs ?? []) {
-      if (stair.art) continue;
       drawStairExitHalf(this.stairOverlayGfx, stair);
     }
   }
@@ -529,16 +520,10 @@ export class GameRenderer {
     this.visionMaskGfx.poly(entityFlat).fill({ color: 0xffffff });
 
     const indoors = playerContext !== "outdoor:street";
-    const fogVision = !indoors && this.map.visualTheme === "pixel-city"
-      ? exteriorVisualVisionContext(this.map, player.position)
-      : vision;
-    const fogPolygon = fogVision === vision
-      ? polygon
-      : visibilityPolygon(player.position, fogVision);
-    const fogFlat = fogPolygon.flatMap((point) => [point.x, point.y]);
-    const fogStyle = visibilityFogStyle(this.map.visualTheme, indoors);
+    const fogFlat = polygon.flatMap((point) => [point.x, point.y]);
+    const fogStyle = visibilityFogStyle(indoors);
     for (const layer of [this.fogGfx, this.foregroundFogGfx]) {
-      layer.rect(fogVision.boundsRect.x, fogVision.boundsRect.y, fogVision.boundsRect.w, fogVision.boundsRect.h).fill(fogStyle);
+      layer.rect(vision.boundsRect.x, vision.boundsRect.y, vision.boundsRect.w, vision.boundsRect.h).fill(fogStyle);
       layer.poly(fogFlat).cut();
     }
   }
@@ -616,17 +601,6 @@ export class GameRenderer {
     return contextKey(this.map, floorId, position);
   }
 
-  private updateDoorViews(snapshot: GameSnapshot): void {
-    const states = new Map((snapshot.doors ?? []).map((door) => [door.id, door]));
-    for (const [id, sprites] of this.art.doorViews) {
-      const openness = states.get(id)?.openness ?? 0;
-      const frame = Math.max(0, Math.min(6, Math.round(openness * 6)));
-      for (const sprite of sprites) {
-        sprite.texture = cityTexture(`${sprite.label}-${frame}`);
-      }
-    }
-  }
-
   private doorOccluders(snapshot: GameSnapshot, floorId: string): import("@dotbot/game/types").Rect[] {
     return (snapshot.doors ?? [])
       .filter((door) => door.floorId === floorId && door.blocking)
@@ -635,11 +609,12 @@ export class GameRenderer {
 
   private updateVisibility(player: DotBotEntity | null, playerContext: string): void {
     const indoors = playerContext !== "outdoor:street";
-    const pixelInterior = indoors && this.map.visualTheme === "pixel-city";
-    this.art.ground.alpha = indoors ? (pixelInterior ? 0.16 : 0.4) : 1;
-    this.art.outdoorDetail.alpha = indoors ? (pixelInterior ? 0.12 : 0.25) : 1;
-    this.art.outdoorObjects.alpha = indoors ? (pixelInterior ? 0.2 : 0.35) : 1;
-    this.art.outdoorForeground.alpha = indoors ? (pixelInterior ? 0.2 : 0.35) : 1;
+    // Indoors the street is context, not content: dim it enough to recede without
+    // losing the sense of where the building sits.
+    this.art.ground.alpha = indoors ? 0.4 : 1;
+    this.art.outdoorDetail.alpha = indoors ? 0.25 : 1;
+    this.art.outdoorObjects.alpha = indoors ? 0.35 : 1;
+    this.art.outdoorForeground.alpha = indoors ? 0.35 : 1;
     this.art.labels.alpha = indoors ? 0.45 : 1;
 
     const activeBuilding =
@@ -705,7 +680,6 @@ export class GameRenderer {
   }
 
   private drawDots(snapshot: GameSnapshot, viewerSquadId: string | undefined, playerContext: string): void {
-    for (const view of this.dotViews.values()) view.visible = false;
 
     for (const dot of snapshot.dots) {
       if (!dot.active || this.contextKey(dot.floorId, dot.position) !== playerContext) {
@@ -713,25 +687,8 @@ export class GameRenderer {
       }
 
       const color = dot.item.kind === "blueprint" ? DOT_COLOR.blueprint : DOT_COLOR.powerup;
-      const perspective = this.map.visualTheme === "pixel-city";
-      if (perspective) {
-        let view = this.dotViews.get(dot.id);
-        if (!view) {
-          view = new Sprite();
-          view.anchor.set(0.5);
-          view.roundPixels = true;
-          this.dotViews.set(dot.id, view);
-          this.maskedDotsLayer.addChild(view);
-        }
-        view.texture = dotItemTexture(dot.item);
-        view.position.set(dot.position.x, dot.position.y);
-        view.width = 35;
-        view.height = 35;
-        view.visible = true;
-      } else {
-        drawDotDisc(this.maskedGfx, dot.position, dot.radius, color);
-        this.drawDotMark(this.maskedGfx, dot.item, dot.position, dot.radius);
-      }
+      drawDotDisc(this.maskedGfx, dot.position, dot.radius, color);
+      this.drawDotMark(this.maskedGfx, dot.item, dot.position, dot.radius);
 
       const coverage = snapshot.coverages.find((item) => item.kind === "capture" && item.targetId === dot.id);
       if (coverage) {
@@ -865,23 +822,11 @@ export class GameRenderer {
     if (!view) {
       const root = new Container();
       const body = new Graphics();
-      const shields = new Sprite();
-      shields.anchor.set(0.5);
-      shields.roundPixels = false;
-      // The chosen DotBot study makes the three plates a major part of the
-      // silhouette. Keep the raster frame synchronized with the body while
-      // letting it extend beyond the compact movement sprite.
-      shields.scale.set(1.28);
-      const sprite = new Sprite();
-      sprite.anchor.set(0.5);
-      sprite.roundPixels = false;
       const progress = new Graphics();
-      root.addChild(body, shields, sprite, progress);
+      root.addChild(body, progress);
       view = {
         root,
         body,
-        shields,
-        sprite,
         progress,
         signature: "",
         lastPosition: null,
@@ -895,7 +840,6 @@ export class GameRenderer {
 
     const color = this.relationshipColor(bot, viewerSquadId);
     const serrated = !bot.isAmbient && viewerSquadId !== undefined && bot.squadId !== viewerSquadId;
-    const pixelBot = this.map.visualTheme === "pixel-city";
     const now = performance.now();
     const positionChanged = view.lastPosition !== null && Math.hypot(
       bot.position.x - view.lastPosition.x,
@@ -903,7 +847,6 @@ export class GameRenderer {
     ) > 0.2;
     if (positionChanged) view.movingUntil = now + 110;
     const moved = now < view.movingUntil;
-    const direction = pixelBot ? this.pixelDirection(bot.facing) : "";
     const animation = bot.state === "downed"
       ? "downed"
       : bot.dashActiveMs > 0
@@ -920,25 +863,11 @@ export class GameRenderer {
       serrated ? 1 : 0,
       bot.dashActiveMs > 0 ? 1 : 0,
       bot.invulnerabilityMs > 0 ? 1 : 0,
-      direction,
       animation,
     ].join("|");
     if (view.signature !== signature) {
       view.body.clear();
-      this.drawBotBody(
-        view.body,
-        { ...bot, position: { x: 0, y: 0 }, facing: pixelBot ? bot.facing : 0 },
-        viewerSquadId,
-        pixelBot,
-      );
-      view.sprite.visible = pixelBot;
-      view.shields.visible = pixelBot;
-      if (pixelBot) {
-        const shieldSignature = this.pixelShieldSignature(bot);
-        view.sprite.texture = dotbotTexture(`${animation}-${direction}`);
-        view.shields.texture = dotbotShieldTexture(`shield-${shieldSignature}-${direction}`);
-        view.shields.tint = color;
-      }
+      this.drawBotBody(view.body, { ...bot, position: { x: 0, y: 0 }, facing: 0 }, viewerSquadId);
       view.signature = signature;
     }
     view.lastPosition = { ...bot.position };
@@ -963,10 +892,9 @@ export class GameRenderer {
       view.displayPosition.x + (reaction?.offset.x ?? 0),
       view.displayPosition.y + (reaction?.offset.y ?? 0),
     );
-    view.root.rotation = (pixelBot ? 0 : bot.facing) + (reaction?.rotation ?? 0);
+    view.root.rotation = bot.facing + (reaction?.rotation ?? 0);
     view.root.scale.set(reaction?.scale ?? 1);
     view.root.zIndex = bot.position.y;
-    view.shields.position.y = 0;
 
     view.progress.clear();
     const coverage = snapshot.coverages.find((item) => item.targetId === bot.id && item.kind !== "capture");
@@ -984,44 +912,14 @@ export class GameRenderer {
     }
   }
 
-  private pixelDirection(facing: number): "e" | "se" | "s" | "sw" | "w" | "nw" | "n" | "ne" {
-    const directions = ["e", "se", "s", "sw", "w", "nw", "n", "ne"] as const;
-    const normalized = ((facing % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-    return directions[Math.round(normalized / (Math.PI / 4)) % directions.length]!;
-  }
-
-  private pixelShieldSignature(bot: DotBotEntity): string {
-    return Array.from({ length: 3 }, (_, index) => {
-      const condition = index < bot.maxShields ? (bot.shieldSegments[index] ?? 0) : 0;
-      return condition >= 1 ? "2" : condition > 0 ? "1" : "0";
-    }).join("");
-  }
-
-  private drawBotBody(
-    g: Graphics,
-    bot: DotBotEntity,
-    viewerSquadId: string | undefined,
-    pixelCore = false,
-  ): void {
+  private drawBotBody(g: Graphics, bot: DotBotEntity, viewerSquadId: string | undefined): void {
     const color = this.relationshipColor(bot, viewerSquadId);
     const coreRadius = bot.state === "downed" ? bot.radius * 0.34 : bot.radius * 0.4;
     const alpha = bot.state === "downed" ? 0.72 : 1;
     const serrated = !bot.isAmbient && viewerSquadId !== undefined && bot.squadId !== viewerSquadId;
 
-    if (!pixelCore) {
-      drawGroundShadow(g, bot.position, bot.radius, alpha);
-      this.drawShieldSegments(g, bot, color, serrated, 1);
-    }
-
-    if (pixelCore) {
-      if (bot.dashActiveMs > 0) {
-        g.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color, width: 2, alpha: 0.34 });
-      }
-      if (bot.invulnerabilityMs > 0 && bot.state === "alive") {
-        g.circle(bot.position.x, bot.position.y, bot.radius - 3).stroke({ color: 0xffffff, width: 2, alpha: 0.5 });
-      }
-      return;
-    }
+    drawGroundShadow(g, bot.position, bot.radius, alpha);
+    this.drawShieldSegments(g, bot, color, serrated, 1);
 
     if (bot.state === "downed") {
       g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color, width: 2.5, alpha });
@@ -1129,19 +1027,10 @@ export class GameRenderer {
       const progress = clamp01(noise.ageMs / noise.ttlMs);
       const radius = 16 + progress * (46 + noise.loudness * 84);
       const alpha = (1 - progress) * 0.55;
-      const perspective = this.map.visualTheme === "pixel-city";
-      const center = perspective ? { x: noise.position.x, y: noise.position.y + 7 } : noise.position;
+      const center = noise.position;
 
-      if (heard.muffled) {
-        if (perspective) this.dashedEllipse(g, center, radius, radius * 0.56, alpha);
-        else this.dashedCircle(g, center, radius, alpha);
-      } else {
-        if (perspective) {
-          g.ellipse(center.x, center.y, radius, radius * 0.56).stroke({ color: INK.opening, width: 2, alpha });
-        } else {
-          g.circle(center.x, center.y, radius).stroke({ color: INK.opening, width: 2, alpha });
-        }
-      }
+      if (heard.muffled) this.dashedCircle(g, center, radius, alpha);
+      else g.circle(center.x, center.y, radius).stroke({ color: INK.opening, width: 2, alpha });
 
       if (heard.vertical !== 0) {
         this.drawChevron(g, noise.position, heard.vertical, alpha);
@@ -1156,24 +1045,6 @@ export class GameRenderer {
       const start = (Math.PI * 2 * i) / dashes;
       const end = start + (Math.PI * 2 * 0.55) / dashes;
       this.drawArcStroke(g, center, radius, start, end, { color: INK.opening, width: 2, alpha });
-    }
-  }
-
-  private dashedEllipse(g: Graphics, center: Vec2, rx: number, ry: number, alpha: number): void {
-    const dashes = 12;
-    const steps = 6;
-
-    for (let index = 0; index < dashes; index += 1) {
-      const start = (Math.PI * 2 * index) / dashes;
-      const end = start + (Math.PI * 2 * 0.55) / dashes;
-      for (let step = 0; step <= steps; step += 1) {
-        const angle = start + ((end - start) * step) / steps;
-        const x = center.x + Math.cos(angle) * rx;
-        const y = center.y + Math.sin(angle) * ry;
-        if (step === 0) g.moveTo(x, y);
-        else g.lineTo(x, y);
-      }
-      g.stroke({ color: INK.opening, width: 2, alpha });
     }
   }
 

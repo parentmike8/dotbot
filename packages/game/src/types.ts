@@ -160,8 +160,6 @@ export type Doorway = {
   open?: boolean;
   /** Omit for a permanent opening or a non-interactive plan annotation. */
   mechanism?: DoorMechanism;
-  /** Pixel City atlas family. Frames are named `${assetKey}-0..N`. */
-  assetKey?: string;
   /** Defaults keep public doors quick without making them visually instant. */
   openDurationMs?: number;
   holdOpenMs?: number;
@@ -289,42 +287,6 @@ export type BaseLayout = Record<string, BaseObjectKind>;
 
 export type Facing = "N" | "S" | "E" | "W";
 
-/** A licensed or first-party raster visual whose collision still comes from
- * the owning map object. Offsets are world-space pixels from the object's
- * authored collision rectangle. */
-export type SpriteVisual = {
-  assetKey: string;
-  /** Editor-promoted singles resize with the owning MapObject. Curated atlas
-   * fixtures omit this because their visual and grounded collider differ. */
-  fitToObject?: boolean;
-  offsetX?: number;
-  offsetY?: number;
-  /** Integer display scale. Pixel-city assets use 1 at the 48 px source size. */
-  scale?: number;
-  /** Duplicate pixels above this world-space offset into the foreground pass
-   * so a bot moving behind a tall fixture is correctly occluded. */
-  occlusionY?: number;
-  /** Extra clipped sprite copies used to make translucent glass opaque enough
-   * to hide a DotBot that is physically behind the fixture. */
-  occlusionCopies?: number;
-};
-
-export type MapArtPlacement = {
-  id: string;
-  assetKey: string;
-  x: number;
-  y: number;
-  /** Omitted dimensions use the source frame size. Both are required for a
-   * tiled region. */
-  w?: number;
-  h?: number;
-  tiled?: boolean;
-  layer: "ground" | "outdoorDetail" | "outdoorObjects" | "roof" | "floor";
-  buildingId?: string;
-  floorId?: string;
-  zIndex?: number;
-};
-
 /** Map objects are drawn from the same authored rectangle used by physics. */
 export type MapObject = {
   id: string;
@@ -344,11 +306,6 @@ export type MapObject = {
   scannable?: boolean;
   /** Persistent base placement slot that materialized this object. */
   slotId?: string;
-  /** Optional code-drawn visual language for a domain-specific fixture kit. */
-  visualStyle?: "retail";
-  /** Optional production raster visual. Physics always uses this object's
-   * rectangle/collisionParts, never opaque pixels from the sprite. */
-  art?: SpriteVisual;
 };
 
 export type StairLink = {
@@ -367,9 +324,6 @@ export type StairLink = {
    * Omit when surrounding authored walls and doors already control access.
    */
   access?: "openEnd";
-  /** Optional production sprite for perspective-aware stair art. The same
-   * rect remains authoritative for traversal, guards, and navigation. */
-  art?: SpriteVisual;
 };
 
 export type DotSpawn = {
@@ -523,17 +477,19 @@ export type MapDocument = {
   extractionPoints: ExtractionPoint[];
   insertionPoints: InsertionPoint[];
   botSpawns: BotSpawn[];
-  /** Plan is the existing code-drawn regression language. Pixel city opts in
-   * to the licensed atlas renderer without changing simulation semantics. */
   /**
-   * `plan` is the pen-plotter line drawing. `pixel-city` is the purchased 3/4
-   * sprite theme. `lit-model` is the monochrome lit-model language: interiors
-   * only so far, so it is not yet a default for any shipped map.
+   * The drawing language.
+   *
+   * `lit-model` is the target and the only one every shipped map uses: a
+   * monochrome physical model, one light from the north-west, silhouette equal to
+   * collider. `plan` is the pen-plotter line drawing it replaced, kept solely
+   * because the player base still has object kinds with no lit-model glyph yet.
+   * It goes when those are ported; nothing new should adopt it.
+   *
+   * Required rather than optional so a map states its language instead of
+   * inheriting one by falling through a renderer branch.
    */
-  visualTheme?: "plan" | "pixel-city" | "lit-model";
-  /** Authored environmental raster layers. Interactive/solid fixtures remain
-   * MapObjects so their visible placement and collision cannot drift apart. */
-  artPlacements?: MapArtPlacement[];
+  visualTheme: "plan" | "lit-model";
   /** Present only on maps that support slot-based furniture placement. */
   placementSlots?: PlacementSlot[];
   /** Non-lootable, floor-aware interaction affordances derived from map data. */

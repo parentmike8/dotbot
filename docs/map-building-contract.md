@@ -16,11 +16,24 @@ If these disagree, do not silently choose. Preserve the higher-authority directi
 ## 2. Production medium
 
 - Author playable spaces in map data and reusable code-drawn renderer primitives.
-- The `pixel-city` visual theme may use the curated LimeZu production atlas documented in `docs/third-party-game-assets.md`. Licensed source packs stay ignored; only selected runtime atlas frames ship. This is a production sprite pipeline, not permission to use room-sized mockups.
+- **Everything is drawn in code. No raster assets ship.** The purchased-sprite pipeline was removed: it carried a second source of truth for every object's shape, and the sprite and the collider drifted apart every time. A drawing function reads the same rectangle physics does, so they cannot disagree.
 - Do not use a concept image as a room, fixture, or roof texture.
 - Do not generate visual assets for ongoing world implementation unless Mike explicitly asks for image exploration.
 - Concepts can inform art direction; they do not prove production capability.
-- Preserve Downtown as the regression and systems map while the new city is developed separately.
+- Downtown is the game and the regression map both. There is one map and one drawing language.
+
+### 2.0 The drawing language
+
+`lit-model` is the language: a monochrome physical model, one light from the
+north-west, achromatic, silhouette equal to collider, nothing in motion drawn
+statically. It is implemented in `apps/client/src/game/renderer/model/`, with
+`model/tone.ts` as its single source of value and light.
+
+One retired language remains in the tree. `plan` — the pen-plotter line drawing —
+still renders the player base, because fourteen base object kinds have no
+lit-model glyph yet. It is reduced to what the base needs: a single building on a
+bare sheet. Nothing new may adopt it, and it is deleted along with
+`renderer/glyphs.ts` when that kit is finished.
 
 ### 2.1 Map source: the authoring format
 
@@ -44,20 +57,16 @@ All four Downtown buildings are authored this way: `content/mercyClinic.ts`, `co
 
 - Use a strict top-down plan view. Draw fixture tops, never projected front faces.
 - Buildings are not boxes. A world of pure rectangles reads as a diagram; give a building the plan its function implies — an L around a yard, a chamfer at a turning circle, a curved frontage, a round tank. The constraint was in the old data format and is gone; the audit, collision, navigation and visibility all take arbitrary geometry.
-- **Pixel City exception:** the purchased environment uses a consistent shallow 3/4 projection. Within that theme, use only assets that share that projection and scale. Colliders remain authored at the visible ground contact/base, tall pixels may occlude a bot in the foreground pass, and no object may mix a front-facing elevation with an overhead footprint.
-- Pixel City DotBots use the first-party directional sprite atlas. Their three shield plates are sprite frames synchronized to direction and movement, with distinct intact, damaged, and broken art. Do not wrap the pixel character in runtime vector shield circles.
-- Pixel City Dots and ground effects use the same foreshortened ground-plane ellipse as the environment. Do not draw circular top-down markers or noise waves into the shallow 3/4 scene.
-- Pixel City collectible Dots use first-party pixel sprite frames with the item mark, shell, highlight, rim, and shadow authored into one image. Do not layer runtime vector symbols over a generic orb.
+- Nothing is drawn in perspective. There is no projected front face anywhere, so no object needs a separate visual footprint, occlusion split, or walk-behind pass. The silhouette *is* the footprint.
 - Dark, closed outlines mean solid and impassable.
 - Light grey floor marks, mats, tracks, thresholds, and annotations mean passable.
 - A visible footprint and its collision footprint must agree. Compound shapes must draw and collide from the same local pieces.
-- In Pixel City, use Map Studio's cyan visual footprint, red collision footprint, and purple occlusion split together. Purchased sprites receive alpha-derived defaults, but the author must correct them for the actual ground contact and overlap behavior before save approval. Use clipped sprite copies when translucent glass would otherwise reveal a DotBot that is physically behind an object; never add a visible backing rectangle.
 - Product marks, controls, handles, bots, and Dots use fixed world-unit scales across rooms.
-- Exterior entrances default to open wall gaps. Pixel City may instead use a matching purchased door animation when the doorway declares an authoritative mechanism; its animation frame, collision, sound, AI visibility, client prediction, and replicated state must all derive from the same live door entity.
+- Exterior entrances are open wall gaps. When a doorway declares an authoritative mechanism, its drawn state, collision, sound, AI visibility, client prediction, and replicated state must all derive from the same live door entity.
 - Interior doors are sliding doors. Do not draw a closed door until timed interaction, noise, collision, and replication are authoritative. Public automatic doors may open on proximity; secured doors still use a grey Interaction Dot and an authored delay.
 - Roofs must derive from the building below. Every roof element belongs to a named system such as access, cooling, exhaust, daylight, drainage, or utilities. Never scatter marks to balance a composition.
 - Use ordinary visible names such as `Parts`, `Shop`, `Rack`, `Core`, `Plate`, `Door`, and `Dock`.
-- Line of sight must be visually explicit indoors and outdoors. Areas outside the visibility polygon receive a dark overlay strong enough to read immediately; hiding enemies alone is insufficient. Pixel City uses the same darkness on the street and inside buildings so visibility never changes visual language at an entrance. A building still blocks sight behind its footprint, but any exterior face directly in the player's line of sight remains fully lit. Foreground copies and base pixels of a tree, bench, car, stair, or other layered sprite receive the same fog geometry so one object never splits into unrelated bright and dark pieces.
+- Line of sight must be visually explicit. Space outside the visibility polygon takes a wash, weighted by where the player is standing: indoors an unseen room has to read as genuinely unknown, so it takes a real veil; outdoors the camera already shows most of the street, and a heavy wash there reads as weather rather than ignorance, so it stays a hint. Same ink either way — only the weight carries the meaning (`renderer/visibilityStyle.ts`). Hiding enemies alone is insufficient. A building still blocks sight behind its footprint.
 
 ## 3.1 The city between the buildings
 

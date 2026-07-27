@@ -170,6 +170,7 @@ describe("LitePredictor", () => {
     const parityMap: MapDocument = {
       id: "prediction-parity",
       name: "Prediction parity",
+      visualTheme: "lit-model",
       width: 600,
       height: 400,
       outdoor: { roads: [], parks: [], walls: [], objects: [], dotSpawns: [] },

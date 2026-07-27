@@ -9,10 +9,10 @@ Before changing the city, a building, a room, map art, collision, doors, stairs,
 
 The short version:
 
-- Build the playable world in production map data and code-drawn renderer primitives. Do not use generated room, fixture, or roof images unless Mike explicitly asks for an image exploration.
-- Preserve Downtown as the regression and systems map. New flagship-city work must not quietly replace it.
+- Build the playable world in production map data and code-drawn renderer primitives. **No raster assets ship** — a sprite is a second source of truth for an object's shape, and it always drifts from the collider. Do not use generated room, fixture, or roof images unless Mike explicitly asks for an image exploration.
+- Downtown is the game and the regression map both. There is one map and one drawing language (`lit-model`).
 - Treat visual shape, collision, navigation clearance, and gameplay meaning as one authored system.
-- Use Map Studio for Pixel City production edits and save directly to the authored map. Keep asset collision and occlusion guides correct; do not bypass them by dropping an untracked image into the renderer.
+- Author the world in map source (`packages/game/src/content/*.ts`). Map Studio is a tweak tool over that source, not an editor — reach for it to nudge a bench, not to build a floor.
 - Plan each floor in plain language before choosing coordinates: purpose, operational zones, adjacency logic, player route, and intended empty space. Use your own spatial judgment; do not generate a layout by filling a grid or merely satisfying validators.
 - Review the rendered floor once with overlays off and explain whether its object relationships look believable before checking collision overlays. Run `auditBuildingFloorQuality` afterward as a backstop, never as a substitute for design reasoning.
 - Reuse the existing mid-stride stair transition. Do not add a teleport, fade, modal, or special stair control.

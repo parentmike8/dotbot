@@ -1,13 +1,11 @@
-import { Container, Graphics, Sprite, Text } from "pixi.js";
-import { doorRuntimeId, isGroundFloor, stairGuardRects, stairHalves } from "@dotbot/game/mapModel";
+import { Container, Graphics, Text } from "pixi.js";
+import { isGroundFloor, stairGuardRects, stairHalves } from "@dotbot/game/mapModel";
 import type {
   Building,
   Doorway,
   FloorPlan,
   InteractionDot,
   MapDocument,
-  MapArtPlacement,
-  MapObject,
   Rect,
   PlacementSlot,
   StairLink,
@@ -21,9 +19,8 @@ import { buildOutdoorModel } from "./model/modelOutdoor";
 import { buildRoofModel } from "./model/modelRoof";
 import { SHADOW_ALPHA, type ShadowPad } from "./model/tone";
 import { drawDotDisc } from "./dotArt";
-import { doorwayStyle, perimeterDoorThresholdRect, type DoorwayStyle } from "./doorwayStyle";
+import { doorwayStyle, type DoorwayStyle } from "./doorwayStyle";
 import { DOT_COLOR, INK, PAPER, strokes, WEIGHT } from "./style";
-import { cityFrame, cityTexture } from "./pixelAssets";
 
 /**
  * Static map drawing, shared verbatim between the live game and Map Studio.
@@ -31,6 +28,13 @@ import { cityFrame, cityTexture } from "./pixelAssets";
  * Everything here derives from MapDocument data and the style.ts hierarchy.
  * No gameplay state, no procedural clutter: if a mark isn't explained by the
  * data or by plan-drawing convention, it doesn't belong in this file.
+ *
+ * Two languages live here for now. `lit-model` draws the game; `plan` is the
+ * pen-plotter drawing it replaced, still used by the player base until the
+ * remaining base glyphs are ported. The plan path is deliberately reduced to
+ * what the base actually needs — a single building on a bare sheet — so the
+ * city-scale drafting apparatus (roads, kerbs, crossings, street names) is gone
+ * rather than sitting unreachable.
  */
 
 export type FloorArt = {
@@ -45,7 +49,10 @@ export type FloorArt = {
   architecture: Container;
   /** All furniture and fixtures. */
   furniture: Container;
-  /** Tall sprite pixels that render after bots for correct walk-behind depth. */
+  /**
+   * Marks that render after bots. Empty in both current languages — nothing is
+   * drawn in perspective — but it is the fog mask's target, so it always exists.
+   */
   foreground: Container;
   /** Individually addressable so fabrication can temporarily replace one glyph. */
   objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
@@ -62,7 +69,6 @@ export type BuildingArt = {
   roof: Container;
   /** Street-view entrance marks; visible only when viewed from outside. */
   entranceMarks: Container;
-  doorSprites: Map<string, Sprite>;
   floors: FloorArt[];
   label: Text;
 };
@@ -74,19 +80,13 @@ export type MapArt = {
   outdoorDetail: Container;
   /** Solid outdoor objects. */
   outdoorObjects: Container;
-  /** Perspective pixels that must cover a bot moving behind a tall prop. */
+  /** Marks that must cover a bot passing behind them, and the fog mask's target. */
   foreground: Container;
   outdoorForeground: Container;
   buildingsLayer: Container;
   buildings: BuildingArt[];
   labels: Container;
-  /** Street-view door art keyed by authoritative runtime id. */
-  doorViews: Map<string, Sprite[]>;
 };
-
-const SIDEWALK = 20;
-/** Roads narrower than this are service lanes: no center dash, no sidewalks. */
-const LANE_MAX = 90;
 
 const LABEL_FONT = "system-ui, -apple-system, Segoe UI, sans-serif";
 
@@ -117,95 +117,30 @@ export function buildMapArt(map: MapDocument): MapArt {
     ground.addChild(outdoors.ground);
     outdoorDetail.addChild(outdoors.detail);
     outdoorObjects.addChild(outdoors.objects);
-
-    const buildings = map.buildings.map((building) => buildBuildingArt(
-      building, buildingsLayer, labels, map.placementSlots, map.interactionDots, map, foreground,
-    ));
-    drawExtractionLabels(labels, map);
-    root.addChild(ground, outdoorDetail, outdoorObjects, buildingsLayer, labels);
-    return {
-      root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground,
-      buildingsLayer, buildings, labels, doorViews: new Map(),
-    };
+  } else {
+    drawGround(groundGfx, map);
+    drawOutdoorObjects(outdoorDetailGfx, outdoorObjectsGfx, map);
   }
-
-  drawGround(groundGfx, map);
-  addPlacements(ground, map, "ground");
-  if (map.visualTheme === "pixel-city") {
-    const roadMarks = new Graphics();
-    drawPixelRoads(roadMarks, map);
-    ground.addChild(roadMarks);
-  }
-  addPlacements(outdoorDetail, map, "outdoorDetail");
-  addPlacements(outdoorObjects, map, "outdoorObjects");
-  drawOutdoorObjects(outdoorDetailGfx, outdoorObjectsGfx, outdoorDetail, outdoorObjects, outdoorForeground, map);
 
   const buildings = map.buildings.map((building) => buildBuildingArt(
-    building,
-    buildingsLayer,
-    labels,
-    map.placementSlots,
-    map.interactionDots,
-    map,
-    foreground,
+    building, buildingsLayer, labels, map.placementSlots, map.interactionDots, map, foreground,
   ));
-
-  if (map.visualTheme !== "pixel-city") drawStreetNames(labels, map);
   drawExtractionLabels(labels, map);
-
   root.addChild(ground, outdoorDetail, outdoorObjects, buildingsLayer, labels);
 
-  const doorViews = new Map<string, Sprite[]>();
-  for (const building of buildings) {
-    const collect = (id: string, sprite: Sprite) => doorViews.set(id, [...(doorViews.get(id) ?? []), sprite]);
-    for (const [id, sprite] of building.doorSprites) collect(id, sprite);
-  }
-
-  return { root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground, buildingsLayer, buildings, labels, doorViews };
-}
-
-function drawPixelRoads(g: Graphics, map: MapDocument): void {
-  const lineColor = 0xd9c86c;
-  const curbColor = 0x252638;
-  for (const road of map.outdoor.roads) {
-    const horizontal = road.w >= road.h;
-    if (horizontal) {
-      g.rect(road.x, road.y, road.w, 4).fill({ color: curbColor });
-      g.rect(road.x, road.y + road.h - 4, road.w, 4).fill({ color: curbColor });
-      for (let x = road.x + 20; x < road.x + road.w - 20; x += 84) {
-        g.rect(x, road.y + road.h / 2 - 3, 48, 6).fill({ color: lineColor, alpha: 0.9 });
-      }
-    } else {
-      g.rect(road.x, road.y, 4, road.h).fill({ color: curbColor });
-      g.rect(road.x + road.w - 4, road.y, 4, road.h).fill({ color: curbColor });
-      for (let y = road.y + 20; y < road.y + road.h - 20; y += 84) {
-        g.rect(road.x + road.w / 2 - 3, y, 6, 48).fill({ color: lineColor, alpha: 0.9 });
-      }
-    }
-  }
-
-  for (const intersection of roadIntersections(map)) {
-    const stripe = 10;
-    for (let index = 0; index < 5; index += 1) {
-      g.rect(intersection.x + 18 + index * 28, intersection.y + 12, stripe, 64).fill({ color: 0xe4e6ef, alpha: 0.85 });
-      g.rect(intersection.x + 12, intersection.y + 18 + index * 28, 64, stripe).fill({ color: 0xe4e6ef, alpha: 0.85 });
-    }
-  }
+  return {
+    root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground,
+    buildingsLayer, buildings, labels,
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Ground plane: white paper, linework-only streets
+// Ground plane (plan language): a bare drawing sheet
 // ---------------------------------------------------------------------------
 
 function drawGround(g: Graphics, map: MapDocument): void {
-  g.rect(0, 0, map.width, map.height).fill({ color: map.visualTheme === "pixel-city" ? 0x31313c : PAPER });
-
-  if (map.visualTheme === "pixel-city") return;
-
+  g.rect(0, 0, map.width, map.height).fill({ color: PAPER });
   drawSheetBorder(g, map);
-  drawSidewalks(g, map);
-  drawParks(g, map);
-  drawRoads(g, map);
   drawExtractionPads(g, map);
   drawEntranceWalkways(g, map);
 }
@@ -224,176 +159,6 @@ function drawSheetBorder(g: Graphics, map: MapDocument): void {
   const inset = Math.min(...map.outdoor.walls.filter((w) => w.x <= 0).map((w) => w.w), 26);
   g.rect(inset, inset, map.width - inset * 2, map.height - inset * 2).stroke({ color: INK.structure, width: 2 });
   g.rect(inset - 6, inset - 6, map.width - (inset - 6) * 2, map.height - (inset - 6) * 2).stroke(strokes.hairline);
-}
-
-function drawSidewalks(g: Graphics, map: MapDocument): void {
-  for (const road of map.outdoor.roads) {
-    const horizontal = road.w >= road.h;
-
-    if (Math.min(road.w, road.h) < LANE_MAX) {
-      continue;
-    }
-
-    if (horizontal) {
-      // Outer sidewalk edges.
-      line(g, road.x, road.y - SIDEWALK, road.x + road.w, road.y - SIDEWALK, strokes.hairline);
-      line(g, road.x, road.y + road.h + SIDEWALK, road.x + road.w, road.y + road.h + SIDEWALK, strokes.hairline);
-      // Expansion joints.
-      for (let x = road.x + 48; x < road.x + road.w; x += 72) {
-        line(g, x, road.y - SIDEWALK, x, road.y, strokes.hairline);
-        line(g, x, road.y + road.h, x, road.y + road.h + SIDEWALK, strokes.hairline);
-      }
-    } else {
-      line(g, road.x - SIDEWALK, road.y, road.x - SIDEWALK, road.y + road.h, strokes.hairline);
-      line(g, road.x + road.w + SIDEWALK, road.y, road.x + road.w + SIDEWALK, road.y + road.h, strokes.hairline);
-      for (let y = road.y + 48; y < road.y + road.h; y += 72) {
-        line(g, road.x - SIDEWALK, y, road.x, y, strokes.hairline);
-        line(g, road.x + road.w, y, road.x + road.w + SIDEWALK, y, strokes.hairline);
-      }
-    }
-  }
-}
-
-function drawParks(g: Graphics, map: MapDocument): void {
-  for (const park of map.outdoor.parks) {
-    g.roundRect(park.x, park.y, park.w, park.h, 10).stroke(strokes.fixture);
-    g.roundRect(park.x + 5, park.y + 5, park.w - 10, park.h - 10, 8).stroke(strokes.hairline);
-  }
-}
-
-function roadIntersections(map: MapDocument): Rect[] {
-  const horizontal = map.outdoor.roads.filter((road) => road.w >= road.h);
-  const vertical = map.outdoor.roads.filter((road) => road.h > road.w);
-  const intersections: Rect[] = [];
-
-  for (const h of horizontal) {
-    for (const v of vertical) {
-      const x = Math.max(h.x, v.x);
-      const y = Math.max(h.y, v.y);
-      const right = Math.min(h.x + h.w, v.x + v.w);
-      const bottom = Math.min(h.y + h.h, v.y + v.h);
-
-      if (right > x && bottom > y) {
-        intersections.push({ x, y, w: right - x, h: bottom - y });
-      }
-    }
-  }
-
-  return intersections;
-}
-
-function drawRoads(g: Graphics, map: MapDocument): void {
-  const intersections = roadIntersections(map);
-
-  for (const road of map.outdoor.roads) {
-    const horizontal = road.w >= road.h;
-    const lane = Math.min(road.w, road.h) < LANE_MAX;
-    const curb = lane ? { color: INK.hairline, width: 1.2 } : { color: INK.fixture, width: 1.4 };
-    const gaps = intersections.map((inter) =>
-      horizontal ? { start: inter.x, end: inter.x + inter.w } : { start: inter.y, end: inter.y + inter.h },
-    );
-
-    // Curb lines: the strongest site mark, still well below wall weight.
-    if (horizontal) {
-      for (const [start, end] of spans(road.x, road.x + road.w, gaps)) {
-        line(g, start, road.y, end, road.y, curb);
-        line(g, start, road.y + road.h, end, road.y + road.h, curb);
-      }
-      if (!lane) {
-        dashLine(g, road.x + 16, road.x + road.w - 16, road.y + road.h / 2, gaps, true);
-      }
-    } else {
-      for (const [start, end] of spans(road.y, road.y + road.h, gaps)) {
-        line(g, road.x, start, road.x, end, curb);
-        line(g, road.x + road.w, start, road.x + road.w, end, curb);
-      }
-      if (!lane) {
-        dashLine(g, road.y + 16, road.y + road.h - 16, road.x + road.w / 2, gaps, false);
-      }
-    }
-  }
-
-  for (const inter of intersections) {
-    // Full crossings only; a service lane meeting an avenue gets no stripes.
-    if (Math.min(inter.w, inter.h) >= LANE_MAX) {
-      drawCrosswalks(g, inter);
-    }
-  }
-}
-
-function spans(start: number, end: number, gaps: Array<{ start: number; end: number }>): Array<[number, number]> {
-  const sorted = gaps
-    .map((gap) => ({ start: Math.max(start, gap.start), end: Math.min(end, gap.end) }))
-    .filter((gap) => gap.end > gap.start)
-    .sort((a, b) => a.start - b.start);
-  const result: Array<[number, number]> = [];
-  let cursor = start;
-
-  for (const gap of sorted) {
-    if (gap.start > cursor) {
-      result.push([cursor, gap.start]);
-    }
-    cursor = Math.max(cursor, gap.end);
-  }
-
-  if (cursor < end) {
-    result.push([cursor, end]);
-  }
-
-  return result;
-}
-
-function dashLine(
-  g: Graphics,
-  start: number,
-  end: number,
-  cross: number,
-  gaps: Array<{ start: number; end: number }>,
-  horizontal: boolean,
-): void {
-  const dash = 24;
-  const gapLen = 20;
-
-  for (let pos = start; pos < end; pos += dash + gapLen) {
-    const segEnd = Math.min(pos + dash, end);
-
-    if (gaps.some((gap) => segEnd > gap.start - 30 && pos < gap.end + 30)) {
-      continue;
-    }
-
-    if (horizontal) {
-      line(g, pos, cross, segEnd, cross, { color: INK.hairline, width: 2 });
-    } else {
-      line(g, cross, pos, cross, segEnd, { color: INK.hairline, width: 2 });
-    }
-  }
-}
-
-function drawCrosswalks(g: Graphics, inter: Rect): void {
-  const stripe = 6;
-  const gap = 9;
-  const depth = 24;
-
-  for (const edgeX of [inter.x - depth, inter.x + inter.w + depth - stripe]) {
-    for (let i = 0; i < 3; i += 1) {
-      const sx = edgeX + (edgeX < inter.x ? i : -i) * (stripe + gap);
-      g.rect(sx, inter.y + 6, stripe, inter.h - 12).fill({ color: INK.hairline });
-    }
-  }
-
-  for (const edgeY of [inter.y - depth, inter.y + inter.h + depth - stripe]) {
-    for (let i = 0; i < 3; i += 1) {
-      const sy = edgeY + (edgeY < inter.y ? i : -i) * (stripe + gap);
-      g.rect(inter.x + 6, sy, inter.w - 12, stripe).fill({ color: INK.hairline });
-    }
-  }
-
-  // Stop lines just outside the crosswalks.
-  const stop = { color: INK.fixture, width: 3 };
-  line(g, inter.x - depth - 12, inter.y + inter.h / 2, inter.x - depth - 12, inter.y + inter.h - 6, stop);
-  line(g, inter.x + inter.w + depth + 12, inter.y + 6, inter.x + inter.w + depth + 12, inter.y + inter.h / 2, stop);
-  line(g, inter.x + 6, inter.y - depth - 12, inter.x + inter.w / 2, inter.y - depth - 12, stop);
-  line(g, inter.x + inter.w / 2, inter.y + inter.h + depth + 12, inter.x + inter.w - 6, inter.y + inter.h + depth + 12, stop);
 }
 
 function drawExtractionPads(g: Graphics, map: MapDocument): void {
@@ -438,9 +203,6 @@ function drawExtractionPads(g: Graphics, map: MapDocument): void {
 function drawOutdoorObjects(
   detailG: Graphics,
   objectsG: Graphics,
-  detailLayer: Container,
-  objectsLayer: Container,
-  foreground: Container,
   map: MapDocument,
 ): void {
   // Ground markings (parking stalls) first, trees last so canopies overlap.
@@ -449,116 +211,8 @@ function drawOutdoorObjects(
 
   for (const object of sorted) {
     const isDetail = object.solid === false && object.kind !== "car";
-    if (object.art) {
-      addObjectSprite(isDetail ? detailLayer : objectsLayer, foreground, object);
-    } else {
-      drawObject(isDetail ? detailG : objectsG, object);
-    }
+    drawObject(isDetail ? detailG : objectsG, object);
   }
-}
-
-function placementMatches(
-  placement: MapArtPlacement,
-  layer: MapArtPlacement["layer"],
-  buildingId?: string,
-  floorId?: string,
-): boolean {
-  return placement.layer === layer && placement.buildingId === buildingId && placement.floorId === floorId;
-}
-
-function addPlacements(
-  container: Container,
-  map: MapDocument,
-  layer: MapArtPlacement["layer"],
-  buildingId?: string,
-  floorId?: string,
-): void {
-  for (const placement of map.artPlacements ?? []) {
-    if (!placementMatches(placement, layer, buildingId, floorId)) continue;
-    if (placement.tiled) {
-      const frame = cityFrame(placement.assetKey);
-      const width = placement.w ?? frame.w;
-      const height = placement.h ?? frame.h;
-      for (let y = 0; y < height; y += frame.h) {
-        for (let x = 0; x < width; x += frame.w) {
-          const tile = new Sprite(cityTexture(placement.assetKey));
-          tile.position.set(placement.x + x, placement.y + y);
-          tile.roundPixels = true;
-          tile.zIndex = placement.zIndex ?? placement.y;
-          container.addChild(tile);
-        }
-      }
-      continue;
-    }
-    const display = new Sprite(cityTexture(placement.assetKey));
-    display.position.set(placement.x, placement.y);
-    if (placement.w !== undefined) display.width = placement.w;
-    if (placement.h !== undefined) display.height = placement.h;
-    display.zIndex = placement.zIndex ?? placement.y + (placement.h ?? cityFrame(placement.assetKey).h);
-    container.addChild(display);
-  }
-}
-
-function makeObjectSprite(object: MapObject): Sprite {
-  const art = object.art!;
-  const sprite = new Sprite(cityTexture(art.assetKey));
-  if (art.fitToObject) {
-    sprite.width = object.w;
-    sprite.height = object.h;
-  } else {
-    const scale = art.scale ?? 1;
-    sprite.scale.set(scale);
-  }
-  sprite.position.set(object.x + (art.offsetX ?? 0), object.y + (art.offsetY ?? 0));
-  sprite.roundPixels = true;
-  sprite.zIndex = object.y + object.h;
-  return sprite;
-}
-
-function addObjectSprite(container: Container, foreground: Container, object: MapObject): void {
-  const sprite = makeObjectSprite(object);
-  container.addChild(sprite);
-  if (object.art?.occlusionY === undefined) return;
-
-  const copies = Math.max(1, Math.min(4, object.art.occlusionCopies ?? 1));
-  const sample = makeObjectSprite(object);
-  const top = sample.y;
-  const cut = object.y + object.art.occlusionY;
-  sample.destroy();
-  for (let index = 0; index < copies; index += 1) {
-    const overlay = makeObjectSprite(object);
-    const mask = new Graphics();
-    mask.rect(overlay.x, top, overlay.width, Math.max(0, cut - top)).fill({ color: 0xffffff });
-    overlay.mask = mask;
-    foreground.addChild(overlay, mask);
-  }
-}
-
-function makeStairSprite(stair: StairLink): Sprite {
-  const art = stair.art!;
-  const sprite = new Sprite(cityTexture(art.assetKey));
-  if (art.fitToObject) {
-    sprite.width = stair.rect.w;
-    sprite.height = stair.rect.h;
-  } else {
-    sprite.scale.set(art.scale ?? 1);
-  }
-  sprite.position.set(stair.rect.x + (art.offsetX ?? 0), stair.rect.y + (art.offsetY ?? 0));
-  sprite.roundPixels = true;
-  sprite.zIndex = stair.rect.y + stair.rect.h;
-  return sprite;
-}
-
-/** Render licensed stair art below bots and repeat its non-enterable half in
- * the foreground so the mid-stride floor change reads as moving through it. */
-function addStairSprite(container: Container, foreground: Container, stair: StairLink): void {
-  container.addChild(makeStairSprite(stair));
-  const overlay = makeStairSprite(stair);
-  const { exit } = stairHalves(stair);
-  const mask = new Graphics();
-  mask.rect(exit.x, exit.y, exit.w, exit.h).fill({ color: 0xffffff });
-  overlay.mask = mask;
-  foreground.addChild(overlay, mask);
 }
 
 // ---------------------------------------------------------------------------
@@ -737,36 +391,6 @@ function makeLabel(text: string, size: number, letterSpacing: number, color: num
   return label;
 }
 
-function drawStreetNames(layer: Container, map: MapDocument): void {
-  for (const road of map.outdoor.roads) {
-    const horizontal = road.w >= road.h;
-
-    if (Math.min(road.w, road.h) < LANE_MAX) {
-      continue;
-    }
-    const name = road.id.replace(/-/g, " ").toUpperCase();
-    const positions = horizontal
-      ? [
-          { x: road.x + road.w * 0.18, y: road.y + road.h / 2 },
-          { x: road.x + road.w * 0.8, y: road.y + road.h / 2 },
-        ]
-      : [
-          { x: road.x + road.w / 2, y: road.y + road.h * 0.22 },
-          { x: road.x + road.w / 2, y: road.y + road.h * 0.82 },
-        ];
-
-    for (const pos of positions) {
-      const label = makeLabel(name, 17, 7, INK.hairline);
-      label.anchor.set(0.5);
-      label.position.set(pos.x, pos.y);
-      if (!horizontal) {
-        label.rotation = -Math.PI / 2;
-      }
-      layer.addChild(label);
-    }
-  }
-}
-
 function drawExtractionLabels(layer: Container, map: MapDocument): void {
   for (const point of map.extractionPoints) {
     // Home Base has a dedicated interaction-dot marker and contextual DEPLOY
@@ -813,27 +437,16 @@ function buildBuildingArt(
   const roof = new Container();
   const roofG = new Graphics();
   if (map?.visualTheme === "lit-model") roof.addChild(buildRoofModel(building).view);
-  else if (map?.visualTheme !== "pixel-city") drawGenericRoof(roofG, building);
+  else drawGenericRoof(roofG, building);
   roof.addChild(roofG);
-  if (map) addPlacements(roof, map, "roof", building.id);
   buildingsLayer.addChild(roof);
 
   // Entrance marks sit above the roof and only make sense from the street;
   // callers hide them while an interior floor of this building is active.
   const entranceMarks = new Container();
   const entranceGfx = new Graphics();
-  const doorSprites = new Map<string, Sprite>();
   entranceMarks.addChild(entranceGfx);
-  if (map?.visualTheme === "pixel-city") {
-    drawPixelEntrances(entranceGfx, building);
-    const ground = building.floors.find(isGroundFloor);
-    for (const doorway of ground?.doorways ?? []) {
-      const sprite = makePixelDoorSprite(doorway, building.footprint);
-      if (!sprite || !ground) continue;
-      doorSprites.set(doorRuntimeId(ground.id, doorway.id), sprite);
-      entranceMarks.addChild(sprite);
-    }
-  } else if (map?.visualTheme !== "lit-model") {
+  if (map?.visualTheme !== "lit-model") {
     // Drafting notation: a paper-white notch, ink jambs and a dashed canopy. The
     // lit model already builds the opening as geometry — curtain, rails, reveal —
     // so leaving this on paints a flat white bar across a shaded wall.
@@ -844,64 +457,12 @@ function buildBuildingArt(
   const label = makeLabel(building.name, 16, 3.5, INK.fixture, "800");
   label.anchor.set(0.5, 0.5);
   label.position.set(
-    building.footprint.x + building.footprint.w * (building.kind === "retail" ? 0.29 : 0.5),
-    building.footprint.y + building.footprint.h * (building.kind === "retail" ? 0.64 : 0.5),
+    building.footprint.x + building.footprint.w / 2,
+    building.footprint.y + building.footprint.h / 2,
   );
   labels.addChild(label);
-  if (map?.visualTheme === "pixel-city") label.visible = false;
 
-  return { building, roof, entranceMarks, doorSprites, floors, label };
-}
-
-function makePixelDoorSprite(doorway: Doorway, footprint: Rect): Sprite | null {
-  if (!doorway.assetKey || doorway.dir !== "h") return null;
-  if (Math.abs(doorway.y - (footprint.y + footprint.h)) > 10) return null;
-  const sprite = new Sprite(cityTexture(`${doorway.assetKey}-0`));
-  sprite.label = doorway.assetKey;
-  sprite.anchor.set(0.5, 1);
-  sprite.position.set(doorway.x, footprint.y + footprint.h);
-  sprite.roundPixels = false;
-  sprite.zIndex = doorway.y;
-  return sprite;
-}
-
-/** Pixel façades are opaque images, so an authored open exterior doorway must
- * cut an equally obvious dark opening through the matching facade pixels. */
-function drawPixelEntrances(g: Graphics, building: Building): void {
-  const ground = building.floors.find(isGroundFloor);
-  for (const entrance of buildingEntrances(building)) {
-    if (!entrance.open) continue;
-    const hasAnimatedDoor = ground?.doorways.some(
-      (doorway) =>
-        doorway.assetKey !== undefined &&
-        Math.abs(doorway.x - entrance.cx) <= 1 &&
-        Math.abs(doorway.y - entrance.cy) <= 10,
-    );
-    // The licensed animation includes its own frame, opening, and threshold.
-    // Adding the generic entrance cutout here narrows the visible passage and
-    // leaves a black rectangle protruding below the facade.
-    if (hasAnimatedDoor) continue;
-    const depth = 76;
-    if (entrance.side === "S") {
-      g.rect(entrance.cx - entrance.width / 2, entrance.cy - depth, entrance.width, depth)
-        .fill({ color: 0x12131b })
-        .stroke({ color: 0x25283a, width: 3 });
-      g.rect(entrance.cx - entrance.width / 2 + 6, entrance.cy - 5, entrance.width - 12, 5).fill({ color: 0x6c7890 });
-    } else if (entrance.side === "N") {
-      // The exterior art is a south-facing facade. A north service exit is
-      // visible only after the roof hides; cutting the roof here creates a
-      // misleading skylight-like black box.
-      continue;
-    } else if (entrance.side === "E") {
-      g.rect(entrance.cx - depth, entrance.cy - entrance.width / 2, depth, entrance.width)
-        .fill({ color: 0x12131b })
-        .stroke({ color: 0x25283a, width: 3 });
-    } else {
-      g.rect(entrance.cx, entrance.cy - entrance.width / 2, depth, entrance.width)
-        .fill({ color: 0x12131b })
-        .stroke({ color: 0x25283a, width: 3 });
-    }
-  }
+  return { building, roof, entranceMarks, floors, label };
 }
 
 /**
@@ -933,11 +494,6 @@ function drawGenericRoof(g: Graphics, building: Building): void {
     return;
   }
 
-  if (building.kind === "retail") {
-    drawRetailRoof(g, building);
-    return;
-  }
-
   if (building.kind === "warehouse") {
     // Ridge skylight strips over the storage bays, exhaust plant one corner.
     for (const fx of [0.28, 0.46, 0.64]) {
@@ -952,106 +508,6 @@ function drawGenericRoof(g: Graphics, building: Building): void {
   // Default: one air handler and a vent, off-center.
   drawObject(g, { id: `${building.id}-roof-hvac`, kind: "hvac", ...at(0.6, 0.3), w: 72, h: 48 });
   drawObject(g, { id: `${building.id}-roof-vent`, kind: "vent", ...at(0.25, 0.65), w: 22, h: 22 });
-}
-
-/** Compact commercial roof kit derived from the building below: one rear
- * service spine over the stock/utility edge and one skylight bank over the
- * open sales floor. Every item belongs to one of those two systems. */
-function drawRetailRoof(g: Graphics, building: Building): void {
-  const fp = building.footprint;
-  const seam = { color: INK.hairline, width: WEIGHT.hairline, alpha: 0.38 };
-
-  // A regular membrane grid belongs to the roof as a whole. It is the quiet
-  // base order that every raised element aligns to.
-  for (const fraction of [0.25, 0.5, 0.75]) {
-    line(g, fp.x + fp.w * fraction, fp.y + 9, fp.x + fp.w * fraction, fp.y + fp.h - 9, seam);
-  }
-  for (const fraction of [1 / 3, 2 / 3]) {
-    line(g, fp.x + 9, fp.y + fp.h * fraction, fp.x + fp.w - 9, fp.y + fp.h * fraction, seam);
-  }
-
-  // One continuous rear service spine. Access, travel, cooling, and exhaust
-  // share the same deck and baseline instead of floating independently.
-  const service = {
-    x: fp.x + fp.w * 0.08,
-    y: fp.y + fp.h * 0.09,
-    w: fp.w * 0.84,
-    h: Math.min(180, fp.h * 0.27),
-  };
-  g.rect(service.x, service.y, service.w, service.h).fill({ color: PAPER });
-  g.rect(service.x, service.y, service.w, service.h).stroke(strokes.anchor);
-  g.rect(service.x + 8, service.y + 8, service.w - 16, service.h - 16).stroke(strokes.hairline);
-
-  const centerY = service.y + service.h / 2;
-  const hatch = { x: service.x + 28, y: centerY - 32, w: 68, h: 64 };
-  g.rect(hatch.x, hatch.y, hatch.w, hatch.h).fill({ color: PAPER });
-  g.rect(hatch.x, hatch.y, hatch.w, hatch.h).stroke(strokes.opening);
-  g.rect(hatch.x + 6, hatch.y + 6, hatch.w - 12, hatch.h - 12).stroke(strokes.hairline);
-  line(g, hatch.x + 10, hatch.y + 10, hatch.x + hatch.w - 10, hatch.y + hatch.h - 10, strokes.hairline);
-  line(g, hatch.x + hatch.w - 10, hatch.y + 10, hatch.x + 10, hatch.y + hatch.h - 10, strokes.hairline);
-
-  // The access lane is a real, bounded path from the hatch to the equipment.
-  const laneX = hatch.x + hatch.w + 12;
-  const equipmentX = service.x + service.w * 0.37;
-  const laneW = equipmentX - laneX - 12;
-  g.rect(laneX, centerY - 25, laneW, 50).fill({ color: INK.plate });
-  line(g, laneX, centerY - 25, laneX + laneW, centerY - 25, strokes.hairline);
-  line(g, laneX, centerY + 25, laneX + laneW, centerY + 25, strokes.hairline);
-  for (let x = laneX + 24; x < laneX + laneW; x += 38) {
-    line(g, x, centerY - 25, x, centerY + 25, seam);
-  }
-
-  const equipmentY = centerY - 42;
-  const unitA = { x: equipmentX, y: equipmentY, w: service.w * 0.2, h: 84 };
-  const unitB = { x: unitA.x + unitA.w + 18, y: equipmentY, w: service.w * 0.17, h: 84 };
-  drawObject(g, { id: `${building.id}-roof-ahu-a`, kind: "hvac", ...unitA });
-  drawObject(g, { id: `${building.id}-roof-ahu-b`, kind: "hvac", ...unitB });
-
-  // Exhausts form one aligned manifold at the end of the same service spine.
-  const exhaust = {
-    x: unitB.x + unitB.w + 18,
-    y: equipmentY,
-    w: service.x + service.w - 26 - (unitB.x + unitB.w + 18),
-    h: 84,
-  };
-  g.rect(exhaust.x, exhaust.y, exhaust.w, exhaust.h).fill({ color: INK.plate });
-  g.rect(exhaust.x, exhaust.y, exhaust.w, exhaust.h).stroke(strokes.fixture);
-  const ventSize = Math.min(26, exhaust.w * 0.22);
-  const ventGap = (exhaust.w - ventSize * 3) / 4;
-  for (let index = 0; index < 3; index += 1) {
-    drawObject(g, {
-      id: `${building.id}-roof-exhaust-${index}`,
-      kind: "vent",
-      x: exhaust.x + ventGap + index * (ventSize + ventGap),
-      y: centerY - ventSize / 2,
-      w: ventSize,
-      h: ventSize,
-    });
-  }
-
-  // One ordered daylight bank sits directly over the open sales floor. The
-  // curb and six equal lights make it one architectural element, not clutter.
-  const skylight = {
-    x: fp.x + fp.w * 0.5,
-    y: fp.y + fp.h * 0.57,
-    w: fp.w * 0.31,
-    h: fp.h * 0.18,
-  };
-  g.rect(skylight.x, skylight.y, skylight.w, skylight.h).fill({ color: INK.glass, alpha: 0.72 });
-  g.rect(skylight.x, skylight.y, skylight.w, skylight.h).stroke(strokes.anchor);
-  g.rect(skylight.x + 7, skylight.y + 7, skylight.w - 14, skylight.h - 14).stroke(strokes.hairline);
-  line(g, skylight.x + skylight.w / 3, skylight.y + 7, skylight.x + skylight.w / 3, skylight.y + skylight.h - 7, strokes.fixture);
-  line(g, skylight.x + skylight.w * 2 / 3, skylight.y + 7, skylight.x + skylight.w * 2 / 3, skylight.y + skylight.h - 7, strokes.fixture);
-  line(g, skylight.x + 7, skylight.y + skylight.h / 2, skylight.x + skylight.w - 7, skylight.y + skylight.h / 2, strokes.fixture);
-
-  // A single straight utility trunk reinforces the relationship between the
-  // rear service spine and the daylight bank without crossing the open roof.
-  const trunkX = skylight.x + skylight.w / 2;
-  line(g, trunkX - 3, service.y + service.h, trunkX - 3, skylight.y, strokes.hairline);
-  line(g, trunkX + 3, service.y + service.h, trunkX + 3, skylight.y, strokes.hairline);
-  for (const y of [service.y + service.h + 20, skylight.y - 20]) {
-    g.rect(trunkX - 6, y - 3, 12, 6).fill({ color: INK.plate }).stroke(strokes.hairline);
-  }
 }
 
 /** Shared roof/deck plate: quiet tint, strong outline, parapet hairline. */
@@ -1095,21 +551,14 @@ function buildFloorArt(
   const fp = building.footprint;
   const isRoof = floor.label === "ROOF";
 
-  if (map) addPlacements(backdrop, map, "floor", building.id, floor.id);
-  if (map?.visualTheme === "pixel-city") addPixelInteriorThresholds(thresholds, floor, building.footprint);
-
   // Plate.
-  if (isRoof) {
-    drawRoofPlate(architecture, fp);
-  } else if (map?.visualTheme !== "pixel-city") {
-    architecture.rect(fp.x, fp.y, fp.w, fp.h).fill({ color: PAPER });
-  }
+  if (isRoof) drawRoofPlate(architecture, fp);
+  else architecture.rect(fp.x, fp.y, fp.w, fp.h).fill({ color: PAPER });
 
   // Furniture below structure so wall poché always wins overlaps.
   for (const object of floor.objects) {
     const view = new Graphics();
-    if (object.art) addObjectSprite(furniture, foreground, object);
-    else drawObject(view, object);
+    drawObject(view, object);
     view.zIndex = object.y + object.h;
     furniture.addChild(view);
     objectViews.set(object.id, { object, view });
@@ -1125,13 +574,7 @@ function buildFloorArt(
   for (const stair of floor.stairs) {
     const stairView = new Container();
     const stairGfx = new Graphics();
-    if (stair.art) {
-      addStairSprite(stairView, foreground, stair);
-      const { entry, vertical } = stairHalves(stair);
-      drawPassableStairGuides(stairGfx, entry, vertical);
-    } else {
-      drawStair(stairGfx, stair);
-    }
+    drawStair(stairGfx, stair);
     stairView.addChild(stairGfx);
     stairFixtures.addChild(stairView);
     stairViews.set(stair.id, { stair, view: stairView });
@@ -1150,21 +593,18 @@ function buildFloorArt(
     drawWindow(architecture, band, floor.walls);
   }
 
-  // The floor plan shows the traversable opening and threshold only. The
-  // automatic exterior door remains authoritative for collision, noise, and
-  // visibility, but repeating its south-facing facade art inside would cover
-  // the player and fixtures in the top-down interior view.
+  // The floor plan shows the traversable opening and threshold only.
   for (const doorway of floor.doorways) {
     drawDoorway(architecture, annotationGfx, doorway, doorwayStyle(doorway, fp));
   }
 
   for (const dot of interactionDots) {
-    drawInteractionDot(interactionDotGfx, dot, map?.visualTheme === "pixel-city");
+    drawInteractionDot(interactionDotGfx, dot);
     const label = interactionLabel(dot, floor);
     if (label) interactionLabels.addChild(makeInteractionLabel(label, dot));
   }
 
-  view.addChild(backdrop, thresholds, architecture, stairFixtures, furniture, annotation, interactionDotGfx, interactionLabels);
+  view.addChild(architecture, stairFixtures, furniture, annotation, interactionDotGfx, interactionLabels);
   return { floor, view, architecture, furniture, foreground, objectViews, stairViews, annotation, annotationGfx };
 }
 
@@ -1268,41 +708,7 @@ function buildLitModelRoofArt(building: Building, floor: FloorPlan): FloorArt {
   };
 }
 
-/** Exterior doors keep their licensed animation on the facade. From inside,
- * every perimeter doorway is permanently rendered as the same light sidewalk
- * threshold so the route stays visually obvious even while collision closes. */
-function addPixelInteriorThresholds(container: Container, floor: FloorPlan, footprint: Rect): void {
-  const frame = cityFrame("door-threshold");
-  for (const doorway of floor.doorways) {
-    const rect = perimeterDoorThresholdRect(doorway, footprint);
-    if (!rect) continue;
-
-    if (doorway.dir === "h") {
-      for (let offset = 0; offset < rect.w; offset += frame.w) {
-        const sprite = new Sprite(cityTexture("door-threshold"));
-        sprite.position.set(rect.x + offset, rect.y);
-        sprite.width = Math.min(frame.w, rect.w - offset);
-        sprite.height = rect.h;
-        sprite.roundPixels = true;
-        container.addChild(sprite);
-      }
-      continue;
-    }
-
-    // No current Pixel City facade uses a vertical entrance, but keep the
-    // authored rule complete for mirrored blocks.
-    for (let offset = 0; offset < rect.h; offset += frame.w) {
-      const sprite = new Sprite(cityTexture("door-threshold"));
-      sprite.position.set(rect.x, rect.y + offset);
-      sprite.width = rect.w;
-      sprite.height = Math.min(frame.w, rect.h - offset);
-      sprite.roundPixels = true;
-      container.addChild(sprite);
-    }
-  }
-}
-
-function drawInteractionDot(g: Graphics, dot: InteractionDot, perspective = false): void {
+function drawInteractionDot(g: Graphics, dot: InteractionDot): void {
   if (dot.kind === "emptySlot") return;
   const { x, y } = dot.position;
   if (dot.kind === "deployment") {
@@ -1316,7 +722,7 @@ function drawInteractionDot(g: Graphics, dot: InteractionDot, perspective = fals
   // Use the same outer primitive as collectible Dots. Environment interactions
   // stay neutral and carry their meaning in the nearby label; an extra inner
   // ring made them read like generic UI buttons.
-  drawDotDisc(g, dot.position, dot.radius, DOT_COLOR.interaction, perspective);
+  drawDotDisc(g, dot.position, dot.radius, DOT_COLOR.interaction);
 }
 
 function interactionLabel(dot: InteractionDot, floor: FloorPlan): string | null {
@@ -1597,18 +1003,3 @@ export function dashedSegment(
   }
 }
 
-export type Camera = { x: number; y: number; scale: number };
-
-/** Fit the whole map inside a viewport with a margin, centered. */
-export function fitCamera(map: MapDocument, viewport: { width: number; height: number }, margin = 40): Camera {
-  const scale = Math.min(
-    (viewport.width - margin * 2) / map.width,
-    (viewport.height - margin * 2) / map.height,
-  );
-
-  return {
-    scale,
-    x: (viewport.width - map.width * scale) / 2,
-    y: (viewport.height - map.height * scale) / 2,
-  };
-}

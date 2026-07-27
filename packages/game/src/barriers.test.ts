@@ -35,6 +35,7 @@ function yard(barriers: Barrier[]): MapDocument {
   return {
     id: "barrier-test",
     name: "Barrier test",
+    visualTheme: "lit-model",
     width: 1000,
     height: 800,
     outdoor: {

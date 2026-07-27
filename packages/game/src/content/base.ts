@@ -521,6 +521,14 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
   const map: MapDocument = {
     id: "player-base",
     name: "Base",
+    /**
+     * The last map still drawn in the retired plan language. Fourteen of the
+     * base's object kinds — fabricator, bay console, planning table, bunks — have
+     * no lit-model glyph yet, so switching this over would empty the room. It
+     * moves to `lit-model` when that kit is finished, and the plan renderer is
+     * deleted with it.
+     */
+    visualTheme: "plan",
     width: MAP_WIDTH,
     height: MAP_HEIGHT,
     outdoor: {
