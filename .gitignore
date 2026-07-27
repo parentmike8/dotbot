@@ -3,3 +3,11 @@ dist/
 *.tsbuildinfo
 .DS_Store
 .env
+
+# Purchased source packs live outside the repo, in ../Game Assets. The playable
+# client ships only the curated, game-ready atlas under apps/client/public/assets.
+Game Assets/
+.map-editor-history/
+
+# Concept and reference images. Explorations, not production assets.
+tmp/
