@@ -1,11 +1,12 @@
 import { useMemo } from "react";
-import { withinDownedCoverRange } from "@dotbot/game/interactions";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import type { NetSession } from "../../game/session/NetSession";
 import { arrivalSparkline } from "../../game/session/netgraph";
 import { ManifestScreen } from "../ManifestScreen";
 import { FeedbackControls } from "../FeedbackControls";
+import { BodyPromptView, DownedSelfView } from "../downed/DownedPrompts";
+import { useDownedPrompts } from "../downed/useDownedPrompts";
 
 type NetGameViewProps = {
   session: NetSession;
@@ -18,22 +19,16 @@ type NetGameViewProps = {
 export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "RETURN TO LOBBY", connectionMessage = "" }: NetGameViewProps) {
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug,
-    legendVisible, toggleLegend, joystick, joystickHandlers, queueDash, cycleSpectator, giveUp, selectDownedVerb, plea,
+    legendVisible, toggleLegend, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun, selectDownedVerb, plea,
+    takeFromBody, setBodyAction,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ session, spectate: true });
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
-  const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === session.playerId) ?? false;
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
-  const hostileDowned = player?.state === "alive" ? snapshot?.bots.find((bot) =>
-    bot.state === "downed" && bot.squadId !== player.squadId && bot.floorId === player.floorId
-      && Math.hypot(bot.position.x - player.position.x, bot.position.y - player.position.y) <= player.radius * 2.6,
-  ) : undefined;
-  // The SAME range math the server gates the channel on — the UI must never
-  // claim an interaction the simulation would refuse.
-  const hostileInRange = Boolean(player && hostileDowned && withinDownedCoverRange(
-    player.position, player.radius, hostileDowned.position, hostileDowned.radius, session.config.coverCenterTolerance,
-  ));
-  const hostileChannel = hostileDowned ? snapshot?.coverages.find((coverage) => coverage.actorId === player?.id && coverage.targetId === hostileDowned.id) : undefined;
+  const { prompt, self: downed, onVerb } = useDownedPrompts({
+    snapshot, events, playerId: session.playerId, spectating, runOver: runResult !== null,
+    selectDownedVerb, takeFromBody, setBodyAction,
+  });
   const mineRotated = [...events].reverse().find((event) => event.type === "mineRotated");
   const spectateMode = runResult?.outcome === "died";
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / session.config.dashCooldownMs) : 1;
@@ -192,21 +187,8 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
           </button>
         </div>
       ) : null}
-      {player?.state === "downed" && !reviveInProgress && !runResult ? (
-        <div className="downed-actions">
-          <button type="button" className="plea-button" onClick={plea}>PLEA · P</button>
-          <button type="button" className="give-up-button" onClick={giveUp}>GIVE UP</button>
-        </div>
-      ) : null}
-      {hostileDowned && !runResult ? (
-        <div className="hostile-verb-strip" aria-label="Downed hostile actions">
-          <strong>
-            {hostileChannel ? verbLabel(hostileChannel.kind) : hostileInRange ? "DOWNED BOT" : "STAND ON THE BODY"}
-          </strong>
-          <button type="button" onClick={() => selectDownedVerb("loot")}>F · LOOT</button>
-          <button type="button" onClick={() => selectDownedVerb("revive")}>R · REVIVE</button>
-        </div>
-      ) : null}
+      {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}
+      <BodyPromptView prompt={prompt} onVerb={onVerb} onTake={takeFromBody} onTakeAll={(bodyId) => takeFromBody(bodyId, "all")} />
       {runResult && !spectateMode ? (
         <ManifestScreen
           result={runResult}
@@ -222,10 +204,6 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       ) : null}
     </main>
   );
-}
-
-function verbLabel(kind: string): string {
-  return kind === "loot" ? "LOOTING" : kind === "revive" ? "REVIVING" : "DOWNED BOT";
 }
 
 function formatRunTime(timeMs: number): string {

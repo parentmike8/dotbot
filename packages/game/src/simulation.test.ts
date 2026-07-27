@@ -878,6 +878,25 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("does not re-open a body the player is still standing on with LOOT held", async () => {
+    // A verb is standing state — it persists until the player picks the other one.
+    // Without a guard the channel restarts the tick after it finishes and the same
+    // body is searched again every three seconds, noise and all, forever.
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ isAmbient: false, controller: "frozen", position: { x: 100, y: 180 }, state: "downed", shields: 0, bays: [healthItem, null, null], hold: [] }),
+    ]);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
+    runTicks(simulation, 12);
+    expect(simulation.drainEvents().filter((event) => event.type === "searched")).toHaveLength(1);
+
+    runTicks(simulation, 60);
+    expect(simulation.drainEvents().filter((event) => event.type === "searched")).toEqual([]);
+    expect(simulation.getSnapshot().coverages.filter((entry) => entry.kind === "loot")).toEqual([]);
+    simulation.dispose();
+  });
+
   it("closes a searched body back up when it is revived", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),

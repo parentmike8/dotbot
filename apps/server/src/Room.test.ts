@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { ServerMessage } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence } from "./db";
 import type { BaseObjectKind } from "@dotbot/game/types";
-import { Room, carriesAction, type RoomPeer } from "./Room";
+import { Room, type RoomPeer } from "./Room";
+import { carriesAction } from "@dotbot/protocol";
 import { buildingContaining, buildingOfFloor } from "@dotbot/game/mapModel";
 import { downtownMap } from "@dotbot/game/content/downtown";
 
@@ -235,8 +236,9 @@ describe("Room input stream", () => {
     expect(carriesAction({ ...move, take: { fromBotId: "enemy", index: "all" } })).toBe(true);
     expect(carriesAction({ ...move, plea: true })).toBe(true);
     // A verb is standing state, not an edge: it repeats every frame while a key is
-    // held, so shedding one costs nothing.
-    expect(carriesAction({ ...move, downedVerb: "loot" })).toBe(false);
+    // held, so shedding one costs nothing — which is why `ActionEdges` does not
+    // name it, and why passing it here would not typecheck.
+    expect(carriesAction({ ...move })).toBe(false);
   });
 
   it("consumes one frame per tick in seq order, acks only applied frames, and sheds stall backlogs", async () => {

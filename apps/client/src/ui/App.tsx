@@ -1,7 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Item, MapDocument } from "@dotbot/game/types";
 import { defaultGameConfig } from "@dotbot/game";
-import { withinDownedCoverRange } from "@dotbot/game/interactions";
 import { floorHeight, locationLabel, resolvePlan } from "@dotbot/game/mapModel";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
@@ -9,6 +8,9 @@ import { ManifestScreen } from "./ManifestScreen";
 import { arrivalSparkline } from "../game/session/netgraph";
 import { FeedbackControls } from "./FeedbackControls";
 import { selectMapDocument } from "../mapSelection";
+import { BodyPromptView, DownedSelfView } from "./downed/DownedPrompts";
+import { useDownedPrompts } from "./downed/useDownedPrompts";
+import { itemGlyph, itemLabel } from "./items";
 
 const coachFadeAtMs = 12_000;
 const coachDismissAtMs = 15_000;
@@ -20,22 +22,9 @@ function formatRunClock(timeMs: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function itemLabel(item: Item): string {
-  if (item.kind === "blueprint") return `Blueprint: ${item.blueprintId}`;
-  if (item.kind === "mine") return "Mine";
-  return ({ health: "Health", radar: "Radar", dashOvercharge: "Dash overcharge", incognito: "Incognito" } as const)[item.type];
-}
-
 /** The bank always shows every bay, so an empty one still reads as a slot. */
 function bayStrip(bays: (Item | null)[] | undefined): (Item | null)[] {
   return Array.from({ length: defaultGameConfig.baySlots }, (_, index) => bays?.[index] ?? null);
-}
-
-function itemGlyph(item: Item | null): string {
-  if (!item) return "·";
-  if (item.kind === "blueprint") return "⌑";
-  if (item.kind === "mine") return "×";
-  return ({ health: "+", radar: "◎", dashOvercharge: "›", incognito: "◌" } as const)[item.type];
 }
 
 export function App() {
@@ -49,24 +38,17 @@ export function App() {
 function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRestart: () => void }) {
   const {
     hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, legendVisible, toggleLegend,
-    joystick, joystickHandlers, queueDash, useBay, swapBayItem, giveUp, selectDownedVerb, plea,
+    joystick, joystickHandlers, queueDash, useBay, swapBayItem, leaveRun, selectDownedVerb, plea,
+    takeFromBody, setBodyAction, spectating,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
-  } = useDotBotGame({ map: requestedMap });
+  } = useDotBotGame({ map: requestedMap, spectate: true });
   const [swapBay, setSwapBay] = useState<number | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
   const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
-  const reviveInProgress = snapshot?.coverages.some((coverage) => coverage.kind === "revive" && coverage.targetId === playerId) ?? false;
-  const hostileDowned = player?.state === "alive" ? snapshot?.bots.find((bot) =>
-    bot.state === "downed" && bot.squadId !== player.squadId && bot.floorId === player.floorId
-      && Math.hypot(bot.position.x - player.position.x, bot.position.y - player.position.y) <= player.radius * 2.6,
-  ) : undefined;
-  // The SAME range math the simulation gates the channel on.
-  const hostileInRange = Boolean(player && hostileDowned && withinDownedCoverRange(
-    player.position, player.radius, hostileDowned.position, hostileDowned.radius, defaultGameConfig.coverCenterTolerance,
-  ));
-  const hostileChannel = hostileDowned
-    ? snapshot?.coverages.find((coverage) => coverage.actorId === player?.id && coverage.targetId === hostileDowned.id)
-    : undefined;
+  const { prompt, self: downed, onVerb } = useDownedPrompts({
+    snapshot, events, playerId, spectating, runOver: runResult !== null,
+    selectDownedVerb, takeFromBody, setBodyAction,
+  });
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / defaultGameConfig.dashCooldownMs) : 1;
   const remainingRunMs = Math.max(0, defaultGameConfig.runDurationMs - (snapshot?.timeMs ?? 0));
   const runClock = formatRunClock(remainingRunMs);
@@ -231,7 +213,7 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
         </div>
       </section>
 
-      {swapBay !== null ? (
+      {swapBay !== null && player?.hold.length ? (
         <aside className="hold-picker" aria-label={`Choose a hold item for bay ${swapBay + 1}`}>
           <header><strong>HOLD → BAY {swapBay + 1}</strong><button type="button" onClick={() => setSwapBay(null)}>×</button></header>
           <p>2 second stationary, noisy swap</p>
@@ -294,20 +276,9 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
         </div>
       ) : null}
 
-      {player?.state === "downed" && !reviveInProgress && !runResult ? (
-        <div className="downed-actions">
-          <button type="button" className="plea-button" onClick={plea}>PLEA · P</button>
-          <button type="button" className="give-up-button" onClick={giveUp}>GIVE UP</button>
-        </div>
-      ) : null}
+      {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}
 
-      {hostileDowned && !runResult ? (
-        <div className="hostile-verb-strip" aria-label="Downed hostile actions">
-          <strong>{hostileChannel?.kind === "loot" ? "LOOTING" : hostileChannel?.kind === "revive" ? "REVIVING" : hostileInRange ? "DOWNED BOT" : "STAND ON THE BODY"}</strong>
-          <button type="button" onClick={() => selectDownedVerb("loot")}>F · LOOT</button>
-          <button type="button" onClick={() => selectDownedVerb("revive")}>R · REVIVE</button>
-        </div>
-      ) : null}
+      <BodyPromptView prompt={prompt} onVerb={onVerb} onTake={takeFromBody} onTakeAll={(bodyId) => takeFromBody(bodyId, "all")} />
 
       {coachPhase !== null ? (
         <section className={`quick-coach ${coachPhase}`} aria-label="Quick start guide">

@@ -169,6 +169,34 @@ export type WireInputFrame = {
   plea?: boolean;
 };
 
+/**
+ * Does this frame carry a one-shot edge, rather than just movement?
+ *
+ * Three places need this exact answer: the client decides whether a frame ships
+ * immediately and reliably, and the server's jitter buffer sheds frames in two
+ * places and must shed continuous movement in preference to a press. It was
+ * written out field by field in all of them, so a new action had to be remembered
+ * five times over — and a list you have to remember is a list that goes stale.
+ *
+ * A `downedVerb` is deliberately not an edge: it is standing state, repeated every
+ * frame a key is held, so shedding one costs nothing.
+ */
+export type ActionEdges = {
+  dash?: boolean;
+  useBay?: BayIndex;
+  swapBay?: unknown;
+  take?: unknown;
+  plea?: boolean;
+};
+
+export function carriesAction(frame: ActionEdges): boolean {
+  return frame.dash === true
+    || frame.useBay !== undefined
+    || frame.swapBay !== undefined
+    || frame.take !== undefined
+    || frame.plea === true;
+}
+
 export type ClientMessage =
   | {
       type: "hello";

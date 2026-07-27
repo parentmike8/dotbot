@@ -32,8 +32,8 @@ export interface GameSession {
   drainEvents(): SimEvent[];
   /** Authoritative run outcome for this session implementation. */
   getRunState(): RunState;
-  /** Opt out while downed. Local ends immediately; network leaves the run. */
-  giveUp(): void;
+  /** Leave while downed. Local ends immediately; network leaves the run. */
+  leaveRun(): void;
   /** Debug instrumentation; optional so NetSession can no-op it. */
   setMeasuredFps?(fps: number): void;
   /** Predicted dash impacts to flash immediately (network sessions only —

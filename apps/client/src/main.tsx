@@ -16,11 +16,13 @@ async function mount(): Promise<void> {
   const surface = selectClientSurface(window.location.search);
   const Component = surface === "lab"
     ? (await import("./ui/StyleLab")).StyleLab
-    : surface === "studio"
-      ? (await import("./ui/MapStudio")).MapStudio
-      : surface === "solo"
-        ? (await import("./ui/App")).App
-        : (await import("./ui/base/BaseApp")).BaseApp;
+    : surface === "hud"
+      ? (await import("./ui/downed/HudLab")).HudLab
+      : surface === "studio"
+        ? (await import("./ui/MapStudio")).MapStudio
+        : surface === "solo"
+          ? (await import("./ui/App")).App
+          : (await import("./ui/base/BaseApp")).BaseApp;
 
   createRoot(document.getElementById("root")!, {
     /**

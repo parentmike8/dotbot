@@ -11,7 +11,7 @@ describe("NetSession item edges", () => {
     vi.useRealTimers();
   });
 
-  it("cuts tick-aligned frames with one-shot edges and routes GIVE UP through leaveRun", () => {
+  it("cuts tick-aligned frames with one-shot edges and routes LEAVE RUN through leaveRun", () => {
     const sent: Array<Record<string, unknown>> = [];
     const deliveries: string[] = [];
     const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
@@ -31,7 +31,7 @@ describe("NetSession item edges", () => {
     advance(tickMs * 4 + 1);
     session.sendInput({ move: { x: 1, y: 0 }, dash: false });
     advance(tickMs * 2);
-    session.giveUp();
+    session.leaveRun();
     session.requestSquad("bravo");
 
     const inputMessages = sent.filter((message) => message.type === "input");

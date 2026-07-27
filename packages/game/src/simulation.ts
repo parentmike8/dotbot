@@ -1749,6 +1749,13 @@ export class DotBotSimulation {
           this.coverages.delete(coverageKey);
           continue;
         }
+        // A verb is standing state: it persists until the player picks the other
+        // one. So a body that has already been searched must refuse the channel,
+        // or holding LOOT re-opens the same body every three seconds forever.
+        if (verb === "loot" && downed.searched) {
+          this.coverages.delete(coverageKey);
+          continue;
+        }
         kind = verb;
       }
       const durationMs = kind === "loot" ? this.config.lootDurationMs : this.config.coverDurationMs;

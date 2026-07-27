@@ -5,7 +5,7 @@ import { buildingContaining, buildingOfFloor, physicsFloorId } from "@dotbot/gam
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import { assignSquadInsertions, squadSpawnPosition, validateInsertionMap } from "@dotbot/game/insertion";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, InsertionPoint, SimEvent } from "@dotbot/game/types";
-import { filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot, visiblePhysicsFloors } from "@dotbot/protocol";
+import { carriesAction, filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot, visiblePhysicsFloors } from "@dotbot/protocol";
 import { LOBBY_SQUADS } from "@dotbot/protocol";
 import type { ClientMessage, DeliveryClass, FullWireSnapshot, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta, WireInputFrame } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
@@ -1029,22 +1029,6 @@ function makeSpawn(
       : [defaultHealth, null, null, null],
     hold: [],
   };
-}
-
-/**
- * Does this frame carry a one-shot edge, rather than just movement?
- *
- * The jitter buffer sheds frames in two places, and both must shed continuous
- * movement in preference to a press. That list lived twice, so a new action had to
- * be remembered twice — and a list that has to be remembered is a list that goes
- * stale. Adding a field to `WireInputFrame` means adding it here, once.
- */
-export function carriesAction(frame: WireInputFrame): boolean {
-  return frame.dash
-    || frame.useBay !== undefined
-    || frame.swapBay !== undefined
-    || frame.take !== undefined
-    || frame.plea === true;
 }
 
 function sanitizeName(name: string): string {

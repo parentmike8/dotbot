@@ -91,7 +91,7 @@ describe("LocalSession run-state ownership", () => {
     expect(session.getRunState()).toEqual({ phase: "over", reason: "timeout", keptItems: [], lostItems: [health, health, health], learnedBlueprints: [] });
   });
 
-  it("ends a downed solo run through GIVE UP with an itemized loss", async () => {
+  it("ends a downed solo run through LEAVE RUN with an itemized loss", async () => {
     const downed = snapshot(50, [{
       id: "player", name: "Player", squadId: "alpha", isAmbient: false, color: "#fff",
       position: { x: 10, y: 10 }, radius: 24, state: "downed", floorId: "outdoor", facing: 0,
@@ -104,7 +104,7 @@ describe("LocalSession run-state ownership", () => {
     const { session } = scriptedSession({ events: [], snapshot: downed });
     await session.start();
     session.update(100);
-    session.giveUp();
+    session.leaveRun();
     expect(session.getRunState()).toEqual({ phase: "over", reason: "died", keptItems: [], lostItems: [health], learnedBlueprints: [] });
   });
 });

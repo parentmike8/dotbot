@@ -15,7 +15,7 @@ import {
 import { selectSpectatedBot } from "./spectate";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
-import type { BayIndex, DotBotEntity, DownedVerb, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { BayIndex, DotBotEntity, DownedVerb, GameSnapshot, Item, MapDocument, SimEvent, TakeCommand, Vec2 } from "@dotbot/game/types";
 import type { NetworkDebugStats } from "./session/netgraph";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
@@ -75,11 +75,22 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const useBayQueuedRef = useRef<BayIndex | undefined>(undefined);
   const swapQueuedRef = useRef<{ bayIndex: BayIndex; holdIndex: number } | undefined>(undefined);
   const downedVerbRef = useRef<DownedVerb | undefined>(undefined);
+  const takeQueuedRef = useRef<TakeCommand | undefined>(undefined);
   const pleaQueuedRef = useRef(false);
   const spectateCycleQueuedRef = useRef(false);
   const spectatedBotIdRef = useRef<string | null>(null);
   const runEndedRef = useRef(false);
   const interactionChannelRef = useRef<InteractionChannelVisual | null>(null);
+  /**
+   * What F does to the body underfoot. Search when it is closed, take everything
+   * when it is open — one key, because the second press is the obvious next thing
+   * to want and a phone has no room for a third.
+   *
+   * The overlay sets it, for the same reason it sets the interaction channel: only
+   * the overlay knows which body is in reach and whether it has been searched, and
+   * a second copy of that reasoning in here is a second copy that can disagree.
+   */
+  const bodyActionRef = useRef<(() => void) | null>(null);
   const pendingDraftsRef = useRef<string[]>([]);
   const frameRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
@@ -186,12 +197,14 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             useBay: useBayQueuedRef.current,
             swapBay: swapQueuedRef.current,
             downedVerb: downedVerbRef.current,
+            take: takeQueuedRef.current,
             plea: pleaQueuedRef.current,
           });
         }
         dashQueuedRef.current = false;
         useBayQueuedRef.current = undefined;
         swapQueuedRef.current = undefined;
+        takeQueuedRef.current = undefined;
         pleaQueuedRef.current = false;
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
@@ -253,7 +266,11 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           setRunResult(result);
         }
 
-        const livingSquadmates = spectateEnabled && runState.phase === "over" && playerSquadId
+        // Watching begins the moment you go down, not when the run ends: you
+        // follow a squadmate who is still up, and once none are the camera falls
+        // back to your own body — where you can still plea.
+        const watching = spectateEnabled && (runState.phase === "over" || currentPlayer?.state === "downed");
+        const livingSquadmates = watching && playerSquadId
           ? nextSnapshot.bots.filter((bot) => bot.id !== session.playerId && bot.squadId === playerSquadId && bot.state === "alive")
           : [];
         const spectator = selectSpectatedBot(livingSquadmates, spectatedBotIdRef.current, spectateCycleQueuedRef.current);
@@ -263,7 +280,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const presentedAt = renderer.render(
           nextSnapshot,
           renderPlayerId,
-          spectateEnabled && runState.phase === "over" && spectator === null,
+          watching && runState.phase === "over" && spectator === null,
           interactionChannelRef.current,
           session.intel,
         );
@@ -309,13 +326,14 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         return;
       }
 
-      const verbByCode: Partial<Record<string, DownedVerb>> = {
-        KeyF: "loot",
-        KeyR: "revive",
-      };
-      if (verbByCode[event.code]) {
+      if (event.code === "KeyF") {
         event.preventDefault();
-        if (!runEndedRef.current) downedVerbRef.current = verbByCode[event.code];
+        if (!runEndedRef.current && !event.repeat) bodyActionRef.current?.();
+        return;
+      }
+      if (event.code === "KeyR") {
+        event.preventDefault();
+        if (!runEndedRef.current) downedVerbRef.current = "revive";
         return;
       }
       if (event.code === "KeyP") {
@@ -438,12 +456,17 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     }
   }, [spectateEnabled]);
 
-  const giveUp = useCallback(() => {
-    sessionRef.current?.giveUp();
+  const leaveRun = useCallback(() => {
+    sessionRef.current?.leaveRun();
   }, []);
 
   const selectDownedVerb = useCallback((verb: DownedVerb) => {
     if (!runEndedRef.current) downedVerbRef.current = verb;
+  }, []);
+
+  const takeFromBody = useCallback((fromBotId: string, index: number | "all") => {
+    void feedbackRef.current?.unlock();
+    if (!runEndedRef.current) takeQueuedRef.current = { fromBotId, index };
   }, []);
 
   const plea = useCallback(() => {
@@ -453,6 +476,10 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
   const setInteractionChannel = useCallback((visual: InteractionChannelVisual | null) => {
     interactionChannelRef.current = visual;
+  }, []);
+
+  const setBodyAction = useCallback((action: (() => void) | null) => {
+    bodyActionRef.current = action;
   }, []);
 
   const draftObjects = useCallback((objectIds: string[]) => {
@@ -579,11 +606,13 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     queueDash,
     useBay,
     swapBayItem,
-    giveUp,
+    leaveRun,
     selectDownedVerb,
+    takeFromBody,
     plea,
     cycleSpectator,
     setInteractionChannel,
+    setBodyAction,
     draftObjects,
   };
 }

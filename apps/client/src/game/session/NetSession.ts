@@ -1,6 +1,6 @@
 import type { BayIndex, GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { physicsFloorId } from "@dotbot/game/mapModel";
-import { applyWireDotFrame, assertNever, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
+import { applyWireDotFrame, assertNever, carriesAction, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
 import type { ClientMessage, DeliveryClass, EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot, WireInputFrame } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
@@ -68,6 +68,7 @@ export class NetSession implements GameSession {
   private queuedUseBay: BayIndex | undefined;
   private queuedSwapBay: { bayIndex: BayIndex; holdIndex: number } | undefined;
   private stagedDownedVerb: InputCommand["downedVerb"];
+  private queuedTake: InputCommand["take"];
   private queuedPlea = false;
   private edgeAwaitingFlush = false;
   private predictor: LitePredictor | null = null;
@@ -165,10 +166,6 @@ export class NetSession implements GameSession {
     this.send({ type: "leaveRun" });
   }
 
-  giveUp(): void {
-    this.leaveRun();
-  }
-
   /**
    * Stages the current input state. Actual input frames are cut at the fixed
    * prediction tick rate inside advancePrediction — one frame per tick, seq
@@ -180,6 +177,7 @@ export class NetSession implements GameSession {
     this.predictionDashQueued ||= input.dash;
     if (input.useBay !== undefined && this.queuedUseBay === undefined) this.queuedUseBay = input.useBay;
     if (input.swapBay && !this.queuedSwapBay) this.queuedSwapBay = input.swapBay;
+    if (input.take && !this.queuedTake) this.queuedTake = input.take;
     this.stagedDownedVerb = input.downedVerb;
     this.queuedPlea ||= input.plea ?? false;
   }
@@ -559,16 +557,18 @@ export class NetSession implements GameSession {
       useBay: this.queuedUseBay,
       swapBay: this.queuedSwapBay,
       downedVerb: this.stagedDownedVerb,
+      take: this.queuedTake,
       plea: this.queuedPlea || undefined,
     };
     this.predictionDashQueued = false;
     this.queuedUseBay = undefined;
     this.queuedSwapBay = undefined;
+    this.queuedTake = undefined;
     this.queuedPlea = false;
     if (this.predictor && this.predictionEnabled) {
       this.predictor.step(frame);
     }
-    if (frame.dash || frame.useBay !== undefined || frame.swapBay !== undefined || frame.plea === true) {
+    if (carriesAction(frame)) {
       this.edgeAwaitingFlush = true;
     }
     this.pendingInputs.push({
@@ -598,13 +598,11 @@ export class NetSession implements GameSession {
       useBay: input.useBay,
       swapBay: input.swapBay,
       downedVerb: input.downedVerb,
+      take: input.take,
       plea: input.plea,
     }));
     const top = frames[frames.length - 1];
-    const delivery: DeliveryClass = frames.some((frame) =>
-      frame.dash || frame.useBay !== undefined || frame.swapBay !== undefined || frame.plea === true)
-      ? "reliable"
-      : "latest";
+    const delivery: DeliveryClass = frames.some(carriesAction) ? "reliable" : "latest";
     this.send({
       type: "input",
       seq: top.seq,
@@ -614,6 +612,7 @@ export class NetSession implements GameSession {
       useBay: top.useBay,
       swapBay: top.swapBay,
       downedVerb: top.downedVerb,
+      take: top.take,
       plea: top.plea,
       frames,
     }, delivery);

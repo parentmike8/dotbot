@@ -94,7 +94,7 @@ export class LocalSession implements GameSession {
     return this.runState;
   }
 
-  giveUp(): void {
+  leaveRun(): void {
     if (this.runState.phase === "over") return;
     const player = this.lastSnapshot?.bots.find((bot) => bot.id === this.playerId);
     if (!player || player.state !== "downed") return;
