@@ -1747,8 +1747,12 @@ const listeningPostGlyph: GlyphFn = (g, pad, o) => {
   const top = volume(g, r, MAT.painted, LIFT.cabinet, 1.5);
   inlay(g, inset(top, 1.4), shade(MAT.painted.top, 0.93), 1);
 
-  // Dish at the far end, mounted on a short pedestal.
-  const radius = Math.min(across ? top.h : top.w, (across ? top.w : top.h) * 0.4) * 0.42;
+  // Dish at the far end, mounted on a short pedestal. Sized to nearly fill the
+  // bay's short side: a small disc on a big box reads as a dial, and the dish
+  // being round is the entire cue that separates this from a plain console.
+  const short = across ? top.h : top.w;
+  const long = across ? top.w : top.h;
+  const radius = Math.min(short * 0.44, long * 0.24);
   const dishAt = across
     ? { x: farSide ? top.x + radius + 3 : top.x + top.w - radius - 3, y: top.y + top.h / 2 }
     : { x: top.x + top.w / 2, y: farSide ? top.y + radius + 3 : top.y + top.h - radius - 3 };

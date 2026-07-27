@@ -1,4 +1,4 @@
-import { isGroundFloor } from "@dotbot/game/mapModel";
+import { isGroundFloor, isVehicleDoor } from "@dotbot/game/mapModel";
 import type { Building, Doorway, Rect } from "@dotbot/game/types";
 
 /**
@@ -28,7 +28,7 @@ export function perimeterEntrances(building: Building): PerimeterEntrance[] {
   for (const door of ground.doorways) {
     // A door with no stated kind is read by width, the way the old rect maps
     // implied it: a wide opening standing permanently open is a vehicle door.
-    const vehicle = door.opening ? door.opening === "rollup" : door.open === true && door.width >= 96;
+    const vehicle = isVehicleDoor(door);
     let side: Side | null = null;
     if (door.dir === "h" && Math.abs(door.y - fp.y) <= tol) side = "N";
     else if (door.dir === "h" && Math.abs(door.y - (fp.y + fp.h)) <= tol) side = "S";

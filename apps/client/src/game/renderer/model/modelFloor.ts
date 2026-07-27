@@ -1,5 +1,5 @@
 import { Container, Graphics } from "pixi.js";
-import { FLAT_KINDS, stairHalves } from "@dotbot/game/mapModel";
+import { bandFromWall, FLAT_KINDS, isVehicleDoor, stairHalves } from "@dotbot/game/mapModel";
 import { isDisc, pathOutline, solidBounds } from "@dotbot/game/geometry";
 import type { Barrier, Building, Doorway, FloorPlan, MapObject, StairLink, Vec2, WallSegment, WindowBand } from "@dotbot/game/types";
 import { drawModelObject } from "./modelGlyphs";
@@ -190,7 +190,7 @@ function drawHighBays(g: Graphics, rooms: Room[], fp: Rect): void {
  */
 function drawWear(g: Graphics, floor: FloorPlan, fp: Rect): void {
   const racks = floor.objects.filter((o) => o.kind === "shelf" && o.h > o.w * 3).sort((a, b) => a.x - b.x);
-  const vehicleDoors = floor.doorways.filter((d) => d.open && d.width >= 96);
+  const vehicleDoors = floor.doorways.filter(isVehicleDoor);
 
   /**
    * Wear is soft-edged and cumulative. A hard-edged bright rectangle reads as
@@ -301,7 +301,7 @@ function interiorSide(fp: Rect, doorway: Doorway): "N" | "S" | "E" | "W" {
  * - Person doors get a worn threshold.
  */
 function drawFloorPaint(layer: Container, g: Graphics, floor: FloorPlan, fp: Rect): void {
-  const vehicleDoors = floor.doorways.filter((d) => d.open && d.width >= 96);
+  const vehicleDoors = floor.doorways.filter(isVehicleDoor);
 
   // Dock strip: the band inside the wall that the vehicle doors share.
   if (vehicleDoors.length >= 2 && vehicleDoors.every((d) => d.dir === "h")) {
@@ -328,7 +328,7 @@ function drawFloorPaint(layer: Container, g: Graphics, floor: FloorPlan, fp: Rec
   for (const door of floor.doorways) {
     const side = interiorSide(fp, door);
     const horizontal = door.dir === "h";
-    if (door.open && door.width >= 96) {
+    if (isVehicleDoor(door)) {
       // Keep-clear apron: hazard hatching directly inside a vehicle door.
       const depth = 30;
       const band: Rect = horizontal
@@ -590,18 +590,6 @@ function drawBarrier(g: Graphics, pad: ShadowPad, barrier: Barrier): void {
   }
 }
 
-function bandFromWall(door: Doorway, walls: WallSegment[]): Rect | null {
-  const wall = walls.find((w) =>
-    door.dir === "h"
-      ? door.y >= w.y - 3 && door.y <= w.y + w.h + 3
-      : door.x >= w.x - 3 && door.x <= w.x + w.w + 3,
-  );
-  if (!wall) return null;
-  return door.dir === "h"
-    ? { x: door.x - door.width / 2, y: wall.y, w: door.width, h: wall.h }
-    : { x: wall.x, y: door.y - door.width / 2, w: wall.w, h: door.width };
-}
-
 /**
  * Roll-up door: the retracted curtain sitting in the wall thickness, with a
  * guide rail at each jamb. The opening itself stays completely open — nothing
@@ -654,13 +642,28 @@ function drawVehicleDoorHead(g: Graphics, pad: ShadowPad, door: Doorway, walls: 
  */
 type TreadRun = { half: Rect; from: number; to: number };
 
-/** The two runs of a flight, ordered shallow-to-deep, with their depth ramps. */
-function treadRuns(stair: StairLink): { runs: TreadRun[]; vertical: boolean } {
+/**
+ * The two runs of a flight, in draw order, with their depth ramps.
+ *
+ * `beyond` is the run past the break line — the half a bot crossing the stair
+ * disappears into. That is the *exit* half whichever way the flight goes, which is
+ * not the same as "the last one drawn": on a descending flight the exit run is
+ * drawn second, and on an ascending one it is drawn first.
+ */
+function treadRuns(stair: StairLink): { runs: TreadRun[]; beyond: TreadRun; vertical: boolean } {
   const { entry, exit, vertical } = stairHalves(stair);
-  const runs: TreadRun[] = stair.direction === "down"
-    ? [{ half: entry, from: 0.02, to: 0.55 }, { half: exit, from: 0.55, to: 0.98 }]
-    : [{ half: exit, from: 0.98, to: 0.55 }, { half: entry, from: 0.55, to: 0.02 }];
-  return { runs, vertical };
+  const down = stair.direction === "down";
+  const exitRun: TreadRun = down
+    ? { half: exit, from: 0.55, to: 0.98 }
+    : { half: exit, from: 0.98, to: 0.55 };
+  const entryRun: TreadRun = down
+    ? { half: entry, from: 0.02, to: 0.55 }
+    : { half: entry, from: 0.55, to: 0.02 };
+  return {
+    runs: down ? [entryRun, exitRun] : [exitRun, entryRun],
+    beyond: exitRun,
+    vertical,
+  };
 }
 
 function drawTreadRun(g: Graphics, run: TreadRun, vertical: boolean): void {
@@ -718,9 +721,8 @@ function drawStair(g: Graphics, pad: ShadowPad, stair: StairLink): void {
  * the stair underneath it.
  */
 export function drawStairDeepHalf(g: Graphics, stair: StairLink): void {
-  const { runs, vertical } = treadRuns(stair);
-  const deep = runs.at(-1);
-  if (deep) drawTreadRun(g, deep, vertical);
+  const { beyond, vertical } = treadRuns(stair);
+  drawTreadRun(g, beyond, vertical);
 }
 
 /**
@@ -839,7 +841,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   for (const door of floor.doorways) {
     // An archway is a hole in a wall: no curtain, no rails. Where the opening
     // does not say what it is, a wide open one is a roll-up by convention.
-    const rollup = door.opening ? door.opening === "rollup" : door.open && door.width >= 96;
+    const rollup = isVehicleDoor(door);
     if (rollup) drawVehicleDoorHead(structure, structurePad, door, floor.walls);
   }
   for (const band of floor.windows ?? []) drawWindow(glazing, band, floor.walls);

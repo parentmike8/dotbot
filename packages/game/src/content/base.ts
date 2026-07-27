@@ -143,7 +143,19 @@ export type BaseShellDef = {
   upper: BaseUpperDef;
 };
 
-const SINGLETON_BASE_KINDS = new Set<BaseObjectKind>(["fabricator", "bayConsole", "planningTable", "draftingTable", "repairBench", "listeningPost", "signalMast"]);
+/**
+ * Fixtures the base may only hold one of.
+ *
+ * Exported because it is part of the placement contract, not an implementation
+ * detail: anything offering the player a choice of fixture — or, in the style
+ * lab, fitting out every slot at once — has to know which kinds are unique.
+ * `validateBaseLayout` enforces it, but discovering the rule by catching that
+ * error is not an API.
+ */
+export const SINGLETON_BASE_KINDS: ReadonlySet<BaseObjectKind> = new Set([
+  "fabricator", "bayConsole", "planningTable", "draftingTable", "repairBench",
+  "listeningPost", "signalMast",
+]);
 
 const SLOT_ZONES = new Map<string, "wall" | "floor">(BASE_SLOT_DEFS.map((def) => [def.id, def.zone]));
 const SLOT_FLOORS = new Map<string, "GROUND" | "F1">(BASE_SLOT_DEFS.map((def) => [def.id, def.floor]));
@@ -188,8 +200,12 @@ function workshopShell(): BaseShellDef {
     footprint: { x: 80, y: 60, w: 840, h: 640 },
     walls,
     doorways: [
-      { id: "ws-dock-door", x: 700, y: 474, width: 120, dir: "h", open: true },
-      { id: "ws-arch", x: 260, y: 474, width: 120, dir: "h", open: true },
+      // Both state their kind rather than leaving it to be inferred from width.
+      // The dock shutter really is a roll-up; the partition opening is an archway
+      // between two rooms. Read as the same thing, the archway earned the
+      // workshop a second truck apron and a traffic lane down its whole depth.
+      { id: "ws-dock-door", x: 700, y: 474, width: 120, dir: "h", open: true, opening: "rollup" },
+      { id: "ws-arch", x: 260, y: 474, width: 120, dir: "h", open: true, opening: "archway" },
     ],
     windows: [
       { id: "ws-win-n1", x: 278, y: 66, length: 64, dir: "h" },
@@ -223,7 +239,7 @@ function workshopShell(): BaseShellDef {
         { id: "ws-up-e-n", x: 488, y: 272, w: 12, h: 108 },
         { id: "ws-up-e-s", x: 488, y: 500, w: 12, h: 176 },
       ],
-      doorways: [{ id: "ws-up-rail-break", x: 494, y: 440, width: 120, dir: "v", open: true }],
+      doorways: [{ id: "ws-up-rail-break", x: 494, y: 440, width: 120, dir: "v", open: true, opening: "archway" }],
       windows: [
         { id: "ws-up-win-w", x: 98, y: 420, length: 64, dir: "v" },
         { id: "ws-up-win-s", x: 260, y: 682, length: 64, dir: "h" },

@@ -1,13 +1,14 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics, Text } from "pixi.js";
 import { shieldArcSpan } from "@dotbot/game/shields";
-import type { BaseLayout, Building, DotSpawn, FloorPlan, Rect, Vec2 } from "@dotbot/game/types";
+import type { BaseLayout, BaseObjectKind, Building, DotSpawn, FloorPlan, Rect, Vec2 } from "@dotbot/game/types";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { quaysideMap } from "@dotbot/game/content/quaysideDepot";
 import {
   BASE_OBJECT_KINDS,
   BASE_SLOT_DEFS,
   DEFAULT_BASE_SHELL,
+  SINGLETON_BASE_KINDS,
   baseShellDef,
   createBaseMap,
   isObjectAllowedInSlot,
@@ -265,14 +266,22 @@ function cityWorld(): Container {
  */
 function baseWorld(floorLabel: string): Container {
   const world = new Container();
-  const kinds = [...BASE_OBJECT_KINDS];
-  // One of everything, cycled across the slots, so no bay is left empty.
+
+  /**
+   * Prefer a kind not yet shown, so the fit-out covers as much of the kit as the
+   * slots allow. Singletons may only appear once, which is why this cannot just
+   * cycle: the base holds exactly one fabricator, and asking for two throws.
+   */
   const layout: BaseLayout = {};
-  BASE_SLOT_DEFS.forEach((slot, index) => {
-    const allowed = kinds.filter((kind) => isObjectAllowedInSlot(kind, slot));
-    const pick = allowed[index % allowed.length];
-    if (pick) layout[slot.id] = pick;
-  });
+  const shown = new Set<BaseObjectKind>();
+  for (const slot of BASE_SLOT_DEFS) {
+    const allowed = BASE_OBJECT_KINDS.filter((kind) => isObjectAllowedInSlot(kind, slot));
+    const free = allowed.filter((kind) => !SINGLETON_BASE_KINDS.has(kind) || !shown.has(kind));
+    const pick = free.find((kind) => !shown.has(kind)) ?? free[0];
+    if (!pick) continue;
+    layout[slot.id] = pick;
+    shown.add(pick);
+  }
 
   const map = createBaseMap(layout, DEFAULT_BASE_SHELL, { expanded: true });
   const art = buildMapArt(map);

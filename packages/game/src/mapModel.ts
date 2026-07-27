@@ -11,6 +11,7 @@ import type {
   Rect,
   StairLink,
   Vec2,
+  WallSegment,
 } from "./types";
 
 export const DOOR_COLLISION_DEPTH = 16;
@@ -245,6 +246,64 @@ export function contextKey(map: MapDocument, floorId: string, position: Vec2): s
 
   const building = buildingContaining(map, position);
   return building ? `outdoor:${building.id}` : "outdoor:street";
+}
+
+/**
+ * Whether an opening is a vehicle door — a roll-up a truck drives through.
+ *
+ * The authored `opening` kind is authoritative. Only fall back to the width
+ * heuristic for openings that predate the field, and treat that fallback as a
+ * migration aid rather than a rule: a 120-unit archway between two rooms is not a
+ * loading dock, and inferring otherwise gave the player base a truck apron and a
+ * polished traffic lane running the depth of its workshop.
+ *
+ * This lives here, once, because the renderer had grown two versions of the
+ * question that disagreed — the door itself checked `opening`, while the floor
+ * paint and the wear pattern went straight to the width. Same map, two answers.
+ */
+export function isVehicleDoor(doorway: Doorway): boolean {
+  if (doorway.opening) return doorway.opening === "rollup";
+  return doorway.open === true && doorway.width >= 96;
+}
+
+/**
+ * The wall band a rect-authored doorway was cut from, so a curtain can sit in the
+ * wall's thickness and nowhere else.
+ *
+ * Three conditions, and all three earn their place. The wall has to **run along**
+ * the opening, it has to **cross** the opening's line, and its run has to **reach**
+ * the opening. Matching on the cross axis alone was the bug: a doorway is the
+ * *absence* between two jambs, so no wall contains its centre, and any wall that
+ * merely passed through the door's line qualified. The player base's 120-unit
+ * archway matched the 616-unit west wall and drew a curtain the full depth of the
+ * workshop.
+ *
+ * Thinnest match wins. The band is the wall's *thickness*, so a thin partition
+ * beats a thick shell that happens to run nearby.
+ */
+export function bandFromWall(door: Doorway, walls: WallSegment[]): Rect | null {
+  const horizontal = door.dir === "h";
+  const half = door.width / 2;
+  const centre = horizontal ? door.x : door.y;
+  const TOL = 3;
+
+  const thickness = (w: WallSegment) => (horizontal ? w.h : w.w);
+  const jambs = walls.filter((w) => {
+    if (horizontal ? w.w < w.h : w.h < w.w) return false;
+    const crosses = horizontal
+      ? door.y >= w.y - TOL && door.y <= w.y + w.h + TOL
+      : door.x >= w.x - TOL && door.x <= w.x + w.w + TOL;
+    if (!crosses) return false;
+    const lo = horizontal ? w.x : w.y;
+    const hi = lo + (horizontal ? w.w : w.h);
+    return hi >= centre - half - TOL && lo <= centre + half + TOL;
+  });
+
+  const wall = jambs.sort((a, b) => thickness(a) - thickness(b))[0];
+  if (!wall) return null;
+  return horizontal
+    ? { x: door.x - half, y: wall.y, w: door.width, h: wall.h }
+    : { x: wall.x, y: door.y - half, w: wall.w, h: door.width };
 }
 
 export type StairHalves = {
