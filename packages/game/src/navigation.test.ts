@@ -13,7 +13,6 @@ function makeMap(overrides: Partial<MapDocument> = {}): MapDocument {
   return {
     id: "navigation-test",
     name: "Navigation Test",
-    visualTheme: "lit-model",
     width: WIDTH,
     height: HEIGHT,
     outdoor: {

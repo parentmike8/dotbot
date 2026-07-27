@@ -66,7 +66,6 @@ function wrap(building: ReturnType<typeof compileBuilding>): MapDocument {
   return {
     id: "source-test",
     name: "Source test",
-    visualTheme: "lit-model",
     width: 1000,
     height: 1000,
     outdoor: { roads: [], parks: [], walls: [], objects: [], dotSpawns: [] },

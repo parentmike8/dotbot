@@ -15,8 +15,8 @@ import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, SimEvent
 import type { MatchIntel } from "@dotbot/protocol";
 import { shieldArcSpan } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
-import { buildMapArt, drawStair, drawStairExitHalf, type MapArt } from "./mapArt";
-import { drawObjectDraftLayers } from "./glyphs";
+import { buildMapArt, type MapArt } from "./mapArt";
+import { drawStairDeepHalf } from "./model/modelFloor";
 import {
   applyPredictedImpactOverlays,
   classifyPredictedImpact,
@@ -40,13 +40,13 @@ export type InteractionChannelVisual = {
 };
 
 type DraftAnimation = {
-  object: import("@dotbot/game/types").MapObject;
-  staticView: Container;
-  outline: Graphics;
-  detail: Graphics;
-  outlineMask: Graphics;
-  detailMask: Graphics;
-  pencil: Graphics;
+  /** The area being built across, in world units. */
+  bounds: { x: number; y: number; w: number; h: number };
+  /** The production view itself, revealed through `mask`. */
+  view: Container;
+  mask: Graphics;
+  /** The deposition front: a bright line at the leading edge of the reveal. */
+  front: Graphics;
   startedAt: number;
   durationMs: number;
 };
@@ -184,11 +184,19 @@ export class GameRenderer {
     }
   }
 
-  /** Reusable fabrication hook: M5 placement and M6 output call this API. */
+  /**
+   * Fabrication reveal: M5 placement and M6 output call this.
+   *
+   * The object builds up across its own footprint behind a bright deposition
+   * front, the way the fabricator that made it works. This masks the *production*
+   * view rather than drawing a stand-in over it, which is the whole trick: the
+   * previous version hid the real glyph and animated a hand-decomposed copy, so
+   * every object kind needed a second drawing routine that agreed with the first,
+   * and any glyph without one simply failed to animate.
+   */
   draftObject(objectId: string, durationMs = 1200): boolean {
     const floors = this.art.buildings.flatMap((building) => building.floors);
-    const floor = floors
-      .find((candidate) => candidate.objectViews.has(objectId));
+    const floor = floors.find((candidate) => candidate.objectViews.has(objectId));
     const entry = floor?.objectViews.get(objectId);
     const stairFloor = entry ? undefined : floors.find((candidate) => candidate.stairViews.has(objectId));
     const stairEntry = stairFloor?.stairViews.get(objectId);
@@ -196,39 +204,18 @@ export class GameRenderer {
     if (!targetFloor || (!entry && !stairEntry)) return false;
     this.finishDraft(objectId);
 
-    const outline = new Graphics();
-    const detail = new Graphics();
-    const outlineMask = new Graphics();
-    const detailMask = new Graphics();
-    const pencil = new Graphics();
-    const object = entry?.object ?? {
-      id: objectId,
-      kind: "rug" as const,
-      ...stairEntry!.stair.rect,
-      solid: false,
-    };
-    if (entry) {
-      drawObjectDraftLayers(outline, detail, object);
-    } else {
-      const { x, y, w, h } = stairEntry!.stair.rect;
-      outline.rect(x, y, w, h).stroke({ color: INK.opening, width: WEIGHT.opening });
-      drawStair(detail, stairEntry!.stair);
-    }
-    outline.mask = outlineMask;
-    detail.mask = detailMask;
-    const staticView = entry?.view ?? stairEntry!.view;
-    staticView.visible = false;
-    targetFloor.furniture.addChild(outline, detail, pencil, outlineMask, detailMask);
+    const object = entry?.object;
+    const bounds = object
+      ? { x: object.x, y: object.y, w: object.w, h: object.h }
+      : { ...stairEntry!.stair.rect };
+    const view: Container = entry?.view ?? stairEntry!.view;
+
+    const mask = new Graphics();
+    const front = new Graphics();
+    view.mask = mask;
+    targetFloor.furniture.addChild(mask, front);
     this.draftAnimations.set(objectId, {
-      object,
-      staticView,
-      outline,
-      detail,
-      outlineMask,
-      detailMask,
-      pencil,
-      startedAt: performance.now(),
-      durationMs,
+      bounds, view, mask, front, startedAt: performance.now(), durationMs,
     });
     return true;
   }
@@ -438,46 +425,45 @@ export class GameRenderer {
   private updateDraftAnimations(now: number): void {
     for (const [objectId, animation] of this.draftAnimations) {
       const progress = clamp01((now - animation.startedAt) / animation.durationMs);
-      const outlineProgress = clamp01(progress / 0.55);
-      const detailProgress = clamp01((progress - 0.55) / 0.45);
-      this.drawDraftMask(animation.outlineMask, animation.object, outlineProgress);
-      this.drawDraftMask(animation.detailMask, animation.object, detailProgress);
-      this.drawPencilTick(animation.pencil, animation.object, progress < 0.55 ? outlineProgress : detailProgress);
+      const { x, y, w, h } = animation.bounds;
+      // Build along the long axis, like a printer bed. `pad` covers the glyph's
+      // cast shadow and any detail that sits a hair outside the authored rect.
+      const pad = 6;
+      const along = w >= h;
+      const swept = (along ? w : h) + pad * 2;
+      const cut = swept * progress;
+
+      animation.mask.clear();
+      if (along) animation.mask.rect(x - pad, y - pad, cut, h + pad * 2).fill({ color: 0xffffff });
+      else animation.mask.rect(x - pad, y - pad, w + pad * 2, cut).fill({ color: 0xffffff });
+
+      animation.front.clear();
+      if (progress < 1) {
+        // A hot line at the leading edge with a soft bloom behind it. Bright
+        // against every material in the kit, so it reads on a dark rack and on a
+        // pale mattress alike.
+        const at = (along ? x : y) - pad + cut;
+        const a = along ? { x: at, y: y - pad, w: 1.6, h: h + pad * 2 } : { x: x - pad, y: at, w: w + pad * 2, h: 1.6 };
+        const glowDepth = 9;
+        const glow = along
+          ? { x: at - glowDepth, y: a.y, w: glowDepth, h: a.h }
+          : { x: a.x, y: at - glowDepth, w: a.w, h: glowDepth };
+        animation.front.rect(glow.x, glow.y, glow.w, glow.h).fill({ color: 0xffffff, alpha: 0.3 });
+        animation.front.rect(a.x, a.y, a.w, a.h).fill({ color: 0xffffff, alpha: 0.95 });
+      }
+
       if (progress >= 1) this.finishDraft(objectId);
-    }
-  }
-
-  private drawDraftMask(mask: Graphics, object: import("@dotbot/game/types").MapObject, progress: number): void {
-    mask.clear();
-    const pad = 4;
-    if (object.w >= object.h) {
-      mask.rect(object.x - pad, object.y - pad, (object.w + pad * 2) * progress, object.h + pad * 2).fill({ color: 0xffffff });
-    } else {
-      mask.rect(object.x - pad, object.y - pad, object.w + pad * 2, (object.h + pad * 2) * progress).fill({ color: 0xffffff });
-    }
-  }
-
-  private drawPencilTick(pencil: Graphics, object: import("@dotbot/game/types").MapObject, progress: number): void {
-    pencil.clear();
-    if (progress >= 1) return;
-    if (object.w >= object.h) {
-      const x = object.x + object.w * progress;
-      pencil.moveTo(x, object.y - 5).lineTo(x + 4, object.y + 3).stroke({ color: INK.hairline, width: WEIGHT.hairline });
-    } else {
-      const y = object.y + object.h * progress;
-      pencil.moveTo(object.x - 5, y).lineTo(object.x + 3, y + 4).stroke({ color: INK.hairline, width: WEIGHT.hairline });
     }
   }
 
   private finishDraft(objectId: string): void {
     const animation = this.draftAnimations.get(objectId);
     if (!animation) return;
-    animation.staticView.visible = true;
-    animation.outline.destroy();
-    animation.detail.destroy();
-    animation.outlineMask.destroy();
-    animation.detailMask.destroy();
-    animation.pencil.destroy();
+    // Release the mask before destroying it, or Pixi keeps clipping to a dead
+    // Graphics and the finished object never appears.
+    animation.view.mask = null;
+    animation.mask.destroy();
+    animation.front.destroy();
     this.draftAnimations.delete(objectId);
   }
 
@@ -493,7 +479,7 @@ export class GameRenderer {
     const plan = planRef ? floorPlanById(this.map, planRef.planId) : null;
 
     for (const stair of plan?.stairs ?? []) {
-      drawStairExitHalf(this.stairOverlayGfx, stair);
+      drawStairDeepHalf(this.stairOverlayGfx, stair);
     }
   }
 

@@ -477,19 +477,6 @@ export type MapDocument = {
   extractionPoints: ExtractionPoint[];
   insertionPoints: InsertionPoint[];
   botSpawns: BotSpawn[];
-  /**
-   * The drawing language.
-   *
-   * `lit-model` is the target and the only one every shipped map uses: a
-   * monochrome physical model, one light from the north-west, silhouette equal to
-   * collider. `plan` is the pen-plotter line drawing it replaced, kept solely
-   * because the player base still has object kinds with no lit-model glyph yet.
-   * It goes when those are ported; nothing new should adopt it.
-   *
-   * Required rather than optional so a map states its language instead of
-   * inheriting one by falling through a renderer branch.
-   */
-  visualTheme: "plan" | "lit-model";
   /** Present only on maps that support slot-based furniture placement. */
   placementSlots?: PlacementSlot[];
   /** Non-lootable, floor-aware interaction affordances derived from map data. */

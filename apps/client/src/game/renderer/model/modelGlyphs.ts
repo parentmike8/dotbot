@@ -6,6 +6,7 @@ import {
   cylinder,
   inlay,
   jitter,
+  jitterSigned,
   LIFT,
   MAT,
   seam,
@@ -1275,6 +1276,544 @@ function skylightGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
 }
 
 // ---------------------------------------------------------------------------
+// The player base
+// ---------------------------------------------------------------------------
+
+/**
+ * Every base fixture materializes into a placement slot, so they all arrive as
+ * the same two rectangles: roughly 86x38 against a wall, or 108x72 on the floor,
+ * in either orientation. Silhouette cannot do the identifying work here the way
+ * it does for a rack or a forklift.
+ *
+ * So these glyphs distinguish themselves on the top face, and they distinguish
+ * by *one* strong cue each, placed where the eye lands: the bright build plate of
+ * a fabricator, the pillow of a bunk, the two arms of a couch, the lit board
+ * edges of a rack. A second cue is detail; it is never the identification.
+ *
+ * They also fill their slot rather than sitting daintily inside it, because the
+ * slot is the collider. A small mast drawn inside an 86x38 box would be a
+ * silhouette that lies about what stops a bot.
+ */
+
+/** The long-axis-aware slot geometry every base glyph starts from. */
+function bay(o: MapObject): {
+  r: Rect;
+  across: boolean;
+  /** True when the presented face is the north/west one. */
+  farSide: boolean;
+} {
+  const facing: Facing = o.facing ?? "S";
+  return { r: rect(o), across: o.w >= o.h, farSide: facing === "S" || facing === "E" };
+}
+
+/** A band along one end of the long axis, at `depth`, measured from the head end. */
+function endBand(r: Rect, across: boolean, atStart: boolean, depth: number): Rect {
+  if (across) {
+    return { x: atStart ? r.x : r.x + r.w - depth, y: r.y, w: depth, h: r.h };
+  }
+  return { x: r.x, y: atStart ? r.y : r.y + r.h - depth, w: r.w, h: depth };
+}
+
+/** A band along one side of the long axis (the back rail, the tool trough). */
+function sideBand(r: Rect, across: boolean, atStart: boolean, depth: number): Rect {
+  if (across) {
+    return { x: r.x, y: atStart ? r.y : r.y + r.h - depth, w: r.w, h: depth };
+  }
+  return { x: atStart ? r.x : r.x + r.w - depth, y: r.y, w: depth, h: r.h };
+}
+
+/**
+ * A bunk. The pillow at the head end is the whole glyph — a mattress without one
+ * is a table — so it takes real area and the brightest value on the object.
+ */
+function bunkGlyph(mat: Material, lift: number, thin: boolean): GlyphFn {
+  return (g, pad, o) => {
+    const { r, across, farSide } = bay(o);
+    contact(pad, r, lift);
+    const top = volume(g, r, mat, lift, 1.5);
+
+    // Mattress, inset so the frame reads as a frame on all four sides.
+    const bed = inset(top, thin ? 1.6 : 2.4);
+    inlay(g, bed, shade(MAT.fibre.top, thin ? 0.99 : 1.03), 1.5);
+
+    // Pillow at the head: the end away from the side the occupant steps in from.
+    const head = endBand(bed, across, !farSide, (across ? bed.w : bed.h) * 0.26);
+    sit(g, head, 2);
+    inlay(g, head, MAT.fibre.lit, 1.5);
+    seam(
+      g,
+      across ? head.x + head.w : head.x,
+      across ? head.y : head.y + head.h,
+      across ? head.x + head.w : head.x + head.w,
+      across ? head.y + head.h : head.y + head.h,
+      shade(MAT.fibre.front, 0.86),
+      0.9,
+    );
+
+    // Turned sheet: one bright fold across the mattress a third of the way down.
+    const fold = across
+      ? { x: bed.x + bed.w * (farSide ? 0.34 : 0.62), y: bed.y, w: 2.2, h: bed.h }
+      : { x: bed.x, y: bed.y + bed.h * (farSide ? 0.34 : 0.62), w: bed.w, h: 2.2 };
+    inlay(g, fold, MAT.fibre.lit);
+
+    if (thin) {
+      // A cot is canvas on a folding frame: the rails show through at both ends.
+      for (const atStart of [true, false]) {
+        const rail = endBand(top, across, atStart, 2);
+        inlay(g, rail, MAT.steelDark.top);
+      }
+    }
+  };
+}
+
+/**
+ * A couch reads by its arms. Two thick blocks at the ends plus a back rail on
+ * the far side leave a seat pad that is obviously for sitting in, at a size where
+ * a bed would just be a big flat pad.
+ */
+const couchGlyph: GlyphFn = (g, pad, o) => {
+  const { r, across, farSide } = bay(o);
+  contact(pad, r, LIFT.seat);
+  const top = volume(g, r, MAT.painted, LIFT.seat, 2);
+
+  const backDepth = Math.max(5, (across ? top.h : top.w) * 0.3);
+  const armDepth = Math.max(5, (across ? top.w : top.h) * 0.13);
+
+  // Seat pad first, so the arms and back overlap it and read as standing proud.
+  const seatPad = across
+    ? {
+        x: top.x + armDepth,
+        y: farSide ? top.y + backDepth : top.y,
+        w: top.w - armDepth * 2,
+        h: top.h - backDepth,
+      }
+    : {
+        x: farSide ? top.x + backDepth : top.x,
+        y: top.y + armDepth,
+        w: top.w - backDepth,
+        h: top.h - armDepth * 2,
+      };
+  inlay(g, seatPad, shade(MAT.fibre.top, 0.99), 1.5);
+  // One cushion division, so the pad is upholstery rather than a slab.
+  const half = across
+    ? { x: seatPad.x + seatPad.w / 2 - 0.5, y: seatPad.y, w: 1, h: seatPad.h }
+    : { x: seatPad.x, y: seatPad.y + seatPad.h / 2 - 0.5, w: seatPad.w, h: 1 };
+  inlay(g, half, shade(MAT.fibre.front, 0.9));
+
+  const back = sideBand(top, across, farSide, backDepth);
+  inlay(g, back, MAT.painted.top, 1.5);
+  inlay(g, across ? { ...back, h: 1.1 } : { ...back, w: 1.1 }, MAT.painted.lit);
+  for (const atStart of [true, false]) {
+    const arm = endBand(top, across, atStart, armDepth);
+    inlay(g, arm, shade(MAT.painted.top, 1.04), 1.5);
+    inlay(g, across ? { ...arm, h: 1 } : { ...arm, w: 1 }, MAT.painted.lit);
+  }
+};
+
+/**
+ * A conference table: one large uninterrupted top. What names it is the service
+ * spine — a cable channel with power grommets down the centreline — because that
+ * is the only thing a big empty top can carry that a big empty desk cannot.
+ */
+const conferenceTableGlyph: GlyphFn = (g, pad, o) => {
+  const { r, across } = bay(o);
+  contact(pad, r, LIFT.bench);
+  const top = volume(g, r, MAT.wood, LIFT.bench, 3);
+  inlay(g, { x: r.x, y: r.y + r.h - LIFT.bench, w: r.w, h: 1.3 }, MAT.wood.lit);
+
+  const spineDepth = Math.max(5, (across ? top.h : top.w) * 0.2);
+  const spine = across
+    ? { x: top.x + top.w * 0.08, y: top.y + (top.h - spineDepth) / 2, w: top.w * 0.84, h: spineDepth }
+    : { x: top.x + (top.w - spineDepth) / 2, y: top.y + top.h * 0.08, w: spineDepth, h: top.h * 0.84 };
+  inlay(g, spine, shade(MAT.wood.top, 0.93), 1);
+  const span = across ? spine.w : spine.h;
+  const ports = Math.max(2, Math.floor(span / 26));
+  for (let i = 0; i < ports; i += 1) {
+    const at = (span / ports) * (i + 0.5);
+    const cx = across ? spine.x + at : spine.x + spine.w / 2;
+    const cy = across ? spine.y + spine.h / 2 : spine.y + at;
+    g.circle(cx, cy, spineDepth * 0.26).fill({ color: DEEP_SEAM });
+    g.circle(cx, cy, spineDepth * 0.26).stroke({ color: MAT.steelDark.lit, width: 0.7 });
+  }
+};
+
+/**
+ * The planning table. Its collision is only the inset tabletop — a bot walks the
+ * chair gutter around it — so the glyph must draw that gutter as open floor.
+ * Filling the slot here would be the one case where honesty runs the other way.
+ */
+const planningTableGlyph: GlyphFn = (g, pad, o) => {
+  const slot = rect(o);
+  const chair = Math.min(30, Math.max(26, Math.min(slot.h * 0.4, slot.w * 0.26)));
+  const surface: Rect = {
+    x: slot.x + chair * 0.52,
+    y: slot.y + chair * 0.48,
+    w: slot.w - chair * 1.04,
+    h: slot.h - chair * 0.96,
+  };
+  const across = surface.w >= surface.h;
+
+  contact(pad, surface, LIFT.bench);
+  const top = volume(g, surface, MAT.steelDark, LIFT.bench, 2);
+
+  // A backlit plan surface: the brightest thing in the room, which is what makes
+  // this the table you walk to.
+  const glass = inset(top, 2.2);
+  inlay(g, glass, V.glass, 1);
+  inlay(g, inset(glass, 1.6), shade(V.glass, 1.02), 1);
+  // Plan graticule, kept to two lines each way so it reads as a drawing surface
+  // rather than as a grid pattern.
+  for (let i = 1; i < 3; i += 1) {
+    seam(g, glass.x + (glass.w / 3) * i, glass.y + 1, glass.x + (glass.w / 3) * i, glass.y + glass.h - 1, shade(V.glass, 0.9));
+    seam(g, glass.x + 1, glass.y + (glass.h / 3) * i, glass.x + glass.w - 1, glass.y + (glass.h / 3) * i, shade(V.glass, 0.9));
+  }
+  // Bezel rail along the long side, where the controls live.
+  const rail = sideBand(top, across, true, 2);
+  inlay(g, rail, MAT.steelDeep.top);
+  inlay(g, across ? { ...rail, h: 0.9 } : { ...rail, w: 0.9 }, MAT.steelDark.lit);
+};
+
+/**
+ * A drafting board: a tilted surface. The tilt is carried by a value ramp up the
+ * board plus a bright leading lip at the low edge, which is the only honest way to
+ * show a slope in a plan view — a flat top with a line on it reads as a table.
+ */
+const draftingTableGlyph: GlyphFn = (g, pad, o) => {
+  const { r, across, farSide } = bay(o);
+  contact(pad, r, LIFT.bench);
+  const top = volume(g, r, MAT.steelDark, LIFT.bench, 1.5);
+
+  // Tool trough along the low edge, the side the draughtsman stands at.
+  const troughDepth = Math.max(4, (across ? top.h : top.w) * 0.16);
+  const trough = sideBand(top, across, !farSide, troughDepth);
+  const board = across
+    ? { x: top.x, y: farSide ? top.y : top.y + troughDepth, w: top.w, h: top.h - troughDepth }
+    : { x: farSide ? top.x : top.x + troughDepth, y: top.y, w: top.w - troughDepth, h: top.h };
+
+  // The ramp: five bands from the high (far) edge to the low edge.
+  const steps = 5;
+  for (let i = 0; i < steps; i += 1) {
+    // Brightest at the high edge — it faces the light most directly.
+    const k = 1.06 - (i / (steps - 1)) * 0.16;
+    const t = farSide ? i : steps - 1 - i;
+    const slice = across
+      ? { x: board.x, y: board.y + (board.h / steps) * t, w: board.w, h: board.h / steps + 0.5 }
+      : { x: board.x + (board.w / steps) * t, y: board.y, w: board.w / steps + 0.5, h: board.h };
+    inlay(g, slice, shade(MAT.fibre.top, k));
+  }
+  // Leading lip at the low edge of the board: the sheet's own thickness.
+  const lip = sideBand(board, across, !farSide, 1.2);
+  inlay(g, lip, MAT.fibre.lit);
+
+  inlay(g, trough, MAT.steelDeep.top);
+  const span = across ? trough.w : trough.h;
+  for (let i = 0; i < 3; i += 1) {
+    const at = span * (0.22 + i * 0.26);
+    const pen = across
+      ? { x: trough.x + at, y: trough.y + troughDepth * 0.3, w: 9, h: 1.4 }
+      : { x: trough.x + troughDepth * 0.3, y: trough.y + at, w: 1.4, h: 9 };
+    inlay(g, pen, i === 1 ? MAT.core.lit : MAT.steelLit.top);
+  }
+};
+
+/**
+ * A repair bench. Deliberately the fitter's bench with its stock swapped: a parts
+ * tray of salvaged plates where the workbench has raw work. Same silhouette, same
+ * vise, because they are the same object doing a different job — inventing a
+ * distinct outline for it would be a lie about the furniture.
+ */
+const repairBenchGlyph: GlyphFn = (g, pad, o) => {
+  workbenchGlyph(g, pad, o);
+  const { r, across, farSide } = bay(o);
+  const top: Rect = { x: r.x, y: r.y, w: r.w, h: Math.max(1, r.h - Math.min(LIFT.bench, Math.min(r.w, r.h) * 0.45)) };
+
+  // Parts tray on the working half, opposite the vise end.
+  const trayLong = Math.min(30, (across ? top.w : top.h) * 0.32);
+  const trayDeep = Math.min(16, (across ? top.h : top.w) * 0.42);
+  const tray: Rect = across
+    ? {
+        x: farSide ? top.x + top.w - trayLong - 4 : top.x + 4,
+        y: top.y + top.h - trayDeep - 2,
+        w: trayLong,
+        h: trayDeep,
+      }
+    : {
+        x: top.x + top.w - trayDeep - 2,
+        y: farSide ? top.y + top.h - trayLong - 4 : top.y + 4,
+        w: trayDeep,
+        h: trayLong,
+      };
+  sit(g, tray, 3);
+  const pan = volume(g, tray, MAT.steelDeep, 3, 1);
+  inlay(g, inset(pan, 1), shade(MAT.steelDeep.top, 0.86), 1);
+  // Salvaged plates, stacked loose.
+  for (let i = 0; i < 3; i += 1) {
+    const jx = jitterSigned(o.id, 40 + i) * 1.6;
+    const plate = across
+      ? { x: pan.x + 2 + i * ((pan.w - 4) / 3) + jx, y: pan.y + 1.8, w: (pan.w - 4) / 3 - 1.4, h: pan.h - 3.6 }
+      : { x: pan.x + 1.8, y: pan.y + 2 + i * ((pan.h - 4) / 3) + jx, w: pan.w - 3.6, h: (pan.h - 4) / 3 - 1.4 };
+    inlay(g, plate, MAT.plateStock.top);
+    inlay(g, across ? { ...plate, h: 0.8 } : { ...plate, w: 0.8 }, MAT.plateStock.lit);
+  }
+};
+
+/**
+ * A cold cabinet. The door seam plus a full-height handle is the cue: it is the
+ * only base fixture whose entire top face is one blank panel with a vertical
+ * break, and the vent grille at the base confirms it.
+ */
+const fridgeGlyph: GlyphFn = (g, pad, o) => {
+  const { r, across } = bay(o);
+  contact(pad, r, LIFT.cabinet);
+  const top = volume(g, r, MAT.steelLit, LIFT.cabinet, 1);
+  inlay(g, inset(top, 1.4), shade(MAT.steelLit.top, 0.97), 1);
+
+  // Door break slightly off centre — a fridge/freezer pair, not a symmetrical box.
+  const at = 0.58;
+  if (across) {
+    seam(g, top.x + top.w * at, top.y + 1, top.x + top.w * at, top.y + top.h - 1, shade(MAT.steelLit.front, 0.7), 1.2);
+  } else {
+    seam(g, top.x + 1, top.y + top.h * at, top.x + top.w - 1, top.y + top.h * at, shade(MAT.steelLit.front, 0.7), 1.2);
+  }
+  // Handles: two bright bars flanking the seam.
+  for (const side of [-1, 1]) {
+    const handle = across
+      ? { x: top.x + top.w * at + side * 4 - (side > 0 ? 0 : 2.2), y: top.y + top.h * 0.2, w: 2.2, h: top.h * 0.6 }
+      : { x: top.x + top.w * 0.2, y: top.y + top.h * at + side * 4 - (side > 0 ? 0 : 2.2), w: top.w * 0.6, h: 2.2 };
+    sit(g, handle, 2);
+    inlay(g, handle, MAT.steelLit.lit, 1);
+  }
+  // Condenser grille on the front face — the one detail allowed down there,
+  // because it is what tells you which way the appliance is plumbed.
+  const lift = Math.min(LIFT.cabinet, Math.min(r.w, r.h) * 0.45);
+  const grille: Rect = { x: r.x + r.w * 0.12, y: r.y + r.h - lift + 1.2, w: r.w * 0.3, h: Math.max(1.4, lift - 2.6) };
+  inlay(g, grille, shade(MAT.steelLit.front, 0.78));
+};
+
+/**
+ * The fabricator: the base's whole point. A dark machine box around a bright
+ * build plate under a gantry rail. The plate is the brightest value on the floor
+ * so the eye goes there first, and the gantry crossing it says "this makes things"
+ * rather than "this stores things".
+ */
+const fabricatorGlyph: GlyphFn = (g, pad, o) => {
+  const { r, across } = bay(o);
+  contact(pad, r, LIFT.machine);
+  const top = volume(g, r, MAT.paintedDark, LIFT.machine, 1.5);
+  inlay(g, inset(top, 1.3), shade(MAT.paintedDark.top, 0.9), 1);
+
+  // Build chamber: recessed, then the lit plate inside it.
+  const chamber = across
+    ? { x: top.x + top.w * 0.2, y: top.y + 2.4, w: top.w * 0.6, h: Math.max(4, top.h - 4.8) }
+    : { x: top.x + 2.4, y: top.y + top.h * 0.2, w: Math.max(4, top.w - 4.8), h: top.h * 0.6 };
+  inlay(g, chamber, DEEP_SEAM, 1);
+  const plate = inset(chamber, 1.8);
+  inlay(g, plate, MAT.core.top, 0.8);
+  inlay(g, inset(plate, 1.4), MAT.core.lit, 0.8);
+
+  // Gantry rail across the short axis of the chamber, with its carriage.
+  const rail = across
+    ? { x: chamber.x - 1.5, y: chamber.y + chamber.h * 0.42, w: chamber.w + 3, h: 2.4 }
+    : { x: chamber.x + chamber.w * 0.42, y: chamber.y - 1.5, w: 2.4, h: chamber.h + 3 };
+  sit(g, rail, 3);
+  inlay(g, rail, MAT.steelDeep.top);
+  inlay(g, across ? { ...rail, h: 0.8 } : { ...rail, w: 0.8 }, MAT.steelDark.lit);
+  const carriage = across
+    ? { x: rail.x + rail.w * 0.34, y: rail.y - 1.8, w: 7, h: rail.h + 3.6 }
+    : { x: rail.x - 1.8, y: rail.y + rail.h * 0.34, w: rail.w + 3.6, h: 7 };
+  sit(g, carriage, 4);
+  volume(g, carriage, MAT.steelDark, 3, 1);
+
+  // Status strip on the machine body, the side away from the chamber.
+  const strip = across
+    ? { x: top.x + 2.4, y: top.y + top.h * 0.34, w: top.w * 0.12, h: top.h * 0.3 }
+    : { x: top.x + top.w * 0.34, y: top.y + 2.4, w: top.w * 0.3, h: top.h * 0.12 };
+  inlay(g, strip, MAT.core.lit, 0.6);
+};
+
+/**
+ * A bay console: the desk you stand at to fit out a DotBot. An angled panel of
+ * readouts, so the value ramp runs up the panel the way the drafting board's
+ * does, plus a key block. Lit readouts distinguish it from a plain desk.
+ */
+const bayConsoleGlyph: GlyphFn = (g, pad, o) => {
+  const { r, across, farSide } = bay(o);
+  contact(pad, r, LIFT.cabinet);
+  const top = volume(g, r, MAT.steelDeep, LIFT.cabinet, 1.5);
+
+  const panelDepth = (across ? top.h : top.w) * 0.56;
+  const panel = sideBand(top, across, farSide, panelDepth);
+  // Two-step ramp is enough at this size; five would band visibly.
+  for (let i = 0; i < 2; i += 1) {
+    const t = farSide ? i : 1 - i;
+    const slice = across
+      ? { x: panel.x + 1.4, y: panel.y + (panel.h / 2) * t, w: panel.w - 2.8, h: panel.h / 2 }
+      : { x: panel.x + (panel.w / 2) * t, y: panel.y + 1.4, w: panel.w / 2, h: panel.h - 2.8 };
+    inlay(g, slice, shade(MAT.steelDark.top, i === 0 ? 1.04 : 0.94));
+  }
+  // Readouts: three bright cells in a row along the panel.
+  const span = across ? panel.w : panel.h;
+  for (let i = 0; i < 3; i += 1) {
+    const at = span * (0.16 + i * 0.28);
+    const cell = across
+      ? { x: panel.x + at, y: panel.y + panelDepth * 0.24, w: span * 0.18, h: panelDepth * 0.3 }
+      : { x: panel.x + panelDepth * 0.24, y: panel.y + at, w: panelDepth * 0.3, h: span * 0.18 };
+    inlay(g, cell, DEEP_SEAM, 0.6);
+    inlay(g, inset(cell, 0.9), i === 1 ? MAT.core.lit : MAT.board.top, 0.6);
+  }
+  // Key block on the operator side.
+  const keys = sideBand(top, across, !farSide, (across ? top.h : top.w) * 0.3);
+  inlay(g, keys, shade(MAT.steelDeep.top, 1.02));
+  const keySpan = across ? keys.w : keys.h;
+  const count = Math.max(4, Math.floor(keySpan / 11));
+  for (let i = 0; i < count; i += 1) {
+    const at = (keySpan / count) * (i + 0.5);
+    const key = across
+      ? { x: keys.x + at - 2.6, y: keys.y + 1.2, w: 5.2, h: Math.max(1.4, keys.h - 2.4) }
+      : { x: keys.x + 1.2, y: keys.y + at - 2.6, w: Math.max(1.4, keys.w - 2.4), h: 5.2 };
+    inlay(g, key, MAT.steelDark.top, 0.6);
+    inlay(g, across ? { ...key, h: 0.7 } : { ...key, w: 0.7 }, MAT.steelDark.lit);
+  }
+};
+
+/**
+ * A reception counter: a worktop with a raised transaction shelf on the public
+ * side. The step in the top face is the cue — it is the only base fixture with two
+ * surfaces at different heights.
+ */
+const receptionDeskGlyph: GlyphFn = (g, pad, o) => {
+  const { r, across, farSide } = bay(o);
+  contact(pad, r, LIFT.cabinet);
+  const top = volume(g, r, MAT.wood, LIFT.cabinet, 1.5);
+
+  // Working surface (staff side), lower and plainer.
+  const workDepth = (across ? top.h : top.w) * 0.52;
+  const work = sideBand(top, across, farSide, workDepth);
+  inlay(g, work, shade(MAT.wood.top, 0.95));
+  // Ledger and a terminal on the working side.
+  const pad2 = across
+    ? { x: work.x + work.w * 0.14, y: work.y + workDepth * 0.28, w: work.w * 0.2, h: workDepth * 0.42 }
+    : { x: work.x + workDepth * 0.28, y: work.y + work.h * 0.14, w: workDepth * 0.42, h: work.h * 0.2 };
+  inlay(g, pad2, MAT.fibre.lit, 0.6);
+
+  // Raised transaction shelf on the public side, drawn as its own small volume so
+  // it casts onto the counter below it.
+  const shelf = sideBand(top, across, !farSide, (across ? top.h : top.w) * 0.4);
+  sit(g, shelf, 3);
+  const shelfTop = volume(g, shelf, MAT.woodDark, 3, 1);
+  inlay(g, inset(shelfTop, 1.2), shade(MAT.woodDark.top, 1.05), 1);
+};
+
+/**
+ * A rack of boards. Lit board edges in dark bays: the pattern is bright-dark
+ * alternation at a tighter pitch than any shelf in the world, which is what makes
+ * it read as electronics rather than storage.
+ */
+const serverRackGlyph: GlyphFn = (g, pad, o) => {
+  const { r, across } = bay(o);
+  contact(pad, r, LIFT.cabinet);
+  const top = volume(g, r, MAT.steelDeep, LIFT.cabinet, 1);
+
+  const inner = inset(top, 2);
+  inlay(g, inner, 0x1b1f23, 0.8);
+  const span = across ? inner.w : inner.h;
+  const bays = Math.max(4, Math.floor(span / 9));
+  for (let i = 0; i < bays; i += 1) {
+    const at = (span / bays) * i;
+    const pitch = span / bays;
+    const board = across
+      ? { x: inner.x + at + 0.8, y: inner.y + 1, w: pitch - 1.6, h: Math.max(1.2, inner.h - 2) }
+      : { x: inner.x + 1, y: inner.y + at + 0.8, w: Math.max(1.2, inner.w - 2), h: pitch - 1.6 };
+    inlay(g, board, MAT.board.top);
+    // The lit leading edge of each board, and an activity mark on some of them.
+    inlay(g, across ? { ...board, h: 0.9 } : { ...board, w: 0.9 }, MAT.board.lit);
+    if (jitter(o.id, 60 + i) > 0.45) {
+      const led = across
+        ? { x: board.x + board.w * 0.3, y: board.y + board.h * 0.55, w: board.w * 0.4, h: 1.1 }
+        : { x: board.x + board.w * 0.55, y: board.y + board.h * 0.3, w: 1.1, h: board.h * 0.4 };
+      inlay(g, led, MAT.core.lit);
+    }
+  }
+};
+
+/**
+ * A listening post: a console with a dish. The dish is a circle on a rectangle,
+ * and it is the only round thing among the base's fixtures, so it identifies at a
+ * glance even though the box around it is the standard wall bay.
+ */
+const listeningPostGlyph: GlyphFn = (g, pad, o) => {
+  const { r, across, farSide } = bay(o);
+  contact(pad, r, LIFT.cabinet);
+  const top = volume(g, r, MAT.painted, LIFT.cabinet, 1.5);
+  inlay(g, inset(top, 1.4), shade(MAT.painted.top, 0.93), 1);
+
+  // Dish at the far end, mounted on a short pedestal.
+  const radius = Math.min(across ? top.h : top.w, (across ? top.w : top.h) * 0.4) * 0.42;
+  const dishAt = across
+    ? { x: farSide ? top.x + radius + 3 : top.x + top.w - radius - 3, y: top.y + top.h / 2 }
+    : { x: top.x + top.w / 2, y: farSide ? top.y + radius + 3 : top.y + top.h - radius - 3 };
+  sitRound(g, dishAt.x, dishAt.y, radius, 4);
+  cylinder(g, dishAt.x, dishAt.y, radius, MAT.steelLit, 4);
+  // Reflector rings and the feed horn at the centre.
+  g.circle(dishAt.x, dishAt.y, radius * 0.62).stroke({ color: shade(MAT.steelLit.front, 0.8), width: 0.8 });
+  g.circle(dishAt.x, dishAt.y, radius * 0.3).fill({ color: DEEP_SEAM });
+  g.circle(dishAt.x, dishAt.y, radius * 0.14).fill({ color: MAT.core.lit });
+
+  // Operator side: a headphone hook and two tuning readouts.
+  const consoleBand = sideBand(top, across, !farSide, (across ? top.h : top.w) * 0.34);
+  for (let i = 0; i < 2; i += 1) {
+    const cell = across
+      ? { x: consoleBand.x + consoleBand.w * (0.52 + i * 0.2), y: consoleBand.y + consoleBand.h * 0.3, w: consoleBand.w * 0.14, h: consoleBand.h * 0.4 }
+      : { x: consoleBand.x + consoleBand.w * 0.3, y: consoleBand.y + consoleBand.h * (0.52 + i * 0.2), w: consoleBand.w * 0.4, h: consoleBand.h * 0.14 };
+    inlay(g, cell, DEEP_SEAM, 0.6);
+    inlay(g, inset(cell, 0.8), MAT.board.lit, 0.6);
+  }
+};
+
+/**
+ * A signal mast: a heavy plinth with a mast rising out of it and antenna arms
+ * radiating from the mast. The arms are what read at play zoom — a bare cylinder
+ * on a box is a bollard on a plinth.
+ */
+const signalMastGlyph: GlyphFn = (g, pad, o) => {
+  const { r } = bay(o);
+  contact(pad, r, LIFT.cabinet);
+  const top = volume(g, r, MAT.steelDark, LIFT.cabinet, 1.5);
+  // Bolted base plate.
+  const plate = inset(top, 2);
+  inlay(g, plate, shade(MAT.steelDark.top, 0.9), 1);
+  for (const [fx, fy] of [[0.12, 0.2], [0.88, 0.2], [0.12, 0.8], [0.88, 0.8]] as Array<[number, number]>) {
+    g.circle(plate.x + plate.w * fx, plate.y + plate.h * fy, 1.1).fill({ color: MAT.steelLit.lit });
+  }
+
+  const cx = top.x + top.w / 2;
+  const cy = top.y + top.h / 2;
+  const mastR = Math.min(top.w, top.h) * 0.19;
+
+  // Antenna arms first so the mast overlaps them at the hub.
+  const arms = 6;
+  const reach = Math.min(top.w, top.h) * 0.46;
+  for (let i = 0; i < arms; i += 1) {
+    const angle = (i / arms) * Math.PI * 2 + 0.26;
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    // Shadow, then the arm, so each element reads as standing off the plinth.
+    g.moveTo(cx + dx * mastR + 0.9, cy + dy * mastR + 1.4)
+      .lineTo(cx + dx * reach + 0.9, cy + dy * reach + 1.4)
+      .stroke({ color: 0x000000, alpha: 0.17, width: 2 });
+    g.moveTo(cx + dx * mastR, cy + dy * mastR)
+      .lineTo(cx + dx * reach, cy + dy * reach)
+      .stroke({ color: MAT.steelLit.top, width: 1.8 });
+    // Element tips catch the light.
+    g.circle(cx + dx * reach, cy + dy * reach, 1.3).fill({ color: MAT.steelLit.lit });
+  }
+
+  sitRound(g, cx, cy, mastR, 7);
+  cylinder(g, cx, cy, mastR, MAT.steelLit, 6);
+  g.circle(cx, cy, mastR * 0.4).fill({ color: MAT.core.lit });
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -1332,6 +1871,22 @@ export const modelGlyphs: Partial<Record<MapObject["kind"], GlyphFn>> = {
   kiosk: kioskGlyph,
   hvac: hvacGlyph,
   skylight: skylightGlyph,
+
+  // The player base.
+  bed: bunkGlyph(MAT.painted, LIFT.seat, false),
+  cot: bunkGlyph(MAT.steelDark, LIFT.low, true),
+  couch: couchGlyph,
+  conferenceTable: conferenceTableGlyph,
+  planningTable: planningTableGlyph,
+  draftingTable: draftingTableGlyph,
+  repairBench: repairBenchGlyph,
+  fridge: fridgeGlyph,
+  fabricator: fabricatorGlyph,
+  bayConsole: bayConsoleGlyph,
+  receptionDesk: receptionDeskGlyph,
+  serverRack: serverRackGlyph,
+  listeningPost: listeningPostGlyph,
+  signalMast: signalMastGlyph,
 };
 
 export function drawModelObject(g: Graphics, pad: ShadowPad, o: MapObject): void {

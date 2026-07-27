@@ -6,7 +6,6 @@ function testMap(objects: MapObject[]): MapDocument {
   return {
     id: "quality-test",
     name: "Quality test",
-    visualTheme: "lit-model",
     width: 420,
     height: 320,
     outdoor: { roads: [], parks: [], walls: [], objects: [], dotSpawns: [] },

@@ -132,7 +132,6 @@ export const quaysideMap: MapDocument = {
   name: "Quayside",
   width: 1280,
   height: 1320,
-  visualTheme: "lit-model",
   outdoor: {
     roads: [{ id: "quay-road", x: 1040, y: 0, w: 150, h: 1320 }],
     parks: [],

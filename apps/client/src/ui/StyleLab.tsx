@@ -1,9 +1,17 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics, Text } from "pixi.js";
 import { shieldArcSpan } from "@dotbot/game/shields";
-import type { Building, DotSpawn, FloorPlan, Rect, Vec2 } from "@dotbot/game/types";
+import type { BaseLayout, Building, DotSpawn, FloorPlan, Rect, Vec2 } from "@dotbot/game/types";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { quaysideMap } from "@dotbot/game/content/quaysideDepot";
+import {
+  BASE_OBJECT_KINDS,
+  BASE_SLOT_DEFS,
+  DEFAULT_BASE_SHELL,
+  baseShellDef,
+  createBaseMap,
+  isObjectAllowedInSlot,
+} from "@dotbot/game/content/base";
 import { buildMapArt } from "../game/renderer/mapArt";
 import { buildFloorModel } from "../game/renderer/model/modelFloor";
 import { buildGeometryProof } from "../game/renderer/model/geometryProof";
@@ -18,7 +26,7 @@ import { V } from "../game/renderer/model/tone";
  * simulation, so the same floor can be re-rendered and screenshotted hundreds
  * of times while an art language is being tuned. `?lab` selects it.
  *
- *   ?lab&view=model|plan|split   which drawing language
+ *   ?lab&view=model|city|base|quay|geometry   what to draw
  *   ?lab&zoom=fit|play|close     camera
  *   ?lab&focus=racks|dock|shop|office
  *   ?lab&floor=GROUND|B1
@@ -28,7 +36,7 @@ import { V } from "../game/renderer/model/tone";
 const BUILDING_ID = "lot6";
 
 type LabParams = {
-  view: "model" | "plan" | "split" | "city" | "cityPlan" | "geometry" | "quay";
+  view: "model" | "city" | "base" | "geometry" | "quay";
   zoom: "fit" | "play" | "close";
   focus: string;
   floorLabel: string;
@@ -40,7 +48,7 @@ function readParams(search: string): LabParams {
   const view = p.get("view");
   const zoom = p.get("zoom");
   return {
-    view: view === "plan" || view === "split" || view === "city" || view === "cityPlan" || view === "geometry" || view === "quay" ? view : "model",
+    view: view === "city" || view === "base" || view === "geometry" || view === "quay" ? view : "model",
     zoom: zoom === "play" || zoom === "close" ? zoom : "fit",
     focus: p.get("focus") ?? "racks",
     floorLabel: (p.get("floor") ?? "GROUND").toUpperCase(),
@@ -163,7 +171,7 @@ function cameraFor(params: LabParams, fp: Rect, viewport: { w: number; h: number
       center: { x: fp.x + fp.w / 2, y: fp.y + fp.h / 2 },
     };
   }
-  const city = params.view === "city" || params.view === "cityPlan";
+  const city = params.view === "city";
   if (city && params.zoom === "fit") {
     const sheet = { x: 0, y: 0, w: downtownMap.width, h: downtownMap.height };
     const margin = 20;
@@ -232,9 +240,9 @@ function modelWorld(building: Building, floor: FloorPlan, params: LabParams): Co
  * `buildMapArt` builds every floor and leaves visibility to the caller, so a
  * city view that skips this stacks every interior on top of the roofs.
  */
-function cityWorld(theme: "lit-model" | undefined): Container {
+function cityWorld(): Container {
   const world = new Container();
-  const art = buildMapArt(theme ? { ...downtownMap, visualTheme: theme } : downtownMap);
+  const art = buildMapArt(downtownMap);
   for (const building of art.buildings) {
     const hasRoof = building.building.floors.some((floor) => floor.label === "ROOF");
     for (const floorArt of building.floors) {
@@ -247,38 +255,38 @@ function cityWorld(theme: "lit-model" | undefined): Container {
   return world;
 }
 
-/** The shipped pen-plotter language, for honest comparison. */
-function planWorld(building: Building, floor: FloorPlan, params: LabParams): Container {
+/**
+ * The player base, fully fitted out.
+ *
+ * Every base object kind at once, which is the only way to judge them: they all
+ * materialize into the same two placement-slot rectangles, so what matters is
+ * whether a fabricator is still distinguishable from a bay console when they are
+ * side by side at the same size. A shot of one in isolation proves nothing.
+ */
+function baseWorld(floorLabel: string): Container {
   const world = new Container();
-  const art = buildMapArt(downtownMap);
+  const kinds = [...BASE_OBJECT_KINDS];
+  // One of everything, cycled across the slots, so no bay is left empty.
+  const layout: BaseLayout = {};
+  BASE_SLOT_DEFS.forEach((slot, index) => {
+    const allowed = kinds.filter((kind) => isObjectAllowedInSlot(kind, slot));
+    const pick = allowed[index % allowed.length];
+    if (pick) layout[slot.id] = pick;
+  });
 
-  // Isolate the one building and the one floor.
-  art.ground.visible = false;
-  art.outdoorDetail.visible = false;
-  art.outdoorObjects.visible = false;
-  art.labels.visible = false;
-  for (const b of art.buildings) {
-    const mine = b.building.id === building.id;
-    b.roof.visible = false;
-    b.entranceMarks.visible = false;
-    b.label.visible = false;
-    for (const f of b.floors) {
-      f.view.visible = mine && f.floor.id === floor.id;
-      f.view.alpha = 1;
+  const map = createBaseMap(layout, DEFAULT_BASE_SHELL, { expanded: true });
+  const art = buildMapArt(map);
+  for (const building of art.buildings) {
+    for (const floorArt of building.floors) {
+      floorArt.view.visible = floorArt.floor.label === floorLabel;
+      floorArt.foreground.visible = floorArt.view.visible;
     }
+    building.roof.visible = false;
   }
   world.addChild(art.root);
-
-  if (!params.actors) return world;
-  const actors = new Graphics();
-  for (const spawn of floor.dotSpawns) {
-    actors.circle(spawn.position.x, spawn.position.y, spawn.radius ?? 11).fill({ color: powerupColor(spawn) });
-    actors.circle(spawn.position.x, spawn.position.y, spawn.radius ?? 11).stroke({ color: HULL, width: 2 });
-  }
-  for (const bot of labBots(floor)) drawLabBot(actors, bot);
-  world.addChild(actors);
   return world;
 }
+
 
 /**
  * Three bots placed to test the thing that matters: can you find your own bot,
@@ -320,15 +328,13 @@ type Shot = LabParams & { name: string; w: number; h: number };
  * each other and independent of whatever window the lab happens to open in.
  */
 const SHOT_SET: Shot[] = [
+  { name: "40-base-ground", view: "base", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: false, w: 1500, h: 1100 },
+  { name: "41-base-upper", view: "base", zoom: "fit", focus: "racks", floorLabel: "F1", actors: false, w: 1500, h: 1100 },
   { name: "31-quayside-source", view: "quay", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: false, w: 1400, h: 1440 },
   { name: "30-geometry-kernel", view: "geometry", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: false, w: 1900, h: 800 },
   { name: "20-city-model", view: "city", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: false, w: 1800, h: 1200 },
   { name: "21-street-close", view: "city", zoom: "close", focus: "street", floorLabel: "GROUND", actors: false, w: 1600, h: 1000 },
-  { name: "22-city-plan", view: "cityPlan", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: false, w: 1800, h: 1200 },
   { name: "01-floor-model", view: "model", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: true, w: 1500, h: 1000 },
-  { name: "02-floor-plan", view: "plan", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: true, w: 1500, h: 1000 },
-  { name: "03-compare-racks", view: "split", zoom: "close", focus: "racks", floorLabel: "GROUND", actors: true, w: 1700, h: 780 },
-  { name: "04-compare-shop", view: "split", zoom: "close", focus: "shop", floorLabel: "GROUND", actors: true, w: 1700, h: 780 },
   { name: "05-racks-close", view: "model", zoom: "close", focus: "racks", floorLabel: "GROUND", actors: true, w: 1500, h: 1100 },
   { name: "06-dock-close", view: "model", zoom: "close", focus: "dock", floorLabel: "GROUND", actors: true, w: 1600, h: 760 },
   { name: "07-shop-close", view: "model", zoom: "close", focus: "shop", floorLabel: "GROUND", actors: true, w: 1100, h: 1150 },
@@ -355,7 +361,7 @@ export function StyleLab() {
     void (async () => {
       const created = new Application();
       await created.init({
-        background: params.view === "plan" ? 0xffffff : V.void,
+        background: V.void,
         width: host.clientWidth,
         height: host.clientHeight,
         antialias: true,
@@ -381,46 +387,8 @@ export function StyleLab() {
         created.stage.removeChildren();
         const floor = findFloor(building, spec.floorLabel);
 
-        if (spec.view === "split") {
-          // Split along the long axis, so each panel stays close to the
-          // proportions of the region being compared.
-          const sideBySide = viewport.w >= viewport.h;
-          const panelSize = sideBySide
-            ? { w: viewport.w / 2, h: viewport.h }
-            : { w: viewport.w, h: viewport.h / 2 };
-          const camera = cameraFor(spec, fp, panelSize);
-          const panels = [
-            { world: planWorld(building, floor, spec), label: "SHIPPED — LINE PLAN", bg: 0xffffff },
-            { world: modelWorld(building, floor, spec), label: "PROPOSED — LIT MODEL", bg: V.void },
-          ];
-          panels.forEach((panel, index) => {
-            const ox = sideBySide ? panelSize.w * index : 0;
-            const oy = sideBySide ? 0 : panelSize.h * index;
-            const holder = new Container();
-            const bg = new Graphics();
-            bg.rect(ox, oy, panelSize.w, panelSize.h).fill({ color: panel.bg });
-            const mask = new Graphics();
-            mask.rect(ox, oy, panelSize.w, panelSize.h).fill({ color: 0xffffff });
-            panel.world.scale.set(camera.scale);
-            panel.world.position.set(
-              ox + panelSize.w / 2 - camera.center.x * camera.scale,
-              oy + panelSize.h / 2 - camera.center.y * camera.scale,
-            );
-            holder.addChild(bg, panel.world);
-            holder.mask = mask;
-            const tag = caption(panel.label);
-            tag.position.set(ox + 16, oy + 14);
-            created.stage.addChild(mask, holder, tag);
-          });
-          const divider = new Graphics();
-          if (sideBySide) divider.rect(viewport.w / 2 - 1, 0, 2, viewport.h).fill({ color: 0x8b9197 });
-          else divider.rect(0, viewport.h / 2 - 1, viewport.w, 2).fill({ color: 0x8b9197 });
-          created.stage.addChild(divider);
-          return;
-        }
-
         const bg = new Graphics();
-        bg.rect(0, 0, viewport.w, viewport.h).fill({ color: spec.view === "plan" || spec.view === "cityPlan" ? 0xffffff : V.void });
+        bg.rect(0, 0, viewport.w, viewport.h).fill({ color: V.void });
         created.stage.addChild(bg);
 
         if (spec.view === "quay") {
@@ -467,14 +435,27 @@ export function StyleLab() {
           return;
         }
 
+        if (spec.view === "base") {
+          const world = baseWorld(spec.floorLabel);
+          const shell = baseShellDef(DEFAULT_BASE_SHELL).footprint;
+          const camera = cameraFor(spec, shell, viewport);
+          world.scale.set(camera.scale);
+          world.position.set(
+            viewport.w / 2 - camera.center.x * camera.scale,
+            viewport.h / 2 - camera.center.y * camera.scale,
+          );
+          created.stage.addChild(world);
+          created.stage.addChild(Object.assign(
+            caption(`PLAYER BASE / ${spec.floorLabel}  \u00b7  every installable kind at once  \u00b7  all in the same placement-slot rectangles`),
+            { x: 16, y: 14 },
+          ));
+          return;
+        }
+
         const camera = cameraFor(spec, fp, viewport);
         const world = spec.view === "city"
-          ? cityWorld("lit-model")
-          : spec.view === "cityPlan"
-            ? cityWorld(undefined)
-            : spec.view === "plan"
-              ? planWorld(building, floor, spec)
-              : modelWorld(building, floor, spec);
+          ? cityWorld()
+          : modelWorld(building, floor, spec);
         world.scale.set(camera.scale);
         world.position.set(
           viewport.w / 2 - camera.center.x * camera.scale,

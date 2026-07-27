@@ -420,7 +420,6 @@ const authoredDowntownMap: MapDocument = {
   height: MAP_H,
   // The monochrome lit physical model, indoors and out. `?theme=plan` still
   // renders the old drafting notation for comparison.
-  visualTheme: "lit-model",
   outdoor: outdoorPlan(),
   buildings: [mercyClinic, civicTower, lot6Depot, beaconHouse],
   extractionPoints: [

@@ -41,7 +41,6 @@ function makeMap(botSpawns: BotSpawn[], dotSpawns: DotSpawn[] = []): MapDocument
   return {
     id: "test-map",
     name: "Test Map",
-    visualTheme: "lit-model",
     width: 500,
     height: 360,
     outdoor: {

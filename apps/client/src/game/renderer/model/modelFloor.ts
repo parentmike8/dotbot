@@ -652,45 +652,52 @@ function drawVehicleDoorHead(g: Graphics, pad: ShadowPad, door: Doorway, walls: 
  * change of projection, so a stair down looks like a stair down from directly
  * above and never needs a camera trick.
  */
-function drawStair(g: Graphics, pad: ShadowPad, stair: StairLink): void {
+type TreadRun = { half: Rect; from: number; to: number };
+
+/** The two runs of a flight, ordered shallow-to-deep, with their depth ramps. */
+function treadRuns(stair: StairLink): { runs: TreadRun[]; vertical: boolean } {
   const { entry, exit, vertical } = stairHalves(stair);
+  const runs: TreadRun[] = stair.direction === "down"
+    ? [{ half: entry, from: 0.02, to: 0.55 }, { half: exit, from: 0.55, to: 0.98 }]
+    : [{ half: exit, from: 0.98, to: 0.55 }, { half: entry, from: 0.55, to: 0.02 }];
+  return { runs, vertical };
+}
+
+function drawTreadRun(g: Graphics, run: TreadRun, vertical: boolean): void {
+  const span = vertical ? run.half.h : run.half.w;
+  const treads = Math.max(4, Math.round(span / 16));
+  for (let i = 0; i < treads; i += 1) {
+    const depth = run.from + (run.to - run.from) * (i / treads);
+    const tread: Rect = vertical
+      ? { x: run.half.x, y: run.half.y + (span / treads) * i, w: run.half.w, h: span / treads }
+      : { x: run.half.x + (span / treads) * i, y: run.half.y, w: span / treads, h: run.half.h };
+    // Tread nose lit, riser in shadow, both darkening with depth.
+    const k = 1 - depth * 0.72;
+    inlay(g, tread, shade(MAT.steel.top, k));
+    inlay(
+      g,
+      vertical
+        ? { x: tread.x, y: tread.y + tread.h - 1.6, w: tread.w, h: 1.6 }
+        : { x: tread.x + tread.w - 1.6, y: tread.y, w: 1.6, h: tread.h },
+      shade(MAT.steel.edge, k),
+    );
+    inlay(
+      g,
+      vertical ? { x: tread.x, y: tread.y, w: tread.w, h: 0.8 } : { x: tread.x, y: tread.y, w: 0.8, h: tread.h },
+      shade(MAT.steel.lit, k),
+    );
+  }
+}
+
+function drawStair(g: Graphics, pad: ShadowPad, stair: StairLink): void {
   const r = stair.rect;
 
   // The shaft opening: a hole in the slab, dark at the bottom.
   contact(pad, r, LIFT.wall);
   inlay(g, r, 0x23272b);
 
-  const down = stair.direction === "down";
-  const runs: Array<{ half: Rect; from: number; to: number }> = down
-    ? [{ half: entry, from: 0.02, to: 0.55 }, { half: exit, from: 0.55, to: 0.98 }]
-    : [{ half: exit, from: 0.98, to: 0.55 }, { half: entry, from: 0.55, to: 0.02 }];
-
-  for (const run of runs) {
-    const span = vertical ? run.half.h : run.half.w;
-    const treads = Math.max(4, Math.round(span / 16));
-    for (let i = 0; i < treads; i += 1) {
-      const t = i / treads;
-      const depth = run.from + (run.to - run.from) * t;
-      const tread: Rect = vertical
-        ? { x: run.half.x, y: run.half.y + (span / treads) * i, w: run.half.w, h: span / treads }
-        : { x: run.half.x + (span / treads) * i, y: run.half.y, w: span / treads, h: run.half.h };
-      // Tread nose lit, riser in shadow, both darkening with depth.
-      const k = 1 - depth * 0.72;
-      inlay(g, tread, shade(MAT.steel.top, k));
-      inlay(
-        g,
-        vertical
-          ? { x: tread.x, y: tread.y + tread.h - 1.6, w: tread.w, h: 1.6 }
-          : { x: tread.x + tread.w - 1.6, y: tread.y, w: 1.6, h: tread.h },
-        shade(MAT.steel.edge, k),
-      );
-      inlay(
-        g,
-        vertical ? { x: tread.x, y: tread.y, w: tread.w, h: 0.8 } : { x: tread.x, y: tread.y, w: 0.8, h: tread.h },
-        shade(MAT.steel.lit, k),
-      );
-    }
-  }
+  const { runs, vertical } = treadRuns(stair);
+  for (const run of runs) drawTreadRun(g, run, vertical);
 
   // Stringers down both flanks.
   for (const end of [0, 1]) {
@@ -699,6 +706,21 @@ function drawStair(g: Graphics, pad: ShadowPad, stair: StairLink): void {
       : { x: r.x, y: r.y + (end ? r.h - 3 : 0), w: r.w, h: 3 };
     volume(g, side, MAT.steelDeep, 5);
   }
+}
+
+/**
+ * The deep run of a flight, redrawn above the bot layer.
+ *
+ * A bot crossing the break line changes floor mid-stride, and this is what makes
+ * that legible: the far treads pass over it, so it visibly descends into the
+ * shaft rather than sliding across a picture of one. Deliberately the same
+ * `drawTreadRun` the floor uses, so the overlay cannot drift out of register with
+ * the stair underneath it.
+ */
+export function drawStairDeepHalf(g: Graphics, stair: StairLink): void {
+  const { runs, vertical } = treadRuns(stair);
+  const deep = runs.at(-1);
+  if (deep) drawTreadRun(g, deep, vertical);
 }
 
 /**
