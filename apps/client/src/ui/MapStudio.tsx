@@ -1,576 +1,443 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Application, Container, Graphics } from "pixi.js";
-import { defaultGameConfig } from "@dotbot/game/config";
-import { downtownMap } from "@dotbot/game/content/downtown";
-import { floorHeight, isGroundFloor, isSolidObject, rectContains } from "@dotbot/game/mapModel";
-import { buildMapArt, fitCamera, type MapArt } from "../game/renderer/mapArt";
-import type { Building, FloorPlan, MapDocument, Rect, Vec2 } from "@dotbot/game/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BUILDING_SOURCES } from "@dotbot/game/content/sources";
+import type { SourceWall } from "@dotbot/game/mapSource";
+import type { SourceEdit } from "@dotbot/game/mapSourcePatch";
+import type { ObjectKind, Vec2 } from "@dotbot/game/types";
+import { selectMapDocument } from "../mapSelection";
+import { StudioCanvas, type CanvasView } from "../studio/StudioCanvas";
+import {
+  beginSession,
+  commit,
+  DOT_TRAY,
+  editedBuildings,
+  findDot,
+  findObject,
+  handlesFor,
+  KIND_SIZE,
+  nextId,
+  OBJECT_TRAY,
+  OPENING_TRAY,
+  pendingCount,
+  rebuildMap,
+  saveSession,
+  type Handle,
+  type Tool,
+} from "../studio/editing";
 
 /**
- * Map Studio: the development-only authoring and review environment.
+ * Map Studio — a tweak tool over authored map source.
  *
- * Renders the production map art (mapArt.ts — the exact drawing the game
- * uses) on a clean canvas with no HUD, players, simulation, or fog. Supports
- * pan/zoom, building/floor selection, and inspection layers so the map can
- * be designed and critiqued as a drawing before gameplay ever touches it.
+ * Deliberately not a map editor. The world is built in map source, by hand or by
+ * an LLM, because that is what scales and what carries intent. This exists for
+ * the edits that are faster to make with a mouse than to describe: nudge that
+ * bench, delete that Dot, drop a door in that wall.
  *
- * Reach it at /?studio during development.
+ * Two decisions keep it small. It renders through the production map art, so
+ * every judgement is made against what a player will actually see — the previous
+ * editor drew its own schematic, which meant "does this aisle read as a route"
+ * was answered against a picture the game never shows. And it saves by patching
+ * the source file rather than regenerating it, so the comments, helpers and named
+ * constants an author wrote all survive the round trip.
  */
 
-type Selection =
-  | { kind: "exterior" }
-  | { kind: "floor"; buildingId: string; floorId: string };
+type Status = { tone: "idle" | "ok" | "warn"; text: string };
 
-type LayerToggles = {
-  architecture: boolean;
-  furniture: boolean;
-  annotations: boolean;
-  labels: boolean;
-  collision: boolean;
-  clearance: boolean;
-  grid: boolean;
-  dimOthers: boolean;
-};
-
-const defaultToggles: LayerToggles = {
-  architecture: true,
-  furniture: true,
-  annotations: true,
-  labels: true,
-  collision: false,
-  clearance: false,
-  grid: false,
-  dimOthers: true,
-};
-
-type StudioState = {
-  selection: Selection;
-  toggles: LayerToggles;
-};
-
-class StudioController {
-  private app: Application;
-  private world = new Container();
-  private art: MapArt;
-  private overlay = new Graphics();
-  private gridGfx = new Graphics();
-  private map: MapDocument;
-  private scale = 1;
-  private minScale = 0.05;
-  private destroyed = false;
-  private dragging: { pointerId: number; startX: number; startY: number; worldX: number; worldY: number } | null = null;
-  /** Click-to-select: fired with world coordinates when the canvas is
-   * clicked without dragging. Spatial selection is the only building picker
-   * that stays usable once maps grow to dozens or hundreds of buildings. */
-  private pickHandler: ((point: Vec2) => void) | null = null;
-
-  private constructor(app: Application, map: MapDocument, private host: HTMLElement, private coordsEl: HTMLElement | null) {
-    this.app = app;
-    this.map = map;
-    this.art = buildMapArt(map);
-    this.world.addChild(this.gridGfx, this.art.root, this.overlay);
-    this.app.stage.addChild(this.world);
-    this.bindInput();
-    this.fit();
-    // Studio is development-only; a global handle makes console inspection easy.
-    (window as unknown as { __studio?: StudioController }).__studio = this;
-  }
-
-  static async create(host: HTMLElement, map: MapDocument, coordsEl: HTMLElement | null): Promise<StudioController> {
-    const app = new Application();
-
-    await app.init({
-      antialias: true,
-      autoDensity: true,
-      background: "#ffffff",
-      resizeTo: host,
-      resolution: Math.min(window.devicePixelRatio || 1, 2),
-    });
-
-    host.appendChild(app.canvas);
-    return new StudioController(app, map, host, coordsEl);
-  }
-
-  destroy(): void {
-    if (this.destroyed) {
-      return;
-    }
-
-    this.destroyed = true;
-    try {
-      this.app.destroy({ removeView: true }, { children: true });
-    } catch {
-      try {
-        this.app.canvas?.remove();
-      } catch {
-        // Already torn down.
-      }
-    }
-  }
-
-  fit(): void {
-    // The host can measure zero for a frame during initial layout; keep
-    // retrying until it has a real size so the first view is always framed.
-    if (this.host.clientWidth < 50 || this.host.clientHeight < 50) {
-      if (!this.destroyed) {
-        requestAnimationFrame(() => this.fit());
-      }
-      return;
-    }
-
-    const camera = fitCamera(this.map, { width: this.host.clientWidth, height: this.host.clientHeight });
-    this.scale = camera.scale;
-    this.minScale = camera.scale * 0.4;
-    this.world.scale.set(camera.scale);
-    this.world.position.set(camera.x, camera.y);
-  }
-
-  /** 1:1 world units to CSS pixels, centered on the current view center. */
-  actualSize(): void {
-    const cx = (this.host.clientWidth / 2 - this.world.position.x) / this.scale;
-    const cy = (this.host.clientHeight / 2 - this.world.position.y) / this.scale;
-    this.scale = 1;
-    this.world.scale.set(1);
-    this.world.position.set(this.host.clientWidth / 2 - cx, this.host.clientHeight / 2 - cy);
-  }
-
-  setPickHandler(handler: ((point: Vec2) => void) | null): void {
-    this.pickHandler = handler;
-  }
-
-  focusRect(rect: Rect, margin = 80): void {
-    const scale = Math.min(
-      (this.host.clientWidth - margin * 2) / rect.w,
-      (this.host.clientHeight - margin * 2) / rect.h,
-      6,
-    );
-    this.scale = scale;
-    this.world.scale.set(scale);
-    this.world.position.set(
-      this.host.clientWidth / 2 - (rect.x + rect.w / 2) * scale,
-      this.host.clientHeight / 2 - (rect.y + rect.h / 2) * scale,
-    );
-  }
-
-  apply(state: StudioState): void {
-    const { selection, toggles } = state;
-    const dimAlpha = toggles.dimOthers ? 0.22 : 1;
-    const interior = selection.kind === "floor";
-
-    this.art.ground.alpha = interior ? dimAlpha : 1;
-    this.art.outdoorDetail.visible = toggles.furniture;
-    this.art.outdoorObjects.visible = toggles.furniture;
-    this.art.outdoorDetail.alpha = interior ? dimAlpha : 1;
-    this.art.outdoorObjects.alpha = interior ? dimAlpha : 1;
-    this.art.labels.visible = toggles.labels;
-    this.art.labels.alpha = interior ? dimAlpha : 1;
-
-    for (const view of this.art.buildings) {
-      const isSelected = interior && view.building.id === selection.buildingId;
-      const hasRoofPlan = view.building.floors.some((floor) => floor.label === "ROOF");
-
-      for (const floorArt of view.floors) {
-        const isActiveFloor = isSelected && floorArt.floor.id === selection.floorId;
-        const isRoofPlan = floorArt.floor.label === "ROOF";
-        floorArt.view.visible = isActiveFloor || (isRoofPlan && !isSelected);
-        floorArt.view.alpha = isActiveFloor ? 1 : interior ? dimAlpha : 1;
-        floorArt.architecture.visible = toggles.architecture;
-        floorArt.furniture.visible = toggles.furniture;
-        floorArt.annotation.visible = toggles.annotations;
-      }
-
-      view.roof.visible = !isSelected && !hasRoofPlan;
-      view.roof.alpha = interior && !isSelected ? dimAlpha : 1;
-      view.entranceMarks.visible = !isSelected;
-      view.entranceMarks.alpha = interior && !isSelected ? dimAlpha : 1;
-      view.label.visible = toggles.labels && !isSelected;
-      view.label.alpha = interior ? dimAlpha : 1;
-    }
-
-    this.drawGrid(toggles.grid);
-    this.drawOverlays(state);
-  }
-
-  private drawGrid(visible: boolean): void {
-    this.gridGfx.clear();
-
-    if (!visible) {
-      return;
-    }
-
-    const step = 100;
-    for (let x = 0; x <= this.map.width; x += step) {
-      this.gridGfx.moveTo(x, 0).lineTo(x, this.map.height).stroke({ color: 0x9db4c8, width: x % 500 === 0 ? 0.8 : 0.4, alpha: 0.5 });
-    }
-    for (let y = 0; y <= this.map.height; y += step) {
-      this.gridGfx.moveTo(0, y).lineTo(this.map.width, y).stroke({ color: 0x9db4c8, width: y % 500 === 0 ? 0.8 : 0.4, alpha: 0.5 });
-    }
-  }
-
-  /** Collision and clearance overlays for the selected physics context. */
-  private drawOverlays(state: StudioState): void {
-    this.overlay.clear();
-    const { toggles } = state;
-
-    if (!toggles.collision && !toggles.clearance) {
-      return;
-    }
-
-    const rects = this.collisionRects(state.selection);
-    const radius = defaultGameConfig.botRadius;
-
-    if (toggles.clearance) {
-      for (const rect of rects) {
-        this.overlay
-          .rect(rect.x - radius, rect.y - radius, rect.w + radius * 2, rect.h + radius * 2)
-          .fill({ color: 0xf2994a, alpha: 0.14 });
-      }
-    }
-
-    if (toggles.collision) {
-      for (const rect of rects) {
-        this.overlay.rect(rect.x, rect.y, rect.w, rect.h).fill({ color: 0xeb5757, alpha: 0.12 });
-        this.overlay.rect(rect.x, rect.y, rect.w, rect.h).stroke({ color: 0xeb5757, width: 1.2, alpha: 0.8 });
-      }
-
-      // Stair runs: walkable connectors, outlined for contrast.
-      for (const stair of this.selectionStairs(state.selection)) {
-        this.overlay.rect(stair.x, stair.y, stair.w, stair.h).stroke({ color: 0x27ae60, width: 1.5, alpha: 0.9 });
-      }
-    }
-  }
-
-  private selectionPlans(selection: Selection): FloorPlan[] {
-    if (selection.kind === "floor") {
-      const building = this.map.buildings.find((candidate) => candidate.id === selection.buildingId);
-      const plan = building?.floors.find((floor) => floor.id === selection.floorId);
-      // GROUND floors share the outdoor physics plane.
-      if (plan && isGroundFloor(plan)) {
-        return this.outdoorPlans();
-      }
-      return plan ? [plan] : [];
-    }
-
-    return this.outdoorPlans();
-  }
-
-  private outdoorPlans(): FloorPlan[] {
-    return this.map.buildings.map((building) => building.floors.find(isGroundFloor)).filter((plan): plan is FloorPlan => Boolean(plan));
-  }
-
-  private collisionRects(selection: Selection): Rect[] {
-    const rects: Rect[] = [];
-    const outdoorContext = selection.kind === "exterior" || this.selectionPlans(selection).some(isGroundFloor);
-
-    if (outdoorContext) {
-      rects.push(...this.map.outdoor.walls);
-      for (const object of this.map.outdoor.objects) {
-        if (isSolidObject(object)) {
-          rects.push(object);
-        }
-      }
-    }
-
-    for (const plan of this.selectionPlans(selection)) {
-      rects.push(...plan.walls);
-      for (const object of plan.objects) {
-        if (isSolidObject(object)) {
-          rects.push(object);
-        }
-      }
-    }
-
-    return rects;
-  }
-
-  private selectionStairs(selection: Selection): Rect[] {
-    return this.selectionPlans(selection).flatMap((plan) => plan.stairs.map((stair) => stair.rect));
-  }
-
-  // --- Input -----------------------------------------------------------------
-
-  private bindInput(): void {
-    const canvas = this.app.canvas;
-
-    canvas.addEventListener("pointerdown", (event) => {
-      canvas.setPointerCapture(event.pointerId);
-      this.dragging = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        worldX: this.world.position.x,
-        worldY: this.world.position.y,
-      };
-    });
-
-    canvas.addEventListener("pointermove", (event) => {
-      if (this.dragging && event.pointerId === this.dragging.pointerId) {
-        this.world.position.set(
-          this.dragging.worldX + (event.clientX - this.dragging.startX),
-          this.dragging.worldY + (event.clientY - this.dragging.startY),
-        );
-      }
-
-      if (this.coordsEl) {
-        const rect = canvas.getBoundingClientRect();
-        const wx = (event.clientX - rect.left - this.world.position.x) / this.scale;
-        const wy = (event.clientY - rect.top - this.world.position.y) / this.scale;
-        this.coordsEl.textContent = `${Math.round(wx)}, ${Math.round(wy)} · ${this.scale.toFixed(2)}x`;
-      }
-    });
-
-    canvas.addEventListener("pointerup", (event) => {
-      if (!this.dragging || event.pointerId !== this.dragging.pointerId) {
-        return;
-      }
-
-      const moved = Math.hypot(event.clientX - this.dragging.startX, event.clientY - this.dragging.startY);
-      this.dragging = null;
-
-      if (moved < 6 && this.pickHandler) {
-        const rect = canvas.getBoundingClientRect();
-        this.pickHandler({
-          x: (event.clientX - rect.left - this.world.position.x) / this.scale,
-          y: (event.clientY - rect.top - this.world.position.y) / this.scale,
-        });
-      }
-    });
-    canvas.addEventListener("pointercancel", (event) => {
-      if (this.dragging && event.pointerId === this.dragging.pointerId) {
-        this.dragging = null;
-      }
-    });
-
-    canvas.addEventListener(
-      "wheel",
-      (event) => {
-        event.preventDefault();
-        const rect = canvas.getBoundingClientRect();
-        const px = event.clientX - rect.left;
-        const py = event.clientY - rect.top;
-        const worldX = (px - this.world.position.x) / this.scale;
-        const worldY = (py - this.world.position.y) / this.scale;
-        const next = Math.min(8, Math.max(this.minScale, this.scale * Math.exp(-event.deltaY * 0.0014)));
-        this.scale = next;
-        this.world.scale.set(next);
-        this.world.position.set(px - worldX * next, py - worldY * next);
-      },
-      { passive: false },
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// React shell
-// ---------------------------------------------------------------------------
+const GRIDS = [0, 2, 4, 8, 16];
 
 export function MapStudio() {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const coordsRef = useRef<HTMLSpanElement | null>(null);
-  const controllerRef = useRef<StudioController | null>(null);
-  const [ready, setReady] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(true);
-  const [filter, setFilter] = useState("");
-  const [state, setState] = useState<StudioState>({ selection: { kind: "exterior" }, toggles: defaultToggles });
+  const canvasRef = useRef<StudioCanvas | null>(null);
+  const baseMap = useMemo(() => selectMapDocument(window.location.search), []);
 
-  const map = downtownMap;
+  const editable = useMemo(
+    () => baseMap.buildings.filter((building) => BUILDING_SOURCES[building.id]).map((building) => building.id),
+    [baseMap],
+  );
+  const session = useMemo(() => beginSession(editable), [editable]);
+
+  const [building, setBuilding] = useState(editable[0] ?? "");
+  const [floor, setFloor] = useState("GROUND");
+  const [tool, setTool] = useState<Tool>("select");
+  const [grid, setGrid] = useState(4);
+  const [selection, setSelection] = useState<Handle | null>(null);
+  const [kind, setKind] = useState<ObjectKind>("crateStack");
+  const [dotIndex, setDotIndex] = useState(0);
+  const [openingIndex, setOpeningIndex] = useState(0);
+  const [thickness, setThickness] = useState(8);
+  const [draft, setDraft] = useState<Vec2[]>([]);
+  const [cursor, setCursor] = useState<Vec2>({ x: 0, y: 0 });
+  const [pending, setPending] = useState(0);
+  const [status, setStatus] = useState<Status>({ tone: "idle", text: "Ready." });
+  const [revision, setRevision] = useState(0);
+
+  const source = session.sources[building] ?? null;
+  const map = useMemo(() => rebuildMap(baseMap, session), [baseMap, session, revision]);
+  const floors = useMemo(() => source?.floors.map((item) => item.label) ?? [], [source, revision]);
+
+  /** Record an edit, then let the canvas and the inspector catch up. */
+  const record = useCallback((edit: SourceEdit) => {
+    try {
+      commit(session, building, edit);
+      setPending(pendingCount(session));
+      setRevision((value) => value + 1);
+      setStatus({ tone: "idle", text: `${edit.op} — unsaved` });
+    } catch (error) {
+      setStatus({ tone: "warn", text: (error as Error).message });
+    }
+  }, [building, session]);
+
+  // -------------------------------------------------------------------------
+  // Canvas
+  // -------------------------------------------------------------------------
+
+  /**
+   * The pointer callbacks need the current tool and tray, but the canvas is
+   * mounted once. A ref of live handlers keeps both true without re-creating the
+   * Pixi application — and losing the camera — on every state change.
+   */
+  const live = useRef({
+    place: (_point: Vec2) => {},
+    move: (_handle: Handle, _position: Vec2) => {},
+    opening: (_wall: SourceWall, _at: Vec2) => {},
+  });
+
+  live.current.move = (handle, position) => {
+    record(handle.kind === "object"
+      ? { op: "moveObject", floor: handle.floor, id: handle.id, x: position.x, y: position.y }
+      : {
+        op: "moveDot",
+        floor: handle.floor,
+        id: handle.id,
+        // A Dot's handle is a box around its centre; the edit wants the centre.
+        x: position.x + handle.rect.w / 2,
+        y: position.y + handle.rect.h / 2,
+      });
+  };
+
+  live.current.place = (point) => {
+    if (!source) return;
+    if (tool === "object") {
+      const size = KIND_SIZE[kind] ?? { w: 40, h: 40 };
+      record({
+        op: "addObject",
+        floor,
+        object: { id: nextId(source, kind), kind, x: point.x, y: point.y, w: size.w, h: size.h },
+      });
+    } else if (tool === "dot") {
+      record({ op: "addDot", floor, dot: { id: nextId(source, "dot"), item: DOT_TRAY[dotIndex].item, x: point.x, y: point.y } });
+    }
+  };
+
+  live.current.opening = (wall, at) => {
+    record({ op: "addOpening", floor, wall: wall.id, opening: { ...OPENING_TRAY[openingIndex].opening, near: at } });
+  };
 
   useEffect(() => {
-    let disposed = false;
-
-    async function start() {
-      if (!hostRef.current) {
-        return;
-      }
-
-      const controller = await StudioController.create(hostRef.current, map, coordsRef.current);
-
-      if (disposed) {
-        controller.destroy();
-        return;
-      }
-
-      controllerRef.current = controller;
-      setReady(true);
-    }
-
-    void start();
-
+    const host = hostRef.current;
+    if (!host) return;
+    const canvas = new StudioCanvas();
+    canvasRef.current = canvas;
+    void canvas.mount(host, {
+      onPick: (handle) => setSelection(handle),
+      onHover: (point) => setCursor(point),
+      onDragEnd: (handle, position) => live.current.move(handle, position),
+      onPlace: (point) => live.current.place(point),
+      onWallPoint: (point) => setDraft((points) => [...points, point]),
+      onOpeningPoint: (wall, at) => live.current.opening(wall, at),
+    });
     return () => {
-      disposed = true;
-      controllerRef.current?.destroy();
-      controllerRef.current = null;
+      canvas.dispose();
+      canvasRef.current = null;
     };
-  }, [map]);
+  }, []);
+
+  const view: CanvasView = useMemo(() => ({
+    map, building, floor, grid, tool, selection, draft, source,
+  }), [map, building, floor, grid, tool, selection, draft, source]);
 
   useEffect(() => {
-    if (ready) {
-      controllerRef.current?.apply(state);
-    }
-  }, [ready, state]);
+    canvasRef.current?.apply(view);
+  }, [view]);
 
-  // Click a footprint on the canvas to select that building (its GROUND
-  // floor); click open street to return to the site plan.
   useEffect(() => {
-    if (!ready) {
+    const target = map.buildings.find((item) => item.id === building);
+    if (target) canvasRef.current?.fit(target.footprint);
+    // Fit on building change only; refitting on every edit would fight the author.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [building]);
+
+  // -------------------------------------------------------------------------
+  // Keyboard
+  // -------------------------------------------------------------------------
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+      if (event.key === "Escape") {
+        setDraft([]);
+        setTool("select");
+        setSelection(null);
+        return;
+      }
+      if (!selection || !source) return;
+      if (event.key === "Backspace" || event.key === "Delete") {
+        event.preventDefault();
+        record(selection.kind === "object"
+          ? { op: "deleteObject", floor: selection.floor, id: selection.id }
+          : { op: "deleteDot", floor: selection.floor, id: selection.id });
+        setSelection(null);
+        return;
+      }
+      const step = event.shiftKey ? (grid || 1) * 4 : (grid || 1);
+      const nudge: Record<string, Vec2> = {
+        ArrowLeft: { x: -step, y: 0 },
+        ArrowRight: { x: step, y: 0 },
+        ArrowUp: { x: 0, y: -step },
+        ArrowDown: { x: 0, y: step },
+      };
+      const delta = nudge[event.key];
+      if (!delta) return;
+      event.preventDefault();
+      if (selection.kind === "object") {
+        const object = findObject(source, selection.floor, selection.id);
+        if (object) record({ op: "moveObject", floor: selection.floor, id: selection.id, x: object.x + delta.x, y: object.y + delta.y });
+      } else {
+        const dot = findDot(source, selection.floor, selection.id);
+        if (dot) record({ op: "moveDot", floor: selection.floor, id: selection.id, x: dot.x + delta.x, y: dot.y + delta.y });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selection, grid, source, record]);
+
+  const finishWall = useCallback(() => {
+    if (draft.length < 2 || !source) {
+      setDraft([]);
       return;
     }
-
-    controllerRef.current?.setPickHandler((point) => {
-      const building = map.buildings.find((candidate) => rectContains(candidate.footprint, point, 0));
-
-      setState((prev) => {
-        if (!building) {
-          return prev.selection.kind === "exterior" ? prev : { ...prev, selection: { kind: "exterior" } };
-        }
-
-        if (prev.selection.kind === "floor" && prev.selection.buildingId === building.id) {
-          return prev;
-        }
-
-        const ground = building.floors.find(isGroundFloor) ?? building.floors[0];
-        return { ...prev, selection: { kind: "floor", buildingId: building.id, floorId: ground.id } };
-      });
+    record({
+      op: "addWall",
+      floor,
+      wall: { id: nextId(source, "wall"), thickness, path: draft.map((point) => ({ x: point.x, y: point.y })) },
     });
+    setDraft([]);
+  }, [draft, floor, record, source, thickness]);
 
-    return () => controllerRef.current?.setPickHandler(null);
-  }, [ready, map]);
+  const save = useCallback(async () => {
+    setStatus({ tone: "idle", text: "Saving…" });
+    const outcomes = await saveSession(session);
+    setPending(pendingCount(session));
+    const failed = outcomes.filter((outcome) => !outcome.ok);
+    setStatus(failed.length
+      ? { tone: "warn", text: failed.map((outcome) => `${outcome.building}: ${outcome.detail}`).join(" · ") }
+      : { tone: "ok", text: `Wrote ${outcomes.map((outcome) => outcome.file.split("/").pop()).join(", ")}` });
+  }, [session]);
 
-  const buildings = useMemo(
-    () =>
-      map.buildings.map((building: Building) => ({
-        building,
-        floors: [...building.floors].sort((a, b) => floorHeight(b.label) - floorHeight(a.label)),
-      })),
-    [map],
-  );
+  const selectedObject = selection?.kind === "object" && source ? findObject(source, selection.floor, selection.id) : null;
+  const selectedDot = selection?.kind === "dot" && source ? findDot(source, selection.floor, selection.id) : null;
+  const count = source ? handlesFor(source, floor).length : 0;
 
-  const select = (selection: Selection, focus?: Rect) => {
-    setState((prev) => ({ ...prev, selection }));
-    if (focus) {
-      controllerRef.current?.focusRect(focus);
+  const setCoordinate = (axis: "x" | "y", value: number) => {
+    if (!selection || Number.isNaN(value)) return;
+    if (selectedObject) {
+      record({ op: "moveObject", floor: selection.floor, id: selection.id, x: axis === "x" ? value : selectedObject.x, y: axis === "y" ? value : selectedObject.y });
+    } else if (selectedDot) {
+      record({ op: "moveDot", floor: selection.floor, id: selection.id, x: axis === "x" ? value : selectedDot.x, y: axis === "y" ? value : selectedDot.y });
     }
   };
 
-  const toggle = (key: keyof LayerToggles) => {
-    setState((prev) => ({ ...prev, toggles: { ...prev.toggles, [key]: !prev.toggles[key] } }));
-  };
-
-  const toggleDefs: Array<{ key: keyof LayerToggles; label: string }> = [
-    { key: "architecture", label: "Architecture" },
-    { key: "furniture", label: "Furniture" },
-    { key: "annotations", label: "Annotations" },
-    { key: "labels", label: "Labels" },
-    { key: "collision", label: "Collision" },
-    { key: "clearance", label: "Nav clearance" },
-    { key: "grid", label: "Grid" },
-    { key: "dimOthers", label: "Dim inactive" },
-  ];
+  if (!editable.length) {
+    return (
+      <div className="studio studio--empty">
+        <p>
+          Nothing on <strong>{baseMap.name}</strong> is authored in map source, so there is nothing Studio
+          could save. Buildings it can edit live in <code>packages/game/src/content/</code> and are listed
+          in <code>content/sources.ts</code>.
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <main className="studio-shell" aria-label="Map Studio">
-      <div ref={hostRef} className="studio-canvas" />
+    <div className="studio">
+      <aside className="studio__rail">
+        <header className="studio__brand">MAP STUDIO</header>
 
-      <button
-        type="button"
-        className="studio-panel-toggle"
-        onClick={() => setPanelOpen((open) => !open)}
-        aria-label={panelOpen ? "Hide controls" : "Show controls"}
-      >
-        {panelOpen ? "◀" : "▶"}
-      </button>
-
-      <aside className="studio-panel" aria-label="Studio controls" hidden={!panelOpen}>
-        <header className="studio-header">
-          <h1>Map Studio</h1>
-          <span className="studio-map-name">{map.name}</span>
-        </header>
-
-        <section className="studio-section" aria-label="View">
-          <div className="studio-row">
-            <button type="button" onClick={() => controllerRef.current?.fit()}>
-              Fit map
-            </button>
-            <button type="button" onClick={() => controllerRef.current?.actualSize()}>
-              1:1
-            </button>
+        <section>
+          <h2>Building</h2>
+          <select value={building} onChange={(event) => { setBuilding(event.target.value); setSelection(null); setDraft([]); }}>
+            {editable.map((id) => (
+              <option key={id} value={id}>{BUILDING_SOURCES[id]?.source.name ?? id}</option>
+            ))}
+          </select>
+          <h2>Floor</h2>
+          <div className="studio__chips">
+            {floors.map((label) => (
+              <button
+                key={label}
+                type="button"
+                className={label === floor ? "on" : ""}
+                onClick={() => { setFloor(label); setSelection(null); setDraft([]); }}
+              >{label}</button>
+            ))}
           </div>
         </section>
 
-        <section className="studio-section" aria-label="Selection">
-          <button
-            type="button"
-            className={state.selection.kind === "exterior" ? "active" : ""}
-            onClick={() => select({ kind: "exterior" })}
-          >
-            Exterior / site plan
-          </button>
-
-          <input
-            type="search"
-            className="studio-filter"
-            placeholder="Filter buildings…"
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            aria-label="Filter buildings"
-          />
-
-          <div className="studio-building-list">
-            {buildings
-              .filter(({ building }) => building.name.toLowerCase().includes(filter.trim().toLowerCase()))
-              .map(({ building, floors }) => {
-                const isSelected = state.selection.kind === "floor" && state.selection.buildingId === building.id;
-                const ground = floors.find((floor) => floor.label === "GROUND") ?? floors[floors.length - 1];
-                return (
-                  <div key={building.id} className="studio-building">
-                    <button
-                      type="button"
-                      className={`studio-building-row ${isSelected ? "active" : ""}`}
-                      onClick={() =>
-                        select({ kind: "floor", buildingId: building.id, floorId: ground.id }, building.footprint)
-                      }
-                    >
-                      <span>{building.name}</span>
-                      <span className="studio-floor-count">{floors.length}</span>
-                    </button>
-                    {isSelected ? (
-                      <div className="studio-floors">
-                        {floors.map((floor) => {
-                          const active = state.selection.kind === "floor" && state.selection.floorId === floor.id;
-                          return (
-                            <button
-                              key={floor.id}
-                              type="button"
-                              className={active ? "active" : ""}
-                              onClick={() => select({ kind: "floor", buildingId: building.id, floorId: floor.id })}
-                            >
-                              {floor.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
+        <section>
+          <h2>Tool</h2>
+          <div className="studio__chips">
+            {(["select", "object", "dot", "wall", "opening"] as Tool[]).map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={item === tool ? "on" : ""}
+                onClick={() => { setTool(item); setDraft([]); }}
+              >{item}</button>
+            ))}
+          </div>
+          <h2>Snap</h2>
+          <div className="studio__chips">
+            {GRIDS.map((step) => (
+              <button key={step} type="button" className={step === grid ? "on" : ""} onClick={() => setGrid(step)}>
+                {step === 0 ? "off" : step}
+              </button>
+            ))}
           </div>
         </section>
 
-        <section className="studio-section" aria-label="Layers">
-          {toggleDefs.map(({ key, label }) => (
-            <label key={key} className="studio-toggle">
-              <input type="checkbox" checked={state.toggles[key]} onChange={() => toggle(key)} />
-              <span>{label}</span>
+        {tool === "object" && (
+          <section className="studio__tray">
+            <h2>Object</h2>
+            {OBJECT_TRAY.map((group) => (
+              <div key={group.group}>
+                <h3>{group.group}</h3>
+                <div className="studio__chips">
+                  {group.kinds.map((item) => (
+                    <button key={item} type="button" className={item === kind ? "on" : ""} onClick={() => setKind(item)}>{item}</button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <p className="studio__hint">Click the plan to place. The footprint is this kind&rsquo;s usual size; change w/h in the source.</p>
+          </section>
+        )}
+
+        {tool === "dot" && (
+          <section className="studio__tray">
+            <h2>Dot</h2>
+            <div className="studio__chips">
+              {DOT_TRAY.map((entry, index) => (
+                <button key={entry.label} type="button" className={index === dotIndex ? "on" : ""} onClick={() => setDotIndex(index)}>{entry.label}</button>
+              ))}
+            </div>
+            <p className="studio__hint">Click the plan to drop a Dot at that point.</p>
+          </section>
+        )}
+
+        {tool === "opening" && (
+          <section className="studio__tray">
+            <h2>Opening</h2>
+            <div className="studio__chips">
+              {OPENING_TRAY.map((entry, index) => (
+                <button key={entry.label} type="button" className={index === openingIndex ? "on" : ""} onClick={() => setOpeningIndex(index)}>{entry.label}</button>
+              ))}
+            </div>
+            <p className="studio__hint">Click an interior wall. The opening snaps onto its centreline, and its width is the clear width.</p>
+          </section>
+        )}
+
+        {tool === "wall" && (
+          <section className="studio__tray">
+            <h2>Wall</h2>
+            <label>
+              Thickness
+              <input type="number" min={4} max={40} step={2} value={thickness} onChange={(event) => setThickness(Number(event.target.value))} />
             </label>
-          ))}
+            <p className="studio__hint">
+              Click each corner. A wall is a centreline, so it reaches {thickness / 2} past a free
+              end — pull that end in by {thickness / 2} to stop it exactly on a line.
+            </p>
+            <div className="studio__row">
+              <button type="button" onClick={finishWall} disabled={draft.length < 2}>Finish ({draft.length})</button>
+              <button type="button" onClick={() => setDraft([])} disabled={!draft.length}>Clear</button>
+            </div>
+          </section>
+        )}
+
+        <section className="studio__spacer" />
+
+        <section className="studio__save">
+          <div className="studio__row">
+            <button type="button" className="primary" onClick={() => void save()} disabled={!pending}>
+              Save{pending ? ` (${pending})` : ""}
+            </button>
+          </div>
+          <p className={`studio__status studio__status--${status.tone}`}>{status.text}</p>
+          {pending > 0 && (
+            <p className="studio__hint">
+              Unsaved in {editedBuildings(session).join(", ")}. Saving patches the source file in place;
+              the dev server then reloads it.
+            </p>
+          )}
+        </section>
+      </aside>
+
+      <div className="studio__stage" ref={hostRef} />
+
+      <aside className="studio__rail studio__rail--right">
+        <section>
+          <h2>Selection</h2>
+          {!selection && <p className="studio__hint">Click something on the plan. {count} selectable on this floor.</p>}
+          {selectedObject && (
+            <dl className="studio__props">
+              <dt>id</dt><dd className="studio__mono">{selectedObject.id}</dd>
+              <dt>kind</dt><dd>{selectedObject.kind}</dd>
+              <dt>x</dt><dd><input type="number" value={selectedObject.x} onChange={(event) => setCoordinate("x", Number(event.target.value))} /></dd>
+              <dt>y</dt><dd><input type="number" value={selectedObject.y} onChange={(event) => setCoordinate("y", Number(event.target.value))} /></dd>
+              <dt>size</dt><dd>{selectedObject.w} × {selectedObject.h}</dd>
+              {selectedObject.facing && <><dt>facing</dt><dd>{selectedObject.facing}</dd></>}
+              {selectedObject.scannable && <><dt>flags</dt><dd>scannable</dd></>}
+            </dl>
+          )}
+          {selectedDot && (
+            <dl className="studio__props">
+              <dt>id</dt><dd className="studio__mono">{selectedDot.id}</dd>
+              <dt>item</dt><dd>{"type" in selectedDot.item ? String(selectedDot.item.type) : selectedDot.item.kind}</dd>
+              <dt>x</dt><dd><input type="number" value={selectedDot.x} onChange={(event) => setCoordinate("x", Number(event.target.value))} /></dd>
+              <dt>y</dt><dd><input type="number" value={selectedDot.y} onChange={(event) => setCoordinate("y", Number(event.target.value))} /></dd>
+            </dl>
+          )}
+          {selection && (
+            <div className="studio__row">
+              <button
+                type="button"
+                onClick={() => {
+                  record(selection.kind === "object"
+                    ? { op: "deleteObject", floor: selection.floor, id: selection.id }
+                    : { op: "deleteDot", floor: selection.floor, id: selection.id });
+                  setSelection(null);
+                }}
+              >Delete</button>
+            </div>
+          )}
         </section>
 
-        <footer className="studio-footer">
-          <span ref={coordsRef} className="studio-coords">
-            —
-          </span>
-        </footer>
+        <section>
+          <h2>Cursor</h2>
+          <p className="studio__mono">{cursor.x}, {cursor.y}</p>
+        </section>
+
+        <section className="studio__spacer" />
+
+        <section>
+          <h2>Keys</h2>
+          <ul className="studio__keys">
+            <li><kbd>drag</kbd> move · <kbd>arrows</kbd> nudge · <kbd>shift</kbd> ×4</li>
+            <li><kbd>del</kbd> remove · <kbd>esc</kbd> cancel</li>
+            <li><kbd>wheel</kbd> zoom · <kbd>right-drag</kbd> pan</li>
+          </ul>
+        </section>
       </aside>
-    </main>
+    </div>
   );
 }
