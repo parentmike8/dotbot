@@ -1,5 +1,6 @@
 import { defaultGameConfig } from "../config";
-import { isSolidObject, stairExitPoint } from "../mapModel";
+import { interactionDotReach } from "../interactions";
+import { objectCollisionRects, stairExitPoint } from "../mapModel";
 import { OUTDOOR_FLOOR_ID } from "../types";
 import type {
   BaseLayout,
@@ -29,6 +30,7 @@ export const BASE_OBJECT_KINDS = [
   "fabricator",
   "bayConsole",
   "planningTable",
+  "draftingTable",
   "repairBench",
   "bed",
   "bench",
@@ -58,6 +60,7 @@ export const BASE_KIND_ZONES: Readonly<Record<BaseObjectKind, readonly ("wall" |
   locker: ["wall"],
   shelf: ["wall", "floor"],
   planningTable: ["floor"],
+  draftingTable: ["floor"],
   bed: ["floor"],
   bench: ["floor"],
   bikeRack: ["floor"],
@@ -140,7 +143,7 @@ export type BaseShellDef = {
   upper: BaseUpperDef;
 };
 
-const SINGLETON_BASE_KINDS = new Set<BaseObjectKind>(["fabricator", "bayConsole", "planningTable", "repairBench", "listeningPost", "signalMast"]);
+const SINGLETON_BASE_KINDS = new Set<BaseObjectKind>(["fabricator", "bayConsole", "planningTable", "draftingTable", "repairBench", "listeningPost", "signalMast"]);
 
 const SLOT_ZONES = new Map<string, "wall" | "floor">(BASE_SLOT_DEFS.map((def) => [def.id, def.zone]));
 const SLOT_FLOORS = new Map<string, "GROUND" | "F1">(BASE_SLOT_DEFS.map((def) => [def.id, def.floor]));
@@ -553,8 +556,10 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
 }
 
 /**
- * Derives the base's complete interaction grammar from placed objects, empty
- * slots, and the deployment threshold. Nothing here is authored per shell.
+ * Derives the base's complete interaction grammar from placed objects and the
+ * deployment threshold. Empty placement slots stay visual-only until a player
+ * explicitly enters a placement flow, so normal navigation is not littered
+ * with mystery interactions. Nothing here is authored per shell.
  */
 export function deriveBaseInteractionDots(map: MapDocument): InteractionDot[] {
   const building = map.buildings[0];
@@ -577,15 +582,6 @@ export function deriveBaseInteractionDots(map: MapDocument): InteractionDot[] {
           targetId: object.id,
           floorId: floor.id,
           position: objectInteractionPosition(building, floor, object, standOnAble),
-          radius: BASE_INTERACTION_DOT_RADIUS,
-        });
-      } else {
-        dots.push({
-          id: `interaction-empty-${slot.id}`,
-          kind: "emptySlot",
-          targetId: slot.id,
-          floorId: floor.id,
-          position: rectCenter(slot.rect),
           radius: BASE_INTERACTION_DOT_RADIUS,
         });
       }
@@ -620,7 +616,7 @@ function objectInteractionPosition(
   const sideOrder = [preferred, ...(["N", "E", "S", "W"] as const).filter((side) => side !== preferred)];
   const solids: Rect[] = [
     ...floor.walls,
-    ...floor.objects.filter((candidate) => candidate.id !== object.id && isSolidObject(candidate)),
+    ...floor.objects.filter((candidate) => candidate.id !== object.id).flatMap(objectCollisionRects),
   ];
   const valid = (position: Vec2) =>
     insideWithRadius(position, building.footprint, botRadius) &&
@@ -647,12 +643,12 @@ function objectInteractionPosition(
 function createStandabilityCheck(map: MapDocument, building: Building, floor: FloorPlan): (position: Vec2) => boolean {
   const cell = 8;
   const botRadius = defaultGameConfig.botRadius;
-  const captureRange = botRadius - BASE_INTERACTION_DOT_RADIUS - 2;
+  const captureRange = interactionDotReach(botRadius, BASE_INTERACTION_DOT_RADIUS);
   const cols = Math.ceil(map.width / cell);
   const rows = Math.ceil(map.height / cell);
   const solids = floor.label === "GROUND"
-    ? [...map.outdoor.walls, ...map.outdoor.objects.filter(isSolidObject), ...floor.walls, ...floor.objects.filter(isSolidObject)]
-    : [...floor.walls, ...floor.objects.filter(isSolidObject)];
+    ? [...map.outdoor.walls, ...map.outdoor.objects.flatMap(objectCollisionRects), ...floor.walls, ...floor.objects.flatMap(objectCollisionRects)]
+    : [...floor.walls, ...floor.objects.flatMap(objectCollisionRects)];
   const seeds = floor.label === "GROUND"
     ? map.botSpawns.filter((spawn) => spawn.controller === "human").map((spawn) => spawn.position)
     : building.floors.flatMap((other) => other.stairs.filter((stair) => stair.toFloorId === floor.id).map(stairExitPoint));

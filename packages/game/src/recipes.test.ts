@@ -32,12 +32,13 @@ describe("economy recipe data", () => {
       expect(blueprintIds.has(recipe.requiresBlueprint!), recipe.id).toBe(true);
       if (recipe.output.kind === "furniture") expect(BASE_KIND_ZONES[recipe.output.objectKind].length, recipe.id).toBeGreaterThan(0);
     }
-    const derivedFurniture = new Set(["repairBench", "listeningPost", "signalMast"]);
+    const derivedFurniture = new Set(["draftingTable", "repairBench", "listeningPost", "signalMast"]);
     expect(new Set(furnitureRecipes.flatMap((recipe) =>
       recipe.output.kind === "furniture" && !derivedFurniture.has(recipe.output.objectKind) ? [recipe.output.objectKind] : [],
     ))).toEqual(blueprintIds);
     expect(furnitureRecipes.find((recipe) => recipe.id === "furniture-listeningPost")?.requiresBlueprint).toBe("serverRack");
     expect(furnitureRecipes.find((recipe) => recipe.id === "furniture-signalMast")?.requiresBlueprint).toBe("generator");
+    expect(furnitureRecipes.find((recipe) => recipe.id === "furniture-draftingTable")?.requiresBlueprint).toBe("desk");
     expect(new Set(Object.keys(BASE_KIND_ZONES))).toEqual(new Set(BASE_OBJECT_KINDS));
   });
 

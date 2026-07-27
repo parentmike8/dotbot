@@ -1,0 +1,3202 @@
+{
+  "id": "pixel-city-block",
+  "name": "Pixel City Block Playtest",
+  "width": 1824,
+  "height": 1296,
+  "visualTheme": "pixel-city",
+  "artPlacements": [
+    {
+      "id": "city-asphalt",
+      "assetKey": "asphalt",
+      "x": 0,
+      "y": 0,
+      "w": 1824,
+      "h": 1296,
+      "tiled": true,
+      "layer": "ground"
+    },
+    {
+      "id": "block-paving",
+      "assetKey": "sidewalk",
+      "x": 48,
+      "y": 48,
+      "w": 1488,
+      "h": 960,
+      "tiled": true,
+      "layer": "ground"
+    },
+    {
+      "id": "south-sidewalk",
+      "assetKey": "sidewalk",
+      "x": 48,
+      "y": 912,
+      "w": 1488,
+      "h": 96,
+      "tiled": true,
+      "layer": "ground"
+    },
+    {
+      "id": "east-sidewalk",
+      "assetKey": "sidewalk",
+      "x": 1440,
+      "y": 48,
+      "w": 96,
+      "h": 960,
+      "tiled": true,
+      "layer": "ground"
+    },
+    {
+      "id": "park-floor",
+      "assetKey": "park-paving",
+      "x": 864,
+      "y": 504,
+      "w": 576,
+      "h": 384,
+      "tiled": true,
+      "layer": "ground"
+    },
+    {
+      "id": "shop-floor",
+      "assetKey": "interior-floor",
+      "x": 144,
+      "y": 120,
+      "w": 672,
+      "h": 576,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "pixel-parts",
+      "floorId": "pixel-city:shop:GROUND"
+    },
+    {
+      "id": "shop-entry-rug",
+      "assetKey": "interior-rug",
+      "x": 372,
+      "y": 568,
+      "w": 144,
+      "h": 96,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "pixel-parts",
+      "floorId": "pixel-city:shop:GROUND",
+      "zIndex": 1
+    },
+    {
+      "id": "shop-floor-f1",
+      "assetKey": "interior-floor",
+      "x": 144,
+      "y": 120,
+      "w": 672,
+      "h": 576,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "pixel-parts",
+      "floorId": "pixel-city:shop:F1"
+    },
+    {
+      "id": "parts-roof-west",
+      "assetKey": "shop-roof",
+      "x": 144,
+      "y": 120,
+      "layer": "roof",
+      "buildingId": "pixel-parts"
+    },
+    {
+      "id": "parts-roof-east",
+      "assetKey": "shop-roof",
+      "x": 480,
+      "y": 120,
+      "layer": "roof",
+      "buildingId": "pixel-parts"
+    },
+    {
+      "id": "parts-middle-west",
+      "assetKey": "shop-middle",
+      "x": 144,
+      "y": 360,
+      "layer": "roof",
+      "buildingId": "pixel-parts"
+    },
+    {
+      "id": "parts-middle-east",
+      "assetKey": "shop-middle",
+      "x": 480,
+      "y": 360,
+      "layer": "roof",
+      "buildingId": "pixel-parts"
+    },
+    {
+      "id": "parts-front-west",
+      "assetKey": "shop-front-blue-doorless",
+      "x": 144,
+      "y": 552,
+      "layer": "roof",
+      "buildingId": "pixel-parts"
+    },
+    {
+      "id": "parts-front-east",
+      "assetKey": "shop-front-blue-doorless",
+      "x": 480,
+      "y": 552,
+      "layer": "roof",
+      "buildingId": "pixel-parts"
+    },
+    {
+      "id": "blue-roof",
+      "assetKey": "shop-roof",
+      "x": 864,
+      "y": 120,
+      "layer": "roof",
+      "buildingId": "blue-shop"
+    },
+    {
+      "id": "blue-front",
+      "assetKey": "bakery-front-doorless",
+      "x": 864,
+      "y": 216,
+      "layer": "roof",
+      "buildingId": "blue-shop"
+    },
+    {
+      "id": "red-roof",
+      "assetKey": "shop-roof",
+      "x": 1200,
+      "y": 120,
+      "layer": "roof",
+      "buildingId": "red-shop"
+    },
+    {
+      "id": "red-front",
+      "assetKey": "coolies-front-doorless",
+      "x": 1200,
+      "y": 312,
+      "layer": "roof",
+      "buildingId": "red-shop"
+    },
+    {
+      "id": "shop-floor-f2",
+      "assetKey": "interior-floor",
+      "x": 144,
+      "y": 120,
+      "w": 672,
+      "h": 576,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "pixel-parts",
+      "floorId": "pixel-city:shop:F2"
+    },
+    {
+      "id": "shop-floor-f3",
+      "assetKey": "interior-floor",
+      "x": 144,
+      "y": 120,
+      "w": 672,
+      "h": 576,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "pixel-parts",
+      "floorId": "pixel-city:shop:F3"
+    },
+    {
+      "id": "shop-floor-f4",
+      "assetKey": "interior-floor",
+      "x": 144,
+      "y": 120,
+      "w": 672,
+      "h": 576,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "pixel-parts",
+      "floorId": "pixel-city:shop:F4"
+    },
+    {
+      "id": "bakery-floor-ground",
+      "assetKey": "bakery-floor",
+      "x": 864,
+      "y": 120,
+      "w": 336,
+      "h": 336,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "blue-shop",
+      "floorId": "pixel-city:blue:GROUND"
+    },
+    {
+      "id": "bakery-floor-f1",
+      "assetKey": "bakery-floor",
+      "x": 864,
+      "y": 120,
+      "w": 336,
+      "h": 336,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "blue-shop",
+      "floorId": "pixel-city:blue:F1"
+    },
+    {
+      "id": "bakery-entry-rug",
+      "assetKey": "interior-rug",
+      "x": 1080,
+      "y": 392,
+      "w": 96,
+      "h": 48,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "blue-shop",
+      "floorId": "pixel-city:blue:GROUND",
+      "zIndex": 1
+    },
+    {
+      "id": "coolies-floor-ground",
+      "assetKey": "wood-floor",
+      "x": 1200,
+      "y": 120,
+      "w": 336,
+      "h": 336,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "red-shop",
+      "floorId": "pixel-city:red:GROUND"
+    },
+    {
+      "id": "coolies-floor-f1",
+      "assetKey": "wood-floor",
+      "x": 1200,
+      "y": 120,
+      "w": 336,
+      "h": 336,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "red-shop",
+      "floorId": "pixel-city:red:F1"
+    },
+    {
+      "id": "coolies-entry-rug",
+      "assetKey": "interior-rug",
+      "x": 1416,
+      "y": 392,
+      "w": 96,
+      "h": 48,
+      "tiled": true,
+      "layer": "floor",
+      "buildingId": "red-shop",
+      "floorId": "pixel-city:red:GROUND",
+      "zIndex": 1
+    }
+  ],
+  "outdoor": {
+    "roads": [
+      {
+        "id": "south-street",
+        "x": 24,
+        "y": 1008,
+        "w": 1776,
+        "h": 240
+      },
+      {
+        "id": "east-street",
+        "x": 1536,
+        "y": 24,
+        "w": 240,
+        "h": 1224
+      }
+    ],
+    "parks": [
+      {
+        "id": "pocket-park",
+        "x": 864,
+        "y": 504,
+        "w": 576,
+        "h": 384
+      }
+    ],
+    "walls": [
+      {
+        "id": "edge-north",
+        "x": 0,
+        "y": 0,
+        "w": 1824,
+        "h": 24
+      },
+      {
+        "id": "edge-south",
+        "x": 0,
+        "y": 1272,
+        "w": 1824,
+        "h": 24
+      },
+      {
+        "id": "edge-west",
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 1248
+      },
+      {
+        "id": "edge-east",
+        "x": 1800,
+        "y": 24,
+        "w": 24,
+        "h": 1248
+      }
+    ],
+    "objects": [
+      {
+        "id": "street-bench-a",
+        "kind": "bench",
+        "x": 872,
+        "y": 844,
+        "w": 78,
+        "h": 18,
+        "solid": true,
+        "art": {
+          "assetKey": "bench",
+          "offsetX": -9,
+          "offsetY": -75,
+          "occlusionY": 4
+        }
+      },
+      {
+        "id": "street-bench-b",
+        "kind": "bench",
+        "x": 1112,
+        "y": 844,
+        "w": 78,
+        "h": 18,
+        "solid": true,
+        "art": {
+          "assetKey": "bench",
+          "offsetX": -9,
+          "offsetY": -75,
+          "occlusionY": 4
+        }
+      },
+      {
+        "id": "street-trash",
+        "kind": "dumpster",
+        "x": 1320,
+        "y": 856,
+        "w": 42,
+        "h": 24,
+        "solid": true,
+        "art": {
+          "assetKey": "trash-bin",
+          "offsetX": 0,
+          "offsetY": -72,
+          "occlusionY": 3
+        }
+      },
+      {
+        "id": "street-hydrant",
+        "kind": "hydrant",
+        "x": 748,
+        "y": 940,
+        "w": 24,
+        "h": 24,
+        "solid": true,
+        "art": {
+          "assetKey": "hydrant",
+          "offsetX": 0,
+          "offsetY": -72,
+          "occlusionY": 3
+        }
+      },
+      {
+        "id": "street-lamp-a",
+        "kind": "lampPost",
+        "x": 840,
+        "y": 920,
+        "w": 20,
+        "h": 20,
+        "solid": true,
+        "art": {
+          "assetKey": "street-lamp",
+          "offsetX": -10,
+          "offsetY": -172,
+          "occlusionY": 2
+        }
+      },
+      {
+        "id": "street-lamp-b",
+        "kind": "lampPost",
+        "x": 1260,
+        "y": 920,
+        "w": 20,
+        "h": 20,
+        "solid": true,
+        "art": {
+          "assetKey": "street-lamp",
+          "offsetX": -10,
+          "offsetY": -172,
+          "occlusionY": 2
+        }
+      },
+      {
+        "id": "park-tree-a",
+        "kind": "tree",
+        "x": 900,
+        "y": 572,
+        "w": 40,
+        "h": 28,
+        "solid": true,
+        "art": {
+          "assetKey": "street-tree",
+          "offsetX": -28,
+          "offsetY": -113,
+          "occlusionY": 4
+        }
+      },
+      {
+        "id": "park-tree-b",
+        "kind": "tree",
+        "x": 1360,
+        "y": 572,
+        "w": 40,
+        "h": 28,
+        "solid": true,
+        "art": {
+          "assetKey": "planter-tree",
+          "offsetX": -28,
+          "offsetY": -164,
+          "occlusionY": 4
+        }
+      },
+      {
+        "id": "park-tree-c",
+        "kind": "tree",
+        "x": 1360,
+        "y": 790,
+        "w": 40,
+        "h": 28,
+        "solid": true,
+        "art": {
+          "assetKey": "street-tree",
+          "offsetX": -28,
+          "offsetY": -113,
+          "occlusionY": 4
+        }
+      },
+      {
+        "id": "park-bench-a",
+        "kind": "bench",
+        "x": 1014,
+        "y": 624,
+        "w": 78,
+        "h": 18,
+        "solid": true,
+        "art": {
+          "assetKey": "bench",
+          "offsetX": -9,
+          "offsetY": -75,
+          "occlusionY": 4
+        }
+      },
+      {
+        "id": "park-bench-b",
+        "kind": "bench",
+        "x": 1190,
+        "y": 760,
+        "w": 78,
+        "h": 18,
+        "solid": true,
+        "art": {
+          "assetKey": "bench",
+          "offsetX": -9,
+          "offsetY": -75,
+          "occlusionY": 4
+        }
+      },
+      {
+        "id": "parked-car-a",
+        "kind": "car",
+        "x": 180,
+        "y": 892,
+        "w": 183,
+        "h": 72,
+        "solid": true,
+        "art": {
+          "assetKey": "car-right",
+          "offsetX": -6,
+          "offsetY": -72,
+          "occlusionY": 8,
+          "occlusionCopies": 3
+        }
+      },
+      {
+        "id": "parked-car-b",
+        "kind": "car",
+        "x": 560,
+        "y": 892,
+        "w": 183,
+        "h": 72,
+        "solid": true,
+        "art": {
+          "assetKey": "car-right",
+          "offsetX": -6,
+          "offsetY": -72,
+          "occlusionY": 8,
+          "occlusionCopies": 3
+        }
+      },
+      {
+        "id": "parked-car-c",
+        "kind": "car",
+        "x": 1572,
+        "y": 584,
+        "w": 72,
+        "h": 183,
+        "solid": true,
+        "art": {
+          "assetKey": "car-down",
+          "offsetX": -12,
+          "offsetY": -9,
+          "occlusionY": 8,
+          "occlusionCopies": 3
+        }
+      },
+      {
+        "id": "alley-barrel",
+        "kind": "drum",
+        "x": 560,
+        "y": 44,
+        "w": 36,
+        "h": 24,
+        "solid": true,
+        "art": {
+          "assetKey": "barrel-blue",
+          "offsetX": -6,
+          "offsetY": -69,
+          "occlusionY": 4
+        }
+      },
+      {
+        "id": "alley-barrels",
+        "kind": "drum",
+        "x": 620,
+        "y": 36,
+        "w": 84,
+        "h": 28,
+        "solid": true,
+        "art": {
+          "assetKey": "barrel-cluster",
+          "offsetX": -6,
+          "offsetY": -65,
+          "occlusionY": 5
+        }
+      },
+      {
+        "id": "alley-container",
+        "kind": "dumpster",
+        "x": 952,
+        "y": 28,
+        "w": 180,
+        "h": 36,
+        "solid": true,
+        "art": {
+          "assetKey": "alley-container",
+          "offsetX": -6,
+          "offsetY": -105,
+          "occlusionY": 8,
+          "occlusionCopies": 2
+        }
+      },
+      {
+        "id": "alley-bin",
+        "kind": "dumpster",
+        "x": 1360,
+        "y": 40,
+        "w": 42,
+        "h": 24,
+        "solid": true,
+        "art": {
+          "assetKey": "trash-bin",
+          "offsetX": 0,
+          "offsetY": -72,
+          "occlusionY": 3
+        }
+      },
+      {
+        "id": "alley-cardboard-a",
+        "kind": "pallet",
+        "x": 840,
+        "y": 76,
+        "w": 40,
+        "h": 28,
+        "solid": false,
+        "art": {
+          "assetKey": "cardboard-a",
+          "offsetX": -4,
+          "offsetY": -17,
+          "occlusionY": 2
+        }
+      },
+      {
+        "id": "alley-cardboard-b",
+        "kind": "pallet",
+        "x": 1180,
+        "y": 66,
+        "w": 40,
+        "h": 28,
+        "solid": false,
+        "art": {
+          "assetKey": "cardboard-b",
+          "offsetX": -4,
+          "offsetY": -17,
+          "occlusionY": 2
+        }
+      },
+      {
+        "id": "west-lane-cone",
+        "kind": "bollard",
+        "x": 100,
+        "y": 688,
+        "w": 20,
+        "h": 16,
+        "solid": true,
+        "art": {
+          "assetKey": "traffic-cone",
+          "offsetX": -14,
+          "offsetY": -29,
+          "occlusionY": 2
+        }
+      },
+      {
+        "id": "front-planter-a",
+        "kind": "planter",
+        "x": 256,
+        "y": 724,
+        "w": 40,
+        "h": 28,
+        "solid": true,
+        "art": {
+          "assetKey": "planter-tree",
+          "offsetX": -28,
+          "offsetY": -164,
+          "occlusionY": 4
+        }
+      },
+      {
+        "id": "front-planter-b",
+        "kind": "planter",
+        "x": 560,
+        "y": 724,
+        "w": 40,
+        "h": 28,
+        "solid": true,
+        "art": {
+          "assetKey": "planter-tree",
+          "offsetX": -28,
+          "offsetY": -164,
+          "occlusionY": 4
+        }
+      }
+    ],
+    "dotSpawns": [
+      {
+        "id": "street-health",
+        "item": {
+          "kind": "powerup",
+          "type": "health"
+        },
+        "position": {
+          "x": 970,
+          "y": 810
+        }
+      },
+      {
+        "id": "park-incognito",
+        "item": {
+          "kind": "powerup",
+          "type": "incognito"
+        },
+        "position": {
+          "x": 1300,
+          "y": 660
+        }
+      },
+      {
+        "id": "alley-radar",
+        "item": {
+          "kind": "powerup",
+          "type": "radar"
+        },
+        "position": {
+          "x": 1000,
+          "y": 90
+        }
+      }
+    ]
+  },
+  "buildings": [
+    {
+      "id": "pixel-parts",
+      "kind": "retail",
+      "name": "PLUME PARTS",
+      "footprint": {
+        "x": 144,
+        "y": 120,
+        "w": 672,
+        "h": 576
+      },
+      "floors": [
+        {
+          "id": "pixel-city:shop:GROUND",
+          "label": "GROUND",
+          "walls": [
+            {
+              "id": "shop-north-west",
+              "x": 144,
+              "y": 120,
+              "w": 528,
+              "h": 16
+            },
+            {
+              "id": "shop-north-east",
+              "x": 768,
+              "y": 120,
+              "w": 48,
+              "h": 16
+            },
+            {
+              "id": "shop-west",
+              "x": 144,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-east",
+              "x": 800,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-south-west",
+              "x": 144,
+              "y": 680,
+              "w": 216,
+              "h": 16
+            },
+            {
+              "id": "shop-south-centre",
+              "x": 456,
+              "y": 680,
+              "w": 240,
+              "h": 16
+            },
+            {
+              "id": "shop-south-east",
+              "x": 792,
+              "y": 680,
+              "w": 24,
+              "h": 16
+            }
+          ],
+          "doorways": [
+            {
+              "id": "shop-front-entry",
+              "x": 408,
+              "y": 688,
+              "width": 96,
+              "dir": "h",
+              "mechanism": "automatic",
+              "assetKey": "shop-door-blue",
+              "openDurationMs": 420,
+              "holdOpenMs": 1150,
+              "triggerRadius": 104,
+              "noiseLoudness": 0.42
+            },
+            {
+              "id": "shop-front-entry-east",
+              "x": 744,
+              "y": 688,
+              "width": 96,
+              "dir": "h",
+              "mechanism": "automatic",
+              "assetKey": "shop-door-blue",
+              "openDurationMs": 420,
+              "holdOpenMs": 1150,
+              "triggerRadius": 104,
+              "noiseLoudness": 0.42
+            },
+            {
+              "id": "shop-back-entry",
+              "x": 720,
+              "y": 128,
+              "width": 96,
+              "dir": "h",
+              "open": true
+            }
+          ],
+          "windows": [],
+          "stairs": [
+            {
+              "id": "shop-stair-up",
+              "rect": {
+                "x": 216,
+                "y": 282,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "up",
+              "toFloorId": "pixel-city:shop:F1",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-up",
+                "fitToObject": true
+              }
+            }
+          ],
+          "objects": [
+            {
+              "id": "stock-a",
+              "kind": "shelf",
+              "x": 188,
+              "y": 188,
+              "w": 78,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-wall-shelf",
+                "offsetX": -9,
+                "offsetY": -90,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "stock-b",
+              "kind": "shelf",
+              "x": 294,
+              "y": 188,
+              "w": 78,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-wall-shelf",
+                "offsetX": -9,
+                "offsetY": -90,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "stock-c",
+              "kind": "shelf",
+              "x": 400,
+              "y": 188,
+              "w": 78,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-wall-shelf",
+                "offsetX": -9,
+                "offsetY": -90,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "stock-rack-a",
+              "kind": "shelf",
+              "x": 524,
+              "y": 188,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-a",
+                "offsetX": 0,
+                "offsetY": -74,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "stock-rack-b",
+              "kind": "shelf",
+              "x": 586,
+              "y": 188,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-b",
+                "offsetX": 0,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "service-counter-a",
+              "kind": "counter",
+              "x": 188,
+              "y": 560,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "service-counter-b",
+              "kind": "counter",
+              "x": 282,
+              "y": 560,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "display-a",
+              "kind": "shelf",
+              "x": 380,
+              "y": 382,
+              "w": 66,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-island-a",
+                "offsetX": -15,
+                "offsetY": -116,
+                "occlusionY": 6
+              }
+            },
+            {
+              "id": "display-b",
+              "kind": "shelf",
+              "x": 510,
+              "y": 382,
+              "w": 69,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-island-b",
+                "offsetX": -15,
+                "offsetY": -116,
+                "occlusionY": 6
+              }
+            },
+            {
+              "id": "display-endcap",
+              "kind": "shelf",
+              "x": 430,
+              "y": 520,
+              "w": 78,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "rolling-rack-parts",
+                "offsetX": -9,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "work-bench-a",
+              "kind": "workbench",
+              "x": 680,
+              "y": 280,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "work-console",
+              "kind": "bayConsole",
+              "x": 680,
+              "y": 400,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "monitor-desk",
+                "offsetX": -12,
+                "offsetY": -96,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "repair-console",
+              "kind": "repairBench",
+              "x": 694,
+              "y": 506,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "repair-console",
+                "offsetX": -3,
+                "offsetY": -120,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "server-rack",
+              "kind": "serverRack",
+              "x": 686,
+              "y": 544,
+              "w": 75,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "server-rack",
+                "offsetX": -9,
+                "offsetY": -114,
+                "occlusionY": 5
+              }
+            }
+          ],
+          "dotSpawns": [
+            {
+              "id": "shop-health",
+              "item": {
+                "kind": "powerup",
+                "type": "health"
+              },
+              "position": {
+                "x": 594,
+                "y": 582
+              }
+            },
+            {
+              "id": "shop-radar",
+              "item": {
+                "kind": "powerup",
+                "type": "radar"
+              },
+              "position": {
+                "x": 504,
+                "y": 246
+              }
+            },
+            {
+              "id": "shop-dash",
+              "item": {
+                "kind": "powerup",
+                "type": "dashOvercharge"
+              },
+              "position": {
+                "x": 630,
+                "y": 348
+              }
+            }
+          ]
+        },
+        {
+          "id": "pixel-city:shop:F1",
+          "label": "F1",
+          "walls": [
+            {
+              "id": "shop-f1-north",
+              "x": 144,
+              "y": 120,
+              "w": 672,
+              "h": 16
+            },
+            {
+              "id": "shop-f1-west",
+              "x": 144,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-f1-east",
+              "x": 800,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-f1-south",
+              "x": 144,
+              "y": 680,
+              "w": 672,
+              "h": 16
+            }
+          ],
+          "doorways": [],
+          "windows": [],
+          "stairs": [
+            {
+              "id": "shop-stair-down",
+              "rect": {
+                "x": 216,
+                "y": 282,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "down",
+              "toFloorId": "pixel-city:shop:GROUND",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-down",
+                "fitToObject": true
+              }
+            },
+            {
+              "id": "shop-f1-stair-up",
+              "rect": {
+                "x": 328,
+                "y": 282,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "up",
+              "toFloorId": "pixel-city:shop:F2",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-up",
+                "fitToObject": true
+              }
+            }
+          ],
+          "objects": [
+            {
+              "id": "f1-bin-a",
+              "kind": "shelf",
+              "x": 188,
+              "y": 188,
+              "w": 78,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-wall-shelf",
+                "offsetX": -9,
+                "offsetY": -90,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-bin-b",
+              "kind": "shelf",
+              "x": 294,
+              "y": 188,
+              "w": 78,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-wall-shelf",
+                "offsetX": -9,
+                "offsetY": -90,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-bin-c",
+              "kind": "shelf",
+              "x": 488,
+              "y": 188,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-a",
+                "offsetX": 0,
+                "offsetY": -74,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f1-bin-d",
+              "kind": "shelf",
+              "x": 552,
+              "y": 188,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-b",
+                "offsetX": 0,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f1-qc-desk",
+              "kind": "bayConsole",
+              "x": 676,
+              "y": 188,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "monitor-desk",
+                "offsetX": -12,
+                "offsetY": -96,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-qc-desk-b",
+              "kind": "bayConsole",
+              "x": 676,
+              "y": 276,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "monitor-desk",
+                "offsetX": -12,
+                "offsetY": -96,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-line-a1",
+              "kind": "workbench",
+              "x": 500,
+              "y": 372,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-line-a2",
+              "kind": "workbench",
+              "x": 590,
+              "y": 372,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-line-a3",
+              "kind": "workbench",
+              "x": 680,
+              "y": 372,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-line-b1",
+              "kind": "workbench",
+              "x": 500,
+              "y": 460,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-line-b2",
+              "kind": "workbench",
+              "x": 590,
+              "y": 460,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-line-b3",
+              "kind": "workbench",
+              "x": 680,
+              "y": 460,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f1-stage-a",
+              "kind": "crateStack",
+              "x": 296,
+              "y": 560,
+              "w": 88,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "crate-stack-a",
+                "offsetX": -4,
+                "offsetY": -15,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f1-stage-b",
+              "kind": "crateStack",
+              "x": 392,
+              "y": 560,
+              "w": 88,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "crate-stack-b",
+                "offsetX": -4,
+                "offsetY": -15,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f1-pack-a",
+              "kind": "shelf",
+              "x": 500,
+              "y": 574,
+              "w": 78,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "rolling-rack-parts",
+                "offsetX": -9,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f1-pack-b",
+              "kind": "shelf",
+              "x": 586,
+              "y": 574,
+              "w": 78,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "rolling-rack-empty",
+                "offsetX": -9,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            }
+          ],
+          "dotSpawns": [
+            {
+              "id": "shop-f1-blueprint",
+              "item": {
+                "kind": "blueprint",
+                "blueprintId": "shield-frame",
+                "sourceBuildingId": "pixel-parts"
+              },
+              "position": {
+                "x": 640,
+                "y": 630
+              }
+            },
+            {
+              "id": "shop-f1-health",
+              "item": {
+                "kind": "powerup",
+                "type": "health"
+              },
+              "position": {
+                "x": 240,
+                "y": 630
+              }
+            }
+          ]
+        },
+        {
+          "id": "pixel-city:shop:F2",
+          "label": "F2",
+          "walls": [
+            {
+              "id": "shop-f2-north",
+              "x": 144,
+              "y": 120,
+              "w": 672,
+              "h": 16
+            },
+            {
+              "id": "shop-f2-west",
+              "x": 144,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-f2-east",
+              "x": 800,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-f2-south",
+              "x": 144,
+              "y": 680,
+              "w": 672,
+              "h": 16
+            }
+          ],
+          "doorways": [],
+          "windows": [],
+          "stairs": [
+            {
+              "id": "shop-f2-stair-down",
+              "rect": {
+                "x": 328,
+                "y": 282,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "down",
+              "toFloorId": "pixel-city:shop:F1",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-down",
+                "fitToObject": true
+              }
+            },
+            {
+              "id": "shop-f2-stair-up",
+              "rect": {
+                "x": 216,
+                "y": 282,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "up",
+              "toFloorId": "pixel-city:shop:F3",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-up",
+                "fitToObject": true
+              }
+            }
+          ],
+          "objects": [
+            {
+              "id": "f2-wall-crate-a",
+              "kind": "shelf",
+              "x": 488,
+              "y": 188,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "pallet-shelf",
+                "offsetX": -6,
+                "offsetY": -65,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-wall-crate-b",
+              "kind": "shelf",
+              "x": 580,
+              "y": 188,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "pallet-shelf",
+                "offsetX": -6,
+                "offsetY": -65,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-inventory-desk",
+              "kind": "bayConsole",
+              "x": 700,
+              "y": 188,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "monitor-desk",
+                "offsetX": -12,
+                "offsetY": -96,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f2-rack-1a",
+              "kind": "shelf",
+              "x": 520,
+              "y": 288,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-a",
+                "offsetX": 0,
+                "offsetY": -74,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-rack-1b",
+              "kind": "shelf",
+              "x": 584,
+              "y": 288,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-b",
+                "offsetX": 0,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-rack-1c",
+              "kind": "shelf",
+              "x": 648,
+              "y": 288,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-a",
+                "offsetX": 0,
+                "offsetY": -74,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-rack-2a",
+              "kind": "shelf",
+              "x": 520,
+              "y": 400,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-b",
+                "offsetX": 0,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-rack-2b",
+              "kind": "shelf",
+              "x": 584,
+              "y": 400,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-a",
+                "offsetX": 0,
+                "offsetY": -74,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-rack-2c",
+              "kind": "shelf",
+              "x": 648,
+              "y": 400,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-b",
+                "offsetX": 0,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-rack-3a",
+              "kind": "shelf",
+              "x": 520,
+              "y": 512,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-a",
+                "offsetX": 0,
+                "offsetY": -74,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-rack-3b",
+              "kind": "shelf",
+              "x": 584,
+              "y": 512,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-b",
+                "offsetX": 0,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-rack-3c",
+              "kind": "shelf",
+              "x": 648,
+              "y": 512,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-a",
+                "offsetX": 0,
+                "offsetY": -74,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-stage-a",
+              "kind": "crateStack",
+              "x": 296,
+              "y": 560,
+              "w": 88,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "crate-stack-b",
+                "offsetX": -4,
+                "offsetY": -15,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-stage-b",
+              "kind": "crateStack",
+              "x": 392,
+              "y": 560,
+              "w": 88,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "crate-stack-a",
+                "offsetX": -4,
+                "offsetY": -15,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-case-a",
+              "kind": "shelf",
+              "x": 690,
+              "y": 558,
+              "w": 84,
+              "h": 26,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-case",
+                "offsetX": -6,
+                "offsetY": -35,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f2-case-b",
+              "kind": "shelf",
+              "x": 690,
+              "y": 600,
+              "w": 84,
+              "h": 26,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-case",
+                "offsetX": -6,
+                "offsetY": -35,
+                "occlusionY": 4
+              }
+            }
+          ],
+          "dotSpawns": [
+            {
+              "id": "shop-f2-radar",
+              "item": {
+                "kind": "powerup",
+                "type": "radar"
+              },
+              "position": {
+                "x": 460,
+                "y": 340
+              }
+            },
+            {
+              "id": "shop-f2-dash",
+              "item": {
+                "kind": "powerup",
+                "type": "dashOvercharge"
+              },
+              "position": {
+                "x": 600,
+                "y": 460
+              }
+            }
+          ]
+        },
+        {
+          "id": "pixel-city:shop:F3",
+          "label": "F3",
+          "walls": [
+            {
+              "id": "shop-f3-north",
+              "x": 144,
+              "y": 120,
+              "w": 672,
+              "h": 16
+            },
+            {
+              "id": "shop-f3-west",
+              "x": 144,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-f3-east",
+              "x": 800,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-f3-south",
+              "x": 144,
+              "y": 680,
+              "w": 672,
+              "h": 16
+            }
+          ],
+          "doorways": [],
+          "windows": [],
+          "stairs": [
+            {
+              "id": "shop-f3-stair-down",
+              "rect": {
+                "x": 216,
+                "y": 282,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "down",
+              "toFloorId": "pixel-city:shop:F2",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-down",
+                "fitToObject": true
+              }
+            },
+            {
+              "id": "shop-f3-stair-up",
+              "rect": {
+                "x": 328,
+                "y": 282,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "up",
+              "toFloorId": "pixel-city:shop:F4",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-up",
+                "fitToObject": true
+              }
+            }
+          ],
+          "objects": [
+            {
+              "id": "f3-fridge",
+              "kind": "fridge",
+              "x": 176,
+              "y": 188,
+              "w": 40,
+              "h": 26,
+              "solid": true,
+              "art": {
+                "assetKey": "fridge",
+                "offsetX": -4,
+                "offsetY": -99,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f3-kitchenette",
+              "kind": "counter",
+              "x": 232,
+              "y": 188,
+              "w": 84,
+              "h": 26,
+              "solid": true,
+              "art": {
+                "assetKey": "kitchenette",
+                "offsetX": -6,
+                "offsetY": -51,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f3-break-table",
+              "kind": "table",
+              "x": 176,
+              "y": 230,
+              "w": 84,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "break-table",
+                "offsetX": -6,
+                "offsetY": -63,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f3-reclaim-a",
+              "kind": "shelf",
+              "x": 452,
+              "y": 188,
+              "w": 78,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "rolling-rack-empty",
+                "offsetX": -9,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f3-reclaim-b",
+              "kind": "shelf",
+              "x": 546,
+              "y": 188,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-b",
+                "offsetX": 0,
+                "offsetY": -72,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f3-reclaim-c",
+              "kind": "shelf",
+              "x": 610,
+              "y": 188,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "storage-rack-a",
+                "offsetX": 0,
+                "offsetY": -74,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f3-bay-1c",
+              "kind": "repairBench",
+              "x": 608,
+              "y": 240,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "repair-console",
+                "offsetX": -3,
+                "offsetY": -120,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f3-bay-1b",
+              "kind": "workbench",
+              "x": 672,
+              "y": 240,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f3-bay-2c",
+              "kind": "repairBench",
+              "x": 608,
+              "y": 328,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "repair-console",
+                "offsetX": -3,
+                "offsetY": -120,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f3-bay-2b",
+              "kind": "workbench",
+              "x": 672,
+              "y": 328,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f3-bay-3c",
+              "kind": "repairBench",
+              "x": 608,
+              "y": 416,
+              "w": 48,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "repair-console",
+                "offsetX": -3,
+                "offsetY": -120,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f3-bay-3b",
+              "kind": "workbench",
+              "x": 672,
+              "y": 416,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f3-diag-a",
+              "kind": "bayConsole",
+              "x": 452,
+              "y": 372,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "monitor-desk",
+                "offsetX": -12,
+                "offsetY": -96,
+                "occlusionY": 5
+              }
+            }
+          ],
+          "dotSpawns": [
+            {
+              "id": "shop-f3-health",
+              "item": {
+                "kind": "powerup",
+                "type": "health"
+              },
+              "position": {
+                "x": 360,
+                "y": 240
+              }
+            },
+            {
+              "id": "shop-f3-incognito",
+              "item": {
+                "kind": "powerup",
+                "type": "incognito"
+              },
+              "position": {
+                "x": 560,
+                "y": 300
+              }
+            }
+          ]
+        },
+        {
+          "id": "pixel-city:shop:F4",
+          "label": "F4",
+          "walls": [
+            {
+              "id": "shop-f4-north",
+              "x": 144,
+              "y": 120,
+              "w": 672,
+              "h": 16
+            },
+            {
+              "id": "shop-f4-west",
+              "x": 144,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-f4-east",
+              "x": 800,
+              "y": 136,
+              "w": 16,
+              "h": 544
+            },
+            {
+              "id": "shop-f4-south",
+              "x": 144,
+              "y": 680,
+              "w": 672,
+              "h": 16
+            },
+            {
+              "id": "f4-core-n",
+              "x": 548,
+              "y": 332,
+              "w": 192,
+              "h": 12
+            },
+            {
+              "id": "f4-core-s",
+              "x": 548,
+              "y": 492,
+              "w": 192,
+              "h": 12
+            },
+            {
+              "id": "f4-core-e",
+              "x": 728,
+              "y": 344,
+              "w": 12,
+              "h": 148
+            },
+            {
+              "id": "f4-core-w-n",
+              "x": 548,
+              "y": 344,
+              "w": 12,
+              "h": 36
+            },
+            {
+              "id": "f4-core-w-s",
+              "x": 548,
+              "y": 464,
+              "w": 12,
+              "h": 28
+            }
+          ],
+          "doorways": [],
+          "windows": [],
+          "stairs": [
+            {
+              "id": "shop-f4-stair-down",
+              "rect": {
+                "x": 328,
+                "y": 282,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "down",
+              "toFloorId": "pixel-city:shop:F3",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-down",
+                "fitToObject": true
+              }
+            }
+          ],
+          "objects": [
+            {
+              "id": "f4-power-a",
+              "kind": "serverRack",
+              "x": 488,
+              "y": 188,
+              "w": 75,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "server-rack",
+                "offsetX": -9,
+                "offsetY": -114,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f4-power-b",
+              "kind": "serverRack",
+              "x": 579,
+              "y": 188,
+              "w": 75,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "server-rack",
+                "offsetX": -9,
+                "offsetY": -114,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f4-power-c",
+              "kind": "serverRack",
+              "x": 670,
+              "y": 188,
+              "w": 75,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "server-rack",
+                "offsetX": -9,
+                "offsetY": -114,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f4-cover-crate",
+              "kind": "crateStack",
+              "x": 690,
+              "y": 616,
+              "w": 88,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "crate-stack-a",
+                "offsetX": -4,
+                "offsetY": -15,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "f4-watch-a",
+              "kind": "bayConsole",
+              "x": 176,
+              "y": 240,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "monitor-desk",
+                "offsetX": -12,
+                "offsetY": -96,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f4-watch-b",
+              "kind": "bayConsole",
+              "x": 176,
+              "y": 328,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "monitor-desk",
+                "offsetX": -12,
+                "offsetY": -96,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f4-core-rack",
+              "kind": "serverRack",
+              "x": 600,
+              "y": 364,
+              "w": 75,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "server-rack",
+                "offsetX": -9,
+                "offsetY": -114,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "f4-core-case",
+              "kind": "shelf",
+              "x": 612,
+              "y": 404,
+              "w": 72,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "parts-case",
+                "offsetX": -12,
+                "offsetY": -37,
+                "occlusionY": 4
+              }
+            }
+          ],
+          "dotSpawns": [
+            {
+              "id": "shop-f4-core",
+              "item": {
+                "kind": "blueprint",
+                "blueprintId": "core-frame",
+                "sourceBuildingId": "pixel-parts"
+              },
+              "position": {
+                "x": 646,
+                "y": 462
+              }
+            },
+            {
+              "id": "shop-f4-mine",
+              "item": {
+                "kind": "mine"
+              },
+              "position": {
+                "x": 700,
+                "y": 240
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "blue-shop",
+      "kind": "retail",
+      "name": "BAKERY",
+      "footprint": {
+        "x": 864,
+        "y": 120,
+        "w": 336,
+        "h": 336
+      },
+      "floors": [
+        {
+          "id": "pixel-city:blue:GROUND",
+          "label": "GROUND",
+          "walls": [
+            {
+              "id": "blue-north",
+              "x": 864,
+              "y": 120,
+              "w": 336,
+              "h": 16
+            },
+            {
+              "id": "blue-west",
+              "x": 864,
+              "y": 136,
+              "w": 16,
+              "h": 304
+            },
+            {
+              "id": "blue-east",
+              "x": 1184,
+              "y": 136,
+              "w": 16,
+              "h": 304
+            },
+            {
+              "id": "blue-south-west",
+              "x": 864,
+              "y": 440,
+              "w": 216,
+              "h": 16
+            },
+            {
+              "id": "blue-south-east",
+              "x": 1176,
+              "y": 440,
+              "w": 24,
+              "h": 16
+            }
+          ],
+          "doorways": [
+            {
+              "id": "bakery-entry",
+              "x": 1128,
+              "y": 448,
+              "width": 96,
+              "dir": "h",
+              "mechanism": "automatic",
+              "assetKey": "bakery-door",
+              "openDurationMs": 420,
+              "holdOpenMs": 1150,
+              "triggerRadius": 104,
+              "noiseLoudness": 0.42
+            }
+          ],
+          "windows": [],
+          "stairs": [
+            {
+              "id": "bakery-stair-up",
+              "rect": {
+                "x": 1072,
+                "y": 152,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "up",
+              "toFloorId": "pixel-city:blue:F1",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-up",
+                "fitToObject": true
+              }
+            }
+          ],
+          "objects": [
+            {
+              "id": "bakery-oven",
+              "kind": "stove",
+              "x": 896,
+              "y": 188,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "oven",
+                "offsetX": -6,
+                "offsetY": -81,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "bakery-rack",
+              "kind": "shelf",
+              "x": 988,
+              "y": 188,
+              "w": 72,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "bakery-rack",
+                "offsetX": -12,
+                "offsetY": -69,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "bakery-bread-a",
+              "kind": "shelf",
+              "x": 896,
+              "y": 300,
+              "w": 56,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "bread-shelf",
+                "offsetX": -4,
+                "offsetY": -81,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "bakery-bread-b",
+              "kind": "shelf",
+              "x": 896,
+              "y": 344,
+              "w": 56,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "bread-shelf-b",
+                "offsetX": -4,
+                "offsetY": -81,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "bakery-case-a",
+              "kind": "produceDisplay",
+              "x": 972,
+              "y": 350,
+              "w": 88,
+              "h": 26,
+              "solid": true,
+              "art": {
+                "assetKey": "deli-case",
+                "offsetX": -4,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "bakery-counter",
+              "kind": "counter",
+              "x": 972,
+              "y": 392,
+              "w": 88,
+              "h": 26,
+              "solid": true,
+              "art": {
+                "assetKey": "bakery-counter",
+                "offsetX": -4,
+                "offsetY": -35,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "bakery-open-sign",
+              "kind": "kiosk",
+              "x": 1036,
+              "y": 420,
+              "w": 40,
+              "h": 14,
+              "solid": false,
+              "art": {
+                "assetKey": "open-sign",
+                "offsetX": -4,
+                "offsetY": -47,
+                "occlusionY": 2
+              }
+            }
+          ],
+          "dotSpawns": [
+            {
+              "id": "bakery-health",
+              "item": {
+                "kind": "powerup",
+                "type": "health"
+              },
+              "position": {
+                "x": 1000,
+                "y": 260
+              }
+            }
+          ]
+        },
+        {
+          "id": "pixel-city:blue:F1",
+          "label": "F1",
+          "walls": [
+            {
+              "id": "blue-f1-north",
+              "x": 864,
+              "y": 120,
+              "w": 336,
+              "h": 16
+            },
+            {
+              "id": "blue-f1-west",
+              "x": 864,
+              "y": 136,
+              "w": 16,
+              "h": 304
+            },
+            {
+              "id": "blue-f1-east",
+              "x": 1184,
+              "y": 136,
+              "w": 16,
+              "h": 304
+            },
+            {
+              "id": "blue-f1-south",
+              "x": 864,
+              "y": 440,
+              "w": 336,
+              "h": 16
+            }
+          ],
+          "doorways": [],
+          "windows": [],
+          "stairs": [
+            {
+              "id": "bakery-stair-down",
+              "rect": {
+                "x": 1072,
+                "y": 152,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "down",
+              "toFloorId": "pixel-city:blue:GROUND",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-down",
+                "fitToObject": true
+              }
+            }
+          ],
+          "objects": [
+            {
+              "id": "bakery-f1-rack-a",
+              "kind": "shelf",
+              "x": 896,
+              "y": 188,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "pallet-shelf",
+                "offsetX": -6,
+                "offsetY": -65,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "bakery-f1-rack-b",
+              "kind": "shelf",
+              "x": 896,
+              "y": 280,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "pallet-shelf",
+                "offsetX": -6,
+                "offsetY": -65,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "bakery-f1-crate-a",
+              "kind": "crateStack",
+              "x": 952,
+              "y": 352,
+              "w": 88,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "crate-stack-a",
+                "offsetX": -4,
+                "offsetY": -15,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "bakery-f1-crate-b",
+              "kind": "crateStack",
+              "x": 1048,
+              "y": 352,
+              "w": 88,
+              "h": 30,
+              "solid": true,
+              "art": {
+                "assetKey": "crate-stack-b",
+                "offsetX": -4,
+                "offsetY": -15,
+                "occlusionY": 4
+              }
+            },
+            {
+              "id": "bakery-f1-desk",
+              "kind": "desk",
+              "x": 896,
+              "y": 400,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "monitor-desk",
+                "offsetX": -12,
+                "offsetY": -96,
+                "occlusionY": 5
+              }
+            }
+          ],
+          "dotSpawns": [
+            {
+              "id": "bakery-f1-dash",
+              "item": {
+                "kind": "powerup",
+                "type": "dashOvercharge"
+              },
+              "position": {
+                "x": 1010,
+                "y": 320
+              }
+            },
+            {
+              "id": "bakery-f1-radar",
+              "item": {
+                "kind": "powerup",
+                "type": "radar"
+              },
+              "position": {
+                "x": 1136,
+                "y": 264
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "red-shop",
+      "kind": "retail",
+      "name": "COOLIES",
+      "footprint": {
+        "x": 1200,
+        "y": 120,
+        "w": 336,
+        "h": 336
+      },
+      "floors": [
+        {
+          "id": "pixel-city:red:GROUND",
+          "label": "GROUND",
+          "walls": [
+            {
+              "id": "red-north",
+              "x": 1200,
+              "y": 120,
+              "w": 336,
+              "h": 16
+            },
+            {
+              "id": "red-west",
+              "x": 1200,
+              "y": 136,
+              "w": 16,
+              "h": 304
+            },
+            {
+              "id": "red-east",
+              "x": 1520,
+              "y": 136,
+              "w": 16,
+              "h": 304
+            },
+            {
+              "id": "red-south-west",
+              "x": 1200,
+              "y": 440,
+              "w": 216,
+              "h": 16
+            },
+            {
+              "id": "red-south-east",
+              "x": 1512,
+              "y": 440,
+              "w": 24,
+              "h": 16
+            }
+          ],
+          "doorways": [
+            {
+              "id": "coolies-entry",
+              "x": 1464,
+              "y": 448,
+              "width": 96,
+              "dir": "h",
+              "mechanism": "automatic",
+              "assetKey": "clothes-door",
+              "openDurationMs": 420,
+              "holdOpenMs": 1150,
+              "triggerRadius": 104,
+              "noiseLoudness": 0.42
+            }
+          ],
+          "windows": [],
+          "stairs": [
+            {
+              "id": "coolies-stair-up",
+              "rect": {
+                "x": 1232,
+                "y": 152,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "up",
+              "toFloorId": "pixel-city:red:F1",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-up",
+                "fitToObject": true
+              }
+            }
+          ],
+          "objects": [
+            {
+              "id": "coolies-rack-a",
+              "kind": "shelf",
+              "x": 1344,
+              "y": 188,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "clothes-rack-a",
+                "offsetX": -6,
+                "offsetY": -81,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "coolies-rack-b",
+              "kind": "shelf",
+              "x": 1432,
+              "y": 188,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "clothes-rack-b",
+                "offsetX": -6,
+                "offsetY": -81,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "coolies-table",
+              "kind": "table",
+              "x": 1384,
+              "y": 300,
+              "w": 80,
+              "h": 52,
+              "solid": true,
+              "art": {
+                "assetKey": "display-table-a",
+                "offsetX": -8,
+                "offsetY": -41,
+                "occlusionY": 6
+              }
+            },
+            {
+              "id": "coolies-desk",
+              "kind": "receptionDesk",
+              "x": 1232,
+              "y": 368,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "clothes-desk",
+                "offsetX": -6,
+                "offsetY": -81,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "coolies-mirror",
+              "kind": "cabinet",
+              "x": 1328,
+              "y": 398,
+              "w": 26,
+              "h": 16,
+              "solid": false,
+              "art": {
+                "assetKey": "mirror-tall",
+                "offsetX": -11,
+                "offsetY": -61,
+                "occlusionY": 3
+              }
+            },
+            {
+              "id": "coolies-mannequin-a",
+              "kind": "kiosk",
+              "x": 1240,
+              "y": 404,
+              "w": 28,
+              "h": 16,
+              "solid": false,
+              "art": {
+                "assetKey": "mannequin-a",
+                "offsetX": -10,
+                "offsetY": -61,
+                "occlusionY": 3
+              }
+            },
+            {
+              "id": "coolies-mannequin-b",
+              "kind": "kiosk",
+              "x": 1284,
+              "y": 404,
+              "w": 28,
+              "h": 16,
+              "solid": false,
+              "art": {
+                "assetKey": "mannequin-b",
+                "offsetX": -10,
+                "offsetY": -61,
+                "occlusionY": 3
+              }
+            },
+            {
+              "id": "coolies-stack",
+              "kind": "kiosk",
+              "x": 1424,
+              "y": 412,
+              "w": 32,
+              "h": 16,
+              "solid": false,
+              "art": {
+                "assetKey": "folded-stack",
+                "offsetX": -8,
+                "offsetY": -29,
+                "occlusionY": 2
+              }
+            }
+          ],
+          "dotSpawns": [
+            {
+              "id": "coolies-incognito",
+              "item": {
+                "kind": "powerup",
+                "type": "incognito"
+              },
+              "position": {
+                "x": 1400,
+                "y": 248
+              }
+            }
+          ]
+        },
+        {
+          "id": "pixel-city:red:F1",
+          "label": "F1",
+          "walls": [
+            {
+              "id": "red-f1-north",
+              "x": 1200,
+              "y": 120,
+              "w": 336,
+              "h": 16
+            },
+            {
+              "id": "red-f1-west",
+              "x": 1200,
+              "y": 136,
+              "w": 16,
+              "h": 304
+            },
+            {
+              "id": "red-f1-east",
+              "x": 1520,
+              "y": 136,
+              "w": 16,
+              "h": 304
+            },
+            {
+              "id": "red-f1-south",
+              "x": 1200,
+              "y": 440,
+              "w": 336,
+              "h": 16
+            }
+          ],
+          "doorways": [],
+          "windows": [],
+          "stairs": [
+            {
+              "id": "coolies-stair-down",
+              "rect": {
+                "x": 1232,
+                "y": 152,
+                "w": 96,
+                "h": 192
+              },
+              "direction": "down",
+              "toFloorId": "pixel-city:red:GROUND",
+              "bottom": "S",
+              "access": "openEnd",
+              "art": {
+                "assetKey": "interior-stair-down",
+                "fitToObject": true
+              }
+            }
+          ],
+          "objects": [
+            {
+              "id": "coolies-f1-rail",
+              "kind": "shelf",
+              "x": 1388,
+              "y": 188,
+              "w": 84,
+              "h": 20,
+              "solid": true,
+              "art": {
+                "assetKey": "clothes-rail",
+                "offsetX": -6,
+                "offsetY": -25,
+                "occlusionY": 3
+              }
+            },
+            {
+              "id": "coolies-f1-rack-a",
+              "kind": "shelf",
+              "x": 1408,
+              "y": 278,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "clothes-rack-b",
+                "offsetX": -6,
+                "offsetY": -81,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "coolies-f1-rack-b",
+              "kind": "shelf",
+              "x": 1408,
+              "y": 370,
+              "w": 84,
+              "h": 28,
+              "solid": true,
+              "art": {
+                "assetKey": "clothes-rack-c",
+                "offsetX": -6,
+                "offsetY": -81,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "coolies-f1-curtain",
+              "kind": "locker",
+              "x": 1232,
+              "y": 352,
+              "w": 72,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "fitting-curtain",
+                "offsetX": -12,
+                "offsetY": -53,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "coolies-f1-bench",
+              "kind": "workbench",
+              "x": 1368,
+              "y": 404,
+              "w": 84,
+              "h": 24,
+              "solid": true,
+              "art": {
+                "assetKey": "work-bench",
+                "offsetX": -6,
+                "offsetY": -67,
+                "occlusionY": 5
+              }
+            },
+            {
+              "id": "coolies-f1-mirror",
+              "kind": "cabinet",
+              "x": 1300,
+              "y": 394,
+              "w": 26,
+              "h": 16,
+              "solid": false,
+              "art": {
+                "assetKey": "mirror-tall",
+                "offsetX": -11,
+                "offsetY": -61,
+                "occlusionY": 3
+              }
+            },
+            {
+              "id": "coolies-f1-drop",
+              "kind": "kiosk",
+              "x": 1330,
+              "y": 244,
+              "w": 32,
+              "h": 16,
+              "solid": false,
+              "art": {
+                "assetKey": "folded-stack",
+                "offsetX": -8,
+                "offsetY": -29,
+                "occlusionY": 2
+              }
+            }
+          ],
+          "dotSpawns": [
+            {
+              "id": "coolies-f1-health",
+              "item": {
+                "kind": "powerup",
+                "type": "health"
+              },
+              "position": {
+                "x": 1460,
+                "y": 338
+              }
+            },
+            {
+              "id": "coolies-f1-mine",
+              "item": {
+                "kind": "mine"
+              },
+              "position": {
+                "x": 1360,
+                "y": 244
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "extractionPoints": [
+    {
+      "id": "east-extract",
+      "name": "EXTRACT",
+      "rect": {
+        "x": 1420,
+        "y": 842,
+        "w": 88,
+        "h": 112
+      }
+    }
+  ],
+  "insertionPoints": [
+    {
+      "id": "south-insert",
+      "name": "SOUTH STREET",
+      "position": {
+        "x": 420,
+        "y": 840
+      },
+      "floorId": "outdoor"
+    }
+  ],
+  "botSpawns": [
+    {
+      "id": "player",
+      "name": "YOU",
+      "squadId": "player-squad",
+      "controller": "human",
+      "color": "#17b7ca",
+      "position": {
+        "x": 420,
+        "y": 840
+      },
+      "floorId": "outdoor"
+    },
+    {
+      "id": "street-rover",
+      "name": "Slate",
+      "squadId": "rival-street",
+      "isAmbient": true,
+      "color": "#7f8c8d",
+      "position": {
+        "x": 1240,
+        "y": 952
+      }
+    },
+    {
+      "id": "plume-guard-1",
+      "name": "Ochre",
+      "squadId": "plume-guard",
+      "isAmbient": true,
+      "color": "#f2994a",
+      "position": {
+        "x": 470,
+        "y": 620
+      },
+      "floorId": "pixel-city:shop:F2"
+    },
+    {
+      "id": "plume-guard-2",
+      "name": "Mint",
+      "squadId": "plume-guard",
+      "isAmbient": true,
+      "color": "#27ae60",
+      "position": {
+        "x": 500,
+        "y": 540
+      },
+      "floorId": "pixel-city:shop:F3"
+    },
+    {
+      "id": "plume-guard-3",
+      "name": "Violet",
+      "squadId": "plume-guard",
+      "isAmbient": true,
+      "color": "#9b51e0",
+      "position": {
+        "x": 450,
+        "y": 560
+      },
+      "floorId": "pixel-city:shop:F4"
+    },
+    {
+      "id": "plume-guard-4",
+      "name": "Coal",
+      "squadId": "plume-guard",
+      "isAmbient": true,
+      "color": "#4f5b66",
+      "position": {
+        "x": 640,
+        "y": 540
+      },
+      "floorId": "pixel-city:shop:F4"
+    },
+    {
+      "id": "bakery-guard",
+      "name": "Amber",
+      "squadId": "bakery-guard",
+      "isAmbient": true,
+      "color": "#f2c94c",
+      "position": {
+        "x": 1014,
+        "y": 410
+      },
+      "floorId": "pixel-city:blue:F1"
+    },
+    {
+      "id": "coolies-guard",
+      "name": "Coral",
+      "squadId": "coolies-guard",
+      "isAmbient": true,
+      "color": "#ff7f6e",
+      "position": {
+        "x": 1470,
+        "y": 246
+      },
+      "floorId": "pixel-city:red:F1"
+    }
+  ]
+}
