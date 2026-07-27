@@ -1,11 +1,13 @@
-import { Container, Graphics, Text } from "pixi.js";
-import { isGroundFloor, stairHalves } from "@dotbot/game/mapModel";
+import { Container, Graphics, Sprite, Text } from "pixi.js";
+import { doorRuntimeId, isGroundFloor, stairGuardRects, stairHalves } from "@dotbot/game/mapModel";
 import type {
   Building,
   Doorway,
   FloorPlan,
   InteractionDot,
   MapDocument,
+  MapArtPlacement,
+  MapObject,
   Rect,
   PlacementSlot,
   StairLink,
@@ -14,7 +16,14 @@ import type {
   WindowBand,
 } from "@dotbot/game/types";
 import { drawObject } from "./glyphs";
+import { buildFloorModel, drawStairHead } from "./model/modelFloor";
+import { buildOutdoorModel } from "./model/modelOutdoor";
+import { buildRoofModel } from "./model/modelRoof";
+import { SHADOW_ALPHA, type ShadowPad } from "./model/tone";
+import { drawDotDisc } from "./dotArt";
+import { doorwayStyle, perimeterDoorThresholdRect, type DoorwayStyle } from "./doorwayStyle";
 import { DOT_COLOR, INK, PAPER, strokes, WEIGHT } from "./style";
+import { cityFrame, cityTexture } from "./pixelAssets";
 
 /**
  * Static map drawing, shared verbatim between the live game and Map Studio.
@@ -28,14 +37,20 @@ export type FloorArt = {
   floor: FloorPlan;
   /** Parent container; visibility toggled per active floor. */
   view: Container;
-  /** Plate, walls, doorway structure, windows, stairs. */
-  architecture: Graphics;
+  /**
+   * Plate, walls, doorway structure, windows, stairs. A Graphics in the line-plan
+   * language; a layer group in the lit-model language, which needs several
+   * stacked passes for slab, wear, light and shadow.
+   */
+  architecture: Container;
   /** All furniture and fixtures. */
   furniture: Container;
+  /** Tall sprite pixels that render after bots for correct walk-behind depth. */
+  foreground: Container;
   /** Individually addressable so fabrication can temporarily replace one glyph. */
   objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
   /** Addressable stair fixtures reuse the fabrication draw-on hook when an expansion commissions. */
-  stairViews: Map<string, { stair: StairLink; view: Graphics }>;
+  stairViews: Map<string, { stair: StairLink; view: Container }>;
   /** Door swings, stair tags, and other plan notation. */
   annotation: Container;
   annotationGfx: Graphics;
@@ -46,21 +61,27 @@ export type BuildingArt = {
   /** Exterior (roof) view for buildings without an authored ROOF plan. */
   roof: Container;
   /** Street-view entrance marks; visible only when viewed from outside. */
-  entranceMarks: Graphics;
+  entranceMarks: Container;
+  doorSprites: Map<string, Sprite>;
   floors: FloorArt[];
   label: Text;
 };
 
 export type MapArt = {
   root: Container;
-  ground: Graphics;
+  ground: Container;
   /** Non-solid outdoor dressing (walk-through). */
-  outdoorDetail: Graphics;
+  outdoorDetail: Container;
   /** Solid outdoor objects. */
-  outdoorObjects: Graphics;
+  outdoorObjects: Container;
+  /** Perspective pixels that must cover a bot moving behind a tall prop. */
+  foreground: Container;
+  outdoorForeground: Container;
   buildingsLayer: Container;
   buildings: BuildingArt[];
   labels: Container;
+  /** Street-view door art keyed by authoritative runtime id. */
+  doorViews: Map<string, Sprite[]>;
 };
 
 const SIDEWALK = 20;
@@ -75,14 +96,49 @@ const LABEL_FONT = "system-ui, -apple-system, Segoe UI, sans-serif";
 
 export function buildMapArt(map: MapDocument): MapArt {
   const root = new Container();
-  const ground = new Graphics();
-  const outdoorDetail = new Graphics();
-  const outdoorObjects = new Graphics();
+  const ground = new Container();
+  const groundGfx = new Graphics();
+  const outdoorDetail = new Container();
+  const outdoorDetailGfx = new Graphics();
+  const outdoorObjects = new Container();
+  const outdoorObjectsGfx = new Graphics();
+  const foreground = new Container();
+  const outdoorForeground = new Container();
   const buildingsLayer = new Container();
   const labels = new Container();
 
-  drawGround(ground, map);
-  drawOutdoorObjects(outdoorDetail, outdoorObjects, map);
+  ground.addChild(groundGfx);
+  outdoorDetail.addChild(outdoorDetailGfx);
+  outdoorObjects.addChild(outdoorObjectsGfx);
+  foreground.addChild(outdoorForeground);
+
+  if (map.visualTheme === "lit-model") {
+    const outdoors = buildOutdoorModel(map);
+    ground.addChild(outdoors.ground);
+    outdoorDetail.addChild(outdoors.detail);
+    outdoorObjects.addChild(outdoors.objects);
+
+    const buildings = map.buildings.map((building) => buildBuildingArt(
+      building, buildingsLayer, labels, map.placementSlots, map.interactionDots, map, foreground,
+    ));
+    drawExtractionLabels(labels, map);
+    root.addChild(ground, outdoorDetail, outdoorObjects, buildingsLayer, labels);
+    return {
+      root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground,
+      buildingsLayer, buildings, labels, doorViews: new Map(),
+    };
+  }
+
+  drawGround(groundGfx, map);
+  addPlacements(ground, map, "ground");
+  if (map.visualTheme === "pixel-city") {
+    const roadMarks = new Graphics();
+    drawPixelRoads(roadMarks, map);
+    ground.addChild(roadMarks);
+  }
+  addPlacements(outdoorDetail, map, "outdoorDetail");
+  addPlacements(outdoorObjects, map, "outdoorObjects");
+  drawOutdoorObjects(outdoorDetailGfx, outdoorObjectsGfx, outdoorDetail, outdoorObjects, outdoorForeground, map);
 
   const buildings = map.buildings.map((building) => buildBuildingArt(
     building,
@@ -90,14 +146,51 @@ export function buildMapArt(map: MapDocument): MapArt {
     labels,
     map.placementSlots,
     map.interactionDots,
+    map,
+    foreground,
   ));
 
-  drawStreetNames(labels, map);
+  if (map.visualTheme !== "pixel-city") drawStreetNames(labels, map);
   drawExtractionLabels(labels, map);
 
   root.addChild(ground, outdoorDetail, outdoorObjects, buildingsLayer, labels);
 
-  return { root, ground, outdoorDetail, outdoorObjects, buildingsLayer, buildings, labels };
+  const doorViews = new Map<string, Sprite[]>();
+  for (const building of buildings) {
+    const collect = (id: string, sprite: Sprite) => doorViews.set(id, [...(doorViews.get(id) ?? []), sprite]);
+    for (const [id, sprite] of building.doorSprites) collect(id, sprite);
+  }
+
+  return { root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground, buildingsLayer, buildings, labels, doorViews };
+}
+
+function drawPixelRoads(g: Graphics, map: MapDocument): void {
+  const lineColor = 0xd9c86c;
+  const curbColor = 0x252638;
+  for (const road of map.outdoor.roads) {
+    const horizontal = road.w >= road.h;
+    if (horizontal) {
+      g.rect(road.x, road.y, road.w, 4).fill({ color: curbColor });
+      g.rect(road.x, road.y + road.h - 4, road.w, 4).fill({ color: curbColor });
+      for (let x = road.x + 20; x < road.x + road.w - 20; x += 84) {
+        g.rect(x, road.y + road.h / 2 - 3, 48, 6).fill({ color: lineColor, alpha: 0.9 });
+      }
+    } else {
+      g.rect(road.x, road.y, 4, road.h).fill({ color: curbColor });
+      g.rect(road.x + road.w - 4, road.y, 4, road.h).fill({ color: curbColor });
+      for (let y = road.y + 20; y < road.y + road.h - 20; y += 84) {
+        g.rect(road.x + road.w / 2 - 3, y, 6, 48).fill({ color: lineColor, alpha: 0.9 });
+      }
+    }
+  }
+
+  for (const intersection of roadIntersections(map)) {
+    const stripe = 10;
+    for (let index = 0; index < 5; index += 1) {
+      g.rect(intersection.x + 18 + index * 28, intersection.y + 12, stripe, 64).fill({ color: 0xe4e6ef, alpha: 0.85 });
+      g.rect(intersection.x + 12, intersection.y + 18 + index * 28, 64, stripe).fill({ color: 0xe4e6ef, alpha: 0.85 });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +198,9 @@ export function buildMapArt(map: MapDocument): MapArt {
 // ---------------------------------------------------------------------------
 
 function drawGround(g: Graphics, map: MapDocument): void {
-  g.rect(0, 0, map.width, map.height).fill({ color: PAPER });
+  g.rect(0, 0, map.width, map.height).fill({ color: map.visualTheme === "pixel-city" ? 0x31313c : PAPER });
+
+  if (map.visualTheme === "pixel-city") return;
 
   drawSheetBorder(g, map);
   drawSidewalks(g, map);
@@ -340,14 +435,130 @@ function drawExtractionPads(g: Graphics, map: MapDocument): void {
   }
 }
 
-function drawOutdoorObjects(detailG: Graphics, objectsG: Graphics, map: MapDocument): void {
+function drawOutdoorObjects(
+  detailG: Graphics,
+  objectsG: Graphics,
+  detailLayer: Container,
+  objectsLayer: Container,
+  foreground: Container,
+  map: MapDocument,
+): void {
   // Ground markings (parking stalls) first, trees last so canopies overlap.
   const order = (kind: string) => (kind === "parkingStall" ? 0 : kind === "tree" ? 2 : 1);
   const sorted = [...map.outdoor.objects].sort((a, b) => order(a.kind) - order(b.kind));
 
   for (const object of sorted) {
-    drawObject(object.solid === false && object.kind !== "car" ? detailG : objectsG, object);
+    const isDetail = object.solid === false && object.kind !== "car";
+    if (object.art) {
+      addObjectSprite(isDetail ? detailLayer : objectsLayer, foreground, object);
+    } else {
+      drawObject(isDetail ? detailG : objectsG, object);
+    }
   }
+}
+
+function placementMatches(
+  placement: MapArtPlacement,
+  layer: MapArtPlacement["layer"],
+  buildingId?: string,
+  floorId?: string,
+): boolean {
+  return placement.layer === layer && placement.buildingId === buildingId && placement.floorId === floorId;
+}
+
+function addPlacements(
+  container: Container,
+  map: MapDocument,
+  layer: MapArtPlacement["layer"],
+  buildingId?: string,
+  floorId?: string,
+): void {
+  for (const placement of map.artPlacements ?? []) {
+    if (!placementMatches(placement, layer, buildingId, floorId)) continue;
+    if (placement.tiled) {
+      const frame = cityFrame(placement.assetKey);
+      const width = placement.w ?? frame.w;
+      const height = placement.h ?? frame.h;
+      for (let y = 0; y < height; y += frame.h) {
+        for (let x = 0; x < width; x += frame.w) {
+          const tile = new Sprite(cityTexture(placement.assetKey));
+          tile.position.set(placement.x + x, placement.y + y);
+          tile.roundPixels = true;
+          tile.zIndex = placement.zIndex ?? placement.y;
+          container.addChild(tile);
+        }
+      }
+      continue;
+    }
+    const display = new Sprite(cityTexture(placement.assetKey));
+    display.position.set(placement.x, placement.y);
+    if (placement.w !== undefined) display.width = placement.w;
+    if (placement.h !== undefined) display.height = placement.h;
+    display.zIndex = placement.zIndex ?? placement.y + (placement.h ?? cityFrame(placement.assetKey).h);
+    container.addChild(display);
+  }
+}
+
+function makeObjectSprite(object: MapObject): Sprite {
+  const art = object.art!;
+  const sprite = new Sprite(cityTexture(art.assetKey));
+  if (art.fitToObject) {
+    sprite.width = object.w;
+    sprite.height = object.h;
+  } else {
+    const scale = art.scale ?? 1;
+    sprite.scale.set(scale);
+  }
+  sprite.position.set(object.x + (art.offsetX ?? 0), object.y + (art.offsetY ?? 0));
+  sprite.roundPixels = true;
+  sprite.zIndex = object.y + object.h;
+  return sprite;
+}
+
+function addObjectSprite(container: Container, foreground: Container, object: MapObject): void {
+  const sprite = makeObjectSprite(object);
+  container.addChild(sprite);
+  if (object.art?.occlusionY === undefined) return;
+
+  const copies = Math.max(1, Math.min(4, object.art.occlusionCopies ?? 1));
+  const sample = makeObjectSprite(object);
+  const top = sample.y;
+  const cut = object.y + object.art.occlusionY;
+  sample.destroy();
+  for (let index = 0; index < copies; index += 1) {
+    const overlay = makeObjectSprite(object);
+    const mask = new Graphics();
+    mask.rect(overlay.x, top, overlay.width, Math.max(0, cut - top)).fill({ color: 0xffffff });
+    overlay.mask = mask;
+    foreground.addChild(overlay, mask);
+  }
+}
+
+function makeStairSprite(stair: StairLink): Sprite {
+  const art = stair.art!;
+  const sprite = new Sprite(cityTexture(art.assetKey));
+  if (art.fitToObject) {
+    sprite.width = stair.rect.w;
+    sprite.height = stair.rect.h;
+  } else {
+    sprite.scale.set(art.scale ?? 1);
+  }
+  sprite.position.set(stair.rect.x + (art.offsetX ?? 0), stair.rect.y + (art.offsetY ?? 0));
+  sprite.roundPixels = true;
+  sprite.zIndex = stair.rect.y + stair.rect.h;
+  return sprite;
+}
+
+/** Render licensed stair art below bots and repeat its non-enterable half in
+ * the foreground so the mid-stride floor change reads as moving through it. */
+function addStairSprite(container: Container, foreground: Container, stair: StairLink): void {
+  container.addChild(makeStairSprite(stair));
+  const overlay = makeStairSprite(stair);
+  const { exit } = stairHalves(stair);
+  const mask = new Graphics();
+  mask.rect(exit.x, exit.y, exit.w, exit.h).fill({ color: 0xffffff });
+  overlay.mask = mask;
+  foreground.addChild(overlay, mask);
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +579,7 @@ function buildingEntrances(building: Building): Entrance[] {
   }
 
   for (const doorway of ground.doorways) {
-    const open = doorway.open ?? false;
+    const open = doorway.open === true || doorway.mechanism !== undefined;
 
     if (doorway.dir === "h") {
       if (Math.abs(doorway.y - fp.y) <= tol) {
@@ -558,6 +769,10 @@ function drawStreetNames(layer: Container, map: MapDocument): void {
 
 function drawExtractionLabels(layer: Container, map: MapDocument): void {
   for (const point of map.extractionPoints) {
+    // Home Base has a dedicated interaction-dot marker and contextual DEPLOY
+    // tag. The generic map caption beneath it is redundant and visually clips
+    // into the sealed threshold.
+    if (point.id === "base-deployment") continue;
     const label = makeLabel(point.name, 11, 3, INK.opening, "700");
     label.anchor.set(0.5, 0);
     label.position.set(point.rect.x + point.rect.w / 2, point.rect.y + point.rect.h + 8);
@@ -575,6 +790,8 @@ function buildBuildingArt(
   labels: Container,
   placementSlots?: PlacementSlot[],
   interactionDots?: InteractionDot[],
+  map?: MapDocument,
+  foregroundRoot?: Container,
 ): BuildingArt {
   const floors: FloorArt[] = [];
 
@@ -584,30 +801,107 @@ function buildBuildingArt(
       floor,
       placementSlots?.filter((slot) => slot.floor === floor.label),
       interactionDots?.filter((dot) => dot.floorId === floor.id),
+      map,
     );
     art.view.visible = false;
+    art.foreground.visible = false;
     buildingsLayer.addChild(art.view);
+    foregroundRoot?.addChild(art.foreground);
     floors.push(art);
   }
 
   const roof = new Container();
   const roofG = new Graphics();
-  drawGenericRoof(roofG, building);
+  if (map?.visualTheme === "lit-model") roof.addChild(buildRoofModel(building).view);
+  else if (map?.visualTheme !== "pixel-city") drawGenericRoof(roofG, building);
   roof.addChild(roofG);
+  if (map) addPlacements(roof, map, "roof", building.id);
   buildingsLayer.addChild(roof);
 
   // Entrance marks sit above the roof and only make sense from the street;
   // callers hide them while an interior floor of this building is active.
-  const entranceMarks = new Graphics();
-  drawEntranceMarks(entranceMarks, building);
+  const entranceMarks = new Container();
+  const entranceGfx = new Graphics();
+  const doorSprites = new Map<string, Sprite>();
+  entranceMarks.addChild(entranceGfx);
+  if (map?.visualTheme === "pixel-city") {
+    drawPixelEntrances(entranceGfx, building);
+    const ground = building.floors.find(isGroundFloor);
+    for (const doorway of ground?.doorways ?? []) {
+      const sprite = makePixelDoorSprite(doorway, building.footprint);
+      if (!sprite || !ground) continue;
+      doorSprites.set(doorRuntimeId(ground.id, doorway.id), sprite);
+      entranceMarks.addChild(sprite);
+    }
+  } else if (map?.visualTheme !== "lit-model") {
+    // Drafting notation: a paper-white notch, ink jambs and a dashed canopy. The
+    // lit model already builds the opening as geometry — curtain, rails, reveal —
+    // so leaving this on paints a flat white bar across a shaded wall.
+    drawEntranceMarks(entranceGfx, building);
+  }
   buildingsLayer.addChild(entranceMarks);
 
   const label = makeLabel(building.name, 16, 3.5, INK.fixture, "800");
   label.anchor.set(0.5, 0.5);
-  label.position.set(building.footprint.x + building.footprint.w / 2, building.footprint.y + building.footprint.h / 2);
+  label.position.set(
+    building.footprint.x + building.footprint.w * (building.kind === "retail" ? 0.29 : 0.5),
+    building.footprint.y + building.footprint.h * (building.kind === "retail" ? 0.64 : 0.5),
+  );
   labels.addChild(label);
+  if (map?.visualTheme === "pixel-city") label.visible = false;
 
-  return { building, roof, entranceMarks, floors, label };
+  return { building, roof, entranceMarks, doorSprites, floors, label };
+}
+
+function makePixelDoorSprite(doorway: Doorway, footprint: Rect): Sprite | null {
+  if (!doorway.assetKey || doorway.dir !== "h") return null;
+  if (Math.abs(doorway.y - (footprint.y + footprint.h)) > 10) return null;
+  const sprite = new Sprite(cityTexture(`${doorway.assetKey}-0`));
+  sprite.label = doorway.assetKey;
+  sprite.anchor.set(0.5, 1);
+  sprite.position.set(doorway.x, footprint.y + footprint.h);
+  sprite.roundPixels = false;
+  sprite.zIndex = doorway.y;
+  return sprite;
+}
+
+/** Pixel façades are opaque images, so an authored open exterior doorway must
+ * cut an equally obvious dark opening through the matching facade pixels. */
+function drawPixelEntrances(g: Graphics, building: Building): void {
+  const ground = building.floors.find(isGroundFloor);
+  for (const entrance of buildingEntrances(building)) {
+    if (!entrance.open) continue;
+    const hasAnimatedDoor = ground?.doorways.some(
+      (doorway) =>
+        doorway.assetKey !== undefined &&
+        Math.abs(doorway.x - entrance.cx) <= 1 &&
+        Math.abs(doorway.y - entrance.cy) <= 10,
+    );
+    // The licensed animation includes its own frame, opening, and threshold.
+    // Adding the generic entrance cutout here narrows the visible passage and
+    // leaves a black rectangle protruding below the facade.
+    if (hasAnimatedDoor) continue;
+    const depth = 76;
+    if (entrance.side === "S") {
+      g.rect(entrance.cx - entrance.width / 2, entrance.cy - depth, entrance.width, depth)
+        .fill({ color: 0x12131b })
+        .stroke({ color: 0x25283a, width: 3 });
+      g.rect(entrance.cx - entrance.width / 2 + 6, entrance.cy - 5, entrance.width - 12, 5).fill({ color: 0x6c7890 });
+    } else if (entrance.side === "N") {
+      // The exterior art is a south-facing facade. A north service exit is
+      // visible only after the roof hides; cutting the roof here creates a
+      // misleading skylight-like black box.
+      continue;
+    } else if (entrance.side === "E") {
+      g.rect(entrance.cx - depth, entrance.cy - entrance.width / 2, depth, entrance.width)
+        .fill({ color: 0x12131b })
+        .stroke({ color: 0x25283a, width: 3 });
+    } else {
+      g.rect(entrance.cx, entrance.cy - entrance.width / 2, depth, entrance.width)
+        .fill({ color: 0x12131b })
+        .stroke({ color: 0x25283a, width: 3 });
+    }
+  }
 }
 
 /**
@@ -639,6 +933,11 @@ function drawGenericRoof(g: Graphics, building: Building): void {
     return;
   }
 
+  if (building.kind === "retail") {
+    drawRetailRoof(g, building);
+    return;
+  }
+
   if (building.kind === "warehouse") {
     // Ridge skylight strips over the storage bays, exhaust plant one corner.
     for (const fx of [0.28, 0.46, 0.64]) {
@@ -655,6 +954,106 @@ function drawGenericRoof(g: Graphics, building: Building): void {
   drawObject(g, { id: `${building.id}-roof-vent`, kind: "vent", ...at(0.25, 0.65), w: 22, h: 22 });
 }
 
+/** Compact commercial roof kit derived from the building below: one rear
+ * service spine over the stock/utility edge and one skylight bank over the
+ * open sales floor. Every item belongs to one of those two systems. */
+function drawRetailRoof(g: Graphics, building: Building): void {
+  const fp = building.footprint;
+  const seam = { color: INK.hairline, width: WEIGHT.hairline, alpha: 0.38 };
+
+  // A regular membrane grid belongs to the roof as a whole. It is the quiet
+  // base order that every raised element aligns to.
+  for (const fraction of [0.25, 0.5, 0.75]) {
+    line(g, fp.x + fp.w * fraction, fp.y + 9, fp.x + fp.w * fraction, fp.y + fp.h - 9, seam);
+  }
+  for (const fraction of [1 / 3, 2 / 3]) {
+    line(g, fp.x + 9, fp.y + fp.h * fraction, fp.x + fp.w - 9, fp.y + fp.h * fraction, seam);
+  }
+
+  // One continuous rear service spine. Access, travel, cooling, and exhaust
+  // share the same deck and baseline instead of floating independently.
+  const service = {
+    x: fp.x + fp.w * 0.08,
+    y: fp.y + fp.h * 0.09,
+    w: fp.w * 0.84,
+    h: Math.min(180, fp.h * 0.27),
+  };
+  g.rect(service.x, service.y, service.w, service.h).fill({ color: PAPER });
+  g.rect(service.x, service.y, service.w, service.h).stroke(strokes.anchor);
+  g.rect(service.x + 8, service.y + 8, service.w - 16, service.h - 16).stroke(strokes.hairline);
+
+  const centerY = service.y + service.h / 2;
+  const hatch = { x: service.x + 28, y: centerY - 32, w: 68, h: 64 };
+  g.rect(hatch.x, hatch.y, hatch.w, hatch.h).fill({ color: PAPER });
+  g.rect(hatch.x, hatch.y, hatch.w, hatch.h).stroke(strokes.opening);
+  g.rect(hatch.x + 6, hatch.y + 6, hatch.w - 12, hatch.h - 12).stroke(strokes.hairline);
+  line(g, hatch.x + 10, hatch.y + 10, hatch.x + hatch.w - 10, hatch.y + hatch.h - 10, strokes.hairline);
+  line(g, hatch.x + hatch.w - 10, hatch.y + 10, hatch.x + 10, hatch.y + hatch.h - 10, strokes.hairline);
+
+  // The access lane is a real, bounded path from the hatch to the equipment.
+  const laneX = hatch.x + hatch.w + 12;
+  const equipmentX = service.x + service.w * 0.37;
+  const laneW = equipmentX - laneX - 12;
+  g.rect(laneX, centerY - 25, laneW, 50).fill({ color: INK.plate });
+  line(g, laneX, centerY - 25, laneX + laneW, centerY - 25, strokes.hairline);
+  line(g, laneX, centerY + 25, laneX + laneW, centerY + 25, strokes.hairline);
+  for (let x = laneX + 24; x < laneX + laneW; x += 38) {
+    line(g, x, centerY - 25, x, centerY + 25, seam);
+  }
+
+  const equipmentY = centerY - 42;
+  const unitA = { x: equipmentX, y: equipmentY, w: service.w * 0.2, h: 84 };
+  const unitB = { x: unitA.x + unitA.w + 18, y: equipmentY, w: service.w * 0.17, h: 84 };
+  drawObject(g, { id: `${building.id}-roof-ahu-a`, kind: "hvac", ...unitA });
+  drawObject(g, { id: `${building.id}-roof-ahu-b`, kind: "hvac", ...unitB });
+
+  // Exhausts form one aligned manifold at the end of the same service spine.
+  const exhaust = {
+    x: unitB.x + unitB.w + 18,
+    y: equipmentY,
+    w: service.x + service.w - 26 - (unitB.x + unitB.w + 18),
+    h: 84,
+  };
+  g.rect(exhaust.x, exhaust.y, exhaust.w, exhaust.h).fill({ color: INK.plate });
+  g.rect(exhaust.x, exhaust.y, exhaust.w, exhaust.h).stroke(strokes.fixture);
+  const ventSize = Math.min(26, exhaust.w * 0.22);
+  const ventGap = (exhaust.w - ventSize * 3) / 4;
+  for (let index = 0; index < 3; index += 1) {
+    drawObject(g, {
+      id: `${building.id}-roof-exhaust-${index}`,
+      kind: "vent",
+      x: exhaust.x + ventGap + index * (ventSize + ventGap),
+      y: centerY - ventSize / 2,
+      w: ventSize,
+      h: ventSize,
+    });
+  }
+
+  // One ordered daylight bank sits directly over the open sales floor. The
+  // curb and six equal lights make it one architectural element, not clutter.
+  const skylight = {
+    x: fp.x + fp.w * 0.5,
+    y: fp.y + fp.h * 0.57,
+    w: fp.w * 0.31,
+    h: fp.h * 0.18,
+  };
+  g.rect(skylight.x, skylight.y, skylight.w, skylight.h).fill({ color: INK.glass, alpha: 0.72 });
+  g.rect(skylight.x, skylight.y, skylight.w, skylight.h).stroke(strokes.anchor);
+  g.rect(skylight.x + 7, skylight.y + 7, skylight.w - 14, skylight.h - 14).stroke(strokes.hairline);
+  line(g, skylight.x + skylight.w / 3, skylight.y + 7, skylight.x + skylight.w / 3, skylight.y + skylight.h - 7, strokes.fixture);
+  line(g, skylight.x + skylight.w * 2 / 3, skylight.y + 7, skylight.x + skylight.w * 2 / 3, skylight.y + skylight.h - 7, strokes.fixture);
+  line(g, skylight.x + 7, skylight.y + skylight.h / 2, skylight.x + skylight.w - 7, skylight.y + skylight.h / 2, strokes.fixture);
+
+  // A single straight utility trunk reinforces the relationship between the
+  // rear service spine and the daylight bank without crossing the open roof.
+  const trunkX = skylight.x + skylight.w / 2;
+  line(g, trunkX - 3, service.y + service.h, trunkX - 3, skylight.y, strokes.hairline);
+  line(g, trunkX + 3, service.y + service.h, trunkX + 3, skylight.y, strokes.hairline);
+  for (const y of [service.y + service.h + 20, skylight.y - 20]) {
+    g.rect(trunkX - 6, y - 3, 12, 6).fill({ color: INK.plate }).stroke(strokes.hairline);
+  }
+}
+
 /** Shared roof/deck plate: quiet tint, strong outline, parapet hairline. */
 export function drawRoofPlate(g: Graphics, fp: Rect): void {
   g.rect(fp.x, fp.y, fp.w, fp.h).fill({ color: INK.plate });
@@ -667,33 +1066,51 @@ function buildFloorArt(
   floor: FloorPlan,
   placementSlots?: PlacementSlot[],
   interactionDots: InteractionDot[] = [],
+  map?: MapDocument,
 ): FloorArt {
+  if (map?.visualTheme === "lit-model") {
+    return floor.label === "ROOF"
+      ? buildLitModelRoofArt(building, floor)
+      : buildLitModelFloorArt(building, floor, interactionDots);
+  }
+
   const view = new Container();
+  const backdrop = new Container();
+  const thresholds = new Container();
   const architecture = new Graphics();
   const furniture = new Container();
+  furniture.sortableChildren = true;
+  const foreground = new Container();
+  foreground.sortableChildren = true;
   const objectViews = new Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>();
   const stairFixtures = new Container();
-  const stairViews = new Map<string, { stair: StairLink; view: Graphics }>();
+  const stairViews = new Map<string, { stair: StairLink; view: Container }>();
   const slotMarkers = new Graphics();
   const annotationGfx = new Graphics();
   const interactionDotGfx = new Graphics();
+  const interactionLabels = new Container();
   const annotation = new Container();
   annotation.addChild(annotationGfx);
 
   const fp = building.footprint;
   const isRoof = floor.label === "ROOF";
 
+  if (map) addPlacements(backdrop, map, "floor", building.id, floor.id);
+  if (map?.visualTheme === "pixel-city") addPixelInteriorThresholds(thresholds, floor, building.footprint);
+
   // Plate.
   if (isRoof) {
     drawRoofPlate(architecture, fp);
-  } else {
+  } else if (map?.visualTheme !== "pixel-city") {
     architecture.rect(fp.x, fp.y, fp.w, fp.h).fill({ color: PAPER });
   }
 
   // Furniture below structure so wall poché always wins overlaps.
   for (const object of floor.objects) {
     const view = new Graphics();
-    drawObject(view, object);
+    if (object.art) addObjectSprite(furniture, foreground, object);
+    else drawObject(view, object);
+    view.zIndex = object.y + object.h;
     furniture.addChild(view);
     objectViews.set(object.id, { object, view });
   }
@@ -706,8 +1123,16 @@ function buildFloorArt(
 
   // Stairs.
   for (const stair of floor.stairs) {
-    const stairView = new Graphics();
-    drawStair(stairView, stair);
+    const stairView = new Container();
+    const stairGfx = new Graphics();
+    if (stair.art) {
+      addStairSprite(stairView, foreground, stair);
+      const { entry, vertical } = stairHalves(stair);
+      drawPassableStairGuides(stairGfx, entry, vertical);
+    } else {
+      drawStair(stairGfx, stair);
+    }
+    stairView.addChild(stairGfx);
     stairFixtures.addChild(stairView);
     stairViews.set(stair.id, { stair, view: stairView });
     const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", 10, 2, INK.fixture, "700");
@@ -725,26 +1150,200 @@ function buildFloorArt(
     drawWindow(architecture, band, floor.walls);
   }
 
-  // Doorways: leaf into architecture, swing arc into annotation.
+  // The floor plan shows the traversable opening and threshold only. The
+  // automatic exterior door remains authoritative for collision, noise, and
+  // visibility, but repeating its south-facing facade art inside would cover
+  // the player and fixtures in the top-down interior view.
   for (const doorway of floor.doorways) {
-    drawDoorway(architecture, annotationGfx, doorway, doorwayMode(doorway, floor, fp));
+    drawDoorway(architecture, annotationGfx, doorway, doorwayStyle(doorway, fp));
+  }
+
+  for (const dot of interactionDots) {
+    drawInteractionDot(interactionDotGfx, dot, map?.visualTheme === "pixel-city");
+    const label = interactionLabel(dot, floor);
+    if (label) interactionLabels.addChild(makeInteractionLabel(label, dot));
+  }
+
+  view.addChild(backdrop, thresholds, architecture, stairFixtures, furniture, annotation, interactionDotGfx, interactionLabels);
+  return { floor, view, architecture, furniture, foreground, objectViews, stairViews, annotation, annotationGfx };
+}
+
+/**
+ * The lit-model language backing a FloorArt.
+ *
+ * Interaction Dots and stair tags are drawn with the shared primitives so the
+ * gameplay layer stays identical across themes — only the world underneath it
+ * changes. Roofs still fall through to the line-plan path: the exterior has not
+ * been ported yet, which is why no shipped map sets this theme by default.
+ */
+function buildLitModelFloorArt(
+  building: Building,
+  floor: FloorPlan,
+  interactionDots: InteractionDot[],
+): FloorArt {
+  const model = buildFloorModel(building, floor);
+  const interactionDotGfx = new Graphics();
+  const interactionLabels = new Container();
+
+  for (const stair of floor.stairs) {
+    const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", 10, 2, 0xf2f3f4, "700");
+    placeStairTag(tag, stair);
+    model.annotation.addChild(tag);
   }
 
   for (const dot of interactionDots) {
     drawInteractionDot(interactionDotGfx, dot);
+    const label = interactionLabel(dot, floor);
+    if (label) interactionLabels.addChild(makeInteractionLabel(label, dot));
   }
 
-  view.addChild(architecture, stairFixtures, furniture, annotation, interactionDotGfx);
-  return { floor, view, architecture, furniture, objectViews, stairViews, annotation, annotationGfx };
+  model.view.addChild(interactionDotGfx, interactionLabels);
+
+  return {
+    floor,
+    view: model.view,
+    architecture: model.architecture,
+    furniture: model.furniture,
+    // No perspective pixels in a plan language, so nothing needs a walk-behind
+    // pass; the container exists to satisfy the shared fog mask.
+    foreground: new Container(),
+    objectViews: model.objectViews,
+    stairViews: model.stairViews,
+    annotation: model.annotation,
+    annotationGfx: model.annotationGfx,
+  };
 }
 
-function drawInteractionDot(g: Graphics, dot: InteractionDot): void {
+/**
+ * An authored ROOF plan in the lit-model language. It shares the roof model with
+ * the generated exterior, so a building looks the same whether you are standing
+ * on it or looking at it from the street.
+ */
+function buildLitModelRoofArt(building: Building, floor: FloorPlan): FloorArt {
+  const model = buildRoofModel(building);
+  const annotationGfx = new Graphics();
+  const annotation = new Container();
+  annotation.addChild(annotationGfx);
+
+  const stairViews = new Map<string, { stair: StairLink; view: Container }>();
+  const stairs = new Container();
+  /**
+   * Roofs get a stair *head*, not a flight.
+   *
+   * This used to call the line-plan `drawStair`, which draws the treads and a DN
+   * arrow — correct looking down a stairwell, and wrong looking down at a roof,
+   * where the flight is inside a housing you cannot see into. It is the reason
+   * Downtown's towers appeared to have staircases lying open on top of them.
+   */
+  const stairPad: ShadowPad = SHADOW_ALPHA.map((alpha) => {
+    const g = new Graphics();
+    g.alpha = alpha;
+    return g;
+  });
+  for (const stair of floor.stairs) {
+    const view = new Container();
+    const g = new Graphics();
+    drawStairHead(g, stairPad, stair);
+    view.addChild(g);
+    stairs.addChild(view);
+    stairViews.set(stair.id, { stair, view });
+    const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", 10, 2, 0xf2f3f4, "700");
+    placeStairTag(tag, stair);
+    annotation.addChild(tag);
+  }
+  stairs.addChildAt(new Container(), 0);
+  for (const layer of stairPad) stairs.addChildAt(layer, 0);
+  model.view.addChild(stairs, annotation);
+
+  return {
+    floor,
+    view: model.view,
+    architecture: model.architecture,
+    furniture: model.furniture,
+    foreground: new Container(),
+    objectViews: model.objectViews,
+    stairViews,
+    annotation,
+    annotationGfx,
+  };
+}
+
+/** Exterior doors keep their licensed animation on the facade. From inside,
+ * every perimeter doorway is permanently rendered as the same light sidewalk
+ * threshold so the route stays visually obvious even while collision closes. */
+function addPixelInteriorThresholds(container: Container, floor: FloorPlan, footprint: Rect): void {
+  const frame = cityFrame("door-threshold");
+  for (const doorway of floor.doorways) {
+    const rect = perimeterDoorThresholdRect(doorway, footprint);
+    if (!rect) continue;
+
+    if (doorway.dir === "h") {
+      for (let offset = 0; offset < rect.w; offset += frame.w) {
+        const sprite = new Sprite(cityTexture("door-threshold"));
+        sprite.position.set(rect.x + offset, rect.y);
+        sprite.width = Math.min(frame.w, rect.w - offset);
+        sprite.height = rect.h;
+        sprite.roundPixels = true;
+        container.addChild(sprite);
+      }
+      continue;
+    }
+
+    // No current Pixel City facade uses a vertical entrance, but keep the
+    // authored rule complete for mirrored blocks.
+    for (let offset = 0; offset < rect.h; offset += frame.w) {
+      const sprite = new Sprite(cityTexture("door-threshold"));
+      sprite.position.set(rect.x, rect.y + offset);
+      sprite.width = rect.w;
+      sprite.height = Math.min(frame.w, rect.h - offset);
+      sprite.roundPixels = true;
+      container.addChild(sprite);
+    }
+  }
+}
+
+function drawInteractionDot(g: Graphics, dot: InteractionDot, perspective = false): void {
+  if (dot.kind === "emptySlot") return;
   const { x, y } = dot.position;
-  g.circle(x, y, dot.radius).fill({ color: DOT_COLOR.interaction });
-  g.circle(x, y, dot.radius).stroke({ color: INK.structure, width: 1.2 });
-  // An engraved hairline ring keeps the mark distinct from items and mines
-  // without the stark white center (owner styling note from live testing).
-  g.circle(x, y, 3.5).stroke({ color: INK.structure, width: WEIGHT.hairline, alpha: 0.8 });
+  if (dot.kind === "deployment") {
+    g.circle(x, y, dot.radius).fill({ color: PAPER });
+    g.circle(x, y, dot.radius).stroke({ color: INK.structure, width: 2 });
+    g.circle(x, y, dot.radius - 4).stroke({ color: INK.fixture, width: WEIGHT.hairline });
+    g.moveTo(x, y + 5).lineTo(x, y - 5).stroke({ color: INK.structure, width: 1.8 });
+    g.moveTo(x - 4, y - 1).lineTo(x, y - 5).lineTo(x + 4, y - 1).stroke({ color: INK.structure, width: 1.8 });
+    return;
+  }
+  // Use the same outer primitive as collectible Dots. Environment interactions
+  // stay neutral and carry their meaning in the nearby label; an extra inner
+  // ring made them read like generic UI buttons.
+  drawDotDisc(g, dot.position, dot.radius, DOT_COLOR.interaction, perspective);
+}
+
+function interactionLabel(dot: InteractionDot, floor: FloorPlan): string | null {
+  if (dot.kind === "deployment") return "DEPLOY";
+  if (dot.kind !== "object") return null;
+  const kind = floor.objects.find((object) => object.id === dot.targetId)?.kind;
+  if (kind === "fabricator") return "FABRICATE";
+  if (kind === "locker") return "STASH";
+  if (kind === "bayConsole") return "LOADOUT";
+  if (kind === "planningTable") return "CONTRACTS";
+  if (kind === "draftingTable") return "BASE LAYOUT";
+  return null;
+}
+
+function makeInteractionLabel(text: string, dot: InteractionDot): Container {
+  const tag = new Container();
+  const label = makeLabel(text, 9, 1.4, INK.structure, "800");
+  label.anchor.set(0.5, 0.5);
+  const padX = 5;
+  const padY = 3;
+  const background = new Graphics();
+  background.roundRect(-label.width / 2 - padX, -label.height / 2 - padY, label.width + padX * 2, label.height + padY * 2, 2)
+    .fill({ color: PAPER, alpha: 0.94 })
+    .stroke({ color: INK.hairline, width: WEIGHT.hairline });
+  tag.addChild(background, label);
+  tag.position.set(dot.position.x, dot.position.y - dot.radius - 12);
+  return tag;
 }
 
 function drawPlacementSlot(g: Graphics, slot: PlacementSlot): void {
@@ -844,12 +1443,26 @@ function drawStairTreads(g: Graphics, half: Rect, vertical: boolean, dashed: boo
   }
 }
 
+/** Faint rails preserve the stair footprint without claiming collision. */
+function drawPassableStairGuides(g: Graphics, entry: Rect, vertical: boolean): void {
+  const guide = { color: INK.hairline, width: WEIGHT.hairline, alpha: 0.62 };
+  if (vertical) {
+    line(g, entry.x, entry.y, entry.x, entry.y + entry.h, guide);
+    line(g, entry.x + entry.w, entry.y, entry.x + entry.w, entry.y + entry.h, guide);
+  } else {
+    line(g, entry.x, entry.y, entry.x + entry.w, entry.y, guide);
+    line(g, entry.x, entry.y + entry.h, entry.x + entry.w, entry.y + entry.h, guide);
+  }
+}
+
 /** The flight beyond the break line, belonging to the linked floor. */
 export function drawStairExitHalf(g: Graphics, stair: StairLink): void {
   const { entry, exit, vertical } = stairHalves(stair);
 
   g.rect(exit.x, exit.y, exit.w, exit.h).fill({ color: INK.plate });
-  g.rect(exit.x, exit.y, exit.w, exit.h).stroke({ color: INK.opening, width: 1.4 });
+  if (stair.access !== "openEnd") {
+    g.rect(exit.x, exit.y, exit.w, exit.h).stroke({ color: INK.opening, width: 1.4 });
+  }
   drawStairTreads(g, exit, vertical, true);
 
   // Break line: the plan-convention zigzag at the cut plane.
@@ -875,6 +1488,10 @@ export function drawStairExitHalf(g: Graphics, stair: StairLink): void {
       .lineTo(mx, y + h)
       .stroke(zig);
   }
+
+  for (const guard of stairGuardRects(stair)) {
+    g.rect(guard.x, guard.y, guard.w, guard.h).fill({ color: INK.structure });
+  }
 }
 
 export function drawStair(g: Graphics, stair: StairLink): void {
@@ -882,9 +1499,12 @@ export function drawStair(g: Graphics, stair: StairLink): void {
   const { entry, vertical } = stairHalves(stair);
 
   g.rect(x, y, w, h).fill({ color: INK.plate });
-  g.rect(x, y, w, h).stroke({ color: INK.opening, width: 1.8 });
+  if (stair.access !== "openEnd") {
+    g.rect(x, y, w, h).stroke({ color: INK.opening, width: 1.8 });
+  }
 
   drawStairTreads(g, entry, vertical, false);
+  drawPassableStairGuides(g, entry, vertical);
 
   // Travel arrow: from the entry end toward the break line.
   const arrow = { color: INK.opening, width: 1.8 };
@@ -911,95 +1531,34 @@ export function drawStair(g: Graphics, stair: StairLink): void {
 
 // --- Doorways ----------------------------------------------------------------
 
-function swingBounds(doorway: Doorway, flipped: boolean): Rect {
+function drawDoorway(archG: Graphics, annoG: Graphics, doorway: Doorway, mode: DoorwayStyle): void {
   const w = doorway.width;
 
-  if (doorway.dir === "h") {
-    return { x: doorway.x - w / 2, y: flipped ? doorway.y - w : doorway.y, w, h: w };
-  }
-
-  return { x: flipped ? doorway.x - w : doorway.x, y: doorway.y - w / 2, w, h: w };
-}
-
-/**
- * Doors must not swing over a stair flight: flip the leaf to the other side
- * of the wall; if that side is also blocked or outside, draw a plain
- * threshold instead.
- */
-function doorwayMode(doorway: Doorway, floor: FloorPlan, footprint: Rect): "swing" | "flipped" | "plain" {
-  if (doorway.open) {
-    return "swing";
-  }
-
-  const sweepsStairs = (bounds: Rect) =>
-    floor.stairs.some(
-      (stair) =>
-        bounds.x < stair.rect.x + stair.rect.w + 2 &&
-        bounds.x + bounds.w > stair.rect.x - 2 &&
-        bounds.y < stair.rect.y + stair.rect.h + 2 &&
-        bounds.y + bounds.h > stair.rect.y - 2,
-    );
-
-  if (!sweepsStairs(swingBounds(doorway, false))) {
-    return "swing";
-  }
-
-  const flipped = swingBounds(doorway, true);
-  const insideBuilding =
-    flipped.x >= footprint.x &&
-    flipped.y >= footprint.y &&
-    flipped.x + flipped.w <= footprint.x + footprint.w &&
-    flipped.y + flipped.h <= footprint.y + footprint.h;
-
-  return insideBuilding && !sweepsStairs(flipped) ? "flipped" : "plain";
-}
-
-function drawDoorway(archG: Graphics, annoG: Graphics, doorway: Doorway, mode: "swing" | "flipped" | "plain"): void {
-  const w = doorway.width;
-
-  if (doorway.open) {
-    // Roll-up / open archway: dashed track across the gap.
-    if (doorway.dir === "h") {
-      for (let x = doorway.x - w / 2 + 3; x < doorway.x + w / 2 - 3; x += 12) {
-        archG.rect(x, doorway.y - 1.5, 7, 3).fill({ color: INK.opening });
-      }
-    } else {
-      for (let y = doorway.y - w / 2 + 3; y < doorway.y + w / 2 - 3; y += 12) {
-        archG.rect(doorway.x - 1.5, y, 3, 7).fill({ color: INK.opening });
-      }
-    }
+  if (mode === "open") {
+    // The wall gap is the symbol. Exterior entrances and authored archways do
+    // not need a leaf, swing, dashed barrier, or other claim on walkable space.
     return;
   }
 
-  if (mode === "plain") {
-    if (doorway.dir === "h") {
-      line(annoG, doorway.x - w / 2 + 2, doorway.y, doorway.x + w / 2 - 2, doorway.y, strokes.hairline);
-    } else {
-      line(annoG, doorway.x, doorway.y - w / 2 + 2, doorway.x, doorway.y + w / 2 - 2, strokes.hairline);
-    }
-    return;
-  }
-
-  // Architectural door swing: leaf + quarter arc from the hinge.
-  const sign = mode === "flipped" ? -1 : 1;
-  const leaf = { color: INK.opening, width: 1.6 };
-
+  // An open sliding door: two quiet rails cross the gap and the retracted
+  // panel sits in a wall pocket beyond one jamb. Nothing projects into the
+  // walkable opening. Closed collision/animation will reuse the same track.
+  const panelLength = Math.min(42, w * 0.56);
+  const panelDepth = 5;
   if (doorway.dir === "h") {
-    const hx = doorway.x - w / 2;
-    const hy = doorway.y;
-    line(archG, hx, hy, hx, hy + sign * w, leaf);
-    annoG
-      .moveTo(hx, hy + sign * w)
-      .arc(hx, hy, w, sign * (Math.PI / 2), 0, sign > 0)
-      .stroke(strokes.hairline);
+    line(annoG, doorway.x - w / 2 + 4, doorway.y - 2, doorway.x + w / 2 - 4, doorway.y - 2, strokes.hairline);
+    line(annoG, doorway.x - w / 2 + 4, doorway.y + 2, doorway.x + w / 2 - 4, doorway.y + 2, strokes.hairline);
+    const panelX = doorway.x + w / 2 + 2;
+    archG.rect(panelX, doorway.y - panelDepth / 2, panelLength, panelDepth).fill({ color: INK.plate });
+    archG.rect(panelX, doorway.y - panelDepth / 2, panelLength, panelDepth).stroke(strokes.fixture);
+    line(archG, panelX + 6, doorway.y, panelX + panelLength - 6, doorway.y, strokes.hairline);
   } else {
-    const hx = doorway.x;
-    const hy = doorway.y - w / 2;
-    line(archG, hx, hy, hx + sign * w, hy, leaf);
-    annoG
-      .moveTo(hx + sign * w, hy)
-      .arc(hx, hy, w, sign > 0 ? 0 : Math.PI, Math.PI / 2, sign < 0)
-      .stroke(strokes.hairline);
+    line(annoG, doorway.x - 2, doorway.y - w / 2 + 4, doorway.x - 2, doorway.y + w / 2 - 4, strokes.hairline);
+    line(annoG, doorway.x + 2, doorway.y - w / 2 + 4, doorway.x + 2, doorway.y + w / 2 - 4, strokes.hairline);
+    const panelY = doorway.y + w / 2 + 2;
+    archG.rect(doorway.x - panelDepth / 2, panelY, panelDepth, panelLength).fill({ color: INK.plate });
+    archG.rect(doorway.x - panelDepth / 2, panelY, panelDepth, panelLength).stroke(strokes.fixture);
+    line(archG, doorway.x, panelY + 6, doorway.x, panelY + panelLength - 6, strokes.hairline);
   }
 }
 

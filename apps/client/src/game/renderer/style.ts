@@ -41,7 +41,7 @@ export const INK = {
 export const DOT_COLOR = {
   powerup: 0xe8590c,
   blueprint: 0x1971c2,
-  interaction: INK.fixture,
+  interaction: INK.hairline,
 } as const;
 
 /** Stroke widths in world units (map px). One place, so tiers stay honest. */

@@ -1,23 +1,34 @@
-import { Application, Container, Graphics } from "pixi.js";
-import { clamp, clamp01, colorToNumber } from "@dotbot/game/math";
+import { Application, Container, Graphics, Sprite } from "pixi.js";
+import { clamp, clamp01, colorToNumber, normalize } from "@dotbot/game/math";
 import {
   buildingContaining,
   classifyNoise,
   contextKey,
+  doorEntityCollisionRect,
   floorPlanById,
   isGroundFloor,
   resolvePlan,
 } from "@dotbot/game/mapModel";
-import { hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/visibility";
+import { exteriorVisualVisionContext, hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
-import type { DotBotEntity, GameSnapshot, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { MatchIntel } from "@dotbot/protocol";
 import { shieldArcSpan } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
 import { buildMapArt, drawStair, drawStairExitHalf, type MapArt } from "./mapArt";
+import { cityTexture, dotbotShieldTexture, dotbotTexture, dotItemTexture, loadProductionPixelAssets } from "./pixelAssets";
 import { drawObjectDraftLayers } from "./glyphs";
-import { applyPredictedImpactOverlays, type QueuedPredictedImpact } from "./impactPrediction";
+import {
+  applyPredictedImpactOverlays,
+  classifyPredictedImpact,
+  impactReactionForTarget,
+  predictedImpactDirection,
+  type QueuedPredictedImpact,
+} from "./impactPrediction";
+import { drawDotDisc } from "./dotArt";
+import { drawCatchLight, drawGroundShadow } from "./grounding";
 import { DOT_COLOR, INK, WEIGHT } from "./style";
+import { visibilityFogStyle } from "./visibilityStyle";
 
 const SQUAD_CYAN = 0x15aabf;
 const RIVAL_RED = 0xe03131;
@@ -31,7 +42,7 @@ export type InteractionChannelVisual = {
 
 type DraftAnimation = {
   object: import("@dotbot/game/types").MapObject;
-  staticView: Graphics;
+  staticView: Container;
   outline: Graphics;
   detail: Graphics;
   outlineMask: Graphics;
@@ -39,6 +50,25 @@ type DraftAnimation = {
   pencil: Graphics;
   startedAt: number;
   durationMs: number;
+};
+
+type BotView = {
+  root: Container;
+  body: Graphics;
+  shields: Sprite;
+  sprite: Sprite;
+  progress: Graphics;
+  signature: string;
+  lastPosition: Vec2 | null;
+  displayPosition: Vec2 | null;
+  lastDisplayAt: number;
+  movingUntil: number;
+};
+
+type ImpactView = {
+  root: Container;
+  burst: Graphics;
+  pulse: Graphics;
 };
 
 /**
@@ -53,12 +83,18 @@ export class GameRenderer {
   private readonly art: MapArt;
   /** Faint wash over everything outside the player's line of sight. */
   private readonly fogGfx = new Graphics();
+  /** Matching wash clipped to tall foreground sprite pixels. */
+  private readonly foregroundFogGfx = new Graphics();
   /** Entities subject to line-of-sight: enemies, dots, their rings. */
   private readonly maskedLayer = new Container();
   private readonly maskedGfx = new Graphics();
+  private readonly maskedDotsLayer = new Container();
+  private readonly maskedBotsLayer = new Container();
   private readonly visionMaskGfx = new Graphics();
   /** Always-visible layer: player, squad, noise rings, extraction pulse. */
   private readonly dynamicGfx = new Graphics();
+  private readonly dynamicBotsLayer = new Container();
+  private readonly impactLayer = new Container();
   /** Viewport-space markers that must remain legible beyond the camera. */
   private readonly screenGfx = new Graphics();
   /** Far half of each stair run on the active floor, drawn over the bots so
@@ -71,10 +107,17 @@ export class GameRenderer {
   private lastViewer: DotBotEntity | null = null;
   private lastTimeMs = 0;
   private cameraCenter: Vec2 | null = null;
+  private lastCameraTarget: Vec2 | null = null;
+  private cameraVelocity: Vec2 = { x: 0, y: 0 };
+  private cameraImpulse: Vec2 = { x: 0, y: 0 };
   private lastCameraAt = performance.now();
+  private reducedMotion = false;
   private readonly pleaSignals = new Map<string, { event: Extract<SimEvent, { type: "plea" }>; startedAt: number }>();
   private readonly mineSignals = new Map<string, { event: Extract<SimEvent, { type: "mineSensor" }>; startedAt: number }>();
   private readonly impactFlashes: QueuedPredictedImpact[] = [];
+  private readonly botViews = new Map<string, BotView>();
+  private readonly dotViews = new Map<string, Sprite>();
+  private readonly impactViews = new Map<string, ImpactView>();
   private readonly draftAnimations = new Map<string, DraftAnimation>();
 
   private constructor(app: Application, map: MapDocument) {
@@ -82,16 +125,32 @@ export class GameRenderer {
     this.map = map;
     this.art = buildMapArt(map);
     this.app.stage.addChild(this.worldLayer, this.screenGfx);
-    this.maskedLayer.addChild(this.maskedGfx, this.visionMaskGfx);
+    this.maskedBotsLayer.sortableChildren = true;
+    this.dynamicBotsLayer.sortableChildren = true;
+    this.maskedLayer.addChild(this.maskedGfx, this.maskedDotsLayer, this.maskedBotsLayer, this.visionMaskGfx);
     this.maskedLayer.mask = this.visionMaskGfx;
-    this.worldLayer.addChild(this.art.root, this.fogGfx, this.maskedLayer, this.dynamicGfx, this.stairOverlayGfx);
+    this.foregroundFogGfx.mask = this.art.foreground;
+    this.worldLayer.addChild(
+      this.art.root,
+      this.fogGfx,
+      this.maskedLayer,
+      this.dynamicGfx,
+      this.dynamicBotsLayer,
+      this.impactLayer,
+      this.art.foreground,
+      this.foregroundFogGfx,
+      this.stairOverlayGfx,
+    );
   }
 
   static async create(host: HTMLElement, map: MapDocument): Promise<GameRenderer> {
     const app = new Application();
 
+    await loadProductionPixelAssets(map);
+
     await app.init({
       antialias: true,
+      autoStart: false,
       autoDensity: true,
       background: "#ffffff",
       resizeTo: host,
@@ -101,11 +160,16 @@ export class GameRenderer {
     host.appendChild(app.canvas);
     const renderer = new GameRenderer(app, map);
     renderer.resize(host.clientWidth, host.clientHeight);
+    app.render();
     return renderer;
   }
 
   resize(width: number, height: number): void {
     this.viewport = { width: Math.max(1, width), height: Math.max(1, height) };
+  }
+
+  setReducedMotion(reduced: boolean): void {
+    this.reducedMotion = reduced;
   }
 
   destroy(): void {
@@ -180,17 +244,76 @@ export class GameRenderer {
     this.pleaSignals.set(event.botId, { event, startedAt: this.lastTimeMs });
   }
 
-  /** Instant impact flash at a predicted dash contact — the hit must be seen
-   * the frame it is felt, a round trip before the authoritative arc breaks. */
-  queueImpact(impact: PredictedImpact): void {
-    this.impactFlashes.push({ ...impact, startedAt: performance.now() });
+  /** Instant impact response at predicted dash contact. Returns the predicted
+   * outcome so audio/haptics can use the same classification as the shield. */
+  queueImpact(impact: PredictedImpact, snapshot: GameSnapshot): HitResult {
+    const result = classifyPredictedImpact(snapshot, impact);
+    const direction = predictedImpactDirection(snapshot, impact);
+    this.impactFlashes.push({ ...impact, result, direction, startedAt: performance.now() });
+    this.addCameraImpulse(direction, result === "downed" ? 5 : 3.5);
+    return result;
+  }
+
+  /** Locks an authoritative result onto its existing predicted presentation.
+   * A late acknowledgement never restarts the effect; hits without a local
+   * prediction (local mode, another player, or the viewer being struck) start
+   * exactly once from the server event. */
+  confirmImpact(
+    event: Extract<SimEvent, { type: "hit" }>,
+    snapshot: GameSnapshot,
+    viewerId: string,
+  ): boolean {
+    const now = performance.now();
+    const match = [...this.impactFlashes].reverse().find((impact) =>
+      impact.targetId === event.botId
+        && impact.sourceId === event.byBotId
+        && impact.confirmedAt === undefined
+        && now - impact.startedAt <= 800);
+    const target = snapshot.bots.find((bot) => bot.id === event.botId);
+    const source = snapshot.bots.find((bot) => bot.id === event.byBotId);
+    const fallbackDirection = target && source
+      ? normalize({ x: target.position.x - source.position.x, y: target.position.y - source.position.y })
+      : { x: 0, y: 0 };
+    const direction = Math.hypot(event.direction.x, event.direction.y) > 0.001
+      ? normalize(event.direction)
+      : fallbackDirection;
+    const eventHasWorldPoint = event.tick > 0 || event.position.x !== 0 || event.position.y !== 0;
+    const position = eventHasWorldPoint
+      ? event.position
+      : target
+        ? { x: target.position.x - direction.x * target.radius, y: target.position.y - direction.y * target.radius }
+        : { x: 0, y: 0 };
+
+    if (match) {
+      match.confirmedAt = now;
+      match.result = event.result;
+      match.direction = direction;
+      return true;
+    }
+
+    this.impactFlashes.push({
+      x: position.x,
+      y: position.y,
+      targetId: event.botId,
+      sourceId: event.byBotId,
+      predictionId: `authoritative-${event.tick}-${event.byBotId}-${event.botId}-${now}`,
+      predictedAtMs: now,
+      result: event.result,
+      direction,
+      startedAt: now,
+      confirmedAt: now,
+    });
+    if (event.byBotId === viewerId || event.botId === viewerId) {
+      this.addCameraImpulse(direction, event.result === "downed" ? 5.5 : 3.5);
+    }
+    return false;
   }
 
   queueMineSensor(event: Extract<SimEvent, { type: "mineSensor" }>): void {
     this.mineSignals.set(event.mineId, { event, startedAt: this.lastTimeMs });
   }
 
-  render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null, intel?: MatchIntel): void {
+  render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null, intel?: MatchIntel): number {
     const nowMs = performance.now();
     snapshot = applyPredictedImpactOverlays(snapshot, this.impactFlashes, nowMs);
     this.lastTimeMs = snapshot.timeMs;
@@ -200,14 +323,15 @@ export class GameRenderer {
     const player = overview ? undefined : currentPlayer ?? snapshot.bots[0];
     if (currentPlayer) this.lastViewer = currentPlayer;
     const center = player?.position ?? { x: this.map.width / 2, y: this.map.height / 2 };
-    const camera = this.getCamera(center);
+    const camera = this.getCamera(center, (player?.dashActiveMs ?? 0) > 0);
 
     this.worldLayer.scale.set(camera.scale);
     this.worldLayer.position.set(camera.x, camera.y);
 
     const playerContext = player ? this.contextKey(player.floorId, player.position) : "outdoor:street";
+    this.updateDoorViews(snapshot);
     this.updateVisibility(player ?? null, playerContext);
-    this.updateLineOfSight(player ?? null, playerContext);
+    this.updateLineOfSight(snapshot, player ?? null, playerContext);
 
     this.maskedGfx.clear();
     this.dynamicGfx.clear();
@@ -231,6 +355,10 @@ export class GameRenderer {
     this.drawImpactFlashes(snapshot, nowMs);
 
     this.drawStairOverlay(player ?? null);
+    // The Application ticker is intentionally disabled: scene mutation and
+    // GPU submission happen in this one ordered frame, never a refresh apart.
+    this.app.render();
+    return performance.now();
   }
 
   private drawSignalIntel(snapshot: GameSnapshot, intel: MatchIntel | undefined, playerContext: string): void {
@@ -373,14 +501,16 @@ export class GameRenderer {
     const plan = planRef ? floorPlanById(this.map, planRef.planId) : null;
 
     for (const stair of plan?.stairs ?? []) {
+      if (stair.art) continue;
       drawStairExitHalf(this.stairOverlayGfx, stair);
     }
   }
 
   /** Rebuild the visibility polygon: vision mask + fog wash outside it. */
-  private updateLineOfSight(player: DotBotEntity | null, playerContext: string): void {
+  private updateLineOfSight(snapshot: GameSnapshot, player: DotBotEntity | null, playerContext: string): void {
     this.visionMaskGfx.clear();
     this.fogGfx.clear();
+    this.foregroundFogGfx.clear();
 
     if (!player || player.state === "consumed") {
       this.visionMaskGfx.rect(0, 0, this.map.width, this.map.height).fill({ color: 0xffffff });
@@ -388,37 +518,83 @@ export class GameRenderer {
     }
 
     const vision = visionContext(this.map, playerContext);
-    const polygon = visibilityPolygon(player.position, vision);
+    const polygon = visibilityPolygon(player.position, vision, this.doorOccluders(snapshot, player.floorId));
 
     if (polygon.length < 3) {
       this.visionMaskGfx.rect(0, 0, this.map.width, this.map.height).fill({ color: 0xffffff });
       return;
     }
 
-    const flat = polygon.flatMap((point) => [point.x, point.y]);
-    this.visionMaskGfx.poly(flat).fill({ color: 0xffffff });
+    const entityFlat = polygon.flatMap((point) => [point.x, point.y]);
+    this.visionMaskGfx.poly(entityFlat).fill({ color: 0xffffff });
 
-    const bounds = vision.boundsRect;
-    this.fogGfx.rect(bounds.x, bounds.y, bounds.w, bounds.h).fill({ color: 0x2f353b, alpha: 0.035 });
-    this.fogGfx.poly(flat).cut();
+    const indoors = playerContext !== "outdoor:street";
+    const fogVision = !indoors && this.map.visualTheme === "pixel-city"
+      ? exteriorVisualVisionContext(this.map, player.position)
+      : vision;
+    const fogPolygon = fogVision === vision
+      ? polygon
+      : visibilityPolygon(player.position, fogVision);
+    const fogFlat = fogPolygon.flatMap((point) => [point.x, point.y]);
+    const fogStyle = visibilityFogStyle(this.map.visualTheme, indoors);
+    for (const layer of [this.fogGfx, this.foregroundFogGfx]) {
+      layer.rect(fogVision.boundsRect.x, fogVision.boundsRect.y, fogVision.boundsRect.w, fogVision.boundsRect.h).fill(fogStyle);
+      layer.poly(fogFlat).cut();
+    }
   }
 
-  private getCamera(target: Vec2): { x: number; y: number; scale: number } {
+  private getCamera(target: Vec2, dashing: boolean): { x: number; y: number; scale: number } {
     const now = performance.now();
     const elapsed = Math.max(0, Math.min(100, now - this.lastCameraAt));
     this.lastCameraAt = now;
-    if (!this.cameraCenter) this.cameraCenter = { ...target };
-    const alpha = 1 - Math.exp(-elapsed / 180);
+
+    if (this.lastCameraTarget && elapsed > 0) {
+      const targetDelta = {
+        x: target.x - this.lastCameraTarget.x,
+        y: target.y - this.lastCameraTarget.y,
+      };
+      const rawVelocity = Math.hypot(targetDelta.x, targetDelta.y) > 140
+        ? { x: 0, y: 0 }
+        : { x: targetDelta.x / (elapsed / 1_000), y: targetDelta.y / (elapsed / 1_000) };
+      const velocityAlpha = 1 - Math.exp(-elapsed / 70);
+      this.cameraVelocity = {
+        x: this.cameraVelocity.x + (rawVelocity.x - this.cameraVelocity.x) * velocityAlpha,
+        y: this.cameraVelocity.y + (rawVelocity.y - this.cameraVelocity.y) * velocityAlpha,
+      };
+    }
+    this.lastCameraTarget = { ...target };
+
+    const lookAhead = this.reducedMotion
+      ? { x: 0, y: 0 }
+      : clampVector({
+        x: this.cameraVelocity.x * (dashing ? 0.06 : 0.022),
+        y: this.cameraVelocity.y * (dashing ? 0.06 : 0.022),
+      }, dashing ? 44 : 16);
+    const desired = {
+      x: target.x + lookAhead.x + this.cameraImpulse.x,
+      y: target.y + lookAhead.y + this.cameraImpulse.y,
+    };
+    if (!this.cameraCenter) this.cameraCenter = { ...desired };
+    const alpha = 1 - Math.exp(-elapsed / (dashing ? 62 : 105));
     this.cameraCenter = {
-      x: this.cameraCenter.x + (target.x - this.cameraCenter.x) * alpha,
-      y: this.cameraCenter.y + (target.y - this.cameraCenter.y) * alpha,
+      x: this.cameraCenter.x + (desired.x - this.cameraCenter.x) * alpha,
+      y: this.cameraCenter.y + (desired.y - this.cameraCenter.y) * alpha,
+    };
+    const impulseDecay = Math.exp(-elapsed / 58);
+    this.cameraImpulse = {
+      x: this.cameraImpulse.x * impulseDecay,
+      y: this.cameraImpulse.y * impulseDecay,
     };
     const shortSide = Math.min(this.viewport.width, this.viewport.height);
     const scale = clamp(shortSide / 620, 0.55, 1.0);
     const visibleWidth = this.viewport.width / scale;
     const visibleHeight = this.viewport.height / scale;
-    const centerX = clamp(this.cameraCenter.x, visibleWidth / 2, this.map.width - visibleWidth / 2);
-    const centerY = clamp(this.cameraCenter.y, visibleHeight / 2, this.map.height - visibleHeight / 2);
+    const centerX = visibleWidth >= this.map.width
+      ? this.map.width / 2
+      : clamp(this.cameraCenter.x, visibleWidth / 2, this.map.width - visibleWidth / 2);
+    const centerY = visibleHeight >= this.map.height
+      ? this.map.height / 2
+      : clamp(this.cameraCenter.y, visibleHeight / 2, this.map.height - visibleHeight / 2);
 
     return {
       x: this.viewport.width / 2 - centerX * scale,
@@ -427,15 +603,43 @@ export class GameRenderer {
     };
   }
 
+  private addCameraImpulse(direction: Vec2, intensity: number): void {
+    if (this.reducedMotion) return;
+    const unit = normalize(direction);
+    this.cameraImpulse = clampVector({
+      x: this.cameraImpulse.x + unit.x * intensity - unit.y * intensity * 0.32,
+      y: this.cameraImpulse.y + unit.y * intensity + unit.x * intensity * 0.32,
+    }, 9);
+  }
+
   private contextKey(floorId: string, position: Vec2): string {
     return contextKey(this.map, floorId, position);
   }
 
+  private updateDoorViews(snapshot: GameSnapshot): void {
+    const states = new Map((snapshot.doors ?? []).map((door) => [door.id, door]));
+    for (const [id, sprites] of this.art.doorViews) {
+      const openness = states.get(id)?.openness ?? 0;
+      const frame = Math.max(0, Math.min(6, Math.round(openness * 6)));
+      for (const sprite of sprites) {
+        sprite.texture = cityTexture(`${sprite.label}-${frame}`);
+      }
+    }
+  }
+
+  private doorOccluders(snapshot: GameSnapshot, floorId: string): import("@dotbot/game/types").Rect[] {
+    return (snapshot.doors ?? [])
+      .filter((door) => door.floorId === floorId && door.blocking)
+      .map(doorEntityCollisionRect);
+  }
+
   private updateVisibility(player: DotBotEntity | null, playerContext: string): void {
     const indoors = playerContext !== "outdoor:street";
-    this.art.ground.alpha = indoors ? 0.4 : 1;
-    this.art.outdoorDetail.alpha = indoors ? 0.25 : 1;
-    this.art.outdoorObjects.alpha = indoors ? 0.35 : 1;
+    const pixelInterior = indoors && this.map.visualTheme === "pixel-city";
+    this.art.ground.alpha = indoors ? (pixelInterior ? 0.16 : 0.4) : 1;
+    this.art.outdoorDetail.alpha = indoors ? (pixelInterior ? 0.12 : 0.25) : 1;
+    this.art.outdoorObjects.alpha = indoors ? (pixelInterior ? 0.2 : 0.35) : 1;
+    this.art.outdoorForeground.alpha = indoors ? (pixelInterior ? 0.2 : 0.35) : 1;
     this.art.labels.alpha = indoors ? 0.45 : 1;
 
     const activeBuilding =
@@ -458,7 +662,9 @@ export class GameRenderer {
         const isRoofPlan = floorView.floor.label === "ROOF";
         // A real ROOF plan doubles as the building's roof seen from outside.
         floorView.view.visible = floorView.floor.id === activeFloorId || (isRoofPlan && !isActive);
+        floorView.foreground.visible = floorView.view.visible;
         floorView.view.alpha = floorView.floor.id === activeFloorId ? 1 : indoors ? 0.35 : 1;
+        floorView.foreground.alpha = floorView.view.alpha;
       }
 
       const hasRoofPlan = view.building.floors.some((floor) => floor.label === "ROOF");
@@ -499,21 +705,39 @@ export class GameRenderer {
   }
 
   private drawDots(snapshot: GameSnapshot, viewerSquadId: string | undefined, playerContext: string): void {
+    for (const view of this.dotViews.values()) view.visible = false;
+
     for (const dot of snapshot.dots) {
       if (!dot.active || this.contextKey(dot.floorId, dot.position) !== playerContext) {
         continue;
       }
 
       const color = dot.item.kind === "blueprint" ? DOT_COLOR.blueprint : DOT_COLOR.powerup;
-      this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).fill({ color });
-      this.maskedGfx.circle(dot.position.x, dot.position.y, dot.radius).stroke({ color: 0x111111, width: 2 });
-      this.drawDotMark(this.maskedGfx, dot.item, dot.position, dot.radius);
+      const perspective = this.map.visualTheme === "pixel-city";
+      if (perspective) {
+        let view = this.dotViews.get(dot.id);
+        if (!view) {
+          view = new Sprite();
+          view.anchor.set(0.5);
+          view.roundPixels = true;
+          this.dotViews.set(dot.id, view);
+          this.maskedDotsLayer.addChild(view);
+        }
+        view.texture = dotItemTexture(dot.item);
+        view.position.set(dot.position.x, dot.position.y);
+        view.width = 35;
+        view.height = 35;
+        view.visible = true;
+      } else {
+        drawDotDisc(this.maskedGfx, dot.position, dot.radius, color);
+        this.drawDotMark(this.maskedGfx, dot.item, dot.position, dot.radius);
+      }
 
       const coverage = snapshot.coverages.find((item) => item.kind === "capture" && item.targetId === dot.id);
       if (coverage) {
         const channeler = snapshot.bots.find((bot) => bot.id === coverage.actorId);
         const channelColor = channeler ? this.relationshipColor(channeler, viewerSquadId) : INK.structure;
-        this.drawProgressRing(this.maskedGfx, dot.position, dot.radius + 8, coverage.progressMs / coverage.durationMs, channelColor, 3);
+        this.drawProgressRing(this.maskedGfx, dot.position, dot.radius + 10, coverage.progressMs / coverage.durationMs, channelColor, 3);
       }
     }
   }
@@ -592,6 +816,8 @@ export class GameRenderer {
     const player = snapshot.bots.find((bot) => bot.id === playerId);
     const viewerSquadId = player?.squadId;
 
+    for (const view of this.botViews.values()) view.root.visible = false;
+
     for (const bot of sorted) {
       if (bot.state === "consumed") {
         continue;
@@ -606,58 +832,221 @@ export class GameRenderer {
         // "I see them" and "I know where they are" read differently.
         const seen =
           bot.id === playerId ||
-          (sameArena && (!player || hasLineOfSight(this.map, playerContext, player.position, bot.position)));
-        this.drawBotBody(this.dynamicGfx, bot, snapshot, viewerSquadId, seen ? 1 : 0.35);
+          (sameArena && (!player || hasLineOfSight(
+            this.map,
+            playerContext,
+            player.position,
+            bot.position,
+            this.doorOccluders(snapshot, player.floorId),
+          )));
+        this.updateBotView(bot, snapshot, viewerSquadId, seen ? 1 : 0.35, this.dynamicBotsLayer);
       } else if (sameArena) {
         // Enemies render into the masked layer: hidden outside line of sight.
-        this.drawBotBody(this.maskedGfx, bot, snapshot, viewerSquadId, 1);
+        this.updateBotView(bot, snapshot, viewerSquadId, 1, this.maskedBotsLayer);
       }
+    }
+
+    const presentIds = new Set(snapshot.bots.filter((bot) => bot.state !== "consumed").map((bot) => bot.id));
+    for (const [botId, view] of this.botViews) {
+      if (presentIds.has(botId)) continue;
+      view.root.destroy({ children: true });
+      this.botViews.delete(botId);
     }
   }
 
-  private drawBotBody(g: Graphics, bot: DotBotEntity, snapshot: GameSnapshot, viewerSquadId: string | undefined, fade: number): void {
+  private updateBotView(
+    bot: DotBotEntity,
+    snapshot: GameSnapshot,
+    viewerSquadId: string | undefined,
+    fade: number,
+    layer: Container,
+  ): void {
+    let view = this.botViews.get(bot.id);
+    if (!view) {
+      const root = new Container();
+      const body = new Graphics();
+      const shields = new Sprite();
+      shields.anchor.set(0.5);
+      shields.roundPixels = false;
+      // The chosen DotBot study makes the three plates a major part of the
+      // silhouette. Keep the raster frame synchronized with the body while
+      // letting it extend beyond the compact movement sprite.
+      shields.scale.set(1.28);
+      const sprite = new Sprite();
+      sprite.anchor.set(0.5);
+      sprite.roundPixels = false;
+      const progress = new Graphics();
+      root.addChild(body, shields, sprite, progress);
+      view = {
+        root,
+        body,
+        shields,
+        sprite,
+        progress,
+        signature: "",
+        lastPosition: null,
+        displayPosition: null,
+        lastDisplayAt: performance.now(),
+        movingUntil: 0,
+      };
+      this.botViews.set(bot.id, view);
+    }
+    if (view.root.parent !== layer) layer.addChild(view.root);
+
     const color = this.relationshipColor(bot, viewerSquadId);
-    const coreRadius = bot.state === "downed" ? bot.radius * 0.34 : bot.radius * 0.4;
-    const alpha = (bot.state === "downed" ? 0.72 : 1) * fade;
     const serrated = !bot.isAmbient && viewerSquadId !== undefined && bot.squadId !== viewerSquadId;
+    const pixelBot = this.map.visualTheme === "pixel-city";
+    const now = performance.now();
+    const positionChanged = view.lastPosition !== null && Math.hypot(
+      bot.position.x - view.lastPosition.x,
+      bot.position.y - view.lastPosition.y,
+    ) > 0.2;
+    if (positionChanged) view.movingUntil = now + 110;
+    const moved = now < view.movingUntil;
+    const direction = pixelBot ? this.pixelDirection(bot.facing) : "";
+    const animation = bot.state === "downed"
+      ? "downed"
+      : bot.dashActiveMs > 0
+        ? "dash"
+        : moved
+          ? (Math.floor(now / 150) % 2 === 0 ? "glide-a" : "glide-b")
+          : "idle";
+    const signature = [
+      bot.state,
+      bot.radius,
+      bot.maxShields,
+      bot.shieldSegments.join(","),
+      color,
+      serrated ? 1 : 0,
+      bot.dashActiveMs > 0 ? 1 : 0,
+      bot.invulnerabilityMs > 0 ? 1 : 0,
+      direction,
+      animation,
+    ].join("|");
+    if (view.signature !== signature) {
+      view.body.clear();
+      this.drawBotBody(
+        view.body,
+        { ...bot, position: { x: 0, y: 0 }, facing: pixelBot ? bot.facing : 0 },
+        viewerSquadId,
+        pixelBot,
+      );
+      view.sprite.visible = pixelBot;
+      view.shields.visible = pixelBot;
+      if (pixelBot) {
+        const shieldSignature = this.pixelShieldSignature(bot);
+        view.sprite.texture = dotbotTexture(`${animation}-${direction}`);
+        view.shields.texture = dotbotShieldTexture(`shield-${shieldSignature}-${direction}`);
+        view.shields.tint = color;
+      }
+      view.signature = signature;
+    }
+    view.lastPosition = { ...bot.position };
 
-    this.drawShieldSegments(g, bot, color, serrated, fade);
-
-    if (bot.state === "downed") {
-      g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color, width: 2.5, alpha });
-      // A downed body is a stand-on interaction (revive/consume/loot), so it
-      // carries the same engraved interaction mark as every dot in the world.
-      g.circle(bot.position.x, bot.position.y, 6).fill({ color: DOT_COLOR.interaction, alpha: 0.9 * fade });
-      g.circle(bot.position.x, bot.position.y, 6).stroke({ color: INK.structure, width: 1.2, alpha });
-      g.circle(bot.position.x, bot.position.y, 3.5).stroke({ color: INK.structure, width: WEIGHT.hairline, alpha: 0.8 * fade });
+    if (!view.displayPosition || Math.hypot(
+      bot.position.x - view.displayPosition.x,
+      bot.position.y - view.displayPosition.y,
+    ) > 120) {
+      view.displayPosition = { ...bot.position };
     } else {
-      // Hairline hull at the true collision radius: bodies stop where this
-      // line is, so contact renders as contact instead of a 10px air gap
-      // between shield arcs.
-      g.circle(bot.position.x, bot.position.y, bot.radius - 0.5).stroke({ color: INK.structure, width: 1, alpha: 0.22 * fade });
-      g.circle(bot.position.x, bot.position.y, coreRadius).fill({ color: INK.structure, alpha: 0.95 * fade });
-      g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: INK.structure, width: 2, alpha });
+      const elapsed = Math.max(0, Math.min(50, now - view.lastDisplayAt));
+      const smoothing = 1 - Math.exp(-elapsed / 34);
+      view.displayPosition.x += (bot.position.x - view.displayPosition.x) * smoothing;
+      view.displayPosition.y += (bot.position.y - view.displayPosition.y) * smoothing;
     }
+    view.lastDisplayAt = now;
 
-    if (bot.dashActiveMs > 0) {
-      g.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color: INK.structure, width: 3, alpha: 0.45 * fade });
-    }
+    const reaction = impactReactionForTarget(this.impactFlashes, bot.id, now, this.reducedMotion);
+    view.root.visible = true;
+    view.root.alpha = fade;
+    view.root.position.set(
+      view.displayPosition.x + (reaction?.offset.x ?? 0),
+      view.displayPosition.y + (reaction?.offset.y ?? 0),
+    );
+    view.root.rotation = (pixelBot ? 0 : bot.facing) + (reaction?.rotation ?? 0);
+    view.root.scale.set(reaction?.scale ?? 1);
+    view.root.zIndex = bot.position.y;
+    view.shields.position.y = 0;
 
-    if (bot.invulnerabilityMs > 0 && bot.state === "alive") {
-      g.circle(bot.position.x, bot.position.y, bot.radius - 3).stroke({ color: 0x111111, width: 2, alpha: 0.18 * fade });
-    }
-
+    view.progress.clear();
     const coverage = snapshot.coverages.find((item) => item.targetId === bot.id && item.kind !== "capture");
     if (coverage) {
       const channeler = snapshot.bots.find((candidate) => candidate.id === coverage.actorId);
       this.drawProgressRing(
-        g,
-        bot.position,
+        view.progress,
+        { x: 0, y: 0 },
         bot.radius + 15,
         coverage.progressMs / coverage.durationMs,
         channeler ? this.relationshipColor(channeler, viewerSquadId) : INK.structure,
         4,
       );
+      view.progress.rotation = -view.root.rotation;
+    }
+  }
+
+  private pixelDirection(facing: number): "e" | "se" | "s" | "sw" | "w" | "nw" | "n" | "ne" {
+    const directions = ["e", "se", "s", "sw", "w", "nw", "n", "ne"] as const;
+    const normalized = ((facing % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    return directions[Math.round(normalized / (Math.PI / 4)) % directions.length]!;
+  }
+
+  private pixelShieldSignature(bot: DotBotEntity): string {
+    return Array.from({ length: 3 }, (_, index) => {
+      const condition = index < bot.maxShields ? (bot.shieldSegments[index] ?? 0) : 0;
+      return condition >= 1 ? "2" : condition > 0 ? "1" : "0";
+    }).join("");
+  }
+
+  private drawBotBody(
+    g: Graphics,
+    bot: DotBotEntity,
+    viewerSquadId: string | undefined,
+    pixelCore = false,
+  ): void {
+    const color = this.relationshipColor(bot, viewerSquadId);
+    const coreRadius = bot.state === "downed" ? bot.radius * 0.34 : bot.radius * 0.4;
+    const alpha = bot.state === "downed" ? 0.72 : 1;
+    const serrated = !bot.isAmbient && viewerSquadId !== undefined && bot.squadId !== viewerSquadId;
+
+    if (!pixelCore) {
+      drawGroundShadow(g, bot.position, bot.radius, alpha);
+      this.drawShieldSegments(g, bot, color, serrated, 1);
+    }
+
+    if (pixelCore) {
+      if (bot.dashActiveMs > 0) {
+        g.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color, width: 2, alpha: 0.34 });
+      }
+      if (bot.invulnerabilityMs > 0 && bot.state === "alive") {
+        g.circle(bot.position.x, bot.position.y, bot.radius - 3).stroke({ color: 0xffffff, width: 2, alpha: 0.5 });
+      }
+      return;
+    }
+
+    if (bot.state === "downed") {
+      g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color, width: 2.5, alpha });
+      // A downed body is a stand-on interaction (revive/consume/loot), so it
+      // carries the same engraved interaction mark as every dot in the world.
+      g.circle(bot.position.x, bot.position.y, 6).fill({ color: DOT_COLOR.interaction, alpha: 0.9 });
+      g.circle(bot.position.x, bot.position.y, 6).stroke({ color: INK.structure, width: 1.2, alpha });
+      g.circle(bot.position.x, bot.position.y, 3.5).stroke({ color: INK.structure, width: WEIGHT.hairline, alpha: 0.8 });
+    } else {
+      // Hairline hull at the true collision radius: bodies stop where this
+      // line is, so contact renders as contact instead of a 10px air gap
+      // between shield arcs.
+      g.circle(bot.position.x, bot.position.y, bot.radius - 0.5).stroke({ color: INK.structure, width: 1, alpha: 0.22 });
+      g.circle(bot.position.x, bot.position.y, coreRadius).fill({ color: INK.structure, alpha: 0.95 });
+      g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: INK.structure, width: 2, alpha });
+      // Catch light on the core, so the body reads as a sphere under the plates.
+      drawCatchLight(g, bot.position, coreRadius);
+    }
+
+    if (bot.dashActiveMs > 0) {
+      g.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color: INK.structure, width: 3, alpha: 0.45 });
+    }
+
+    if (bot.invulnerabilityMs > 0 && bot.state === "alive") {
+      g.circle(bot.position.x, bot.position.y, bot.radius - 3).stroke({ color: 0x111111, width: 2, alpha: 0.18 });
     }
   }
 
@@ -673,10 +1062,17 @@ export class GameRenderer {
    * plates draw solid, cracked plates split at the middle, broken plates
    * leave a faint ghost so the exposed side stays readable.
    */
-  private drawShieldSegments(g: Graphics, bot: DotBotEntity, color: number, serrated: boolean, fade: number): void {
+  private drawShieldSegments(
+    g: Graphics,
+    bot: DotBotEntity,
+    color: number,
+    serrated: boolean,
+    fade: number,
+    radiusScale = 0.78,
+  ): void {
     const span = shieldArcSpan(bot.maxShields);
     const step = (Math.PI * 2) / bot.maxShields;
-    const shieldRadius = bot.radius * 0.78;
+    const shieldRadius = bot.radius * radiusScale;
     const intactWidth = bot.state === "downed" ? 2 : 5;
 
     for (let index = 0; index < bot.maxShields; index += 1) {
@@ -733,11 +1129,18 @@ export class GameRenderer {
       const progress = clamp01(noise.ageMs / noise.ttlMs);
       const radius = 16 + progress * (46 + noise.loudness * 84);
       const alpha = (1 - progress) * 0.55;
+      const perspective = this.map.visualTheme === "pixel-city";
+      const center = perspective ? { x: noise.position.x, y: noise.position.y + 7 } : noise.position;
 
       if (heard.muffled) {
-        this.dashedCircle(g, noise.position, radius, alpha);
+        if (perspective) this.dashedEllipse(g, center, radius, radius * 0.56, alpha);
+        else this.dashedCircle(g, center, radius, alpha);
       } else {
-        g.circle(noise.position.x, noise.position.y, radius).stroke({ color: INK.opening, width: 2, alpha });
+        if (perspective) {
+          g.ellipse(center.x, center.y, radius, radius * 0.56).stroke({ color: INK.opening, width: 2, alpha });
+        } else {
+          g.circle(center.x, center.y, radius).stroke({ color: INK.opening, width: 2, alpha });
+        }
       }
 
       if (heard.vertical !== 0) {
@@ -756,44 +1159,84 @@ export class GameRenderer {
     }
   }
 
+  private dashedEllipse(g: Graphics, center: Vec2, rx: number, ry: number, alpha: number): void {
+    const dashes = 12;
+    const steps = 6;
+
+    for (let index = 0; index < dashes; index += 1) {
+      const start = (Math.PI * 2 * index) / dashes;
+      const end = start + (Math.PI * 2 * 0.55) / dashes;
+      for (let step = 0; step <= steps; step += 1) {
+        const angle = start + ((end - start) * step) / steps;
+        const x = center.x + Math.cos(angle) * rx;
+        const y = center.y + Math.sin(angle) * ry;
+        if (step === 0) g.moveTo(x, y);
+        else g.lineTo(x, y);
+      }
+      g.stroke({ color: INK.opening, width: 2, alpha });
+    }
+  }
+
   /** Sharp, short-lived contact burst: a heavy ring snapping outward with a
    * four-tick star — distinct from the softer server noise ring that follows
    * a round trip later. */
   private drawImpactFlashes(snapshot: GameSnapshot, nowMs: number): void {
-    const lifeMs = 240;
+    const retentionMs = 800;
     for (let index = this.impactFlashes.length - 1; index >= 0; index -= 1) {
       const flash = this.impactFlashes[index];
       const age = nowMs - flash.startedAt;
-      if (age > lifeMs) {
+      if (age > retentionMs) {
+        this.impactViews.get(flash.predictionId)?.root.destroy({ children: true });
+        this.impactViews.delete(flash.predictionId);
         this.impactFlashes.splice(index, 1);
         continue;
       }
+
+      const lifeMs = this.reducedMotion ? 150 : flash.result === "downed" ? 300 : 240;
+      let view = this.impactViews.get(flash.predictionId);
+      if (!view) {
+        const root = new Container();
+        const burst = new Graphics();
+        const pulse = new Graphics();
+        burst.circle(0, 0, 8).stroke({ color: INK.structure, width: 3.5 });
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          burst.moveTo(dx * 8, dy * 8).lineTo(dx * 13, dy * 13).stroke({ color: INK.structure, width: 2 });
+        }
+        const target = snapshot.bots.find((bot) => bot.id === flash.targetId);
+        if (target) {
+          pulse.circle(0, 0, target.radius * 0.5).stroke({ color: 0xffffff, width: 6 });
+          pulse.circle(0, 0, target.radius * 0.72).stroke({ color: INK.structure, width: 2.5 });
+        }
+        root.addChild(burst, pulse);
+        this.impactLayer.addChild(root);
+        view = { root, burst, pulse };
+        this.impactViews.set(flash.predictionId, view);
+      }
+
+      view.root.position.set(flash.x, flash.y);
+      const target = snapshot.bots.find((bot) => bot.id === flash.targetId);
+      if (target) view.pulse.position.set(target.position.x - flash.x, target.position.y - flash.y);
+      if (age > lifeMs) {
+        view.root.visible = false;
+        continue;
+      }
+
       const progress = clamp01(age / lifeMs);
       const alpha = (1 - progress) * 0.95;
-      const radius = 8 + progress * 20;
-      const { x, y } = flash;
-      this.dynamicGfx.circle(x, y, radius).stroke({ color: INK.structure, width: 3.5 - progress * 2.5, alpha });
-      const spike = 5 + progress * 7;
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-        this.dynamicGfx
-          .moveTo(x + dx * radius, y + dy * radius)
-          .lineTo(x + dx * (radius + spike), y + dy * (radius + spike))
-          .stroke({ color: INK.structure, width: 2, alpha });
-      }
+      view.root.visible = true;
+      view.burst.alpha = alpha;
+      view.burst.scale.set(1 + progress * 2.5);
 
       // A short white-black pulse on the victim makes the contact readable on
       // a busy floor plan while the speculative shield break above conveys
       // the actual damage result without waiting for a network round trip.
-      const target = snapshot.bots.find((bot) => bot.id === flash.targetId);
       if (target && age <= 110) {
         const targetProgress = age / 110;
-        const targetAlpha = (1 - targetProgress) * 0.95;
-        this.dynamicGfx
-          .circle(target.position.x, target.position.y, target.radius * (0.5 + targetProgress * 0.32))
-          .stroke({ color: 0xffffff, width: 6 - targetProgress * 3, alpha: targetAlpha });
-        this.dynamicGfx
-          .circle(target.position.x, target.position.y, target.radius * (0.72 + targetProgress * 0.4))
-          .stroke({ color: INK.structure, width: 2.5, alpha: targetAlpha });
+        view.pulse.visible = true;
+        view.pulse.alpha = (1 - targetProgress) * 0.95;
+        view.pulse.scale.set(1 + targetProgress * 0.48);
+      } else {
+        view.pulse.visible = false;
       }
     }
   }
@@ -825,4 +1268,11 @@ export class GameRenderer {
       .arc(center.x, center.y, radius, startAngle, endAngle)
       .stroke(strokeStyle);
   }
+}
+
+function clampVector(vector: Vec2, maximum: number): Vec2 {
+  const length = Math.hypot(vector.x, vector.y);
+  if (length <= maximum || length <= 0.0001) return vector;
+  const scale = maximum / length;
+  return { x: vector.x * scale, y: vector.y * scale };
 }
