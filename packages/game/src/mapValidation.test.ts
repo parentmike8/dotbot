@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, deriveBaseInteractionDots, starterBaseLayout, validateBaseLayout } from "./content/base";
+import { interactionDotReach } from "./interactions";
 import type { BaseLayout } from "./types";
-import { collisionLayers, isGroundFloor, isSolidObject, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
+import { collisionLayers, isGroundFloor, objectCollisionRects, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
+import { auditDotPlacement, auditBuildingFloorQuality, type FloorQualityIssue } from "./mapQuality";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Doorway, MapDocument, Rect, StairLink, Vec2 } from "./types";
 
@@ -16,7 +18,7 @@ import type { Doorway, MapDocument, Rect, StairLink, Vec2 } from "./types";
 const CELL = 8;
 const BOT_RADIUS = defaultGameConfig.botRadius;
 /** A bot must get its center within this range of a dot to capture it. */
-const CAPTURE_RANGE = BOT_RADIUS - defaultGameConfig.dotRadius - 2;
+const CAPTURE_RANGE = interactionDotReach(BOT_RADIUS, defaultGameConfig.dotRadius);
 
 type FloorWorld = {
   floorId: string;
@@ -42,13 +44,13 @@ function collectFloors(map: MapDocument = downtownMap): FloorWorld[] {
   };
 
   const outdoor = floor(OUTDOOR_FLOOR_ID);
-  outdoor.solids.push(...map.outdoor.walls, ...map.outdoor.objects.filter(isSolidObject));
+  outdoor.solids.push(...map.outdoor.walls, ...map.outdoor.objects.flatMap(objectCollisionRects));
   outdoor.dots.push(...map.outdoor.dotSpawns.map((spawn) => ({ id: spawn.id, position: spawn.position })));
 
   for (const building of map.buildings) {
     for (const plan of building.floors) {
       const world = floor(physicsFloorId(map, plan.id));
-      world.solids.push(...plan.walls, ...plan.objects.filter(isSolidObject));
+      world.solids.push(...plan.walls, ...plan.objects.flatMap(objectCollisionRects));
       world.dots.push(...plan.dotSpawns.map((spawn) => ({ id: spawn.id, position: spawn.position })));
       world.stairs.push(...plan.stairs);
       world.doorways.push(...plan.doorways);
@@ -206,6 +208,60 @@ describe("downtown map validation", () => {
     expect(() => collisionLayers(overflowMap)).toThrow(/at most 16 physics collision layers/);
   });
 
+  /**
+   * The floor-quality audit is a production authoring gate, not a corner-shop
+   * snapshot. Downtown shipped without this assertion, and an impassable
+   * 6-unit gap between Lot 6's third rack run and the crates beside it survived
+   * all the way to a screenshot review. Every building is gated now.
+   */
+  /**
+   * Per-building, per-kind budgets that may only ever go down.
+   *
+   * Mercy, Civic and Beacon predate the audit being wired into downtown and
+   * carry real authoring debt — recorded here so it is visible and cannot grow,
+   * rather than hidden behind a suppressed assertion. Lot 6 is at zero and any
+   * new building starts at zero.
+   *
+   * Budgets are counts per issue kind, not object ids: `objSeq` renumbers every
+   * downstream object whenever one is added, so id-based baselines rot instantly.
+   */
+  const FLOOR_QUALITY_BUDGET: Record<string, Partial<Record<FloorQualityIssue["kind"], number>>> = {
+    lot6: {},
+    mercy: { "false-aisle": 1, "solid-overlap": 1 },
+    civic: { "false-aisle": 8, "solid-overlap": 1, "disconnected-area": 3 },
+    // `disconnected-area: 1` is paid off: a shelf in the F1 lounge sealed the
+    // roof stair. See beaconHouse.ts for why that room holds a couch and nothing
+    // else. The `stair-unreachable` rule added alongside the fix is what should
+    // have caught it — the stranded region was a stair shaft, whose standable area
+    // is always too small to clear MIN_DISCONNECTED_AREA.
+    beacon: { "false-aisle": 7 },
+  };
+
+  it("matches its recorded floor-quality debt exactly", () => {
+    const actual = Object.fromEntries(downtownMap.buildings.map((building) => {
+      const counts: Partial<Record<FloorQualityIssue["kind"], number>> = {};
+      for (const issue of auditBuildingFloorQuality(downtownMap, building.id)) {
+        counts[issue.kind] = (counts[issue.kind] ?? 0) + 1;
+      }
+      return [building.id, counts];
+    }));
+    // Exact, not a ceiling: paying debt down should require editing this ledger,
+    // so the remaining total stays honest instead of drifting out of date.
+    expect(actual).toEqual(FLOOR_QUALITY_BUDGET);
+  });
+
+  /**
+   * Dots are the loot economy, so this one is asserted empty rather than budgeted.
+   * A Dot nobody can reach and two Dots in the same place are both bugs, not debt.
+   */
+  it("places every Dot where a bot can reach it, and no two on top of each other", () => {
+    expect(auditDotPlacement(downtownMap).map((issue) => issue.message)).toEqual([]);
+  });
+
+  it("keeps Lot 6 Depot completely clean, as the audited reference building", () => {
+    expect(auditBuildingFloorQuality(downtownMap, "lot6").map((issue) => issue.message)).toEqual([]);
+  });
+
   it("has a seed for every physics floor", () => {
     for (const world of worlds) {
       expect(world.seeds.length, `floor ${world.floorId} needs a seed`).toBeGreaterThan(0);
@@ -345,23 +401,20 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("base map val
     expect(createBaseMap(starterBaseLayout, shellId)).toEqual(createBaseMap({ ...starterBaseLayout }, shellId));
     expect(map.outdoor.dotSpawns).toEqual([]);
     expect(map.buildings.flatMap((building) => building.floors.flatMap((floor) => floor.dotSpawns))).toEqual([]);
-    expect(map.interactionDots).toHaveLength(map.placementSlots!.length + 1);
+    expect(map.interactionDots).toHaveLength(map.buildings[0].floors.flatMap((floor) => floor.objects).length + 1);
     expect(map.botSpawns).toEqual([
       expect.objectContaining({ id: "player", controller: "human", bays: [null, null, null, null], hold: [] }),
     ]);
   });
 
-  it("derives exactly one dot for every placed object, empty slot, and deployment threshold", () => {
+  it("derives one dot for every placed object and deployment threshold, without exposing empty slots", () => {
     const starter = createBaseMap(starterBaseLayout, shellId);
     const objects = starter.buildings[0].floors.flatMap((floor) => floor.objects);
-    const occupied = new Set(objects.map((object) => object.slotId));
-    const emptySlots = starter.placementSlots!.filter((slot) => !occupied.has(slot.id));
     const dots = starter.interactionDots!;
 
     expect(dots.filter((dot) => dot.kind === "object").map((dot) => dot.targetId).sort())
       .toEqual(objects.map((object) => object.id).sort());
-    expect(dots.filter((dot) => dot.kind === "emptySlot").map((dot) => dot.targetId).sort())
-      .toEqual(emptySlots.map((slot) => slot.id).sort());
+    expect(dots.filter((dot) => dot.kind === "emptySlot")).toEqual([]);
     expect(dots.filter((dot) => dot.kind === "deployment").map((dot) => dot.targetId))
       .toEqual(starter.extractionPoints.map((point) => point.id));
     expect(new Set(dots.map((dot) => dot.id))).toHaveLength(dots.length);
@@ -458,11 +511,11 @@ describe.each(BASE_SHELL_IDS.map((shellId) => [shellId] as const))("expanded bas
     expect(upper.stairs[0].rect).toEqual(ground.stairs[0].rect);
   });
 
-  it("keeps all seventeen interaction dots stand-on-able with both stair mouths reachable", () => {
+  it("keeps every furnished-object and deployment interaction stand-on-able with both stair mouths reachable", () => {
     const worlds = new Map(collectFloors(map).map((world) => [world.floorId, world]));
     const reachable = new Map([...worlds].map(([floorId, world]) => [floorId, floodReachable(world, map)]));
 
-    expect(map.interactionDots).toHaveLength(17);
+    expect(map.interactionDots).toHaveLength(Object.keys(maximalExpandedBaseLayout).length + 1);
     for (const dot of map.interactionDots!) {
       const floorId = physicsFloorId(map, dot.floorId);
       expect(

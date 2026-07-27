@@ -1,40 +1,83 @@
-import { isGroundFloor, isSolidObject } from "./mapModel";
-import type { Building, FloorPlan, MapDocument, MapObject, Rect, Vec2 } from "./types";
+import { pointToSolidDistanceSquared, rectSolid } from "./geometry";
+import { interactionDotReach } from "./interactions";
+import { isGroundFloor, MIN_DOT_SEPARATION, objectCollisionRects } from "./mapModel";
+import type { Building, DotSpawn, FloorPlan, MapDocument, MapObject, Rect, Solid, Vec2 } from "./types";
 
 const PUSH_CLEARANCE = 10;
 const reachabilityCache = new WeakMap<MapDocument, Map<string, Reachability>>();
 
 type Reachability = { cell: number; cols: number; rows: number; reachable: Set<number> };
 
+/** Everything on a floor that blocks a bot, rect walls and path walls alike. */
+function floorSolids(floor: FloorPlan): Solid[] {
+  return [
+    ...floor.walls.map(rectSolid),
+    ...(floor.barriers ?? []).flatMap((barrier) => barrier.solids),
+  ];
+}
+
 /**
  * Deterministically add one blueprint for every scannable object type in each
  * building. Each spawn sits at the midpoint of the object's most-open side,
  * with a bot-radius clearance from solid geometry.
+ *
+ * Returns a new document. Buildings compiled from map source are module-level
+ * constants that more than one map can include, so pushing spawns into their
+ * floors would decorate every map that shares them — and decorate them twice if
+ * the document were ever built again.
  */
 export function addBlueprintSpawns(map: MapDocument, botRadius: number): MapDocument {
-  for (const building of map.buildings) {
+  const buildings = map.buildings.map((building) => {
     const seen = new Set<string>();
-    for (const floor of building.floors) {
+    const floors = building.floors.map((floor) => {
+      /**
+       * Accumulated as we go, and seeded with the floor's authored Dots.
+       *
+       * Without this the placer stacked blueprints on top of authored Dots: both
+       * are drawn to the same thing — the interesting, scannable object — so a
+       * blueprint for the pharmacy shelf landed 5.7 units from the Dot already
+       * beside it. Two Dots in the same place is one pickup and one wasted slot.
+       */
+      const placed: Vec2[] = floor.dotSpawns.map((dot) => dot.position);
+      const added: DotSpawn[] = [];
       for (const object of floor.objects) {
         if (!object.scannable || seen.has(object.kind)) continue;
-        const position = mostOpenSide(map, building, floor, object, botRadius);
-        floor.dotSpawns.push({
+        seen.add(object.kind);
+        const position = mostOpenSide(map, building, floor, object, botRadius, placed);
+        placed.push(position);
+        added.push({
           id: `blueprint-${building.id}-${object.kind}`,
-          item: { kind: "blueprint", blueprintId: object.kind },
+          item: { kind: "blueprint" as const, blueprintId: object.kind },
           position,
         });
-        seen.add(object.kind);
       }
-    }
-  }
-  return map;
+      return added.length ? { ...floor, dotSpawns: [...floor.dotSpawns, ...added] } : floor;
+    });
+    return { ...building, floors };
+  });
+  return { ...map, buildings };
 }
 
-function mostOpenSide(map: MapDocument, building: Building, floor: FloorPlan, object: MapObject, botRadius: number): Vec2 {
-  const solids: Rect[] = [
-    ...floor.walls,
-    ...floor.objects.filter((candidate) => candidate.id !== object.id && isSolidObject(candidate)),
-    ...(isGroundFloor(floor) ? [...map.outdoor.walls, ...map.outdoor.objects.filter(isSolidObject)] : []),
+function mostOpenSide(
+  map: MapDocument,
+  building: Building,
+  floor: FloorPlan,
+  object: MapObject,
+  botRadius: number,
+  placed: readonly Vec2[],
+): Vec2 {
+  const clearOfDots = (position: Vec2): boolean => placed.every((other) =>
+    Math.hypot(other.x - position.x, other.y - position.y) >= MIN_DOT_SEPARATION);
+  const solids: Solid[] = [
+    ...floorSolids(floor),
+    ...floor.objects.filter((candidate) => candidate.id !== object.id).flatMap(objectCollisionRects).map(rectSolid),
+    ...(isGroundFloor(floor)
+      ? [
+          ...map.outdoor.walls.map(rectSolid),
+          ...map.outdoor.objects.flatMap(objectCollisionRects).map(rectSolid),
+          ...(map.outdoor.barriers ?? []).flatMap((barrier) => barrier.solids),
+        ]
+      : []),
   ];
   const distanceFromEdge = botRadius + PUSH_CLEARANCE;
   const candidates: Vec2[] = [
@@ -47,7 +90,9 @@ function mostOpenSide(map: MapDocument, building: Building, floor: FloorPlan, ob
     .map((position, order) => ({
       position,
       order,
-      score: isReachable(map, floor, position, botRadius) ? openness(position, building.footprint, solids, botRadius) : Number.NEGATIVE_INFINITY,
+      score: isReachable(map, floor, position, botRadius) && clearOfDots(position)
+        ? openness(position, building.footprint, solids, botRadius)
+        : Number.NEGATIVE_INFINITY,
     }))
     .filter((candidate) => Number.isFinite(candidate.score))
     .sort((a, b) => b.score - a.score || a.order - b.order);
@@ -56,7 +101,9 @@ function mostOpenSide(map: MapDocument, building: Building, floor: FloorPlan, ob
 
   // Authored scenery can make the first ring tight. Expand along the same
   // deterministic side order until a bot-clear point exists.
-  for (let extra = 8; extra <= 96; extra += 8) {
+  // Widened from 96: the separation constraint rules out more of the first ring
+  // than clearance alone did, and a crowded floor needs further to walk.
+  for (let extra = 8; extra <= 200; extra += 8) {
     for (const position of candidates) {
       const direction = {
         x: Math.sign(position.x - (object.x + object.w / 2)),
@@ -65,7 +112,8 @@ function mostOpenSide(map: MapDocument, building: Building, floor: FloorPlan, ob
       const expanded = { x: position.x + direction.x * extra, y: position.y + direction.y * extra };
       if (
         Number.isFinite(openness(expanded, building.footprint, solids, botRadius)) &&
-        isReachable(map, floor, expanded, botRadius)
+        isReachable(map, floor, expanded, botRadius) &&
+        clearOfDots(expanded)
       ) return expanded;
     }
   }
@@ -82,14 +130,15 @@ function isReachable(map: MapDocument, floor: FloorPlan, position: Vec2, botRadi
   const mapCache = reachabilityCache.get(map) ?? new Map<string, Reachability>();
   reachabilityCache.set(map, mapCache);
   let cached = mapCache.get(cacheKey);
-  const solids = isGroundFloor(floor)
+  const solids: Solid[] = isGroundFloor(floor)
     ? [
-        ...map.outdoor.walls,
-        ...map.outdoor.objects.filter(isSolidObject),
+        ...map.outdoor.walls.map(rectSolid),
+        ...map.outdoor.objects.flatMap(objectCollisionRects).map(rectSolid),
+        ...(map.outdoor.barriers ?? []).flatMap((barrier) => barrier.solids),
         ...map.buildings.flatMap((candidate) => candidate.floors.filter(isGroundFloor)
-          .flatMap((plan) => [...plan.walls, ...plan.objects.filter(isSolidObject)])),
+          .flatMap((plan) => [...floorSolids(plan), ...plan.objects.flatMap(objectCollisionRects).map(rectSolid)])),
       ]
-    : [...floor.walls, ...floor.objects.filter(isSolidObject)];
+    : [...floorSolids(floor), ...floor.objects.flatMap(objectCollisionRects).map(rectSolid)];
   const center = (index: number): Vec2 => ({
     x: (index % cols) * cell + cell / 2,
     y: Math.floor(index / cols) * cell + cell / 2,
@@ -97,9 +146,9 @@ function isReachable(map: MapDocument, floor: FloorPlan, position: Vec2, botRadi
   const open = (index: number) => {
     const point = center(index);
     if (point.x < botRadius || point.y < botRadius || point.x > map.width - botRadius || point.y > map.height - botRadius) return false;
-    return solids.every((rect) => circleClearsRect(point, botRadius - 1, rect));
+    return solids.every((solid) => pointToSolidDistanceSquared(point, solid) >= (botRadius - 1) ** 2);
   };
-  const captureRange = botRadius - 10 - 2;
+  const captureRange = interactionDotReach(botRadius, 10);
   const nearestOpen = (point: Vec2): number[] => {
     const span = Math.ceil((captureRange + cell) / cell);
     const col = Math.floor(point.x / cell);
@@ -137,13 +186,7 @@ function isReachable(map: MapDocument, floor: FloorPlan, position: Vec2, botRadi
   return nearestOpen(position).some((index) => cached!.reachable.has(index));
 }
 
-function circleClearsRect(center: Vec2, radius: number, rect: Rect): boolean {
-  const dx = center.x - Math.max(rect.x, Math.min(center.x, rect.x + rect.w));
-  const dy = center.y - Math.max(rect.y, Math.min(center.y, rect.y + rect.h));
-  return dx * dx + dy * dy >= radius * radius;
-}
-
-function openness(position: Vec2, bounds: Rect, solids: Rect[], botRadius: number): number {
+function openness(position: Vec2, bounds: Rect, solids: Solid[], botRadius: number): number {
   if (
     position.x < bounds.x + botRadius || position.x > bounds.x + bounds.w - botRadius ||
     position.y < bounds.y + botRadius || position.y > bounds.y + bounds.h - botRadius
@@ -155,10 +198,8 @@ function openness(position: Vec2, bounds: Rect, solids: Rect[], botRadius: numbe
     position.y - bounds.y,
     bounds.y + bounds.h - position.y,
   );
-  for (const rect of solids) {
-    const dx = Math.max(rect.x - position.x, 0, position.x - (rect.x + rect.w));
-    const dy = Math.max(rect.y - position.y, 0, position.y - (rect.y + rect.h));
-    const clearance = Math.hypot(dx, dy);
+  for (const solid of solids) {
+    const clearance = Math.sqrt(pointToSolidDistanceSquared(position, solid));
     if (clearance < botRadius) return Number.NEGATIVE_INFINITY;
     best = Math.min(best, clearance);
   }
