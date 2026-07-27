@@ -187,7 +187,36 @@ Looting can take:
 
 Looted Core Armour and Plate Carriers are carried as loot. The downed player still has their standard black Core and default three-Plate Carrier available if revived.
 
-The exact loot interface and whether the looter chooses individual items or takes everything remain implementation details.
+**Nothing can be eliminated.** There is no finishing move and no third verb. A downed
+bot stays down until somebody revives it, which is what makes the choices below
+belong to the player who is down rather than to whoever is standing over them.
+Looting leaves the body exactly where it is; wanting to loot *and* revive is two
+channels, not a third verb. A channel is held by standing on the body — step off and
+it cancels, and the coverer is never pinned in place while it runs.
+
+The loot interface: a picker over what the body carries, plus a **LOOT ALL** that
+takes the first items that fit and leaves the rest.
+
+### 4.6 Being downed
+
+**DECIDED DIRECTION**
+
+Downed is a place you can stay for the rest of the run. Three choices, and reviving
+is not among them because reviving is something *other* players do to you:
+
+- **Wait** to be picked up by a squadmate.
+- **Plea**, to be picked up by another squad.
+- **Leave** the run.
+
+While downed you watch your squad, following a living squadmate. When none are
+alive the camera returns to your own body, and you can plea from either view. This
+is the DMZ shape and it is deliberate: going down must never be the end of a
+session, only the end of your agency in it until somebody acts.
+
+Squads load in with three and may reach four, by reviving a downed bot from another
+squad that has pleaded — that bot joins the reviver's squad. *Intended, not yet
+built:* `squadId` is fixed at spawn today, with no cap and no mid-run path to change
+it.
 
 ---
 

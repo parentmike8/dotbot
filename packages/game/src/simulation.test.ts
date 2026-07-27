@@ -643,6 +643,41 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("lets a coverer walk off a body mid-channel instead of pinning it", async () => {
+    /**
+     * Standing on a downed bot used to zero the coverer's movement until the
+     * channel finished, which from the keyboard reads as the character being stuck.
+     * The range check is the only mechanism the channel needs: stay to continue,
+     * walk away to cancel.
+     */
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ position: { x: 100, y: 180 } }),
+        enemySpawn({
+          id: "victim", isAmbient: false, controller: "frozen", squadId: "rival-1",
+          position: { x: 100, y: 180 }, state: "downed", shields: 0, bays: [healthItem], hold: [],
+        }),
+      ]),
+      config: { ...testConfig, lootDurationMs: 4000 },
+    });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
+    runTicks(simulation, 4);
+    expect(simulation.getSnapshot().coverages.some((entry) => entry.kind === "loot")).toBe(true);
+
+    const before = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position;
+    for (let tick = 0; tick < 40; tick += 1) {
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false, downedVerb: "loot" });
+      simulation.step();
+    }
+    const after = simulation.getSnapshot();
+    const player = after.bots.find((bot) => bot.id === "player")!;
+    expect(player.position.x).toBeGreaterThan(before.x + 20);
+    // Walked out of range, so the channel is gone and the body keeps its cargo.
+    expect(after.coverages.some((entry) => entry.kind === "loot")).toBe(false);
+    expect(after.bots.find((bot) => bot.id === "victim")?.bays.filter(Boolean)).toEqual([healthItem]);
+    simulation.dispose();
+  });
+
   it("keeps a downed bot indefinitely without a bleed-out timer", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ state: "downed", shields: 0, controller: "frozen" }),

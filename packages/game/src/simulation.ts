@@ -1343,10 +1343,22 @@ export class DotBotSimulation {
           : this.controllers.get(bot.id) === "human"
             ? this.config.playerSpeed
             : this.config.botSpeed;
-      const stationaryChannel = [...this.coverages.values()].some((coverage) =>
-        coverage.actorId === bot.id && (coverage.kind === "loot" || coverage.kind === "revive"),
-      );
-      const direction = frozen || stationaryChannel ? zeroVec() : bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
+      /**
+       * A body channel does not pin you.
+       *
+       * It used to: anyone whose coverage was open had their movement zeroed until
+       * it finished, which from the keyboard is indistinguishable from being stuck —
+       * you walk onto a downed bot and the controls go dead for three seconds. The
+       * channel never needed it. `resolveDownedCoverage` re-tests the range every
+       * tick and deletes the coverage the moment the coverer steps off, so standing
+       * still is already the requirement and walking away is already the cancel.
+       * Taking the force away turns a lockout back into a decision.
+       *
+       * The swap channel keeps its hold, via `frozen`: that one is authored as a two
+       * second stationary, noisy commitment rather than something you hold by
+       * standing on it.
+       */
+      const direction = frozen ? zeroVec() : bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
       let velocity = scale(direction, speed);
 
       // Bounded, decaying knockback replaces the old solver shove.
