@@ -29,11 +29,18 @@ north-west, achromatic, silhouette equal to collider, nothing in motion drawn
 statically. It is implemented in `apps/client/src/game/renderer/model/`, with
 `model/tone.ts` as its single source of value and light.
 
-One retired language remains in the tree. `plan` — the pen-plotter line drawing —
-still renders the player base, because fourteen base object kinds have no
-lit-model glyph yet. It is reduced to what the base needs: a single building on a
-bare sheet. Nothing new may adopt it, and it is deleted along with
-`renderer/glyphs.ts` when that kit is finished.
+There is one language. The pen-plotter `plan` renderer and the pixel-city sprite
+pipeline are both deleted, along with the `visualTheme` field that selected between
+them — with a single legal value it was only a way for a surface to opt out of the
+language by accident, which is how the base kept rendering in `plan` after
+everything else had moved.
+
+Two rules of the language are pure geometry, and they live in
+`renderer/model/prism.ts` rather than in `tone.ts`, because `tone.ts` imports pixi
+and so nothing stated there can be tested: `topFace` (where an extruded solid's top
+face lands) and `cappedLift` (how much apparent height a shape can carry). Both
+`volume` and `volumeShape` get their top face from it, so a rectangle and a polygon
+cannot drift apart.
 
 ### 2.1 Map source: the authoring format
 
@@ -58,7 +65,7 @@ All four Downtown buildings are authored this way: `content/mercyClinic.ts`, `co
 - Use a strict top-down plan view. Draw fixture tops, never projected front faces.
 - Buildings are not boxes. A world of pure rectangles reads as a diagram; give a building the plan its function implies — an L around a yard, a chamfer at a turning circle, a curved frontage, a round tank. The constraint was in the old data format and is gone; the audit, collision, navigation and visibility all take arbitrary geometry.
 - Nothing is drawn in perspective. There is no projected front face anywhere, so no object needs a separate visual footprint, occlusion split, or walk-behind pass. The silhouette *is* the footprint.
-- Dark, closed outlines mean solid and impassable.
+- Dark, closed outlines mean solid and impassable. It follows that **the outermost thing a solid draws is its dark edge**: a catch light, a coping, a lit cap all sit *inside* that edge, never on it and never past it. A light value on the boundary is read as floor, so a bot resting hard against a wall looks as if it stopped short of one, with a bright line in the gap — which is exactly what a coping drawn flush to a building's footprint did to every block in Downtown.
 - Light grey floor marks, mats, tracks, thresholds, and annotations mean passable.
 - A visible footprint and its collision footprint must agree. Compound shapes must draw and collide from the same local pieces.
 - Product marks, controls, handles, bots, and Dots use fixed world-unit scales across rooms.

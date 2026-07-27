@@ -17,11 +17,12 @@
  *     invent its own light.
  *
  *  2. SILHOUETTE == FOOTPRINT == COLLIDER. Apparent height is taken *inside* the
- *     authored shape, never as an overhang: `volume` pulls a rect's south edge
- *     north, and `volumeShape` pulls each vertex north in proportion to how much
- *     its faces point south, which reproduces the rect case exactly. The drawn
- *     shape and the collider stay the same shape, so the plan-view promise —
- *     what you see is what blocks you — survives at any geometry.
+ *     authored shape, never as an overhang: both `volume` and `volumeShape` get
+ *     their top face from `prism.ts`, so a rect and a polygon are one rule and
+ *     cannot drift apart. The drawn shape and the collider stay the same shape, so
+ *     the plan-view promise — what you see is what blocks you — survives at any
+ *     geometry. Its corollary is that the outermost thing any solid draws is
+ *     `mat.edge`: light on the boundary reads as a gap, not as a surface.
  *
  *  3. ACHROMATIC. The world is neutral grey. Materials separate by value and
  *     by a warm/cool bias so slight it never reads as colour. The entire
@@ -37,6 +38,7 @@
 import type { Graphics } from "pixi.js";
 import { edgeNormal, insetPolygon } from "@dotbot/game/geometry";
 import type { Vec2 } from "@dotbot/game/types";
+import { cappedLift, topFace } from "./prism";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -258,6 +260,18 @@ export function occludeShape(pad: ShadowPad, points: Vec2[], reach = 9): void {
 const EDGE_WIDTH = 0.9;
 
 /**
+ * Width of the north-edge catch light.
+ *
+ * It is drawn a full edge-width in from the silhouette, never on it. Contract §3
+ * gives the reason: dark, closed outlines mean solid and impassable, so the
+ * outermost thing a solid draws has to be `mat.edge`. A catch light sitting on the
+ * boundary is light where the boundary should be dark, and against a pale slab it
+ * reads as a gap — a bot resting hard against a wall looks like it stopped short of
+ * one, with a bright line in between.
+ */
+const CATCH_WIDTH = 0.9;
+
+/**
  * Draw an extruded box and return its lit top face.
  *
  * The full authored rect is the silhouette. The south band of depth `lift` is
@@ -272,10 +286,8 @@ export function volume(
   lift: number,
   radius = 0,
 ): Rect {
-  // Never let the front face eat the top. A 16-unit column at lift 11 has a
-  // 5-unit top and reads as a dark blob, not a column, so apparent height is
-  // capped against the object's own short side.
-  const capped = Math.min(lift, Math.min(r.w, r.h) * 0.45);
+  // Never let the front face eat the top: see `cappedLift`.
+  const capped = cappedLift(r.h, lift);
   const top: Rect = { x: r.x, y: r.y, w: r.w, h: Math.max(1, r.h - capped) };
   lift = capped;
 
@@ -288,8 +300,9 @@ export function volume(
   }
 
   // North-edge catch light: the cue that sells thickness at play zoom.
-  if (lift >= LIFT.seat && r.w > 6) {
-    g.rect(r.x + 0.6, r.y + 0.4, r.w - 1.2, 0.9).fill({ color: mat.lit });
+  if (lift >= LIFT.seat && r.w > EDGE_WIDTH * 2 + 6) {
+    g.rect(r.x + EDGE_WIDTH, r.y + EDGE_WIDTH, r.w - EDGE_WIDTH * 2, CATCH_WIDTH)
+      .fill({ color: mat.lit });
   }
 
   const inset = EDGE_WIDTH / 2;
@@ -349,13 +362,7 @@ export function volumeShape(
   if (points.length < 3) return points;
   const count = points.length;
   const normals = points.map((_, index) => edgeNormal(points, index));
-
-  const top = points.map((point, index) => {
-    const incoming = normals[(index - 1 + count) % count];
-    const outgoing = normals[index];
-    const southness = Math.max(0, (incoming.y + outgoing.y) / 2);
-    return { x: point.x, y: point.y - lift * southness };
-  });
+  const top = topFace(points, lift);
 
   // Silhouette first, so any face the top does not cover is already in shade.
   fillPolygon(g, points, mat.front);
@@ -373,16 +380,26 @@ export function volumeShape(
 
   fillPolygon(g, top, mat.top);
 
-  // Catch light along the faces that turn toward the light.
+  /**
+   * Catch light along the faces that turn toward the light, held clear of the
+   * silhouette.
+   *
+   * A north face's top edge *is* the footprint boundary, so stroking it directly
+   * put a 1.1-wide light line centred on the collider — 0.55 of it outside the
+   * shape, which the 0.9 dark outline could not cover. The ring it runs on is
+   * inset far enough that the outline stays the outermost thing drawn.
+   */
+  const litRing = insetPolygon(top, EDGE_WIDTH + CATCH_WIDTH / 2);
   for (let index = 0; index < count; index += 1) {
-    const normal = normals[index];
-    if (normal.y >= -0.35) continue;
-    const a = top[index];
-    const b = top[(index + 1) % count];
-    g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ color: mat.lit, width: 1.1 });
+    if (normals[index].y >= -0.35) continue;
+    const a = litRing[index];
+    const b = litRing[(index + 1) % count];
+    g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ color: mat.lit, width: CATCH_WIDTH });
   }
 
-  g.poly(points.map((point) => ({ x: point.x, y: point.y })))
+  // Inset like `volume`'s, so the dark ring lands inside the collider instead of
+  // straddling it. What the drawing promises is impassable is exactly what is.
+  g.poly(insetPolygon(points, EDGE_WIDTH / 2).map((point) => ({ x: point.x, y: point.y })))
     .stroke({ color: mat.edge, width: EDGE_WIDTH });
 
   return top;

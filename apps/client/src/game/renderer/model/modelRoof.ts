@@ -47,8 +47,17 @@ const ROOF = {
   membraneLit: 0xc6cacd,
   /** Sheet laps across the field. */
   lap: 0xb1b5ba,
-  /** Parapet coping, catching the light. */
-  coping: 0xdfe2e5,
+  /**
+   * Parapet coping: a lit cap on a dark upstand.
+   *
+   * This was 0xdfe2e5 — brighter than the pavement it sat against — and it ran
+   * flush to the footprint, so every building in the city wore a near-white line
+   * all the way round. It matches the site walls' lit edge now, because a parapet
+   * and a yard wall are the same material in the same light.
+   */
+  coping: 0x4d5359,
+  /** A small surface the light reaches square on: a walkway's edge, a soffit. */
+  sunlit: 0xdfe2e5,
   /** Weathering that collects in the low corners. */
   soil: 0xadb1b6,
   /** Inside a doorway reveal, below the roof plane and out of the light. */
@@ -112,11 +121,28 @@ export function buildRoofModel(building: Building): RoofModel {
   }
 
   /**
-   * Parapet: a continuous upstand with a lit coping. Its shadow falls onto its
-   * own deck along the north and west runs, which is the cue that reads as
-   * "this surface is below that wall" rather than "this is a drawn outline".
+   * Parapet: a continuous upstand, standing back off the wall face, with its coping
+   * inside. Its shadow falls onto its own deck along the north and west runs, which
+   * is the cue that reads as "this surface is below that wall" rather than "this is
+   * a drawn outline".
+   *
+   * Two things were wrong here, and both came of building the ring out of four runs
+   * and lighting each one along its own north and west edge. The coping landed on
+   * the *inner* face of the south and east runs, and it landed flush to the
+   * building's outer edge on the north and west ones — so what a bot rested against
+   * outdoors was a bright line, not a wall. Contract §3 settles that: dark, closed
+   * outlines mean solid, so the wall top stays dark to the very edge and the coping
+   * sits inboard of it. Which is how a parapet is built anyway — the stone is set
+   * back off the face, with the wall below it in shadow.
+   *
+   * And because each run lit its own north edge, the side runs each put a
+   * `wall` x 3.5 block of coping under the north parapet: a bright step at all four
+   * corners of a line that should be continuous. One ring, drawn once, has no
+   * corners to get wrong.
    */
   const inner: Rect = { x: fp.x + wall, y: fp.y + wall, w: fp.w - wall * 2, h: fp.h - wall * 2 };
+  const reveal = 2.5; // the wall face below the coping: dark, and the building's edge
+  const stone = 4.5;
   for (const run of [
     { x: fp.x, y: fp.y, w: fp.w, h: wall },
     { x: fp.x, y: fp.y + fp.h - wall, w: fp.w, h: wall },
@@ -124,9 +150,17 @@ export function buildRoofModel(building: Building): RoofModel {
     { x: fp.x + fp.w - wall, y: fp.y + wall, w: wall, h: fp.h - wall * 2 },
   ]) {
     inlay(parapet, run, V.wallCap);
-    // Coping stone on top, brightest along the north face.
-    inlay(parapet, { x: run.x, y: run.y, w: run.w, h: Math.min(3.5, run.h) }, ROOF.coping);
-    if (run.h > wall) inlay(parapet, { x: run.x, y: run.y, w: Math.min(3.5, run.w), h: run.h }, ROOF.coping);
+  }
+  // The coping is a horizontal top surface, so it takes one value all the way
+  // round: under a single light, only faces that turn differ.
+  const cap: Rect = { x: fp.x + reveal, y: fp.y + reveal, w: fp.w - reveal * 2, h: fp.h - reveal * 2 };
+  for (const band of [
+    { x: cap.x, y: cap.y, w: cap.w, h: stone },
+    { x: cap.x, y: cap.y + cap.h - stone, w: cap.w, h: stone },
+    { x: cap.x, y: cap.y, w: stone, h: cap.h },
+    { x: cap.x + cap.w - stone, y: cap.y, w: stone, h: cap.h },
+  ]) {
+    inlay(parapet, band, ROOF.coping);
   }
   // Inner shadow cast by the north and west parapet onto the deck.
   for (let i = 0; i < 5; i += 1) {
@@ -194,7 +228,7 @@ export function buildRoofModel(building: Building): RoofModel {
      */
     const walk: Rect = { x: inner.x + 20, y: service.y + service.h + 26, w: inner.w - 40, h: 22 };
     inlay(deck, walk, shade(ROOF.membrane, 1.05));
-    inlay(deck, { x: walk.x, y: walk.y, w: walk.w, h: 1.6 }, ROOF.coping);
+    inlay(deck, { x: walk.x, y: walk.y, w: walk.w, h: 1.6 }, ROOF.sunlit);
     // Duckboard slats, so the strip reads as a laid walkway rather than a stripe.
     for (let x = walk.x + 12; x < walk.x + walk.w - 4; x += 26) {
       inlay(deck, { x, y: walk.y + 2, w: 2, h: walk.h - 4 }, shade(ROOF.membrane, 0.94));
@@ -296,7 +330,7 @@ function drawEntranceRecesses(g: Graphics, building: Building): void {
       : entrance.side === "E"
         ? { x: reveal.x + reveal.w - lip, y: reveal.y, w: lip, h: reveal.h }
         : { x: reveal.x, y: reveal.y, w: across ? reveal.w : lip, h: across ? lip : reveal.h };
-    inlay(g, soffit, ROOF.coping);
+    inlay(g, soffit, ROOF.sunlit);
 
     // Jambs, standing full height either side of the opening.
     for (const jamb of across
