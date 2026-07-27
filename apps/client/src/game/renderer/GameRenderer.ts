@@ -502,15 +502,15 @@ export class GameRenderer {
       return;
     }
 
-    const entityFlat = polygon.flatMap((point) => [point.x, point.y]);
-    this.visionMaskGfx.poly(entityFlat).fill({ color: 0xffffff });
+    // One flattened outline for the vision mask and both fog layers. Three copies
+    // of the same polygon is three chances for them to stop agreeing.
+    const flat = polygon.flatMap((point) => [point.x, point.y]);
+    this.visionMaskGfx.poly(flat).fill({ color: 0xffffff });
 
-    const indoors = playerContext !== "outdoor:street";
-    const fogFlat = polygon.flatMap((point) => [point.x, point.y]);
-    const fogStyle = visibilityFogStyle(indoors);
+    const fogStyle = visibilityFogStyle(playerContext !== "outdoor:street");
     for (const layer of [this.fogGfx, this.foregroundFogGfx]) {
       layer.rect(vision.boundsRect.x, vision.boundsRect.y, vision.boundsRect.w, vision.boundsRect.h).fill(fogStyle);
-      layer.poly(fogFlat).cut();
+      layer.poly(flat).cut();
     }
   }
 

@@ -152,11 +152,37 @@ export function hasLineOfSight(
 }
 
 /**
+ * How close two consecutive vertices have to be before one of them is noise.
+ *
+ * The corner rays are offset by a fixed *angle*, so the two points either side of
+ * a corner land `distance * 1e-4` apart — a fraction of a unit, well under a pixel
+ * at any play zoom. Where the offset rays hit the same surface, which is most of
+ * them, that leaves a pair of all-but-identical vertices, and a polygon made of
+ * hundreds of zero-area slivers is one no tessellator handles the same way twice.
+ * Nothing real in this world has two corners a quarter-unit apart — the thinnest
+ * wall is eight — so collapsing them costs no shape.
+ */
+const VERTEX_MERGE = 0.25;
+
+/**
  * Visibility polygon from an origin: rays cast at every occluder corner
  * (plus epsilon offsets), clipped to the nearest wall or the arena bounds.
  */
 export function visibilityPolygon(origin: Vec2, context: VisionContext, dynamicOccluders: readonly Rect[] = []): Vec2[] {
-  const segments = [...context.walls, ...dynamicOccluders.flatMap(rectSegments), ...context.bounds];
+  /**
+   * Nothing you are standing inside can occlude you.
+   *
+   * A door's collision rect is an occluder, and a bot is briefly inside one every
+   * time a door closes on it — collision pushes the bot clear, but `blocking` turns
+   * on first. Treating that rect as an occluder walls the bot inside a 56x12 box
+   * and the floor goes dark for a frame or two.
+   */
+  const blinding = dynamicOccluders.filter((rect) =>
+    origin.x > rect.x && origin.x < rect.x + rect.w && origin.y > rect.y && origin.y < rect.y + rect.h);
+  const occluders = blinding.length
+    ? dynamicOccluders.filter((rect) => !blinding.includes(rect))
+    : dynamicOccluders;
+  const segments = [...context.walls, ...occluders.flatMap(rectSegments), ...context.bounds];
   const angles: number[] = [];
 
   for (const segment of segments) {
@@ -180,7 +206,16 @@ export function visibilityPolygon(origin: Vec2, context: VisionContext, dynamicO
     for (const segment of segments) {
       const t = raySegment(origin.x, origin.y, dx, dy, segment);
 
-      if (t !== null && t < nearest) {
+      /**
+       * A hit at the origin is not an occlusion — it is the surface being stood
+       * on, and `hasLineOfSight` has always rejected it for the same reason.
+       * Without this, an origin that lands on an occluder makes every ray return
+       * zero and the polygon collapses to a point; the renderer reads that as "see
+       * everything" and the whole floor flashes lit for a frame. It is reachable,
+       * because door collision rects are occluders and a bot stands inside one
+       * while walking through the opening.
+       */
+      if (t !== null && t > 1e-6 && t < nearest) {
         nearest = t;
       }
     }
@@ -189,5 +224,19 @@ export function visibilityPolygon(origin: Vec2, context: VisionContext, dynamicO
   }
 
   points.sort((a, b) => a.angle - b.angle);
-  return points.map((point) => ({ x: point.x, y: point.y }));
+
+  const polygon: Vec2[] = [];
+  for (const point of points) {
+    const last = polygon.at(-1);
+    if (last && Math.abs(last.x - point.x) < VERTEX_MERGE && Math.abs(last.y - point.y) < VERTEX_MERGE) continue;
+    polygon.push({ x: point.x, y: point.y });
+  }
+  // The seam closes too, so the wrap-around pair cannot leave a sliver either.
+  const first = polygon[0];
+  const last = polygon.at(-1);
+  if (polygon.length > 3 && first && last
+    && Math.abs(first.x - last.x) < VERTEX_MERGE && Math.abs(first.y - last.y) < VERTEX_MERGE) {
+    polygon.pop();
+  }
+  return polygon;
 }
