@@ -1,11 +1,17 @@
 import {
   floorPlanById,
   isGroundFloor,
-  isSolidObject,
+  objectCollisionRects,
   physicsFloorId as normalizePhysicsFloorId,
 } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import type { MapDocument, Rect, Vec2 } from "./types";
+import {
+  pointToSolidDistanceSquared,
+  rectSolid,
+  segmentToSolidDistanceSquared,
+  solidBounds,
+} from "./geometry";
+import type { MapDocument, Rect, Solid, Vec2 } from "./types";
 
 /**
  * Deterministic, static-map navigation for local DotBot AI.
@@ -50,7 +56,7 @@ type CollisionSignature = {
 };
 
 type CollisionIndex = {
-  obstacles: Rect[];
+  obstacles: Solid[];
   bins: number[][];
   binSize: number;
   cols: number;
@@ -529,6 +535,13 @@ function validCollisionRect(rect: Rect): boolean {
   );
 }
 
+/** Any solid's bounding box must be finite before it can enter the graph. */
+function validCollisionSolid(solid: Solid): boolean {
+  if (solid === null || typeof solid !== "object") return false;
+  if (solid.kind === "poly" && solid.points.length < 3) return false;
+  return validCollisionRect(solidBounds(solid));
+}
+
 function cachedGrid(
   map: MapDocument,
   floorId: string,
@@ -579,6 +592,15 @@ function collisionSignatureForFloor(map: MapDocument, floorId: string): Collisio
     hash = hashNumber(hash, rect.h);
     count += 1;
   };
+  const includeSolid = (solid: Solid) => {
+    const bounds = solidBounds(solid);
+    hash = hashNumber(hash, solid.kind === "rect" ? 1 : solid.kind === "capsule" ? 2 : 3);
+    hash = hashNumber(hash, bounds.x);
+    hash = hashNumber(hash, bounds.y);
+    hash = hashNumber(hash, bounds.w);
+    hash = hashNumber(hash, bounds.h);
+    count += 1;
+  };
 
   hash = hashNumber(hash, map.width);
   hash = hashNumber(hash, map.height);
@@ -589,9 +611,7 @@ function collisionSignatureForFloor(map: MapDocument, floorId: string): Collisio
     }
 
     for (const object of map.outdoor.objects) {
-      if (isSolidObject(object)) {
-        include(object);
-      }
+      for (const rect of objectCollisionRects(object)) include(rect);
     }
 
     for (const building of map.buildings) {
@@ -605,9 +625,7 @@ function collisionSignatureForFloor(map: MapDocument, floorId: string): Collisio
         }
 
         for (const object of floor.objects) {
-          if (isSolidObject(object)) {
-            include(object);
-          }
+          for (const rect of objectCollisionRects(object)) include(rect);
         }
       }
     }
@@ -626,9 +644,7 @@ function collisionSignatureForFloor(map: MapDocument, floorId: string): Collisio
   }
 
   for (const object of plan.objects) {
-    if (isSolidObject(object)) {
-      include(object);
-    }
+    for (const rect of objectCollisionRects(object)) include(rect);
   }
 
   return { hash, count };
@@ -646,17 +662,22 @@ function mixHash(hash: number, value: number): number {
   return Math.imul((hash ^ value) >>> 0, 0x01000193) >>> 0;
 }
 
-function collisionRectsForFloor(map: MapDocument, floorId: string): Rect[] | null {
+function collisionRectsForFloor(map: MapDocument, floorId: string): Solid[] | null {
   if (floorId === OUTDOOR_FLOOR_ID) {
-    const result: Rect[] = [
-      ...map.outdoor.walls,
-      ...map.outdoor.objects.filter(isSolidObject),
+    const result: Solid[] = [
+      ...map.outdoor.walls.map(rectSolid),
+      ...map.outdoor.objects.flatMap(objectCollisionRects).map(rectSolid),
+      ...(map.outdoor.barriers ?? []).flatMap((barrier) => barrier.solids),
     ];
 
     for (const building of map.buildings) {
       for (const floor of building.floors) {
         if (isGroundFloor(floor)) {
-          result.push(...floor.walls, ...floor.objects.filter(isSolidObject));
+          result.push(
+            ...floor.walls.map(rectSolid),
+            ...floor.objects.flatMap(objectCollisionRects).map(rectSolid),
+            ...(floor.barriers ?? []).flatMap((barrier) => barrier.solids),
+          );
         }
       }
     }
@@ -665,13 +686,18 @@ function collisionRectsForFloor(map: MapDocument, floorId: string): Rect[] | nul
   }
 
   const plan = floorPlanById(map, floorId);
-  return plan ? [...plan.walls, ...plan.objects.filter(isSolidObject)] : null;
+  if (!plan) return null;
+  return [
+    ...plan.walls.map(rectSolid),
+    ...plan.objects.flatMap(objectCollisionRects).map(rectSolid),
+    ...(plan.barriers ?? []).flatMap((barrier) => barrier.solids),
+  ];
 }
 
 function buildGrid(
   map: MapDocument,
   floorId: string,
-  obstacles: Rect[],
+  obstacles: Solid[],
   radius: number,
 ): NavigationGrid | null {
   const cellSize = Math.max(MIN_CELL_SIZE, Math.min(MAX_CELL_SIZE, radius / 3 || MIN_CELL_SIZE));
@@ -710,14 +736,14 @@ function buildGrid(
   };
 }
 
-function buildCollisionIndex(map: MapDocument, obstacles: Rect[], radius: number): CollisionIndex {
+function buildCollisionIndex(map: MapDocument, obstacles: Solid[], radius: number): CollisionIndex {
   const binSize = Math.max(MIN_SPATIAL_BIN_SIZE, radius * 4);
   const cols = Math.max(1, Math.ceil(map.width / binSize));
   const rows = Math.max(1, Math.ceil(map.height / binSize));
   const bins: number[][] = Array.from({ length: cols * rows }, () => []);
 
   for (let index = 0; index < obstacles.length; index += 1) {
-    const rect = obstacles[index];
+    const rect = solidBounds(obstacles[index]);
 
     if (rect.x + rect.w < 0 || rect.y + rect.h < 0 || rect.x > map.width || rect.y > map.height) {
       continue;
@@ -953,7 +979,7 @@ function pointClearsObstacles(collision: CollisionIndex, point: Vec2, radius: nu
 
         collision.marks[index] = generation;
 
-        if (pointToRectDistanceSquared(point, collision.obstacles[index]) + GEOMETRY_EPSILON < radiusSquared) {
+        if (pointToSolidDistanceSquared(point, collision.obstacles[index]) + GEOMETRY_EPSILON < radiusSquared) {
           return false;
         }
       }
@@ -981,7 +1007,7 @@ function segmentClearsObstacles(collision: CollisionIndex, start: Vec2, end: Vec
         collision.marks[index] = generation;
 
         if (
-          segmentToRectDistanceSquared(start, end, collision.obstacles[index]) + GEOMETRY_EPSILON <
+          segmentToSolidDistanceSquared(start, end, collision.obstacles[index]) + GEOMETRY_EPSILON <
           radiusSquared
         ) {
           return false;
@@ -1004,67 +1030,7 @@ function nextCollisionGeneration(collision: CollisionIndex): number {
   return collision.generation;
 }
 
-function pointToRectDistanceSquared(point: Vec2, rect: Rect): number {
-  const closestX = Math.max(rect.x, Math.min(point.x, rect.x + rect.w));
-  const closestY = Math.max(rect.y, Math.min(point.y, rect.y + rect.h));
-  const dx = point.x - closestX;
-  const dy = point.y - closestY;
-  return dx * dx + dy * dy;
-}
 
-function segmentToRectDistanceSquared(start: Vec2, end: Vec2, rect: Rect): number {
-  if (segmentIntersectsRect(start, end, rect)) {
-    return 0;
-  }
-
-  const topLeft = { x: rect.x, y: rect.y };
-  const topRight = { x: rect.x + rect.w, y: rect.y };
-  const bottomRight = { x: rect.x + rect.w, y: rect.y + rect.h };
-  const bottomLeft = { x: rect.x, y: rect.y + rect.h };
-
-  return Math.min(
-    segmentToSegmentDistanceSquared(start, end, topLeft, topRight),
-    segmentToSegmentDistanceSquared(start, end, topRight, bottomRight),
-    segmentToSegmentDistanceSquared(start, end, bottomRight, bottomLeft),
-    segmentToSegmentDistanceSquared(start, end, bottomLeft, topLeft),
-  );
-}
-
-function segmentIntersectsRect(start: Vec2, end: Vec2, rect: Rect): boolean {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  let tMin = 0;
-  let tMax = 1;
-
-  for (const [origin, delta, min, max] of [
-    [start.x, dx, rect.x, rect.x + rect.w],
-    [start.y, dy, rect.y, rect.y + rect.h],
-  ] as const) {
-    if (Math.abs(delta) <= GEOMETRY_EPSILON) {
-      if (origin < min || origin > max) {
-        return false;
-      }
-
-      continue;
-    }
-
-    let near = (min - origin) / delta;
-    let far = (max - origin) / delta;
-
-    if (near > far) {
-      [near, far] = [far, near];
-    }
-
-    tMin = Math.max(tMin, near);
-    tMax = Math.min(tMax, far);
-
-    if (tMin > tMax) {
-      return false;
-    }
-  }
-
-  return true;
-}
 
 function segmentToSegmentDistanceSquared(a: Vec2, b: Vec2, c: Vec2, d: Vec2): number {
   if (segmentsIntersect(a, b, c, d)) {

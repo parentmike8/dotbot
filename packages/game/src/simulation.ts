@@ -1,5 +1,6 @@
-import type RAPIER from "@dimforge/rapier2d-compat";
-import { separateCircleFromRect } from "./collision";
+import { collectSolids, separateCircleFromRect } from "./collision";
+import { buildSolidIndex, withExtraSolids, type SolidIndex, type SolidSource } from "./solidIndex";
+import { rectSolid } from "./geometry";
 import { integrateWithWalls, pointSegmentDistance, resolveAgainstSolids, separationPush } from "./kinematics";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
@@ -8,22 +9,25 @@ import {
   classifyNoise,
   collisionLayers,
   contextKey,
+  doorEntityCollisionRect,
+  doorRuntimeId,
+  doorwayCollisionRect,
   floorHeight,
   floorPlanById,
   isGroundFloor,
-  isSolidObject,
+  objectCollisionRects,
   physicsFloorId,
   resolvePlan,
   stairConnections,
   stairExitPoint,
+  stairGuardRects,
   stairHalves,
 } from "./mapModel";
-import { withinDownedCoverRange } from "./interactions";
+import { interactionDotReach, withinDownedCoverRange, withinInteractionDotRange } from "./interactions";
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, insertItem } from "./inventory";
 import { applyShieldHit, platesForCount, plateSum, restoreShieldPlate, shatterNearestIntactPlate } from "./shields";
-import { loadRapier } from "./rapier";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import { hasLineOfSight } from "./visibility";
 import type {
@@ -33,6 +37,8 @@ import type {
   Controller,
   CoverageKind,
   CoverageSnapshot,
+  DoorEntity,
+  Doorway,
   DotBotEntity,
   DotEntity,
   GameConfig,
@@ -45,12 +51,18 @@ import type {
   NoiseKind,
   Rect,
   SimEvent,
+  Solid,
   StairLink,
   Vec2,
 } from "./types";
 
 const NOISE_TTL_MS = 900;
 const CHANNEL_PING_MS = 700;
+const DOOR_BLOCKING_THRESHOLD = 0.58;
+const DEFAULT_DOOR_OPEN_MS = 420;
+const DEFAULT_DOOR_HOLD_MS = 1_150;
+const DEFAULT_DOOR_TRIGGER_RADIUS = 112;
+const DEFAULT_DOOR_NOISE = 0.42;
 
 /** Combat rewind window: 18 ticks ≈ 300ms covers the client's interpolation
  * buffer plus a full round trip and the input queue wait, without letting
@@ -67,16 +79,9 @@ const NOISE_LOUDNESS = {
   mineDetonation: 1.0,
 } as const;
 
-type RapierApi = typeof RAPIER;
-type RapierWorld = RAPIER.World;
-type RapierBody = RAPIER.RigidBody;
-type RapierCollider = RAPIER.Collider;
-
 type InternalBot = DotBotEntity & {
   spawn: Vec2;
   spawnFloorId: string;
-  body: RapierBody;
-  collider: RapierCollider;
   desiredMove: Vec2;
   lastAim: Vec2;
   /** Velocity applied this tick (movement + knockback); combat reads this. */
@@ -112,6 +117,11 @@ type InternalMine = MineEntity & {
 
 type ActiveCoverage = CoverageSnapshot;
 
+type InternalDoor = DoorEntity & {
+  doorway: Doorway;
+  holdRemainingMs: number;
+};
+
 type AiIntent = "loot" | "hunt" | "revive" | "consume" | "extract" | "investigate" | "escort" | "wander";
 
 type AiTarget = {
@@ -133,18 +143,21 @@ export class DotBotSimulation {
   readonly config: GameConfig;
   readonly map: MapDocument;
 
-  private readonly rapier: RapierApi;
-  private readonly world: RapierWorld;
   private readonly bots = new Map<string, InternalBot>();
   private readonly controllers = new Map<string, Controller>();
   private readonly inputs = new Map<string, InputCommand>();
   private readonly dots = new Map<string, InternalDot>();
   private readonly mines = new Map<string, InternalMine>();
   private readonly coverages = new Map<string, ActiveCoverage>();
-  /** Physics layer index per floor id (GROUND floors resolve to the outdoor layer). */
-  private readonly layers: Map<string, number>;
-  /** Static collision rects per physics floor, for the penetration safety net. */
-  private readonly solidRects = new Map<string, Rect[]>();
+  private readonly doors = new Map<string, InternalDoor>();
+  /** Everything static a bot collides with, per physics floor. */
+  private readonly staticSolids = new Map<string, Solid[]>();
+  /**
+   * The same geometry, gridded. Built once per plane beside `staticSolids` so the
+   * hot movement loop tests a handful of candidates instead of the whole plane —
+   * see `solidIndex.ts` for why that is bit-identical rather than merely close.
+   */
+  private readonly solidIndexes = new Map<string, SolidIndex>();
   /** Stairs per physics floor. */
   private readonly stairsByFloor = new Map<string, StairLink[]>();
   private disposed = false;
@@ -158,17 +171,16 @@ export class DotBotSimulation {
   private spillSeq = 0;
   private mineSeq = 0;
 
-  private constructor(rapier: RapierApi, map: MapDocument, config: GameConfig) {
-    this.rapier = rapier;
+  private constructor(map: MapDocument, config: GameConfig) {
     this.map = map;
     this.config = config;
-    this.layers = collisionLayers(map);
-    this.world = new this.rapier.World({ x: 0, y: 0 });
-    this.world.timestep = 1 / config.tickHz;
-    this.world.lengthUnit = config.botRadius;
+    // Rejects a map with more physics layers than the floor model allows,
+    // before any of it is built.
+    collisionLayers(map);
 
     this.buildStaticCollision();
     this.collectStairs();
+    this.collectDoors();
 
     for (const spawn of map.botSpawns) {
       this.spawnBot(spawn, spawn.controller ?? "ai");
@@ -178,7 +190,6 @@ export class DotBotSimulation {
   }
 
   static async create(options: SimulationOptions = {}): Promise<DotBotSimulation> {
-    const rapier = await loadRapier();
     const config = { ...defaultGameConfig, ...options.config };
     const map = options.map ?? downtownMap;
 
@@ -186,55 +197,33 @@ export class DotBotSimulation {
     // loading boundary, never in the first live AI tick.
     prewarmNavigation(map, config.botRadius);
 
-    return new DotBotSimulation(rapier, map, config);
+    return new DotBotSimulation(map, config);
   }
 
   // ---------------------------------------------------------------------------
   // World construction
   // ---------------------------------------------------------------------------
 
-  private interactionGroups(floorId: string): number {
-    const layer = this.layers.get(physicsFloorId(this.map, floorId)) ?? 0;
-    const bit = 1 << layer;
-    return (bit << 16) | bit;
-  }
-
-  private addStaticRect(floorId: string, rect: Rect): void {
-    const body = this.world.createRigidBody(
-      this.rapier.RigidBodyDesc.fixed().setTranslation(rect.x + rect.w / 2, rect.y + rect.h / 2),
-    );
-    this.world
-      .createCollider(this.rapier.ColliderDesc.cuboid(rect.w / 2, rect.h / 2), body)
-      .setCollisionGroups(this.interactionGroups(floorId));
-
-    const rects = this.solidRects.get(physicsFloorId(this.map, floorId)) ?? [];
-    rects.push(rect);
-    this.solidRects.set(physicsFloorId(this.map, floorId), rects);
-  }
-
+  /**
+   * Static collision, taken from the same `collectSolids` every other system
+   * reads: client prediction, navigation clearance and line of sight.
+   *
+   * This used to walk the map itself, adding `floor.walls` and object rects. That
+   * made it a second, independent answer to "what is solid here" — and the moment
+   * a wall could be something other than a rectangle, the two answers diverged:
+   * every path wall was solid to the client and thin air to the server, so an
+   * entire building's shell was walk-through while the client kept predicting a
+   * wall. One function, one answer.
+   */
   private buildStaticCollision(): void {
-    for (const wall of this.map.outdoor.walls) {
-      this.addStaticRect(OUTDOOR_FLOOR_ID, wall);
-    }
-
-    for (const object of this.map.outdoor.objects) {
-      if (isSolidObject(object)) {
-        this.addStaticRect(OUTDOOR_FLOOR_ID, object);
-      }
-    }
-
+    const physicsIds = new Set<string>([OUTDOOR_FLOOR_ID]);
     for (const building of this.map.buildings) {
-      for (const floor of building.floors) {
-        for (const wall of floor.walls) {
-          this.addStaticRect(floor.id, wall);
-        }
-
-        for (const object of floor.objects) {
-          if (isSolidObject(object)) {
-            this.addStaticRect(floor.id, object);
-          }
-        }
-      }
+      for (const floor of building.floors) physicsIds.add(physicsFloorId(this.map, floor.id));
+    }
+    for (const id of physicsIds) {
+      const solids = collectSolids(this.map, id);
+      this.staticSolids.set(id, solids);
+      this.solidIndexes.set(id, buildSolidIndex(solids));
     }
   }
 
@@ -245,6 +234,32 @@ export class DotBotSimulation {
         const stairs = this.stairsByFloor.get(key) ?? [];
         stairs.push(...floor.stairs);
         this.stairsByFloor.set(key, stairs);
+      }
+    }
+  }
+
+  private collectDoors(): void {
+    for (const building of this.map.buildings) {
+      for (const floor of building.floors) {
+        for (const doorway of floor.doorways) {
+          if (!doorway.mechanism) continue;
+          const floorId = physicsFloorId(this.map, floor.id);
+          const id = doorRuntimeId(floor.id, doorway.id);
+          this.doors.set(id, {
+            id,
+            doorwayId: doorway.id,
+            buildingId: building.id,
+            floorId,
+            position: { x: doorway.x, y: doorway.y },
+            width: doorway.width,
+            dir: doorway.dir,
+            phase: "closed",
+            openness: 0,
+            blocking: true,
+            doorway,
+            holdRemainingMs: 0,
+          });
+        }
       }
     }
   }
@@ -282,23 +297,10 @@ export class DotBotSimulation {
     const state = spawn.state ?? "alive";
     const shields = spawn.shields ?? (state === "alive" ? maxShields : 0);
     const floorId = physicsFloorId(this.map, spawn.floorId ?? OUTDOOR_FLOOR_ID);
-    // Bots are kinematic and OUTSIDE the contact solver (collision groups 0):
-    // movement, walls, and bot separation all resolve through the shared
-    // kinematics module, which the client predictor uses verbatim. Solver
-    // contacts previously gave unbounded shoves, deep interpenetration, and —
-    // via a Rapier disabled-collider quirk — pushable corpses.
-    const body = this.world.createRigidBody(
-      this.rapier.RigidBodyDesc.kinematicPositionBased()
-        .setTranslation(spawn.position.x, spawn.position.y)
-        .lockRotations(),
-    );
-
-    const collider = this.world.createCollider(
-      this.rapier.ColliderDesc.ball(this.config.botRadius),
-      body,
-    );
-    collider.setCollisionGroups(0);
-
+    // Bots have never lived in a contact solver: movement, walls and bot
+    // separation all resolve through the shared kinematics module, which the
+    // client predictor runs verbatim. Solver contacts gave unbounded shoves,
+    // deep interpenetration, and pushable corpses.
     const shieldSegments = platesForCount(maxShields, shields);
     const bot: InternalBot = {
       id: spawn.id,
@@ -327,8 +329,6 @@ export class DotBotSimulation {
       invulnerabilityMs: 0,
       spawn: { ...spawn.position },
       spawnFloorId: floorId,
-      body,
-      collider,
       desiredMove: zeroVec(),
       lastAim: { x: 1, y: 0 },
       velocity: zeroVec(),
@@ -408,8 +408,6 @@ export class DotBotSimulation {
       return;
     }
 
-    this.world.removeCollider(bot.collider, true);
-    this.world.removeRigidBody(bot.body);
     this.bots.delete(botId);
     this.controllers.delete(botId);
     this.inputs.delete(botId);
@@ -452,6 +450,7 @@ export class DotBotSimulation {
 
     this.ageNoises(dtMs);
     this.updateTimers(dtMs);
+    this.updateDoors(dtMs);
 
     for (const bot of this.bots.values()) {
       bot.prevPosition = { ...bot.position };
@@ -459,9 +458,8 @@ export class DotBotSimulation {
 
     this.updateHumanIntents();
     this.updateBotAi();
-    // Bots are solver-free: the shared kinematics module integrates movement
-    // (substepped against walls) and applies capped shoulder-past separation.
-    // The Rapier world holds only static geometry and is never stepped.
+    // The shared kinematics module integrates movement (substepped against
+    // walls) and applies capped shoulder-past separation.
     this.applyMovement(dtMs);
     this.resolveBotSeparation(dtMs);
     this.resolveStairs();
@@ -496,6 +494,10 @@ export class DotBotSimulation {
       mines,
       coverages: [...this.coverages.values()].map((coverage) => ({ ...coverage })),
       noises: this.noises.map((noise) => ({ ...noise, position: { ...noise.position } })),
+      doors: [...this.doors.values()].map(({ doorway: _doorway, holdRemainingMs: _hold, ...door }) => ({
+        ...door,
+        position: { ...door.position },
+      })),
       debug: {
         tickHz: this.config.tickHz,
         tickCount: this.tickCount,
@@ -512,12 +514,6 @@ export class DotBotSimulation {
     }
 
     this.disposed = true;
-    try {
-      this.world.free();
-    } catch {
-      // React Fast Refresh can tear down a WASM world that has already been
-      // released. Cleanup must remain safe and idempotent.
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -543,6 +539,72 @@ export class DotBotSimulation {
     }
 
     this.noises = this.noises.filter((noise) => noise.ageMs < noise.ttlMs);
+  }
+
+  private updateDoors(dtMs: number): void {
+    for (const door of this.doors.values()) {
+      const triggerRadius = door.doorway.triggerRadius ?? DEFAULT_DOOR_TRIGGER_RADIUS;
+      const nearby = [...this.bots.values()].some((bot) =>
+        bot.state === "alive" &&
+        bot.floorId === door.floorId &&
+        distance(bot.position, door.position) <= triggerRadius + bot.radius,
+      );
+      const durationMs = Math.max(1, door.doorway.openDurationMs ?? DEFAULT_DOOR_OPEN_MS);
+      const delta = dtMs / durationMs;
+
+      if (door.phase === "closed" && nearby) {
+        door.phase = "opening";
+        door.holdRemainingMs = door.doorway.holdOpenMs ?? DEFAULT_DOOR_HOLD_MS;
+        this.emitNoise("door", door.position, door.floorId, door.doorway.noiseLoudness ?? DEFAULT_DOOR_NOISE);
+      }
+
+      if (door.phase === "opening") {
+        door.openness = Math.min(1, door.openness + delta);
+        if (door.openness >= 1) {
+          door.phase = "open";
+          door.holdRemainingMs = door.doorway.holdOpenMs ?? DEFAULT_DOOR_HOLD_MS;
+        }
+      } else if (door.phase === "open") {
+        if (nearby) {
+          door.holdRemainingMs = door.doorway.holdOpenMs ?? DEFAULT_DOOR_HOLD_MS;
+        } else {
+          door.holdRemainingMs = Math.max(0, door.holdRemainingMs - dtMs);
+          if (door.holdRemainingMs === 0) door.phase = "closing";
+        }
+      } else if (door.phase === "closing") {
+        if (nearby) {
+          door.phase = "opening";
+          door.holdRemainingMs = door.doorway.holdOpenMs ?? DEFAULT_DOOR_HOLD_MS;
+        } else {
+          door.openness = Math.max(0, door.openness - delta);
+          if (door.openness <= 0) door.phase = "closed";
+        }
+      }
+
+      door.blocking = door.openness < DOOR_BLOCKING_THRESHOLD;
+    }
+  }
+
+  /**
+   * Everything solid on a floor this tick, as `Solid`s: the map's static geometry
+   * plus whichever authoritative doors are currently blocking.
+   */
+  private solidsForFloor(floorId: string): SolidSource {
+    const physicsId = physicsFloorId(this.map, floorId);
+    const doors = [...this.doors.values()]
+      .filter((door) => door.floorId === physicsId && door.blocking)
+      .map((door) => rectSolid(doorwayCollisionRect(door.doorway)));
+    const index = this.solidIndexes.get(physicsId);
+    if (!index) return [...(this.staticSolids.get(physicsId) ?? []), ...doors];
+    // Doors stay after the static geometry, which is where they sat when the plane
+    // was one flat array. Resolution is order-dependent, so that matters.
+    return withExtraSolids(index, doors);
+  }
+
+  private doorOccludersForFloor(floorId: string): Rect[] {
+    return [...this.doors.values()]
+      .filter((door) => door.floorId === physicsFloorId(this.map, floorId) && door.blocking)
+      .map(doorEntityCollisionRect);
   }
 
   /** True once per CHANNEL_PING_MS while a channel's progress accumulates. */
@@ -835,7 +897,13 @@ export class DotBotSimulation {
           available(target) &&
           this.sameArena(bot, target.floorId, target.position) &&
           distance(bot.position, target.position) < 540 &&
-          hasLineOfSight(this.map, contextKey(this.map, bot.floorId, bot.position), bot.position, target.position),
+          hasLineOfSight(
+            this.map,
+            contextKey(this.map, bot.floorId, bot.position),
+            bot.position,
+            target.position,
+            this.doorOccludersForFloor(bot.floorId),
+          ),
       ),
     );
 
@@ -850,7 +918,9 @@ export class DotBotSimulation {
     );
 
     if (dot && this.strategicDistance(bot, dot) < 820) {
-      return makeAiTarget(dot.position, dot.floorId, Math.max(2, bot.radius - dot.radius - 4), bot.radius * 3.2, "loot", dot.id);
+      // Stop just inside the same visible-overlap boundary used for players,
+      // rather than driving the AI core all the way over the Dot.
+      return makeAiTarget(dot.position, dot.floorId, Math.max(2, interactionDotReach(bot.radius, dot.radius) - 2), bot.radius * 3.2, "loot", dot.id);
     }
 
     if (!bot.isAmbient && carriedCount(bot) >= Math.max(2, this.config.baySlots + this.config.holdSlots - 2)) {
@@ -910,7 +980,13 @@ export class DotBotSimulation {
       .filter((target) =>
         target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && available(target) &&
         this.sameArena(bot, target.floorId, target.position) && distance(bot.position, target.position) < 540 &&
-        hasLineOfSight(this.map, contextKey(this.map, bot.floorId, bot.position), bot.position, target.position))
+        hasLineOfSight(
+          this.map,
+          contextKey(this.map, bot.floorId, bot.position),
+          bot.position,
+          target.position,
+          this.doorOccludersForFloor(bot.floorId),
+        ))
       .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
     if (hostile) {
       return makeAiTarget(hostile.position, hostile.floorId, bot.radius * 1.85, bot.radius * 4.5, "hunt", hostile.id);
@@ -1214,7 +1290,13 @@ export class DotBotSimulation {
     if (
       targetDistance < bot.radius * 1.9 ||
       targetDistance > 290 ||
-      !hasLineOfSight(this.map, contextKey(this.map, bot.floorId, bot.position), bot.position, hostile.position)
+      !hasLineOfSight(
+        this.map,
+        contextKey(this.map, bot.floorId, bot.position),
+        bot.position,
+        hostile.position,
+        this.doorOccludersForFloor(bot.floorId),
+      )
     ) {
       return;
     }
@@ -1280,7 +1362,7 @@ export class DotBotSimulation {
         bot.facing = Math.atan2(direction.y, direction.x);
       }
 
-      const solids = this.solidRects.get(bot.floorId) ?? [];
+      const solids = this.solidsForFloor(bot.floorId);
       const next = integrateWithWalls(bot.position, velocity, dtMs, bot.radius, solids);
       this.placeBot(bot, next);
     }
@@ -1315,7 +1397,7 @@ export class DotBotSimulation {
         if (pushA.x === 0 && pushA.y === 0 && pushB.x === 0 && pushB.y === 0) {
           continue;
         }
-        const solids = this.solidRects.get(a.floorId) ?? [];
+        const solids = this.solidsForFloor(a.floorId);
         if (pushA.x !== 0 || pushA.y !== 0) {
           this.placeBot(a, resolveAgainstSolids(add(a.position, pushA), a.radius, solids));
         }
@@ -1326,13 +1408,12 @@ export class DotBotSimulation {
     }
   }
 
-  /** Single write path for bot positions: map-clamped, mirrored to the body. */
+  /** Single write path for bot positions, clamped to the sheet. */
   private placeBot(bot: InternalBot, position: Vec2): void {
     bot.position = {
       x: clamp(position.x, this.config.botRadius, this.map.width - this.config.botRadius),
       y: clamp(position.y, this.config.botRadius, this.map.height - this.config.botRadius),
     };
-    bot.body.setTranslation(bot.position, true);
   }
 
 
@@ -1445,7 +1526,7 @@ export class DotBotSimulation {
       const direction = normalLength > 0.001 ? scale(normal, 1 / normalLength) : { x: 1, y: 0 };
       contact = add(target, scale(direction, touching));
     }
-    const solids = this.solidRects.get(attacker.floorId) ?? [];
+    const solids = this.solidsForFloor(attacker.floorId);
     this.placeBot(attacker, resolveAgainstSolids(contact, attacker.radius, solids));
   }
 
@@ -1512,14 +1593,28 @@ export class DotBotSimulation {
     // A hit on a live plate shatters it; a hit on bare body cracks the
     // nearest surviving plate by half (see shields.ts for the model).
     const impactAngle = Math.atan2(source.position.y - target.position.y, source.position.x - target.position.x);
-    applyShieldHit(target.facing, target.shieldSegments, impactAngle);
+    const shieldHit = applyShieldHit(target.facing, target.shieldSegments, impactAngle);
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     this.emitNoise("impact", target.position, target.floorId, NOISE_LOUDNESS.impact);
+    const away = { x: -Math.cos(impactAngle), y: -Math.sin(impactAngle) };
+    const result = target.shields <= 0 ? "downed" : shieldHit.direct ? "plateBreak" : "bodyHit";
     // A dedicated acknowledgement lets the attacking client correlate its
-    // instant predicted contact with the exact authoritative result. This is
-    // diagnostic data, not another source of combat truth.
-    this.events.push({ type: "hit", botId: target.id, byBotId: source.id });
+    // instant predicted contact with the exact authoritative result. It also
+    // carries the presentation normal so clients never wait on a later
+    // position snapshot to show the physical response.
+    this.events.push({
+      type: "hit",
+      botId: target.id,
+      byBotId: source.id,
+      result,
+      position: {
+        x: target.position.x - away.x * target.radius,
+        y: target.position.y - away.y * target.radius,
+      },
+      direction: away,
+      tick: this.tickCount,
+    });
 
     if (target.shields <= 0) {
       target.state = "downed";
@@ -1531,7 +1626,6 @@ export class DotBotSimulation {
     }
 
     // Readable, bounded hit feedback replacing the solver shove.
-    const away = { x: -Math.cos(impactAngle), y: -Math.sin(impactAngle) };
     target.knockbackVel = scale(away, this.config.knockbackSpeed);
     target.knockbackMs = this.config.knockbackDurationMs;
     return true;
@@ -1548,7 +1642,7 @@ export class DotBotSimulation {
       const coveringBot = aliveBots.find(
         (bot) =>
           bot.floorId === dot.floorId &&
-          distance(bot.position, dot.position) + dot.radius <= bot.radius - 2,
+          withinInteractionDotRange(bot.position, bot.radius, dot.position, dot.radius),
       );
 
       if (!coveringBot) {
@@ -1767,7 +1861,7 @@ export class DotBotSimulation {
     const revivedPosition = resolveAgainstSolids(
       add(target.position, nudge),
       target.radius,
-      this.solidRects.get(target.floorId) ?? [],
+      this.solidsForFloor(target.floorId),
     );
     this.placeBot(target, revivedPosition);
     this.events.push({ type: "revived", botId: target.id, byBotId: reviver.id });

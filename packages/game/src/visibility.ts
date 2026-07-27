@@ -1,8 +1,12 @@
 import { floorPlanById, isGroundFloor } from "./mapModel";
-import type { MapDocument, Rect, Vec2 } from "./types";
+import { solidSegments } from "./geometry";
+import type { Barrier, MapDocument, Rect, Vec2 } from "./types";
 
 /**
  * Line-of-sight geometry. One rule everywhere: only walls occlude.
+ *
+ * A wall may be a rect, or a barrier of capsules and hulls for geometry that
+ * turns or curves; both reduce to the same segments before any ray is cast.
  * Indoors that means the floor's wall segments; on the street, whole
  * building footprints block vision (you cannot see through a building).
  */
@@ -34,6 +38,35 @@ function rectSegments(rect: Rect): Segment[] {
   ];
 }
 
+function exteriorBuildingSegments(rect: Rect, viewer: Vec2): Segment[] {
+  const segments = rectSegments(rect);
+  const omitted = new Set<number>();
+
+  // The near edge is the visible facade. Let the visual fog polygon travel
+  // through that art and stop on the far silhouette instead. Gameplay LOS
+  // continues to use all four footprint edges through visionContext().
+  if (viewer.y <= rect.y) omitted.add(0);
+  else if (viewer.y >= rect.y + rect.h) omitted.add(2);
+  if (viewer.x >= rect.x + rect.w) omitted.add(1);
+  else if (viewer.x <= rect.x) omitted.add(3);
+
+  return segments.filter((_, index) => !omitted.has(index));
+}
+
+/** Visual-only street context that exposes the face of each building while
+ * preserving its far silhouette. Never use this for entity visibility. */
+export function exteriorVisualVisionContext(map: MapDocument, viewer: Vec2): VisionContext {
+  const boundsRect = { x: 0, y: 0, w: map.width, h: map.height };
+  return {
+    walls: [
+      ...map.outdoor.walls.flatMap(rectSegments),
+      ...map.buildings.flatMap((building) => exteriorBuildingSegments(building.footprint, viewer)),
+    ],
+    bounds: rectSegments(boundsRect),
+    boundsRect,
+  };
+}
+
 /**
  * Occluders and bounds for an arena context key (see mapModel.contextKey):
  * "outdoor:street", "outdoor:<buildingId>", or an interior floor id.
@@ -54,25 +87,33 @@ export function visionContext(map: MapDocument, context: string): VisionContext 
 
   let wallRects: Rect[];
   let boundsRect: Rect;
+  /** Non-rectangular occluders: angled runs, curved partitions, hulls. */
+  let barriers: Barrier[] = [];
 
   if (context === "outdoor:street") {
     wallRects = [...map.outdoor.walls, ...map.buildings.map((building) => building.footprint)];
+    barriers = map.outdoor.barriers ?? [];
     boundsRect = { x: 0, y: 0, w: map.width, h: map.height };
   } else if (context.startsWith("outdoor:")) {
     const buildingId = context.slice("outdoor:".length);
     const building = map.buildings.find((item) => item.id === buildingId);
     const ground = building?.floors.find(isGroundFloor);
     wallRects = ground?.walls ?? [];
+    barriers = ground?.barriers ?? [];
     boundsRect = building?.footprint ?? { x: 0, y: 0, w: map.width, h: map.height };
   } else {
     const plan = floorPlanById(map, context);
     const building = plan ? map.buildings.find((item) => item.floors.some((floor) => floor.id === plan.id)) : null;
     wallRects = plan?.walls ?? [];
+    barriers = plan?.barriers ?? [];
     boundsRect = building?.footprint ?? { x: 0, y: 0, w: map.width, h: map.height };
   }
 
   const result: VisionContext = {
-    walls: wallRects.flatMap(rectSegments),
+    walls: [
+      ...wallRects.flatMap(rectSegments),
+      ...barriers.flatMap((barrier) => barrier.solids.flatMap(solidSegments)),
+    ],
     bounds: rectSegments(boundsRect),
     boundsRect,
   };
@@ -110,7 +151,13 @@ function raySegment(
 }
 
 /** True when the straight segment a→b crosses no occluding wall. */
-export function hasLineOfSight(map: MapDocument, context: string, a: Vec2, b: Vec2): boolean {
+export function hasLineOfSight(
+  map: MapDocument,
+  context: string,
+  a: Vec2,
+  b: Vec2,
+  dynamicOccluders: readonly Rect[] = [],
+): boolean {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const span = Math.hypot(dx, dy);
@@ -119,7 +166,10 @@ export function hasLineOfSight(map: MapDocument, context: string, a: Vec2, b: Ve
     return true;
   }
 
-  for (const wall of visionContext(map, context).walls) {
+  for (const wall of [
+    ...visionContext(map, context).walls,
+    ...dynamicOccluders.flatMap(rectSegments),
+  ]) {
     const t = raySegment(a.x, a.y, dx, dy, wall);
 
     if (t !== null && t > 1e-6 && t < 1 - 1e-6) {
@@ -134,8 +184,8 @@ export function hasLineOfSight(map: MapDocument, context: string, a: Vec2, b: Ve
  * Visibility polygon from an origin: rays cast at every occluder corner
  * (plus epsilon offsets), clipped to the nearest wall or the arena bounds.
  */
-export function visibilityPolygon(origin: Vec2, context: VisionContext): Vec2[] {
-  const segments = [...context.walls, ...context.bounds];
+export function visibilityPolygon(origin: Vec2, context: VisionContext, dynamicOccluders: readonly Rect[] = []): Vec2[] {
+  const segments = [...context.walls, ...dynamicOccluders.flatMap(rectSegments), ...context.bounds];
   const angles: number[] = [];
 
   for (const segment of segments) {

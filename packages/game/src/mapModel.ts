@@ -1,6 +1,8 @@
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type {
   Building,
+  DoorEntity,
+  Doorway,
   FloorLabel,
   FloorPlan,
   MapDocument,
@@ -11,9 +13,38 @@ import type {
   Vec2,
 } from "./types";
 
+export const DOOR_COLLISION_DEPTH = 16;
+
+export function doorRuntimeId(floorId: string, doorwayId: string): string {
+  return `${floorId}:${doorwayId}`;
+}
+
+/** The moving leaf occupies the wall gap only while the authoritative door
+ * state says it is blocking. Visual frames and prediction reuse this shape. */
+export function doorwayCollisionRect(doorway: Pick<Doorway, "x" | "y" | "width" | "dir">): Rect {
+  return doorway.dir === "h"
+    ? { x: doorway.x - doorway.width / 2, y: doorway.y - DOOR_COLLISION_DEPTH / 2, w: doorway.width, h: DOOR_COLLISION_DEPTH }
+    : { x: doorway.x - DOOR_COLLISION_DEPTH / 2, y: doorway.y - doorway.width / 2, w: DOOR_COLLISION_DEPTH, h: doorway.width };
+}
+
+export function doorEntityCollisionRect(door: DoorEntity): Rect {
+  return doorwayCollisionRect({ x: door.position.x, y: door.position.y, width: door.width, dir: door.dir });
+}
+
 /**
  * Object kinds that get physics colliders unless the object overrides `solid`.
- * Small, walk-past furniture (chairs, plants, floor markings) stays non-solid.
+ *
+ * The rule is the contract's: silhouette == footprint == collider, with
+ * `FLAT_KINDS` as the only sanctioned exception. If a kind is drawn as a volume
+ * with a cast shadow it belongs here, because walking through it is the map lying
+ * to the player about what is cover.
+ *
+ * Street furniture used to be missing from this list, and closing that gap was a
+ * map pass rather than a list edit: the streets and rooms had been composed around
+ * these being ghosts. It took seven repairs, and the pattern in all seven is worth
+ * remembering — every one was an object standing in a doorway, an entrance
+ * approach, or the only route through a room. Those are the places a collider
+ * matters and a decoration does not, so those are the places a ghost hides a bug.
  */
 const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "bed",
@@ -27,6 +58,7 @@ const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "receptionDesk",
   "serverRack",
   "shelf",
+  "produceDisplay",
   "filingCabinet",
   "locker",
   "crateStack",
@@ -45,13 +77,78 @@ const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "fabricator",
   "bayConsole",
   "planningTable",
+  "draftingTable",
   "repairBench",
   "listeningPost",
   "signalMast",
+  /**
+   * The contract's rule is silhouette == footprint == collider, and `FLAT_KINDS`
+   * is its only sanctioned exception. Each of these is drawn as a volume with a
+   * cast shadow, so leaving it passable is the map lying to the player about what
+   * is cover — the single most common complaint about the exterior.
+   *
+   * Landing the promotion took seven repairs, every one a real authoring bug the
+   * ghosts had been hiding. They are commented at each site; the pattern worth
+   * remembering is that all seven were objects standing in a doorway, an entrance
+   * approach, or the only route through a room — the places a collider matters and
+   * a decoration does not.
+   */
+  "tree",
+  "bench",
+  "bikeRack",
+  "drum",
+  "dumpster",
+  "hydrant",
+  "lampPost",
+]);
+
+/**
+ * Two Dots closer than this are one pickup, not two decisions.
+ *
+ * A Dot is radius 10 and a bot radius 24, so anything inside a bot diameter gets
+ * collected in the same step and the second one might as well not be there. 64 is
+ * the same figure as `MIN_COMFORTABLE_AISLE`: far enough apart that walking to one
+ * rather than the other is a choice.
+ */
+export const MIN_DOT_SEPARATION = 64;
+
+/** Floor coverings: drawn flat, never collide, never drawn over furniture. */
+export const FLAT_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
+  "floorTiles", "parkingStall", "pallet", "rug", "skylight", "vent",
 ]);
 
 export function isSolidObject(object: MapObject): boolean {
   return object.solid ?? SOLID_KINDS.has(object.kind);
+}
+
+/** Visible contracts-table surface; its chairs are intentionally walk-through. */
+export function planningTableSurfaceRect(object: Pick<MapObject, "x" | "y" | "w" | "h">): Rect {
+  const chair = Math.min(30, Math.max(26, Math.min(object.h * 0.4, object.w * 0.26)));
+  return {
+    x: object.x + chair * 0.52,
+    y: object.y + chair * 0.48,
+    w: object.w - chair * 1.04,
+    h: object.h - chair * 0.96,
+  };
+}
+
+/**
+ * Physics rectangles for a map object. Most objects occupy their authored
+ * bounds. Compound plan shapes can declare local collision parts, while the
+ * contracts table collides only at its visible tabletop so a bot is never
+ * stopped by the transparent chair gutter around it.
+ */
+export function objectCollisionRects(object: MapObject): Rect[] {
+  if (!isSolidObject(object)) return [];
+  if (object.collisionParts?.length) {
+    return object.collisionParts.map((part) => ({
+      x: object.x + part.x,
+      y: object.y + part.y,
+      w: part.w,
+      h: part.h,
+    }));
+  }
+  return object.kind === "planningTable" ? [planningTableSurfaceRect(object)] : [object];
 }
 
 export function rectContains(rect: Rect, point: Vec2, inset = 0): boolean {
@@ -159,6 +256,9 @@ export type StairHalves = {
   vertical: boolean;
 };
 
+/** Physical width of a code-drawn freestanding stair rail/end barrier. */
+export const STAIR_GUARD_THICKNESS = 8;
+
 /**
  * Split a stair run at its midline (the architectural break line). Walking
  * from the entry half into the exit half moves the bot to the linked floor.
@@ -177,6 +277,36 @@ export function stairHalves(stair: StairLink): StairHalves {
     exit: entryLow ? high : low,
     vertical,
   };
+}
+
+/**
+ * Collision pieces for a freestanding stair flight. The dashed exit half has
+ * side rails and a far-end cap so it cannot be entered from the wrong side.
+ * The active entry half stays open on both sides and at its outer end.
+ * Authored stair cores return no pieces because their walls/doors own access.
+ */
+export function stairGuardRects(stair: StairLink): Rect[] {
+  if (stair.access !== "openEnd") return [];
+
+  const { x, y, w, h } = stair.rect;
+  const { exit, vertical } = stairHalves(stair);
+  const t = Math.min(STAIR_GUARD_THICKNESS, Math.min(w, h) / 4);
+
+  if (vertical) {
+    const exitAtNorth = exit.y === y;
+    return [
+      { x, y: exit.y, w: t, h: exit.h },
+      { x: x + w - t, y: exit.y, w: t, h: exit.h },
+      { x, y: exitAtNorth ? y : y + h - t, w, h: t },
+    ];
+  }
+
+  const exitAtWest = exit.x === x;
+  return [
+    { x: exit.x, y, w: exit.w, h: t },
+    { x: exit.x, y: y + h - t, w: exit.w, h: t },
+    { x: exitAtWest ? x : x + w - t, y, w: t, h },
+  ];
 }
 
 /** Where a bot arriving via this stair ends up: the center of its exit half. */

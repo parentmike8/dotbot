@@ -1,5 +1,6 @@
-import { separateCircleFromRect } from "./collision";
-import type { Rect, Vec2 } from "./types";
+import { separateCircleFromSolid } from "./geometry";
+import { nearbySolids, type SolidSource } from "./solidIndex";
+import type { Rect, Solid, Vec2 } from "./types";
 
 /**
  * Shared kinematic movement for bots. The server simulation and the client
@@ -22,7 +23,7 @@ export function integrateWithWalls(
   velocity: Vec2,
   dtMs: number,
   radius: number,
-  solids: readonly Rect[],
+  source: SolidSource,
 ): Vec2 {
   const totalPx = (Math.hypot(velocity.x, velocity.y) * dtMs) / 1000;
   if (totalPx === 0) {
@@ -41,7 +42,7 @@ export function integrateWithWalls(
       x: current.x + (live.x * stepMs) / 1000,
       y: current.y + (live.y * stepMs) / 1000,
     };
-    const resolved = resolveAgainstSolids(attempted, radius, solids);
+    const resolved = resolveAgainstSolids(attempted, radius, source);
     const pushX = resolved.x - attempted.x;
     const pushY = resolved.y - attempted.y;
     const pushLen = Math.hypot(pushX, pushY);
@@ -58,14 +59,24 @@ export function integrateWithWalls(
   return current;
 }
 
-/** Iterative circle-vs-rect resolution; three passes settle every corner case
- * the maps produce (the flood-grid validation keeps geometry honest). */
-export function resolveAgainstSolids(position: Vec2, radius: number, solids: readonly Rect[]): Vec2 {
+/**
+ * Iterative circle-vs-solid resolution; three passes settle every corner case the
+ * maps produce (the flood-grid validation keeps geometry honest).
+ *
+ * The single chokepoint for movement collision, shared by the server simulation
+ * and client prediction, so both stay in lockstep by construction. Takes `Solid`s
+ * so a wall may be a rect, a capsule at any angle, or a convex hull.
+ */
+export function resolveAgainstSolids(position: Vec2, radius: number, source: SolidSource): Vec2 {
+  // Narrowed once, not per iteration: the slack in `nearbySolids` covers however
+  // far separation moves the circle, and re-querying mid-loop would make the
+  // candidate set depend on intermediate state.
+  const solids = nearbySolids(source, position, radius);
   let current = position;
   for (let iteration = 0; iteration < 3; iteration += 1) {
     let moved = false;
-    for (const rect of solids) {
-      const next = separateCircleFromRect(current, radius, rect);
+    for (const solid of solids) {
+      const next = separateCircleFromSolid(current, radius, solid);
       if (next.x !== current.x || next.y !== current.y) {
         current = next;
         moved = true;

@@ -1,67 +1,64 @@
-import { clamp } from "./math";
-import { isSolidObject, physicsFloorId } from "./mapModel";
-import type { MapDocument, Rect, Vec2 } from "./types";
+import { pointToSolidDistanceSquared, rectSolid, separateCircleFromSolid } from "./geometry";
+import { objectCollisionRects, physicsFloorId, stairGuardRects } from "./mapModel";
+import type { MapDocument, Rect, Solid, Vec2 } from "./types";
 
-/** Static wall/object rectangles on one physics plane. GROUND plans share outdoor. */
-export function collectSolidRects(map: MapDocument, floorId: string): Rect[] {
+/**
+ * Static geometry on one physics plane. GROUND plans share the outdoor plane.
+ *
+ * Returns `Solid`s rather than rectangles: authored rect walls become rect solids
+ * — the fast path, and bit-identical to what shipped — while compiled barriers
+ * contribute capsules and convex hulls for walls that turn or curve.
+ */
+export function collectSolids(map: MapDocument, floorId: string): Solid[] {
   const targetFloorId = physicsFloorId(map, floorId);
-  const rects: Rect[] = [];
+  const solids: Solid[] = [];
+  const addRects = (rects: Rect[]): void => {
+    for (const rect of rects) solids.push(rectSolid(rect));
+  };
 
   if (targetFloorId === physicsFloorId(map, "outdoor")) {
-    rects.push(...map.outdoor.walls, ...map.outdoor.objects.filter(isSolidObject));
+    addRects(map.outdoor.walls);
+    addRects(map.outdoor.objects.flatMap(objectCollisionRects));
+    for (const barrier of map.outdoor.barriers ?? []) solids.push(...barrier.solids);
   }
 
   for (const building of map.buildings) {
     for (const floor of building.floors) {
-      if (physicsFloorId(map, floor.id) === targetFloorId) {
-        rects.push(...floor.walls, ...floor.objects.filter(isSolidObject));
-      }
+      if (physicsFloorId(map, floor.id) !== targetFloorId) continue;
+      addRects(floor.walls);
+      addRects(floor.objects.flatMap(objectCollisionRects));
+      addRects(floor.stairs.flatMap(stairGuardRects));
+      for (const barrier of floor.barriers ?? []) solids.push(...barrier.solids);
     }
   }
 
-  return rects;
+  return solids;
 }
 
+/**
+ * Rect-only view, for callers that still reason in rectangles.
+ *
+ * Non-rectangular barriers are invisible here, so anything that has to be correct
+ * about the whole world uses `collectSolids` instead.
+ */
+export function collectSolidRects(map: MapDocument, floorId: string): Rect[] {
+  return collectSolids(map, floorId)
+    .filter((solid): solid is Extract<Solid, { kind: "rect" }> => solid.kind === "rect")
+    .map(({ x, y, w, h }) => ({ x, y, w, h }));
+}
+
+/**
+ * Push a circle clear of an axis-aligned wall.
+ *
+ * Delegates to the kernel, which is pinned to a frozen copy of this arithmetic by
+ * an exact-equality test. Every bot's movement — on the server and in client
+ * prediction — resolves through here, so the two must never diverge by a bit.
+ */
 export function separateCircleFromRect(position: Vec2, radius: number, wall: Rect): Vec2 {
-  const closestX = clamp(position.x, wall.x, wall.x + wall.w);
-  const closestY = clamp(position.y, wall.y, wall.y + wall.h);
-  const offset = {
-    x: position.x - closestX,
-    y: position.y - closestY,
-  };
-  const distanceSquared = offset.x * offset.x + offset.y * offset.y;
-  const radiusSquared = radius * radius;
+  return separateCircleFromSolid(position, radius, rectSolid(wall));
+}
 
-  if (distanceSquared >= radiusSquared) {
-    return position;
-  }
-
-  if (distanceSquared > 0.0001) {
-    const distanceToWall = Math.sqrt(distanceSquared);
-    const push = (radius - distanceToWall) / distanceToWall;
-    return {
-      x: position.x + offset.x * push,
-      y: position.y + offset.y * push,
-    };
-  }
-
-  const left = Math.abs(position.x - wall.x);
-  const right = Math.abs(wall.x + wall.w - position.x);
-  const top = Math.abs(position.y - wall.y);
-  const bottom = Math.abs(wall.y + wall.h - position.y);
-  const nearest = Math.min(left, right, top, bottom);
-
-  if (nearest === left) {
-    return { x: wall.x - radius, y: position.y };
-  }
-
-  if (nearest === right) {
-    return { x: wall.x + wall.w + radius, y: position.y };
-  }
-
-  if (nearest === top) {
-    return { x: position.x, y: wall.y - radius };
-  }
-
-  return { x: position.x, y: wall.y + wall.h + radius };
+/** True when a circle overlaps a solid's area. */
+export function circleIntersectsSolid(position: Vec2, radius: number, solid: Solid): boolean {
+  return pointToSolidDistanceSquared(position, solid) < radius * radius;
 }

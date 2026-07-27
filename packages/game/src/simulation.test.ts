@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
-import { classifyNoise, physicsFloorId } from "./mapModel";
+import { interactionDotReach } from "./interactions";
+import { classifyNoise, physicsFloorId, planningTableSurfaceRect } from "./mapModel";
 import { carriedCount } from "./inventory";
 import { DotBotSimulation } from "./simulation";
 import { hasLineOfSight } from "./visibility";
@@ -140,6 +141,42 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  /**
+   * The authoritative simulation must be solid where every other system says it
+   * is. It used to build its own static collision by walking `floor.walls`,
+   * which quietly meant a path wall — the only kind a source-authored building
+   * has — was solid to client prediction, navigation and line of sight, and
+   * completely absent on the server. An entire depot shell was walk-through.
+   */
+  it("collides with path walls, not just rectangles", async () => {
+    const drive = async (from: { x: number; y: number }, move: { x: number; y: number }) => {
+      const simulation = await DotBotSimulation.create({
+        map: { ...downtownMap, botSpawns: [playerSpawn({ position: from })] },
+        config: testConfig,
+      });
+      simulation.applyInput("player", { move, dash: false });
+      runTicks(simulation, 180);
+      const probe = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+      simulation.dispose();
+      return probe.position;
+    };
+
+    // Lot 6 Depot is authored in map source, so its whole shell is path walls.
+    // North elevation, on the solid stretch between the two roll-ups.
+    expect((await drive({ x: 460, y: 940 }, { x: 0, y: 1 })).y).toBeLessThan(1000);
+    // West elevation.
+    expect((await drive({ x: 100, y: 1240 }, { x: 1, y: 0 })).x).toBeLessThan(160);
+    // …and the roll-up is still a real hole.
+    expect((await drive({ x: 340, y: 940 }, { x: 0, y: 1 })).y).toBeGreaterThan(1040);
+    /**
+     * 20s, not the 5s default: this builds three whole-map simulations and steps
+     * each 180 ticks. It sat just inside 5s and began timing out under full-suite
+     * parallel load once street furniture became solid — around 150 more outdoor
+     * colliders for every tick to consider. The cost is real and the test is worth
+     * it; the budget was simply wrong.
+     */
+  }, 20_000);
+
   it("keeps an alive bot outside thin interior walls", async () => {
     const wallX = 220;
     const baseMap = makeMap([playerSpawn({ position: { x: 160, y: 180 } })]);
@@ -166,6 +203,21 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("lets a bot approach the visible contracts tabletop instead of its chair gutter", async () => {
+    const table = { id: "contracts-table", kind: "planningTable" as const, x: 220, y: 140, w: 108, h: 72 };
+    const surface = planningTableSurfaceRect(table);
+    const baseMap = makeMap([playerSpawn({ position: { x: 120, y: surface.y + surface.h / 2 } })]);
+    baseMap.outdoor.objects = [table];
+    const simulation = await DotBotSimulation.create({ map: baseMap, config: testConfig });
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+    runTicks(simulation, 120);
+
+    const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(player.position.x + player.radius).toBeCloseTo(surface.x, 4);
+    simulation.dispose();
+  });
+
   it("captures a covered Dot and adds it to inventory", async () => {
     const simulation = await makeSimulation(
       [playerSpawn({ position: { x: 100, y: 100 } })],
@@ -179,6 +231,32 @@ describe("DotBotSimulation", () => {
     expect(snapshot.dots.find((dot) => dot.id === "dot")?.active).toBe(false);
     expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
     simulation.dispose();
+  });
+
+  it("starts capture when the visible bot and Dot footprints first overlap", async () => {
+    const reach = interactionDotReach(defaultGameConfig.botRadius, defaultGameConfig.dotRadius);
+    const touching = await makeSimulation(
+      [playerSpawn({ position: { x: 100, y: 100 } })],
+      [{ id: "touching-dot", item: healthItem, position: { x: 100 + reach, y: 100 } }],
+    );
+    runTicks(touching, 1);
+    expect(touching.getSnapshot().coverages).toContainEqual(expect.objectContaining({
+      kind: "capture",
+      actorId: "player",
+      targetId: "touching-dot",
+    }));
+    touching.dispose();
+
+    const separated = await makeSimulation(
+      [playerSpawn({ position: { x: 100, y: 100 } })],
+      [{ id: "separated-dot", item: healthItem, position: { x: 100 + reach + 0.01, y: 100 } }],
+    );
+    runTicks(separated, 1);
+    expect(separated.getSnapshot().coverages).not.toContainEqual(expect.objectContaining({
+      kind: "capture",
+      targetId: "separated-dot",
+    }));
+    separated.dispose();
   });
 
   it("preserves authored building provenance on captured contract cargo", async () => {
@@ -1482,7 +1560,15 @@ describe("combat lag compensation", () => {
     // daylight, no interpenetration (knockback opens the gap afterwards).
     expect(gapAtImpact).not.toBeNull();
     expect(Math.abs(gapAtImpact!)).toBeLessThanOrEqual(0.75);
-    expect(simulation.drainEvents()).toContainEqual({ type: "hit", botId: "victim", byBotId: "player" });
+    expect(simulation.drainEvents()).toContainEqual(expect.objectContaining({
+      type: "hit",
+      botId: "victim",
+      byBotId: "player",
+      result: "bodyHit",
+      tick: expect.any(Number),
+      position: expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+      direction: expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+    }));
     simulation.dispose();
   });
 

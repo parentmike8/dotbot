@@ -10,6 +10,36 @@ export type Rect = {
   h: number;
 };
 
+/** A directed line segment. Visibility and geometry queries run on these. */
+export type Segment = { ax: number; ay: number; bx: number; by: number };
+
+/**
+ * Anything a DotBot cannot enter.
+ *
+ * The world was rectangles-only because this type did not exist: every wall was
+ * an axis-aligned `Rect`, so every building was a box and no wall could turn.
+ * A capsule carries a wall at any angle — and a curve, as a path of them — while
+ * a convex polygon carries a hull or a wedge. `rect` remains the fast path and
+ * the shape all existing content is authored in.
+ *
+ * Concave shapes are expressed as several solids rather than one, which keeps
+ * every query in `geometry.ts` exact instead of approximate.
+ */
+export type Solid =
+  | { kind: "rect"; x: number; y: number; w: number; h: number }
+  | { kind: "capsule"; ax: number; ay: number; bx: number; by: number; r: number }
+  | { kind: "poly"; points: Vec2[] };
+
+/**
+ * A named obstacle made of one or more solids — a wall run at any angle, a
+ * curved partition, a ship's hull. Authored geometry that is not a plain
+ * rectangle arrives here.
+ */
+export type Barrier = {
+  id: string;
+  solids: Solid[];
+};
+
 export type BotState = "alive" | "downed" | "consumed";
 
 export type Controller = "human" | "ai" | "frozen";
@@ -61,8 +91,21 @@ export type MineEntity = GameEntity & {
   seam?: boolean;
 };
 
+export type HitResult = "plateBreak" | "bodyHit" | "downed";
+
 export type SimEvent =
-  | { type: "hit"; botId: string; byBotId: string }
+  | {
+      type: "hit";
+      botId: string;
+      byBotId: string;
+      /** Authoritative outcome, so presentation never has to infer a plate
+       * break or down from a later snapshot. */
+      result: HitResult;
+      /** Contact point and away-from-attacker direction in world space. */
+      position: Vec2;
+      direction: Vec2;
+      tick: number;
+    }
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "consumed"; botId: string; byBotId: string; lostItems: Item[] }
   | { type: "revived"; botId: string; byBotId: string }
@@ -87,7 +130,11 @@ export type WallSegment = Rect & {
   id: string;
 };
 
-/** A gap in a wall run, recorded so the renderer can draw door leaf + swing arc. */
+export type DoorMechanism = "automatic";
+
+/** A gap in a wall run. A doorway can remain a permanent opening, or opt into
+ * an authoritative mechanism whose art, collision, sound, and network state
+ * all advance from the same simulation entity. */
 export type Doorway = {
   id: string;
   /** Center of the gap. */
@@ -96,8 +143,30 @@ export type Doorway = {
   width: number;
   /** Direction of the wall run the doorway sits in. */
   dir: "h" | "v";
+  /**
+   * The opening's true centreline. Present when the wall is not axis-aligned, in
+   * which case `dir` is only the nearest-axis hint and this is authoritative.
+   */
+  span?: Segment;
+  /** Depth of the reveal, i.e. the thickness of the wall this was cut from. */
+  thickness?: number;
+  /**
+   * What kind of opening this is, so the renderer hangs the right furniture on it
+   * rather than inferring from width — a 96-unit archway is a hole in a wall, not
+   * a roll-up with a curtain and guide rails.
+   */
+  opening?: "door" | "rollup" | "archway";
   /** Rendered without leaf/arc (roll-up doors, open archways). */
   open?: boolean;
+  /** Omit for a permanent opening or a non-interactive plan annotation. */
+  mechanism?: DoorMechanism;
+  /** Pixel City atlas family. Frames are named `${assetKey}-0..N`. */
+  assetKey?: string;
+  /** Defaults keep public doors quick without making them visually instant. */
+  openDurationMs?: number;
+  holdOpenMs?: number;
+  triggerRadius?: number;
+  noiseLoudness?: number;
 };
 
 /** A glazed band within a wall run. Purely visual; walls stay solid. */
@@ -109,6 +178,8 @@ export type WindowBand = {
   length: number;
   /** Direction of the wall run the band sits in. */
   dir: "h" | "v";
+  /** True centreline, for glazing in a wall that is not axis-aligned. */
+  span?: Segment;
 };
 
 export type ObjectKind =
@@ -124,6 +195,8 @@ export type ObjectKind =
   | "receptionDesk"
   | "serverRack"
   | "shelf"
+  | "produceDisplay"
+  | "floorTiles"
   | "filingCabinet"
   | "locker"
   | "crateStack"
@@ -164,6 +237,7 @@ export type ObjectKind =
   | "fabricator"
   | "bayConsole"
   | "planningTable"
+  | "draftingTable"
   | "repairBench"
   | "listeningPost"
   | "signalMast";
@@ -173,6 +247,7 @@ export type BaseObjectKind =
   | "fabricator"
   | "bayConsole"
   | "planningTable"
+  | "draftingTable"
   | "repairBench"
   | "bed"
   | "bench"
@@ -214,6 +289,43 @@ export type BaseLayout = Record<string, BaseObjectKind>;
 
 export type Facing = "N" | "S" | "E" | "W";
 
+/** A licensed or first-party raster visual whose collision still comes from
+ * the owning map object. Offsets are world-space pixels from the object's
+ * authored collision rectangle. */
+export type SpriteVisual = {
+  assetKey: string;
+  /** Editor-promoted singles resize with the owning MapObject. Curated atlas
+   * fixtures omit this because their visual and grounded collider differ. */
+  fitToObject?: boolean;
+  offsetX?: number;
+  offsetY?: number;
+  /** Integer display scale. Pixel-city assets use 1 at the 48 px source size. */
+  scale?: number;
+  /** Duplicate pixels above this world-space offset into the foreground pass
+   * so a bot moving behind a tall fixture is correctly occluded. */
+  occlusionY?: number;
+  /** Extra clipped sprite copies used to make translucent glass opaque enough
+   * to hide a DotBot that is physically behind the fixture. */
+  occlusionCopies?: number;
+};
+
+export type MapArtPlacement = {
+  id: string;
+  assetKey: string;
+  x: number;
+  y: number;
+  /** Omitted dimensions use the source frame size. Both are required for a
+   * tiled region. */
+  w?: number;
+  h?: number;
+  tiled?: boolean;
+  layer: "ground" | "outdoorDetail" | "outdoorObjects" | "roof" | "floor";
+  buildingId?: string;
+  floorId?: string;
+  zIndex?: number;
+};
+
+/** Map objects are drawn from the same authored rectangle used by physics. */
 export type MapObject = {
   id: string;
   kind: ObjectKind;
@@ -225,10 +337,18 @@ export type MapObject = {
   facing?: Facing;
   /** Solid objects get physics colliders. Default varies by kind (see solidByDefault). */
   solid?: boolean;
+  /** Optional collision pieces in object-local coordinates for compound plan
+   * shapes such as U counters. The visible glyph must trace the same pieces. */
+  collisionParts?: Rect[];
   /** Scannable objects can later be scanned for Base unlocks. Data-only for now. */
   scannable?: boolean;
   /** Persistent base placement slot that materialized this object. */
   slotId?: string;
+  /** Optional code-drawn visual language for a domain-specific fixture kit. */
+  visualStyle?: "retail";
+  /** Optional production raster visual. Physics always uses this object's
+   * rectangle/collisionParts, never opaque pixels from the sprite. */
+  art?: SpriteVisual;
 };
 
 export type StairLink = {
@@ -240,6 +360,16 @@ export type StairLink = {
   toFloorId: string;
   /** Which side of the rect is the bottom of the flight. */
   bottom: Facing;
+  /**
+   * A freestanding flight whose dashed/non-enterable half has solid side
+   * rails and a solid far end. The active entry half stays open at its outer
+   * end and on both sides so a bot can leave immediately after a floor change.
+   * Omit when surrounding authored walls and doors already control access.
+   */
+  access?: "openEnd";
+  /** Optional production sprite for perspective-aware stair art. The same
+   * rect remains authoritative for traversal, guards, and navigation. */
+  art?: SpriteVisual;
 };
 
 export type DotSpawn = {
@@ -266,6 +396,11 @@ export type FloorPlan = {
   id: string;
   label: FloorLabel;
   walls: WallSegment[];
+  /**
+   * Non-rectangular geometry: angled runs, curved partitions, hulls. Compiled
+   * from map source; authored rect walls stay in `walls` above.
+   */
+  barriers?: Barrier[];
   doorways: Doorway[];
   /** Authored glazing. Windows are composed, never auto-sprayed. */
   windows?: WindowBand[];
@@ -274,13 +409,23 @@ export type FloorPlan = {
   dotSpawns: DotSpawn[];
 };
 
-export type BuildingKind = "hospital" | "office" | "warehouse" | "residential";
+export type BuildingKind = "hospital" | "office" | "retail" | "warehouse" | "residential";
 
 export type Building = {
   id: string;
   kind: BuildingKind;
   name: string;
+  /**
+   * Axis-aligned bounds. Cameras, fog bounds and "which building am I in" tests
+   * use this; for a non-rectangular building it is derived from `outline`, never
+   * authored, and is deliberately larger than the building itself.
+   */
   footprint: Rect;
+  /**
+   * The building's true plan shape when it is not a rectangle — an L-plan, a
+   * chamfered corner, a round tower. Absent means the footprint is the shape.
+   */
+  outline?: Vec2[];
   /** Includes the GROUND floor. GROUND shares physics with the outdoor plane. */
   floors: FloorPlan[];
 };
@@ -291,6 +436,35 @@ export type Road = Rect & {
 
 export type ParkArea = Rect & {
   id: string;
+};
+
+/**
+ * What a piece of open ground is *for*.
+ *
+ * Without this the exterior has exactly two states — carriageway and
+ * everything-else — so the renderer fills the whole sheet with one slab and the
+ * result reads as a car park with buildings dropped on it. Naming the ground is
+ * what turns four boxes into a block: a footway is public and continuous, a yard
+ * is back-of-house, a forecourt belongs to the door it serves.
+ *
+ * These are uses, not materials. The renderer decides how a yard looks; the map
+ * only says that this ground is one.
+ */
+export type SurfaceKind =
+  /** Public pavement beside a street. Derived from the street, never hand-placed. */
+  | "footway"
+  /** Paving that serves an entrance, and belongs to it. */
+  | "forecourt"
+  /** Public open paving that is a destination rather than a route. */
+  | "plaza"
+  /** Service hardstanding: loading, parking, bins, back-of-house. */
+  | "yard"
+  /** Unpaved planted setback. Walkable, but nobody routes through it. */
+  | "verge";
+
+export type Surface = Rect & {
+  id: string;
+  kind: SurfaceKind;
 };
 
 export type ExtractionPoint = {
@@ -310,8 +484,15 @@ export type InsertionPoint = {
 export type OutdoorPlan = {
   roads: Road[];
   parks: ParkArea[];
+  /**
+   * What each piece of open ground is for. Compiled from a `CityPlan` — see
+   * `cityPlan.ts` — so footways cannot drift from the streets that produce them.
+   */
+  surfaces?: Surface[];
   /** Map edges plus anything outdoors that collides (hedges, low walls). */
   walls: WallSegment[];
+  /** Non-rectangular outdoor geometry: sea walls, quaysides, cliff faces. */
+  barriers?: Barrier[];
   objects: MapObject[];
   dotSpawns: DotSpawn[];
 };
@@ -342,6 +523,17 @@ export type MapDocument = {
   extractionPoints: ExtractionPoint[];
   insertionPoints: InsertionPoint[];
   botSpawns: BotSpawn[];
+  /** Plan is the existing code-drawn regression language. Pixel city opts in
+   * to the licensed atlas renderer without changing simulation semantics. */
+  /**
+   * `plan` is the pen-plotter line drawing. `pixel-city` is the purchased 3/4
+   * sprite theme. `lit-model` is the monochrome lit-model language: interiors
+   * only so far, so it is not yet a default for any shipped map.
+   */
+  visualTheme?: "plan" | "pixel-city" | "lit-model";
+  /** Authored environmental raster layers. Interactive/solid fixtures remain
+   * MapObjects so their visible placement and collision cannot drift apart. */
+  artPlacements?: MapArtPlacement[];
   /** Present only on maps that support slot-based furniture placement. */
   placementSlots?: PlacementSlot[];
   /** Non-lootable, floor-aware interaction affordances derived from map data. */
@@ -393,6 +585,24 @@ export type DotEntity = GameEntity & {
   captureProgressMs: number;
 };
 
+export type DoorPhase = "closed" | "opening" | "open" | "closing";
+
+/** Authoritative live state for one authored doorway. `blocking` is explicit
+ * so clients never infer collision from a rounded animation frame. */
+export type DoorEntity = {
+  id: string;
+  doorwayId: string;
+  buildingId: string;
+  floorId: string;
+  position: Vec2;
+  width: number;
+  dir: "h" | "v";
+  phase: DoorPhase;
+  /** 0 closed, 1 fully open. */
+  openness: number;
+  blocking: boolean;
+};
+
 export type InputCommand = {
   move: Vec2;
   dash: boolean;
@@ -404,7 +614,7 @@ export type InputCommand = {
 
 export type CoverageKind = "capture" | "consume" | "revive" | "reviveClean" | "lootThenRevive" | "extract" | "swap";
 
-export type NoiseKind = "dash" | "impact" | "stairs" | "channel" | "mineDetonation";
+export type NoiseKind = "dash" | "impact" | "stairs" | "channel" | "door" | "mineDetonation";
 
 /** A sound the simulation emitted; rendered as an expanding ink ring. */
 export type NoiseEvent = {
@@ -477,6 +687,8 @@ export type GameSnapshot = {
   mines: MineEntity[];
   coverages: CoverageSnapshot[];
   noises: NoiseEvent[];
+  /** Optional only for rolling compatibility with snapshots from older rooms. */
+  doors?: DoorEntity[];
   debug: {
     tickHz: number;
     tickCount: number;
