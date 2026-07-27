@@ -194,8 +194,23 @@ Looting leaves the body exactly where it is; wanting to loot *and* revive is two
 channels, not a third verb. A channel is held by standing on the body — step off and
 it cancels, and the coverer is never pinned in place while it runs.
 
-The loot interface: a picker over what the body carries, plus a **LOOT ALL** that
-takes the first items that fit and leaves the rest.
+**The loot channel opens a body; it moves nothing.** Three seconds of standing on a
+body *searches* it: from then on the body is open, its contents are public, and
+anyone but its own squad can take from it while standing on it — no second channel,
+and no channel at all for whoever arrives after. Items leave one at a time, or all
+that fit in one action. Nothing spills: what will not fit stays on the body for
+whoever comes next, rather than the taker's full inventory silently discarding items
+it never saw. A revive closes the body back up.
+
+The loot interface is that open body: a picker over what it carries, one mark per
+item in the same slots as the player's own bays, plus a **TAKE ALL**. An open body
+always shows its slots, empty ones included — searching a stripped body has to end
+in an answer, not in silence.
+
+What a body says without any interface at all: whose it is (relationship colour on
+the hull), whether it holds anything (one notch per item — a *count* is public even
+for rivals, its composition is not), and whether anyone has been through it (a solid
+core is closed, a hollow one has been searched).
 
 ### 4.6 Being downed
 
