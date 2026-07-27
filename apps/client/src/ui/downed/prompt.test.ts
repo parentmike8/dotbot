@@ -81,7 +81,7 @@ describe("bodyPrompt", () => {
       { kind: "loot", actorId: "player", targetId: "rival", progressMs: 750, durationMs: 3000 },
     ];
     expect(prompt([bot(), body()], coverages)).toEqual({
-      kind: "channel", verb: "loot", bodyName: "Ochre", progress: 0.25,
+      kind: "channel", verb: "loot", bodyId: "rival", bodyName: "Ochre", progress: 0.25,
     });
   });
 

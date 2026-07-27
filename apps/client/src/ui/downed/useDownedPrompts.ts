@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { defaultGameConfig } from "@dotbot/game/config";
 import type { DotBotEntity, DownedVerb, GameSnapshot, SimEvent } from "@dotbot/game/types";
 import { bodyPrompt, downedSelf, type BodyPrompt, type DownedSelf } from "./prompt";
@@ -16,7 +16,7 @@ export function useDownedPrompts(input: {
   playerId: string;
   spectating: DotBotEntity | null;
   runOver: boolean;
-  selectDownedVerb: (verb: DownedVerb) => void;
+  selectDownedVerb: (verb: DownedVerb | undefined) => void;
   takeFromBody: (fromBotId: string, index: number | "all") => void;
   setBodyAction: (action: (() => void) | null) => void;
 }): { prompt: BodyPrompt; self: DownedSelf | null; onVerb: (verb: DownedVerb) => void } {
@@ -53,13 +53,33 @@ export function useDownedPrompts(input: {
     pleaCooldownMs: defaultGameConfig.pleaCooldownMs,
   });
 
+  /**
+   * A verb belongs to the body it was chosen for.
+   *
+   * It is standing state — the simulation reads it every tick, so nothing ever
+   * cleared it — which meant one press of F latched for the rest of the run: every
+   * body walked over afterwards started searching itself, with no input from the
+   * player at all. Stepping off a body, or onto a different one, drops the verb.
+   */
+  const verbTarget = useRef<string | null>(null);
+  const promptBodyId = prompt.kind === "none" ? null : prompt.bodyId;
+  const onVerb = useCallback((verb: DownedVerb) => {
+    verbTarget.current = promptBodyId;
+    selectDownedVerb(verb);
+  }, [promptBodyId, selectDownedVerb]);
+
+  useEffect(() => {
+    if (verbTarget.current !== null && verbTarget.current !== promptBodyId) selectDownedVerb(undefined);
+    verbTarget.current = promptBodyId;
+  }, [promptBodyId, selectDownedVerb]);
+
   // F is the body's primary action: search a closed one, empty an open one.
   useEffect(() => {
-    if (prompt.kind === "verbs") setBodyAction(() => selectDownedVerb("loot"));
+    if (prompt.kind === "verbs") setBodyAction(() => onVerb("loot"));
     else if (prompt.kind === "picker") setBodyAction(() => takeFromBody(prompt.bodyId, "all"));
     else setBodyAction(null);
     return () => setBodyAction(null);
-  }, [prompt, selectDownedVerb, setBodyAction, takeFromBody]);
+  }, [onVerb, prompt, setBodyAction, takeFromBody]);
 
-  return { prompt, self, onVerb: selectDownedVerb };
+  return { prompt, self, onVerb };
 }

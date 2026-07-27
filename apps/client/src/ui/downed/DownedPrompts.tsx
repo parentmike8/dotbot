@@ -1,4 +1,5 @@
-import type { DownedVerb } from "@dotbot/game/types";
+import { defaultGameConfig } from "@dotbot/game/config";
+import type { DownedVerb, Item } from "@dotbot/game/types";
 import { itemFamily, itemGlyph, itemLabel } from "../items";
 import type { BodyPrompt, DownedSelf } from "./prompt";
 
@@ -42,6 +43,9 @@ function Key({ code, label, onPress, disabled }: {
 
 const VERB_WORD: Record<DownedVerb, string> = { loot: "SEARCHING", revive: "PICKING UP" };
 
+/** A stripped body still shows a bank, sized like the one the player carries. */
+const EMPTY_SLOTS = defaultGameConfig.baySlots;
+
 export function BodyPromptView({ prompt, onVerb, onTake, onTakeAll }: {
   prompt: BodyPrompt;
   onVerb: (verb: DownedVerb) => void;
@@ -75,36 +79,43 @@ export function BodyPromptView({ prompt, onVerb, onTake, onTakeAll }: {
   }
 
   const full = prompt.room <= 0;
+  const empty = prompt.items.length === 0;
+  /**
+   * An open body always shows slots, empty ones included — the same rule the bay
+   * bank follows, so a hole still reads as a place a thing goes. Searching a
+   * stripped body used to end in silence: three seconds of channel, and then the
+   * prompt simply changed a word. The answer to "what was on it" is "look".
+   */
+  const slots: Array<Item | null> = empty
+    ? Array.from({ length: EMPTY_SLOTS }, () => null)
+    : prompt.items;
+
   return (
     <div className="body-prompt is-open">
       <p className="prompt-line">
         {prompt.bodyName.toUpperCase()}
-        <span>{prompt.items.length === 0 ? "STRIPPED" : full ? "NO ROOM" : `ROOM FOR ${prompt.room}`}</span>
+        <span>{empty ? "NOTHING ON IT" : full ? "NO ROOM" : `ROOM FOR ${prompt.room}`}</span>
       </p>
-      {prompt.items.length > 0 ? (
-        <ul className="loot-row">
-          {prompt.items.map((item, index) => (
-            <li key={`${itemLabel(item)}-${index}`}>
-              <button
-                type="button"
-                className={`loot-slot ${itemFamily(item)}`}
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  if (!full) onTake(prompt.bodyId, index);
-                }}
-                onClick={(event) => event.currentTarget.blur()}
-                disabled={full}
-                aria-label={`Take ${itemLabel(item)}`}
-                title={itemLabel(item)}
-              >{itemGlyph(item)}</button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <ul className="loot-row">
+        {slots.map((item, index) => (
+          <li key={`${item ? itemLabel(item) : "empty"}-${index}`}>
+            <button
+              type="button"
+              className={`loot-slot ${itemFamily(item)}`}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                if (item && !full) onTake(prompt.bodyId, index);
+              }}
+              onClick={(event) => event.currentTarget.blur()}
+              disabled={!item || full}
+              aria-label={item ? `Take ${itemLabel(item)}` : "Empty slot"}
+              title={item ? itemLabel(item) : undefined}
+            >{itemGlyph(item)}</button>
+          </li>
+        ))}
+      </ul>
       <div className="prompt-keys">
-        {prompt.items.length > 0 ? (
-          <Key code="F" label="TAKE ALL" onPress={() => onTakeAll(prompt.bodyId)} disabled={full} />
-        ) : null}
+        {empty ? null : <Key code="F" label="TAKE ALL" onPress={() => onTakeAll(prompt.bodyId)} disabled={full} />}
         <Key code="R" label="PICK UP" onPress={() => onVerb("revive")} />
       </div>
     </div>

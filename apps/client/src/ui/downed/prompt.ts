@@ -22,7 +22,7 @@ export type BodyPrompt =
   /** A rival body underfoot, unsearched. Two verbs, and they are both real. */
   | { kind: "verbs"; bodyId: string; bodyName: string; carriedCount: number }
   /** A channel is running. The ring at the body is the display; this is the label. */
-  | { kind: "channel"; verb: DownedVerb; bodyName: string; progress: number }
+  | { kind: "channel"; verb: DownedVerb; bodyId: string; bodyName: string; progress: number }
   /** An open body underfoot. `room` is how many more items the player can carry. */
   | { kind: "picker"; bodyId: string; bodyName: string; items: Item[]; room: number };
 
@@ -52,6 +52,7 @@ export function bodyPrompt({ viewer, bots, coverages, config }: PromptInput): Bo
     return {
       kind: "channel",
       verb: channel.kind as DownedVerb,
+      bodyId: channel.targetId,
       bodyName: nameOf(channel.targetId),
       progress: channel.durationMs > 0 ? Math.min(1, channel.progressMs / channel.durationMs) : 0,
     };

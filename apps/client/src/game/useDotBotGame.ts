@@ -460,7 +460,13 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     sessionRef.current?.leaveRun();
   }, []);
 
-  const selectDownedVerb = useCallback((verb: DownedVerb) => {
+  /**
+   * `undefined` clears it. A verb is standing state — the simulation reads it every
+   * tick and cancels the channel when it is absent — so nothing ever cleared it and
+   * one press of F latched: every body walked over afterwards started searching
+   * itself. The overlay clears it when the body under the player changes.
+   */
+  const selectDownedVerb = useCallback((verb: DownedVerb | undefined) => {
     if (!runEndedRef.current) downedVerbRef.current = verb;
   }, []);
 

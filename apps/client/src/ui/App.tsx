@@ -114,11 +114,12 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
     }
 
     if (playerCoverage?.kind === "loot") {
-      return playerCoverage.actorId === player.id ? "Looting" : "Being looted";
+      // The channel opens a body; it takes nothing. "Looting" named the wrong half.
+      return playerCoverage.actorId === player.id ? "Searching" : "Being searched";
     }
 
     if (playerCoverage?.kind === "revive") {
-      return playerCoverage.actorId === player.id ? "Reviving" : "Being revived";
+      return playerCoverage.actorId === player.id ? "Picking up" : "Being picked up";
     }
 
     if (playerCoverage?.kind === "swap") return "Swapping";

@@ -18,7 +18,7 @@ import { buildFloorModel } from "../game/renderer/model/modelFloor";
 import { buildGeometryProof } from "../game/renderer/model/geometryProof";
 import { drawDotDisc } from "../game/renderer/dotArt";
 import { drawCatchLight, drawGroundShadow } from "../game/renderer/grounding";
-import { drawDownedBody, type DownedBody } from "../game/renderer/bodies";
+import { drawDownedBody, type BodyStyle, type CrackKind, type DownedBody, type HullKind } from "../game/renderer/bodies";
 import { V } from "../game/renderer/model/tone";
 
 /**
@@ -28,7 +28,7 @@ import { V } from "../game/renderer/model/tone";
  * simulation, so the same floor can be re-rendered and screenshotted hundreds
  * of times while an art language is being tuned. `?lab` selects it.
  *
- *   ?lab&view=model|city|base|quay|geometry   what to draw
+ *   ?lab&view=model|city|base|quay|geometry|bodies   what to draw
  *   ?lab&zoom=fit|play|close     camera
  *   ?lab&focus=racks|dock|shop|office
  *   ?lab&floor=GROUND|B1
@@ -38,7 +38,7 @@ import { V } from "../game/renderer/model/tone";
 const BUILDING_ID = "lot6";
 
 type LabParams = {
-  view: "model" | "city" | "base" | "geometry" | "quay";
+  view: "model" | "city" | "base" | "geometry" | "quay" | "bodies";
   zoom: "fit" | "play" | "close";
   focus: string;
   floorLabel: string;
@@ -50,7 +50,7 @@ function readParams(search: string): LabParams {
   const view = p.get("view");
   const zoom = p.get("zoom");
   return {
-    view: view === "city" || view === "base" || view === "geometry" || view === "quay" ? view : "model",
+    view: view === "city" || view === "base" || view === "geometry" || view === "quay" || view === "bodies" ? view : "model",
     zoom: zoom === "play" || zoom === "close" ? zoom : "fit",
     focus: p.get("focus") ?? "racks",
     floorLabel: (p.get("floor") ?? "GROUND").toUpperCase(),
@@ -300,6 +300,53 @@ function baseWorld(floorLabel: string): Container {
 
 
 /**
+ * Every candidate downed body at once, over a standing bot for scale.
+ *
+ * Which crack reads as damage rather than as a fitting, and whether the hull wants
+ * to be whole or open, are judgement calls — and a judgement call is made by
+ * looking at the options side by side, not by describing them.
+ */
+const CRACKS: CrackKind[] = ["straight", "zigzag", "shatter", "none"];
+const HULLS: HullKind[] = ["whole", "broken"];
+
+function bodiesWorld(): Container {
+  const world = new Container();
+  const g = new Graphics();
+  const cell = 130;
+  const originX = 90;
+  const originY = 140;
+
+  // Reference: what a bot looks like still standing, at the same size.
+  drawLabBot(g, { at: { x: originX, y: 46 }, facing: -Math.PI / 2, color: RIVAL, shields: [1, 0.5, 1], radius: 24 });
+  world.addChild(label("ALIVE, FOR SCALE", originX + 34, 42));
+
+  HULLS.forEach((hull, row) => {
+    CRACKS.forEach((crack, column) => {
+      const style: BodyStyle = { crack, hull };
+      const x = originX + column * cell;
+      const y = originY + row * cell * 1.55;
+      // Unsearched with a carry, then searched and stripped, so both core
+      // treatments are visible for every crack.
+      drawDownedBody(g, { at: { x, y }, radius: 24, color: RIVAL, carriedCount: 3, searched: false, style });
+      drawDownedBody(g, { at: { x, y: y + 70 }, radius: 24, color: AMBIENT, carriedCount: 0, searched: true, style });
+      world.addChild(label(`${hull} / ${crack}`, x - 44, y + 108));
+    });
+  });
+
+  world.addChild(g);
+  return world;
+}
+
+function label(text: string, x: number, y: number): Text {
+  const node = new Text({
+    text,
+    style: { fill: 0x6d7278, fontFamily: "ui-monospace, monospace", fontSize: 9, letterSpacing: 1.2 },
+  });
+  node.position.set(x, y);
+  return node;
+}
+
+/**
  * Bodies next to the bots that are still standing, because that is the only
  * comparison that matters: down has to read as down at a glance, and the three
  * states a body can be in — holding something and unsearched, open with something
@@ -308,9 +355,9 @@ function baseWorld(floorLabel: string): Container {
 function labBodies(floor: FloorPlan): DownedBody[] {
   if (floor.label !== "GROUND") return [];
   return [
-    { at: { x: 513, y: 1245 }, radius: 24, color: RIVAL, carriedCount: 4, searched: false },
-    { at: { x: 513, y: 1310 }, radius: 24, color: AMBIENT, carriedCount: 2, searched: true },
-    { at: { x: 513, y: 1375 }, radius: 24, color: SQUAD, carriedCount: 0, searched: true },
+    { at: { x: 453, y: 1395 }, radius: 24, color: RIVAL, carriedCount: 4, searched: false },
+    { at: { x: 513, y: 1395 }, radius: 24, color: AMBIENT, carriedCount: 2, searched: true },
+    { at: { x: 573, y: 1395 }, radius: 24, color: SQUAD, carriedCount: 0, searched: true },
   ];
 }
 
@@ -354,6 +401,7 @@ type Shot = LabParams & { name: string; w: number; h: number };
  * each other and independent of whatever window the lab happens to open in.
  */
 const SHOT_SET: Shot[] = [
+  { name: "50-downed-bodies", view: "bodies", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: true, w: 1700, h: 1250 },
   { name: "40-base-ground", view: "base", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: false, w: 1500, h: 1100 },
   { name: "41-base-upper", view: "base", zoom: "fit", focus: "racks", floorLabel: "F1", actors: false, w: 1500, h: 1100 },
   { name: "31-quayside-source", view: "quay", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: false, w: 1400, h: 1440 },
@@ -456,6 +504,17 @@ export function StyleLab() {
           created.stage.addChild(proof.view);
           created.stage.addChild(Object.assign(
             caption("GEOMETRY KERNEL  ·  polygons, thick paths, fillets  ·  cyan track = where a 24-unit bot is actually stopped"),
+            { x: 16, y: 14 },
+          ));
+          return;
+        }
+
+        if (spec.view === "bodies") {
+          const world = bodiesWorld();
+          world.scale.set(1.55);
+          created.stage.addChild(world);
+          created.stage.addChild(Object.assign(
+            caption("DOWNED BODY CANDIDATES  \u00b7  top row unsearched with a carry, bottom row searched and stripped"),
             { x: 16, y: 14 },
           ));
           return;
