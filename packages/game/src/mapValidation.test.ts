@@ -391,14 +391,24 @@ describe("downtown map validation", () => {
       for (const floor of building.floors) record(floor.objects);
     }
 
-    expect(Object.fromEntries([...ghosts].sort())).toEqual({
-      // The last ghost on the map, and a deliberate one: a single authored
-      // `solid: false` on the roof terrace planter, which is a low kerb of soil you
-      // step over rather than a box you walk into.
-      planter: 1,
-    });
+    /**
+     * ZERO. The last one went with the passable-drawing work, and its own justification
+     * is what gave it away.
+     *
+     * The roof terrace planter was defended here as "a low kerb of soil you step over
+     * rather than a box you walk into" — but nothing in the drawing said kerb. It was
+     * 30x90, extruded like every other planter, casting a shadow onto the deck, which
+     * is how this world promises cover. So the exemption rested on a reading of the
+     * object that a player had no way to arrive at.
+     *
+     * Solid is also the better roof. A terrace is the most exposed ground on the map
+     * and a waist-high planter is the only cover on it, so making it real turns visual
+     * dressing into a reason to approach from one side rather than another. The audits
+     * pass unchanged, which is the evidence that it cost nothing.
+     */
+    expect(Object.fromEntries([...ghosts].sort())).toEqual({});
     const total = [...ghosts.values()].reduce((sum, count) => sum + count, 0);
-    expect(total, "total ghosts; this number may only go down").toBe(1);
+    expect(total, "total ghosts; this number may only go down").toBe(0);
   });
 
   it("keeps the walking line through every doorway clear of solid objects", () => {

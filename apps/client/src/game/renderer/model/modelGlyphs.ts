@@ -262,10 +262,19 @@ function rackGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
 // Loose freight
 // ---------------------------------------------------------------------------
 
-/** A stringer pallet: three runners, slatted deck, visible gaps. */
-function palletDeck(g: Graphics, r: Rect, id: string, mat: Material = MAT.wood): Rect {
+/**
+ * A stringer pallet: three runners, slatted deck, visible gaps.
+ *
+ * `lift` is a parameter rather than a constant because the same deck does two jobs. Up
+ * on a rack beam or a pair of forks it is genuinely off the ground and keeps its height
+ * and its shadow. Lying on the floor it is something a bot walks over, so it lies flat
+ * — the drawing follows the collider, not the kind.
+ */
+function palletDeck(g: Graphics, r: Rect, id: string, mat: Material = MAT.wood, lift: number = LIFT.low): Rect {
   const across = r.w >= r.h;
-  const top = volume(g, r, mat, LIFT.low);
+  let top = r;
+  if (lift > 0) top = volume(g, r, mat, lift);
+  else inlay(g, r, mat.top);
   const span = across ? top.h : top.w;
   const boards = Math.max(4, Math.min(7, Math.round(span / 6)));
   const gap = Math.max(1.1, span * 0.055);
@@ -288,10 +297,12 @@ function palletDeck(g: Graphics, r: Rect, id: string, mat: Material = MAT.wood):
   return top;
 }
 
-function palletGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
+function palletGlyph(g: Graphics, _pad: ShadowPad, o: MapObject): void {
   const r = rect(o);
-  contact(pad, r, LIFT.low);
-  const top = palletDeck(g, r, o.id);
+  // On the floor, so flat and unshadowed. `markPassable` then washes the whole glyph,
+  // load included — a load a bot walks through is still odd, but at least the drawing
+  // now says so instead of promising cover.
+  const top = palletDeck(g, r, o.id, MAT.wood, 0);
 
   const load = jitter(o.id, 3);
   if (load < 0.34) return; // an empty pallet on a dock strip is normal
@@ -917,14 +928,21 @@ function utilityBoxGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   inlay(g, { x: front.x + front.w * 0.44, y: front.y + front.h * 0.35, w: 2, h: front.h * 0.35 }, DEEP_SEAM);
 }
 
-function ventGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
+/**
+ * A floor grille. Set INTO the deck, so it has no height and casts nothing.
+ *
+ * It used to draw an extruded box with a cast shadow onto the slab while the sim let
+ * bots walk straight through it — the same lie #45 and #46 fixed from the other side,
+ * where thirty ghosts were promoted to solid precisely BECAUSE a cast shadow promises
+ * cover. This one kept the shadow and stayed walk-through.
+ */
+function ventGlyph(g: Graphics, _pad: ShadowPad, o: MapObject): void {
   const r = rect(o);
-  contact(pad, r, LIFT.flat);
-  const top = volume(g, r, MAT.steelDark, LIFT.flat);
-  const louvres = Math.max(3, Math.floor(top.h / 3));
+  inlay(g, r, MAT.steelDark.top);
+  const louvres = Math.max(3, Math.floor(r.h / 3));
   for (let i = 0; i < louvres; i += 1) {
-    const y = top.y + 1.2 + (i * (top.h - 2.4)) / louvres;
-    inlay(g, { x: top.x + 1.4, y, w: top.w - 2.8, h: 1.2 }, MAT.steelDeep.front);
+    const y = r.y + 1.2 + (i * (r.h - 2.4)) / louvres;
+    inlay(g, { x: r.x + 1.4, y, w: r.w - 2.8, h: 1.2 }, MAT.steelDeep.front);
   }
 }
 
@@ -1281,12 +1299,17 @@ function hvacGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   }
 }
 
-/** Roof glazing: bright, framed, and clearly a hole in the deck. */
-function skylightGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
+/**
+ * Roof glazing: bright, framed, and clearly a hole in the deck.
+ *
+ * A hole in a deck is the one thing that certainly does not stand proud of it, and
+ * this was drawing itself lifted five units with a shadow underneath — reading as a
+ * crate on the roof rather than a light well, and promising cover it does not give.
+ */
+function skylightGlyph(g: Graphics, _pad: ShadowPad, o: MapObject): void {
   const r = rect(o);
-  contact(pad, r, LIFT.seat);
-  const top = volume(g, r, MAT.steelDark, LIFT.seat, 1);
-  const glass = inset(top, 3);
+  inlay(g, r, MAT.steelDark.top, 1);
+  const glass = inset(r, 3);
   if (glass.w <= 2 || glass.h <= 2) return;
   inlay(g, glass, V.glass);
   const across = glass.w >= glass.h;

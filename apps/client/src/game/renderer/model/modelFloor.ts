@@ -1,5 +1,12 @@
 import { Container, Graphics } from "pixi.js";
-import { bandFromWall, FLAT_KINDS, isVehicleDoor, stairHalves } from "@dotbot/game/mapModel";
+import {
+  bandFromWall,
+  FLAT_KINDS,
+  isSolidObject,
+  isVehicleDoor,
+  stairHalves,
+  SURFACE_KINDS,
+} from "@dotbot/game/mapModel";
 import { pathOutline } from "@dotbot/game/geometry";
 import type { Building, Doorway, FloorPlan, MapObject, StairLink, Vec2, WallSegment, WindowBand } from "@dotbot/game/types";
 import { drawModelObject } from "./modelGlyphs";
@@ -10,6 +17,7 @@ import {
   inlay,
   jitter,
   LIFT,
+  markPassable,
   MAT,
   contactShape,
   occlude,
@@ -704,6 +712,11 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   for (const object of [...flat, ...standing]) {
     const g = new Graphics();
     drawModelObject(g, objectPad, object);
+    // Derived from the collider, not from a kind list — that disagreement is the bug
+    // this fixes. A surface is exempt because paint cannot be mistaken for cover.
+    if (!isSolidObject(object) && !SURFACE_KINDS.has(object.kind)) {
+      markPassable(g, { x: object.x, y: object.y, w: object.w, h: object.h });
+    }
     objects.addChild(g);
     objectViews.set(object.id, { object, view: g });
   }

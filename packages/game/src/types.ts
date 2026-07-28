@@ -239,7 +239,6 @@ export type ObjectKind =
   | "serverRack"
   | "shelf"
   | "produceDisplay"
-  | "floorTiles"
   | "filingCabinet"
   | "locker"
   | "crateStack"

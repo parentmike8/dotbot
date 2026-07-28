@@ -662,6 +662,42 @@ export function inlay(g: Graphics, r: Rect, color: number, radius = 0): void {
 }
 
 /**
+ * How much of the floor shows through something you can walk over.
+ *
+ * The point of a number this low is that it cannot be mistaken for a material. An
+ * earlier attempt at this made passable things *slightly* fainter and it did not
+ * read at play zoom — a subtle cue is no cue, and the one after that made the cue
+ * the ABSENCE of a cast shadow, which is weaker still: you have to notice something
+ * missing, find a neighbour to compare it against, and already know the rule.
+ */
+export const PASSABLE_ALPHA = 0.6;
+
+/**
+ * How far a passable thing is washed toward white, on top of being see-through.
+ *
+ * Transparency alone puts the floor's own tone through the object, and the floor is
+ * a mid grey — so a grey fixture at 60% over a grey slab is still a grey rectangle.
+ * The wash is what breaks it out of the material range entirely: hazed and bleached,
+ * the way something behind glass looks, which is a thing no solid in the game does.
+ */
+export const PASSABLE_WASH = 0.38;
+
+/**
+ * Mark a drawn object as something a bot walks straight through.
+ *
+ * Applied from the collider — `!isSolidObject(object)` — and never from a list of
+ * kinds, which is the whole reason it exists. Three glyphs had been drawing an
+ * extruded box with a cast shadow while the sim let bots walk through them, and a
+ * comment three files away asserted the opposite was true. Deriving the treatment
+ * from the same predicate the physics uses means the drawing cannot disagree with
+ * what you can walk through, and a new passable kind gets the treatment for free.
+ */
+export function markPassable(g: Graphics, r: Rect): void {
+  g.alpha = PASSABLE_ALPHA;
+  g.rect(r.x, r.y, r.w, r.h).fill({ color: 0xffffff, alpha: PASSABLE_WASH });
+}
+
+/**
  * A recessed seam — the dark hairline that says "two panels meet here". Reads
  * as construction rather than annotation, which is why detail lives in seams
  * and cast shadow instead of the hatch marks the old system used.

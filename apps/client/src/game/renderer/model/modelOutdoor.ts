@@ -1,7 +1,7 @@
 import { Container, Graphics } from "pixi.js";
 import type { MapDocument, Rect, Surface } from "@dotbot/game/types";
 import { pathOutline } from "@dotbot/game/geometry";
-import { FLAT_KINDS } from "@dotbot/game/mapModel";
+import { FLAT_KINDS, isSolidObject, SURFACE_KINDS } from "@dotbot/game/mapModel";
 import { capsuleRuns } from "./modelWalls";
 import { isAcross, outwardBand, perimeterEntrances } from "./entrances";
 import { drawModelObject } from "./modelGlyphs";
@@ -11,6 +11,7 @@ import {
   contactShape,
   inlay,
   jitter,
+  markPassable,
   MAT,
   occlude,
   shade,
@@ -563,6 +564,9 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   for (const object of [...map.outdoor.objects].sort((a, b) => a.y + a.h - (b.y + b.h))) {
     const g = new Graphics();
     drawModelObject(g, pad, object);
+    if (!isSolidObject(object) && !SURFACE_KINDS.has(object.kind)) {
+      markPassable(g, { x: object.x, y: object.y, w: object.w, h: object.h });
+    }
     if (FLAT_KINDS.has(object.kind)) markings.push(g);
     else if (object.solid === false) passable.push(g);
     else {

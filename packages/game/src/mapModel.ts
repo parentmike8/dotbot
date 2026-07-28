@@ -183,7 +183,23 @@ export const MIN_DOT_SEPARATION = 64;
 
 /** Floor coverings: drawn flat, never collide, never drawn over furniture. */
 export const FLAT_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
-  "floorTiles", "parkingStall", "pallet", "rug", "skylight", "vent",
+  "parkingStall", "pallet", "rug", "skylight", "vent",
+]);
+
+/**
+ * The flat kinds that are SURFACE rather than fixture — paint and floor covering.
+ *
+ * This is a drawing distinction, not a physics one, and it earns its place by being on
+ * a different axis from everything above. Whether a bot can walk through something is
+ * `isSolidObject`, and the renderer's see-through-and-washed treatment is derived from
+ * that predicate alone so the two can never disagree again. But paint on tarmac and a
+ * rug on a slab cannot be MISTAKEN for cover in the first place, so washing them out
+ * would only bleach a deliberate accent and fade lines that are already just lines.
+ *
+ * So: everything non-solid is marked, except the things drawn as the ground itself.
+ */
+export const SURFACE_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
+  "parkingStall", "rug",
 ]);
 
 export function isSolidObject(object: MapObject): boolean {

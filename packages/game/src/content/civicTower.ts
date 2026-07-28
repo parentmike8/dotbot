@@ -703,7 +703,13 @@ export const CIVIC_SOURCE: SourceBuilding = {
          * 1492..2028 x 132..528 inner face. `object-off-floor` now fails the map if
          * anything reaches past an elevation again.
          */
-        { id: "civic-roof-planter", kind: "planter", x: 1994, y: 400, w: 30, h: 90, solid: false },
+        /**
+         * Solid, like every other planter. It carried `solid: false` with no reason
+         * recorded, which is the ghost pattern #45 and #46 cleared everywhere else: a
+         * 30x90 concrete box that a bot walked through while casting a shadow onto the
+         * deck. The renderer's passable check found it — nothing on the map had.
+         */
+        { id: "civic-roof-planter", kind: "planter", x: 1994, y: 400, w: 30, h: 90 },
         { id: "civic-roof-table", kind: "table", x: 1900, y: 380, w: 48, h: 48 },
         { id: "civic-roof-chair-w", kind: "chair", x: 1876, y: 392, w: 20, h: 20, facing: "E" },
         { id: "civic-roof-chair-e", kind: "chair", x: 1952, y: 392, w: 20, h: 20, facing: "W" },
