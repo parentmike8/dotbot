@@ -159,7 +159,7 @@ There is no plain currency dot: powerups ARE the currency — you consume them a
 ## 13. Open Questions (with owner rulings, July 2026)
 
 1. **Plain currency dot visual**: RESOLVED — there is no plain currency dot. Powerups are the currency; you consume them as currency.
-2. **Voice channels**: DEFERRED — decide later. The alternative is click-to-mark pings (mark enemy, move here, loot here, etc.).
+2. **Voice channels**: RESOLVED against (2026-07-28) — **click-to-mark pings instead**, and build them now. Left-click pings for your squad using the most recently chosen type; right-click opens the type picker, and choosing a type both fires that ping there and makes it the new left-click default. Three or four plain types (go here / enemy / loot). Owner's words: "Definitely, I like pings."
 3. **Extraction infrastructure**: extraction stays neutral (the three pads). A base-built squad-only extraction beacon was floated but flagged as edging toward pay-to-escape. Not critical right now; do not build.
-4. **Base visiting scope** (squad-only vs friends): not critical right now.
+4. **Base visiting scope** (squad-only vs friends): RESOLVED (2026-07-28) — **squad only**. But the base needs a pass of its own before visiting matters at all: the owner is not happy with it, and it needs a new-player introduction where you start in a room, learn the controls, fight a practice bot to open the door into your own base, and are then shown deploying and what the objects do — briefly, because figuring some of it out is the point.
 5. **Naming**: "bays" (active 4) and "hold" (storage) are working names; "game tray" retired.

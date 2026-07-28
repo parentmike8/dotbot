@@ -64,7 +64,7 @@ The milestone that matters. No DB, no auth beyond a name, no prediction, no inte
 - **Powerups are the currency** (owner ruling on open Q1 — no plain currency dot): orange glyph family — cross (health/plate restore), concentric arcs (radar), chevron (dash overcharge), dashed outline (incognito/muffle). Stored-and-fired items, not instant-on-capture. Legacy identity-colored dots and the `DOT` palette in `content/downtown.ts` retired.
 - **Blueprints** (blue plan-tick glyph): spawn tables driven by the existing `scannable` flags — blueprint dots anchor to their real object (beds at Mercy, racks at Civic, forklift at Lot 6). 2–4 extracted copies = permanently learned. Carried copies lootable; learned unlosable.
 - **Bays(4) + Hold(~12)**: hold as backpack storage; mid-run bay⇄hold swap is a noisy channel; free at base. Everything carried lootable on consume; extraction/deposit channel time scales with load. (Naming "bays" flagged — revisit.)
-- Diegetic dot legend on the pause screen, drawn as a title-block key.
+- ~~Diegetic dot legend on the pause screen, drawn as a title-block key.~~ **CUT (2026-07-28).** The in-game legend was deleted for the same reason: the Dots already carry their own glyphs, so a key is a second place to state what the world states. Owner: "We already have glyphs on the dots... You just delete the legend."
 - Ambient AI made genuinely "dumb obstacle" (no loot/extract/revive verbs for greys); red stand-in squads keep full behavior.
 
 ### M5 — Base-as-menu (spec §2)
