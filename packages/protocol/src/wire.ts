@@ -233,7 +233,7 @@ export function fromWireEvent(event: WireSimEvent): SimEvent {
   if (event.type === "hit") {
     return {
       ...event,
-      result: event.result ?? "bodyHit",
+      result: event.result ?? "plateBreak",
       position: event.position ?? { x: 0, y: 0 },
       direction: event.direction ?? { x: 0, y: 0 },
       tick: event.tick ?? 0,

@@ -27,7 +27,7 @@ import { canTakeFromBody, interactionDotReach, withinDownedCoverRange, withinInt
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, hasRoom, insertItem, removeCarriedAt } from "./inventory";
-import { applyShieldHit, platesForCount, plateSum, restoreShieldPlate, shatterNearestIntactPlate } from "./shields";
+import { applyArmourHit, platesForCount, plateSum, restoreShieldPlate } from "./shields";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import { hasLineOfSight } from "./visibility";
 import type {
@@ -811,13 +811,15 @@ export class DotBotSimulation {
 
   private detonateMine(mine: InternalMine, target: InternalBot): void {
     this.mines.delete(mine.id);
+    // A mine reads exactly like any other hit: the arc it goes off in takes it, or
+    // it reaches the core. One rule, so a mine can never do what a dash cannot.
     const impactAngle = Math.atan2(mine.position.y - target.position.y, mine.position.x - target.position.x);
-    const shattered = shatterNearestIntactPlate(target.facing, target.shieldSegments, impactAngle);
+    const armourHit = applyArmourHit(target.facing, target.shieldSegments, impactAngle);
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation);
 
-    if (shattered === null || target.shields <= 0) {
+    if (armourHit.core) {
       target.shieldSegments = platesForCount(target.maxShields, 0);
       target.shields = 0;
       target.state = "downed";
@@ -1607,15 +1609,15 @@ export class DotBotSimulation {
       return false;
     }
 
-    // A hit on a live plate shatters it; a hit on bare body cracks the
-    // nearest surviving plate by half (see shields.ts for the model).
+    // The hit lands in one plate's arc. A live plate breaks; a broken arc is not
+    // there any more, so the hit reaches the core (see shields.ts for the model).
     const impactAngle = Math.atan2(source.position.y - target.position.y, source.position.x - target.position.x);
-    const shieldHit = applyShieldHit(target.facing, target.shieldSegments, impactAngle);
+    const armourHit = applyArmourHit(target.facing, target.shieldSegments, impactAngle);
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     this.emitNoise("impact", target.position, target.floorId, NOISE_LOUDNESS.impact);
     const away = { x: -Math.cos(impactAngle), y: -Math.sin(impactAngle) };
-    const result = target.shields <= 0 ? "downed" : shieldHit.direct ? "plateBreak" : "bodyHit";
+    const result = armourHit.core ? "downed" : "plateBreak";
     // A dedicated acknowledgement lets the attacking client correlate its
     // instant predicted contact with the exact authoritative result. It also
     // carries the presentation normal so clients never wait on a later
@@ -1633,7 +1635,9 @@ export class DotBotSimulation {
       tick: this.tickCount,
     });
 
-    if (target.shields <= 0) {
+    if (armourHit.core) {
+      // Losing every plate is not what puts a bot down — being hit where a plate
+      // used to be is. A stripped bot can still run, still extract, still be saved.
       target.state = "downed";
       target.dashActiveMs = 0;
       target.velocity = zeroVec();

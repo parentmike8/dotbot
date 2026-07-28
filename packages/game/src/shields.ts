@@ -6,10 +6,16 @@
  * the body, anchored to the bot's facing, with plate 0 centered dead ahead.
  * Each plate is 1 (intact), 0.5 (cracked), or 0 (broken).
  *
- * Damage model: a qualifying hit landing ON a live plate shatters it outright;
- * a hit landing on bare body (a gap, or a broken plate's zone) rattles the
- * frame and cracks the nearest surviving plate by half. No posture grants
- * immunity — angling plates away from a threat halves damage, never voids it.
+ * Damage model: every hit lands in exactly one plate's arc. A live plate takes it
+ * and breaks. A plate that has already broken is not there any more, so the hit
+ * reaches the core — and a hit on the core puts the bot down, however many plates
+ * are still standing elsewhere.
+ *
+ * Losing your plates is therefore not the same as going down. A bot with nothing
+ * left is naked and one hit from anywhere ends it, but it can still run, still
+ * extract, and still be saved. And a bot with two good plates can be dropped by
+ * one hit through the arc where its third used to be: hard to land, and meant to
+ * be — it is the closest thing this game has to a headshot.
  *
  * After every hit the surviving plating re-seats best-first, so the strongest
  * plate always leads the direction of travel and the weakest trails. Players
@@ -58,18 +64,21 @@ export function shieldZoneAt(facing: number, maxShields: number, impactAngle: nu
   return null;
 }
 
-/** The surviving plate angularly nearest to the impact, or null if none live. */
-export function nearestLivePlate(facing: number, segments: number[], impactAngle: number): number | null {
+/**
+ * Which plate's arc this impact belongs to — seams included.
+ *
+ * `shieldZoneAt` returns null between plates, and those gaps are a drawing seam
+ * rather than a hole in the armour. Under the core rule that distinction stops
+ * being cosmetic: treating a seam as bare body would let a fully plated bot be
+ * dropped through fourteen degrees of nothing. A seam belongs to its nearer plate.
+ */
+export function coveringPlate(facing: number, maxShields: number, impactAngle: number): number {
   const delta = normalizeAngle(impactAngle - facing);
-  let best: number | null = null;
+  let best = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
 
-  for (let index = 0; index < segments.length; index += 1) {
-    if (segments[index] <= 0) {
-      continue;
-    }
-
-    const center = normalizeAngle((index * TWO_PI) / segments.length);
+  for (let index = 0; index < maxShields; index += 1) {
+    const center = normalizeAngle((index * TWO_PI) / maxShields);
     const distance = Math.abs(normalizeAngle(delta - center));
 
     if (distance < bestDistance) {
@@ -81,16 +90,6 @@ export function nearestLivePlate(facing: number, segments: number[], impactAngle
   return best;
 }
 
-/** Shatter the intact plate nearest an impact. Cracked plates do not count as intact. */
-export function shatterNearestIntactPlate(facing: number, segments: number[], impactAngle: number): number | null {
-  const intactOnly = segments.map((segment) => segment === 1 ? segment : 0);
-  const nearest = nearestLivePlate(facing, intactOnly, impactAngle);
-  if (nearest === null) return null;
-  segments[nearest] = 0;
-  reseatPlates(segments);
-  return nearest;
-}
-
 /** Fresh plate array with the first `count` plates intact. */
 export function platesForCount(maxShields: number, count: number): number[] {
   return Array.from({ length: maxShields }, (_, index) => (index < count ? 1 : 0));
@@ -100,11 +99,11 @@ export function plateSum(segments: number[]): number {
   return segments.reduce((total, value) => total + value, 0);
 }
 
-export type ShieldHit = {
-  /** Position that absorbed the damage (pre-re-seat). Null when none survive. */
-  plate: number | null;
-  /** True when the hit shattered a plate outright (landed on it). */
-  direct: boolean;
+export type ArmourHit = {
+  /** The plate whose arc the hit landed in, before any re-seat. */
+  plate: number;
+  /** That arc was already broken, so the hit reached the core. */
+  core: boolean;
 };
 
 /** Re-seat plates best-first so the strongest always leads the facing. */
@@ -124,25 +123,22 @@ export function restoreShieldPlate(segments: number[]): void {
 }
 
 /**
- * Apply one qualifying hit to a plate array, mutating it. The surviving
- * plating re-seats best-first afterward. Returns what happened so callers
- * can drive effects/telemetry.
+ * Apply one qualifying hit, mutating the plate array. The surviving plating
+ * re-seats best-first afterward, so a broken arc drifts to the back of a bot that
+ * keeps moving toward the threat — which is what makes facing a defence and makes
+ * running away expose the side you cannot afford to show.
+ *
+ * A core hit changes nothing here. There is nothing left in that arc to damage;
+ * the caller puts the bot down.
  */
-export function applyShieldHit(facing: number, segments: number[], impactAngle: number): ShieldHit {
-  const zone = shieldZoneAt(facing, segments.length, impactAngle);
+export function applyArmourHit(facing: number, segments: number[], impactAngle: number): ArmourHit {
+  const plate = coveringPlate(facing, segments.length, impactAngle);
 
-  if (zone !== null && segments[zone] > 0) {
-    segments[zone] = 0;
-    reseatPlates(segments);
-    return { plate: zone, direct: true };
+  if (segments[plate] <= 0) {
+    return { plate, core: true };
   }
 
-  const nearest = nearestLivePlate(facing, segments, impactAngle);
-
-  if (nearest !== null) {
-    segments[nearest] = Math.max(0, segments[nearest] - 0.5);
-  }
-
+  segments[plate] = 0;
   reseatPlates(segments);
-  return { plate: nearest, direct: false };
+  return { plate, core: false };
 }

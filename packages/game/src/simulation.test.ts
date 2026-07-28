@@ -687,10 +687,13 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("turns a bot downed after a damaging Dash collision", async () => {
+  it("breaks a plate with the first dash and the core with the second", async () => {
+    // One plate covers every angle, so this is the shortest possible fight: the
+    // dash that lands on the plate breaks it and leaves the bot up, and only the
+    // hit that finds the arc where the plate used to be puts it down.
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
-      enemySpawn({ position: { x: 156, y: 180 }, maxShields: 1, shields: 1 }),
+      enemySpawn({ position: { x: 156, y: 180 }, maxShields: 1, shields: 1, controller: "frozen" }),
     ]);
 
     simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
@@ -698,9 +701,16 @@ describe("DotBotSimulation", () => {
     simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
     runTicks(simulation, 18);
 
+    const stripped = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy");
+    // Naked, and still standing. That is the whole point of the change.
+    expect(stripped?.shields).toBe(0);
+    expect(stripped?.state).toBe("alive");
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    runTicks(simulation, 20);
+
     const enemy = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy");
     expect(enemy?.state).toBe("downed");
-    expect(enemy?.shields).toBe(0);
     simulation.dispose();
   });
 
@@ -1424,21 +1434,22 @@ describe("DotBotSimulation", () => {
   });
 
   it("drains downed, revived, and looted events from a scripted fight", async () => {
-    // The player dashes WESTWARD into the enemy's forward plate (bots face
-    // east by default): one dash, one full shatter, one down — a rear
-    // approach would half-crack and need a second dash cycle.
+    // The player dashes WESTWARD into the enemy's one plate: the first dash breaks
+    // it and the next reaches the core underneath. Losing the plate is not the
+    // down — being hit where it used to be is.
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 156, y: 180 }, bays: testBays(1), hold: [] }),
       enemySpawn({ position: { x: 100, y: 180 }, maxShields: 1, shields: 1, bays: testBays(2), hold: [] }),
     ]);
     simulation.setController("enemy", "frozen");
 
-    simulation.applyInput("player", { move: { x: -1, y: 0 }, dash: true });
-    for (let tick = 0; tick < 18; tick += 1) {
-      simulation.step();
-      if (simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state === "downed") {
-        break;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      simulation.applyInput("player", { move: { x: -1, y: 0 }, dash: true });
+      for (let tick = 0; tick < 24; tick += 1) {
+        simulation.step();
+        if (simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state === "downed") break;
       }
+      if (simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state === "downed") break;
     }
     simulation.removeBot("enemy");
     simulation.setController("player", "frozen");
@@ -1727,7 +1738,7 @@ describe("combat lag compensation", () => {
       type: "hit",
       botId: "victim",
       byBotId: "player",
-      result: "bodyHit",
+      result: "plateBreak",
       tick: expect.any(Number),
       position: expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
       direction: expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),

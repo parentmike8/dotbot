@@ -150,6 +150,32 @@ Still to decide:
 
 Plates are not separate contraband equipment. The Plate Carrier is the equipment; Plates are its active protection during a run.
 
+**What puts a bot down: a hit on the Core.**
+
+Every hit lands in exactly one Plate's arc. A live Plate takes it and breaks. A
+Plate that has already broken is not there any more, so the hit reaches the Core —
+and a hit on the Core puts the bot down, however many Plates are still standing
+elsewhere. The seams between Plates are a drawing detail and belong to the nearer
+Plate; there is no fourteen-degree hole in a full carrier.
+
+Losing your Plates is therefore not the same as going down. A stripped bot is naked
+and one hit from any angle ends it, but it can still run, still extract, and still
+be picked up — a state with its own tension, where before it was just a synonym for
+dead. And a bot with two good Plates can be dropped by one hit through the arc where
+its third used to be. That is meant to be hard to land: it is the closest thing this
+game has to a headshot.
+
+This is what makes position a defence rather than a decoration. Plates re-seat
+best-first after every hit, so the strongest always leads the direction of travel:
+face a threat and your good Plate eats the hit, run from one and you show it the
+side you cannot afford to show. Head-on, the default carrier takes four hits. From
+behind a broken arc, two.
+
+*Was:* losing your last Plate was itself the down, which made the third Plate a
+third hit point and made where you were hit irrelevant at the only moment it
+mattered. It also meant the cracked Core drawn on a body was a lie — bots went down
+with the Core untouched.
+
 ### 4.4 Dots
 
 **DECIDED DIRECTION**

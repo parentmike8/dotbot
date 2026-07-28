@@ -14,11 +14,14 @@ const preferences: FeedbackPreferences = {
 
 describe("impact feedback", () => {
   it("keeps observers silent while making downs strongest", () => {
+    // Two outcomes left now that a hit either breaks a plate or breaks the core,
+    // and the down has to be the one you feel.
     expect(impactHapticDuration("plateBreak", "observer")).toBe(0);
+    expect(impactHapticDuration("downed", "observer")).toBe(0);
     expect(impactHapticDuration("downed", "attacker"))
       .toBeGreaterThan(impactHapticDuration("plateBreak", "attacker"));
-    expect(impactHapticDuration("plateBreak", "attacker"))
-      .toBeGreaterThan(impactHapticDuration("bodyHit", "attacker"));
+    expect(impactHapticDuration("downed", "victim"))
+      .toBeGreaterThan(impactHapticDuration("plateBreak", "victim"));
   });
 
   it("holds a fresh cue until asynchronous audio startup finishes", async () => {

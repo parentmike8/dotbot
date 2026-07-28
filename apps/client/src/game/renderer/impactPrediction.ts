@@ -1,4 +1,4 @@
-import { applyShieldHit, plateSum } from "@dotbot/game/shields";
+import { applyArmourHit, plateSum } from "@dotbot/game/shields";
 import type { GameSnapshot, HitResult, Vec2 } from "@dotbot/game/types";
 import type { PredictedImpact } from "../session/GameSession";
 
@@ -23,12 +23,10 @@ export const impactReactionDurationMs = 150;
 
 export function classifyPredictedImpact(snapshot: GameSnapshot, impact: Pick<PredictedImpact, "targetId" | "x" | "y">): HitResult {
   const target = snapshot.bots.find((bot) => bot.id === impact.targetId);
-  if (!target || target.state !== "alive") return "bodyHit";
+  if (!target || target.state !== "alive") return "plateBreak";
   const segments = [...target.shieldSegments];
   const impactAngle = Math.atan2(impact.y - target.position.y, impact.x - target.position.x);
-  const hit = applyShieldHit(target.facing, segments, impactAngle);
-  if (plateSum(segments) <= 0) return "downed";
-  return hit.direct ? "plateBreak" : "bodyHit";
+  return applyArmourHit(target.facing, segments, impactAngle).core ? "downed" : "plateBreak";
 }
 
 export function predictedImpactDirection(
@@ -86,7 +84,7 @@ export function applyPredictedImpactOverlays(
       impact.baselineShieldSegments = [...target.shieldSegments];
       impact.predictedShieldSegments = [...target.shieldSegments];
       const impactAngle = Math.atan2(impact.y - target.position.y, impact.x - target.position.x);
-      applyShieldHit(target.facing, impact.predictedShieldSegments, impactAngle);
+      applyArmourHit(target.facing, impact.predictedShieldSegments, impactAngle);
     }
 
     // A real server result has arrived. Never apply the speculative hit again

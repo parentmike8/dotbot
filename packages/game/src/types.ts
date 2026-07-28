@@ -121,7 +121,15 @@ export type MineEntity = GameEntity & {
   seam?: boolean;
 };
 
-export type HitResult = "plateBreak" | "bodyHit" | "downed";
+/**
+ * What a landed hit did. Two outcomes, because a hit lands in exactly one plate's
+ * arc: the plate broke, or there was no plate there and the core did.
+ *
+ * There used to be a third, `bodyHit` — a hit on bare body that cracked the
+ * nearest surviving plate by half, so damage was never wasted and position never
+ * decided anything. Nothing produces it now.
+ */
+export type HitResult = "plateBreak" | "downed";
 
 export type SimEvent =
   | {
