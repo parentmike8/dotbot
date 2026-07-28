@@ -9,6 +9,7 @@ import { useDownedPrompts } from "../downed/useDownedPrompts";
 import {
   BayBank, DebugPanel, FloorRail, HoldPicker, RunReadout, SettingsPanel, TouchControls,
 } from "../hud/Overlay";
+import { hudSkinClass } from "../hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "../hud/hud";
 
 type NetGameViewProps = {
@@ -58,7 +59,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
 
   return (
     <main
-      className="app-shell net-game"
+      className={`app-shell net-game ${hudSkinClass()}`}
       data-room-code={roomCode}
       data-player-id={session.playerId}
       data-player-state={player?.state ?? "loading"}

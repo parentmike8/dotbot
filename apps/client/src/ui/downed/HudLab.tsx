@@ -6,6 +6,7 @@ import { bodyPrompt, downedSelf, type BodyPrompt, type DownedSelf } from "./prom
 import { BodyPromptView, DownedSelfView } from "./DownedPrompts";
 import { BayBank, FloorRail, HoldPicker, RunReadout, SettingsPanel } from "../hud/Overlay";
 import { floorColumn } from "../hud/hud";
+import { hudSkinClass } from "../hud/overlaySkins";
 import { FeedbackControls } from "../FeedbackControls";
 
 /**
@@ -192,7 +193,8 @@ export function HudLab() {
         <button type="button" aria-pressed={panel === "settings"} onClick={() => setPanel(panel === "settings" ? "none" : "settings")}>settings</button>
       </nav>
       <p className="hud-lab-note">{pose.note}</p>
-      <div className="hud-lab-stage">
+      {/* The stage carries the shipping skin, or this lab reviews an overlay nobody sees. */}
+      <div className={`hud-lab-stage ${hudSkinClass()}`}>
         {corners ? (
           <>
             <RunReadout remainingRunMs={252_000} rivals={7} onSettings={() => setPanel("settings")}>

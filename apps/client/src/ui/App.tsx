@@ -11,6 +11,7 @@ import { useDownedPrompts } from "./downed/useDownedPrompts";
 import {
   BayBank, DebugPanel, FloorRail, HoldPicker, RunReadout, SettingsPanel, TouchControls,
 } from "./hud/Overlay";
+import { hudSkinClass } from "./hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "./hud/hud";
 
 const coachFadeAtMs = 12_000;
@@ -52,7 +53,7 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
 
   return (
     <main
-      className="app-shell"
+      className={`app-shell ${hudSkinClass()}`}
       aria-label="DotBot playable sandbox"
       data-player-state={player?.state ?? "loading"}
       data-player-x={player ? Math.round(player.position.x) : undefined}

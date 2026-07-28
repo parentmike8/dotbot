@@ -1636,13 +1636,23 @@ button {
 
 /* A flat mid tone: light enough for the panels' glass to read, dark enough that a
    hairline on white is not being judged against white. */
+/**
+ * Both grounds, and its own frame.
+ *
+ * It was a single pale slab, which is exactly the blind spot the skins page exposed: an
+ * overlay can read perfectly over interior floor and be unreadable over the road in the
+ * same frame. So the stage is slab above and asphalt below, like the skin previews.
+ *
+ * The border is a literal because the stage now carries a skin, and a skin is entitled to
+ * set `--hairline: transparent` — which would take the lab's own frame with it.
+ */
 .hud-lab-stage {
   position: relative;
   flex: 1;
   min-height: 420px;
   overflow: hidden;
-  border: 1px solid var(--hairline);
-  background: #e9ecef;
+  border: 1px solid #b9bec4;
+  background: linear-gradient(#eceef0 0 62%, #b9bec4 62% 64%, #7c8288 64% 100%);
 }
 
 /* Recently-opened buildings, above the full list. Quieter than the list itself: it is a
@@ -1779,7 +1789,7 @@ button {
    A is byte-for-byte the option that won, kept as the baseline to judge against.
    --------------------------------------------------------------------------- */
 
-.skin-glass {
+.hud-skin {
   --ink: #f3f5f7;
   --panel: rgba(18, 21, 24, .62);
   --panel-glass: rgba(18, 21, 24, .55);
@@ -1790,13 +1800,13 @@ button {
 }
 
 /** Everything that is a pane. Collected once so a variant overrides one list. */
-.skin-glass .hud-plate,
-.skin-glass .bay-bank,
-.skin-glass .run-readout,
-.skin-glass .restart-button,
-.skin-glass .settings-button,
-.skin-glass .bay-button,
-.skin-glass .swap-control {
+.hud-skin .hud-plate,
+.hud-skin .bay-bank,
+.hud-skin .run-readout,
+.hud-skin .restart-button,
+.hud-skin .settings-button,
+.hud-skin .bay-button,
+.hud-skin .swap-control {
   border-radius: 5px;
   backdrop-filter: blur(10px) saturate(.9);
 }
@@ -1807,14 +1817,39 @@ button {
  * "two numbers do not need a panel" — which only holds while the ink is dark. In light
  * ink on a pale interior slab the clock and the headcount vanished completely.
  */
-.skin-glass .run-readout {
+.hud-skin .run-readout {
   padding: 6px 9px;
   border: 1px solid var(--hairline);
   background: var(--panel-glass);
 }
 
-.skin-glass .joystick { background: rgba(18, 21, 24, .52); }
-.skin-glass .joystick.active { background: rgba(18, 21, 24, .7); }
+.hud-skin .joystick { background: rgba(18, 21, 24, .52); }
+.hud-skin .joystick.active { background: rgba(18, 21, 24, .7); }
+
+/**
+ * The downed prompts get a pane, and this is the same lesson as the readout above.
+ *
+ * They carry no background on purpose — bare words over the world — and #48 fixed them by
+ * DARKENING the ink so they survived a pale floor. Inverting the ink puts light text
+ * straight back onto a near-white slab, which is precisely the bug play reported. Light
+ * ink cannot float, so under a skin these become panes like everything else.
+ */
+.hud-skin .prompt-title,
+.hud-skin .prompt-line,
+.hud-skin .floor-rail {
+  padding: 5px 9px;
+  border-radius: 5px;
+  background: var(--panel-glass);
+  backdrop-filter: blur(10px) saturate(.9);
+}
+
+/**
+ * Third unplated surface, and the last: the floor rail was the quietest thing in the
+ * overlay by design — the building name at 7px in `--muted-strong` — which becomes
+ * invisible the moment that tone goes light. Reviewing this in the lab over BOTH grounds
+ * is what caught it; over the dark half alone all three would have looked fine.
+ */
+.hud-skin .floor-rail { padding: 8px 10px; }
 
 /**
  * The dash ring fills with `--ink`, which is right exactly once: while the ink is
@@ -1822,16 +1857,16 @@ button {
  * blob instead of a level. The accent is the honest fill, and it is the cyan already
  * under the joystick knob, so charge and "you" are the same colour.
  */
-.skin-glass .dash-button {
+.hud-skin .dash-button {
   background:
     conic-gradient(var(--squad-cyan) calc(var(--dash-progress) * 1turn), var(--paper) 0),
     var(--paper);
   color: #eef1f4;
 }
 
-.skin-glass .bay-button:not(:disabled):hover,
-.skin-glass .restart-button:hover,
-.skin-glass .settings-button:hover {
+.hud-skin .bay-button:not(:disabled):hover,
+.hud-skin .restart-button:hover,
+.hud-skin .settings-button:hover {
   border-color: rgba(255, 255, 255, .5);
   color: #fff;
 }
@@ -1844,26 +1879,26 @@ button {
    allowed to claim that no object in the world may.
    --------------------------------------------------------------------------- */
 
-.skin-v-deep {
+.hud-skin-deep {
   --panel: rgba(14, 16, 19, .8);
   --panel-glass: rgba(14, 16, 19, .74);
   --hairline: transparent;
 }
 
-.skin-v-deep .hud-plate,
-.skin-v-deep .bay-bank,
-.skin-v-deep .run-readout,
-.skin-v-deep .restart-button,
-.skin-v-deep .settings-button,
-.skin-v-deep .bay-button,
-.skin-v-deep .swap-control {
+.hud-skin-deep .hud-plate,
+.hud-skin-deep .bay-bank,
+.hud-skin-deep .run-readout,
+.hud-skin-deep .restart-button,
+.hud-skin-deep .settings-button,
+.hud-skin-deep .bay-button,
+.hud-skin-deep .swap-control {
   border-color: transparent;
   border-radius: 9px;
   backdrop-filter: blur(18px) saturate(.85);
   box-shadow: 0 6px 20px rgba(0, 0, 0, .34);
 }
 
-.skin-v-deep .bay-button:not(:disabled):hover { background: rgba(30, 34, 39, .86); }
+.hud-skin-deep .bay-button:not(:disabled):hover { background: rgba(30, 34, 39, .86); }
 
 /* --- C · Rimlit: one lit edge, from the same light as the world --------------
    The world has ONE light, north and slightly west, and every face in it is shaded
@@ -1873,19 +1908,19 @@ button {
    actual sheets with a thickness, lit by the same sun as the building below them.
    --------------------------------------------------------------------------- */
 
-.skin-v-rim {
+.hud-skin-rim {
   --panel: rgba(16, 19, 22, .68);
   --panel-glass: rgba(16, 19, 22, .6);
   --hairline: transparent;
 }
 
-.skin-v-rim .hud-plate,
-.skin-v-rim .bay-bank,
-.skin-v-rim .run-readout,
-.skin-v-rim .restart-button,
-.skin-v-rim .settings-button,
-.skin-v-rim .bay-button,
-.skin-v-rim .swap-control {
+.hud-skin-rim .hud-plate,
+.hud-skin-rim .bay-bank,
+.hud-skin-rim .run-readout,
+.hud-skin-rim .restart-button,
+.hud-skin-rim .settings-button,
+.hud-skin-rim .bay-button,
+.hud-skin-rim .swap-control {
   border: none;
   border-radius: 4px;
   backdrop-filter: blur(13px) saturate(.88);
@@ -1897,7 +1932,7 @@ button {
     inset 0 -1px rgba(0, 0, 0, .34);
 }
 
-.skin-v-rim .bay-button strong { text-shadow: 0 1px 1px rgba(0, 0, 0, .5); }
+.hud-skin-rim .bay-button strong { text-shadow: 0 1px 1px rgba(0, 0, 0, .5); }
 
 /* --- D · Accent: glass with colour only where it means something -------------
    A's transparency and A's restraint, with the squad cyan let in on exactly the
@@ -1906,12 +1941,12 @@ button {
    the colour reads as information or as decoration.
    --------------------------------------------------------------------------- */
 
-.skin-v-accent .bay-bank { border-top: 2px solid var(--squad-cyan); }
-.skin-v-accent .bay-button small { color: var(--squad-cyan); }
-.skin-v-accent .hold-chip strong { color: var(--squad-cyan); }
-.skin-v-accent .run-readout dt { color: var(--squad-cyan); }
+.hud-skin-accent .bay-bank { border-top: 2px solid var(--squad-cyan); }
+.hud-skin-accent .bay-button small { color: var(--squad-cyan); }
+.hud-skin-accent .hold-chip strong { color: var(--squad-cyan); }
+.hud-skin-accent .run-readout dt { color: var(--squad-cyan); }
 
-.skin-v-accent .bay-button:not(:disabled):hover {
+.hud-skin-accent .bay-button:not(:disabled):hover {
   border-color: var(--squad-cyan);
   color: #fff;
 }
