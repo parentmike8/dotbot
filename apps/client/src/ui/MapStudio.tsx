@@ -20,6 +20,8 @@ import {
   pendingCount,
   rebuildMap,
   saveSession,
+  undo,
+  undoTarget,
   type Handle,
   type Tool,
 } from "../studio/editing";
@@ -85,6 +87,31 @@ export function MapStudio() {
       setStatus({ tone: "warn", text: (error as Error).message });
     }
   }, [building, session]);
+
+  /**
+   * Take back the last edit, wherever it was made.
+   *
+   * It switches the view to the building being unwound. Undoing something on a floor you
+   * cannot see would look like nothing happening, which is worse than no undo — and
+   * `undoTarget` knows which building it is, so there is no reason to guess.
+   *
+   * Selection is cleared because the thing selected may be the thing that just stopped
+   * existing, and an inspector pointing at a deleted id is the sort of stale handle that
+   * throws two clicks later.
+   */
+  const takeBack = useCallback(() => {
+    const result = undo(session);
+    if (!result) {
+      setStatus({ tone: "idle", text: "Nothing to undo." });
+      return;
+    }
+    setBuilding(result.building);
+    setSelection(null);
+    setDraft([]);
+    setPending(pendingCount(session));
+    setRevision((value) => value + 1);
+    setStatus({ tone: "idle", text: `Undid one edit in ${result.building}.` });
+  }, [session]);
 
   // -------------------------------------------------------------------------
   // Canvas
@@ -173,6 +200,15 @@ export function MapStudio() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+      /**
+       * Before the selection guard, because undo has to work when nothing is selected —
+       * which is most of the time, and always right after a delete.
+       */
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        takeBack();
+        return;
+      }
       if (event.key === "Escape") {
         setDraft([]);
         setTool("select");
@@ -208,7 +244,7 @@ export function MapStudio() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selection, grid, source, record]);
+  }, [selection, grid, source, record, takeBack]);
 
   const finishWall = useCallback(() => {
     if (draft.length < 2 || !source) {
@@ -368,6 +404,7 @@ export function MapStudio() {
 
         <section className="studio__save">
           <div className="studio__row">
+            <button type="button" onClick={takeBack} disabled={!undoTarget(session)}>Undo</button>
             <button type="button" className="primary" onClick={() => void save()} disabled={!pending}>
               Save{pending ? ` (${pending})` : ""}
             </button>
@@ -433,7 +470,7 @@ export function MapStudio() {
           <h2>Keys</h2>
           <ul className="studio__keys">
             <li><kbd>drag</kbd> move · <kbd>arrows</kbd> nudge · <kbd>shift</kbd> ×4</li>
-            <li><kbd>del</kbd> remove · <kbd>esc</kbd> cancel</li>
+            <li><kbd>del</kbd> remove · <kbd>esc</kbd> cancel · <kbd>⌘Z</kbd> undo</li>
             <li><kbd>wheel</kbd> zoom · <kbd>right-drag</kbd> pan</li>
           </ul>
         </section>

@@ -27,6 +27,14 @@ export type StudioSession = {
   sources: Record<string, SourceBuilding>;
   /** Every edit made this session, in order, per building. */
   edits: Record<string, SourceEdit[]>;
+  /**
+   * Which building each edit went to, in the order they were made.
+   *
+   * The per-building logs are what the save path replays, and they cannot answer "what
+   * did I just do" once you have touched two buildings. This can, so undo means the last
+   * thing you actually did rather than the last thing you did *here*.
+   */
+  order: string[];
 };
 
 export function beginSession(buildingIds: readonly string[]): StudioSession {
@@ -35,7 +43,7 @@ export function beginSession(buildingIds: readonly string[]): StudioSession {
     const entry = BUILDING_SOURCES[id];
     if (entry) sources[id] = structuredClone(entry.source);
   }
-  return { sources, edits: {} };
+  return { sources, edits: {}, order: [] };
 }
 
 export function pendingCount(session: StudioSession): number {
@@ -124,7 +132,52 @@ export function commit(session: StudioSession, building: string, edit: SourceEdi
   if (!source) throw new Error(`${building} is not an editable source building`);
   mutate(source, edit);
   session.edits[building] = [...(session.edits[building] ?? []), edit];
+  session.order = [...session.order, building];
   return compileBuilding(source);
+}
+
+/** Which building the next undo would touch, or null when there is nothing to undo. */
+export function undoTarget(session: StudioSession): string | null {
+  return session.order[session.order.length - 1] ?? null;
+}
+
+/**
+ * Take back the last edit, by replaying the log without it.
+ *
+ * REPLAY, NOT AN INVERSE. The task that asked for this proposed an inverse-edit stack,
+ * and that is the harder and more fragile of the two: the inverse of `addOpening` has to
+ * know whether the wall had an `openings` array before it ran, the inverse of `addObject`
+ * has to know where in the list it went, and every future edit op has to remember to
+ * bring its own inverse or undo silently stops being faithful.
+ *
+ * None of that is needed here, because the session already holds everything required to
+ * rebuild from scratch: the registry source is pristine and untouched, and `edits` is the
+ * complete ordered list applied to a clone of it. So dropping the last entry and replaying
+ * is exact by construction, for every op that exists and every op anyone adds.
+ *
+ * It is also the only version that cannot desync from what gets written. The save path
+ * replays the same `edits` list against the file text — so an undo that removes an edit
+ * from the log has already undone it on disk, and there is no second representation to
+ * keep in step. That invariant is the whole design of this tool.
+ *
+ * The cost is a replay per undo: N `mutate` calls and one `compileBuilding`. A compile
+ * already happens on every single edit, so an undo costs about what one edit costs.
+ */
+export function undo(session: StudioSession): { building: string; rebuilt: Building } | null {
+  const building = undoTarget(session);
+  if (!building) return null;
+
+  const remaining = (session.edits[building] ?? []).slice(0, -1);
+  const entry = BUILDING_SOURCES[building];
+  if (!entry) throw new Error(`${building} is not an editable source building`);
+
+  const source = structuredClone(entry.source);
+  for (const edit of remaining) mutate(source, edit);
+
+  session.sources[building] = source;
+  session.edits[building] = remaining;
+  session.order = session.order.slice(0, -1);
+  return { building, rebuilt: compileBuilding(source) };
 }
 
 /** The map with every in-memory source swapped in for its shipped build. */
