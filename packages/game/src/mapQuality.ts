@@ -419,6 +419,47 @@ export function auditBuildingFloorQuality(
           return false;
         });
 
+        /**
+         * A wall standing in the gap means there is no aisle to be false about.
+         *
+         * `gapIsFilled` asks whether something spans the gap end to end, which is the
+         * right question for a fixture bridging two others and the wrong one for a wall:
+         * a partition is thin, so it never spans a gap it divides, and what is left on
+         * either side of it is two slivers rather than one route.
+         *
+         * Civic F2 is the case that found this. The archive stacks sit against the server
+         * room's west face and the room's generator sits ten units inside it — 18 units
+         * apart with a wall between them, reported as a false aisle nobody could walk
+         * either half of. Under the old rule no fixture could be placed anywhere along
+         * that wall, because everything inside the room is within 64 units of it, so a
+         * 120-unit-wide strip was unfurnishable for a reason that was not about the strip.
+         *
+         * Same shape as the inset rule above: the audit is learning which pairs are not
+         * pairs. A wall has to cross the whole shared band to count, so a fixture in a
+         * doorway still cannot hide behind the jamb beside it.
+         */
+        const wallCrossesGap = (solids as { ownerKind: string; ownerId: string; rect: Rect }[]).some((middle) => {
+          if (middle.ownerKind !== "wall") return false;
+          if (middle.ownerId === left.ownerId || middle.ownerId === right.ownerId) return false;
+          if (horizontalFalseAisle) {
+            const start = Math.min(left.rect.x + left.rect.w, right.rect.x + right.rect.w);
+            const end = Math.max(left.rect.x, right.rect.x);
+            const inGap = middle.rect.x < end && middle.rect.x + middle.rect.w > start;
+            const spansBand = middle.rect.y <= Math.max(left.rect.y, right.rect.y)
+              && middle.rect.y + middle.rect.h >= Math.min(left.rect.y + left.rect.h, right.rect.y + right.rect.h);
+            return inGap && spansBand;
+          }
+          if (verticalFalseAisle) {
+            const start = Math.min(left.rect.y + left.rect.h, right.rect.y + right.rect.h);
+            const end = Math.max(left.rect.y, right.rect.y);
+            const inGap = middle.rect.y < end && middle.rect.y + middle.rect.h > start;
+            const spansBand = middle.rect.x <= Math.max(left.rect.x, right.rect.x)
+              && middle.rect.x + middle.rect.w >= Math.min(left.rect.x + left.rect.w, right.rect.x + right.rect.w);
+            return inGap && spansBand;
+          }
+          return false;
+        });
+
         // A small seam can join modules end-to-end, but it cannot justify two
         // long fixture faces compressed front-to-back. That creates repeated
         // counter bands with no usable work zone between them.
@@ -437,7 +478,7 @@ export function auditBuildingFloorQuality(
           continue;
         }
 
-        if ((horizontalFalseAisle || verticalFalseAisle) && !gapIsFilled) {
+        if ((horizontalFalseAisle || verticalFalseAisle) && !gapIsFilled && !wallCrossesGap) {
           const gap = horizontalFalseAisle ? gapX : gapY;
           issues.push({
             floorId: floor.id,

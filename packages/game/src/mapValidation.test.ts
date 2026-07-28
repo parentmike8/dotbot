@@ -230,14 +230,58 @@ describe("downtown map validation", () => {
   const FLOOR_QUALITY_BUDGET: Record<string, Partial<Record<FloorQualityIssue["kind"], number>>> = {
     lot6: {},
     mercy: { "solid-overlap": 1 },
-    civic: { "false-aisle": 7, "solid-overlap": 1 },
+    /**
+     * Down from 7 with the archive furnished, not up.
+     *
+     * Furnishing F2's west strip added one false aisle and the wall rule cleared two —
+     * mine plus a pre-existing pair on either side of a partition. Beacon lost two the
+     * same way. See `wallCrossesGap` in mapQuality.ts: three of these were never routes.
+     */
+    civic: { "false-aisle": 6, "solid-overlap": 1 },
     // `disconnected-area: 1` is paid off: a shelf in the F1 lounge sealed the
     // roof stair. See beaconHouse.ts for why that room holds a couch and nothing
     // else. The `stair-unreachable` rule added alongside the fix is what should
     // have caught it — the stranded region was a stair shaft, whose standable area
     // is always too small to clear MIN_DISCONNECTED_AREA.
-    beacon: { "false-aisle": 7 },
+    beacon: { "false-aisle": 5 },
   };
+
+  it("does not call a gap an aisle when a wall crosses it", () => {
+    /**
+     * The rule that took this ledger down by three, stated as a test rather than trusted.
+     *
+     * Civic F2's archive stacks sit against the server room's west face; the room's
+     * generator sits ten units inside it. Eighteen units apart, with a partition between
+     * them, and neither sliver walkable. The old rule reported it, and because everything
+     * inside that room is within 64 units of its west wall, no fixture could be placed
+     * anywhere along a 120-unit-wide strip.
+     *
+     * Both halves matter, so both are asserted: the pair is silent while the wall is
+     * there, and the same pair IS reported once the wall is taken away — otherwise the
+     * guard could be swallowing real faults and this test would still pass.
+     */
+    const civic = downtownMap.buildings.find((building) => building.id === "civic")!;
+    const f2 = civic.floors.find((floor) => floor.label === "F2")!;
+    const pair = (issues: FloorQualityIssue[]) => issues.filter((issue) =>
+      issue.kind === "false-aisle"
+      && issue.message.includes("civic-f2-archive-a")
+      && issue.message.includes("civic-f2-generator"));
+
+    expect(pair(auditBuildingFloorQuality(downtownMap, "civic"))).toEqual([]);
+
+    const withoutWall: MapDocument = {
+      ...downtownMap,
+      buildings: downtownMap.buildings.map((building) => building.id !== "civic" ? building : {
+        ...building,
+        floors: building.floors.map((floor) => floor.id !== f2.id ? floor : {
+          ...floor,
+          barriers: (floor.barriers ?? []).filter((barrier) => barrier.id !== "civic-server-room"),
+          walls: floor.walls.filter((wall) => !wall.id?.startsWith("civic-server-room")),
+        }),
+      }),
+    };
+    expect(pair(auditBuildingFloorQuality(withoutWall, "civic")).length).toBeGreaterThan(0);
+  });
 
   it("matches its recorded floor-quality debt exactly", () => {
     const actual = Object.fromEntries(downtownMap.buildings.map((building) => {

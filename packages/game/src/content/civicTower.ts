@@ -258,11 +258,11 @@ export const CIVIC_SOURCE: SourceBuilding = {
     {
       label: "F2",
       brief: {
-        purpose: "Data floor: a secured server room with records kept outside it.",
-        zones: ["server room", "records", "circulation", "WC stack"],
-        sequence: "Off the NE shaft, around the server room, out through the NW shaft.",
-        adjacency: "The server room sits in the centre bay so it can be walked all the way round; records take the east windows.",
-        negativeSpace: "The ring of floor around the server room is the only route across.",
+        purpose: "Data floor: a secured server room, with open files at the windows and the archive behind them.",
+        zones: ["server room", "records", "archive", "circulation", "WC stack"],
+        sequence: "Off the NE shaft, around the server room, into the archive off the NW shaft's landing.",
+        adjacency: "The server room sits in the centre bay so it can be walked all the way round; open records take the east windows, and the archive takes the west strip, back-to-back with the server room's blind wall.",
+        negativeSpace: "The ring of floor around the server room is the only route across, and the archive aisle runs down its west windows.",
       },
       shellOpenings: upperGlazing(),
       walls: [
@@ -309,7 +309,26 @@ export const CIVIC_SOURCE: SourceBuilding = {
         { id: "civic-rack-a", kind: "serverRack", x: 1640, y: 424, w: 36, h: 70, facing: "N", scannable: true },
         { id: "civic-rack-b", kind: "serverRack", x: 1690, y: 424, w: 36, h: 70, facing: "N" },
         { id: "civic-rack-c", kind: "serverRack", x: 1740, y: 424, w: 36, h: 70, facing: "N" },
-        { id: "civic-f2-generator", kind: "generator", x: 1630, y: 340, w: 70, h: 48, scannable: true },
+        /**
+         * Not scannable, and the archive is what showed why.
+         *
+         * A blueprint spawn goes on its object's most open side, and this generator has no
+         * open side: 12 units to the room's north wall, 10 to its west wall, 8 to the power
+         * box below, and its one clear face east is inside the separation radius of the
+         * Dot already in that lane. So `mostOpenSide` had been walking its expansion ring
+         * WEST — straight through the server room's wall — and landing the spawn in the
+         * west strip, on the wrong side of a wall from the machine it describes.
+         *
+         * That only ever "worked" because the strip was empty floor. Furnishing it as the
+         * archive filled the space the ring was escaping into, and the placer threw, which
+         * is exactly what the fatal check is for.
+         *
+         * Civic still yields a generator blueprint: `seen` is per building, so the F7 plant
+         * deck's generator takes over — and that one stands in a machine row with walking
+         * room on two sides, which is what a scannable object is supposed to have. The rack
+         * row remains this room's scannable, so the server room still holds one.
+         */
+        { id: "civic-f2-generator", kind: "generator", x: 1630, y: 340, w: 70, h: 48 },
         { id: "civic-f2-hvac", kind: "hvac", x: 1796, y: 424, w: 64, h: 46 },
         { id: "civic-f2-power", kind: "utilityBox", x: 1630, y: 396, w: 26, h: 20 },
         // Records: filing along the east wall outside the room.
@@ -324,9 +343,69 @@ export const CIVIC_SOURCE: SourceBuilding = {
          * square units of floor closed, which is the ghost-hides-a-bug pattern one more
          * time: it was walk-through until `plant` was promoted earlier today.
          */
-        { id: "civic-f2-plant", kind: "plant", x: 1500, y: 440, w: 20, h: 20 },
+        /**
+         * Now in the south-west corner, flush to both walls.
+         *
+         * At 1500,440 it was clear of the door channel, which was all it had to be while
+         * the strip was empty. Furnishing gave it a second constraint it failed: it stood
+         * 46 units north-south from the withdrawals cabinet with their footprints
+         * overlapping in x, which is a gap too narrow to walk and too wide to read as one
+         * piece of furniture — a false aisle, the fault this pass cleared seven of.
+         *
+         * The corner has neither problem. It is flush west and south so there is no slot
+         * behind it, it clears the south window at x 1528, and the stacks are 70 units east.
+         */
+        { id: "civic-f2-plant", kind: "plant", x: 1492, y: 508, w: 20, h: 20 },
+        /**
+         * The archive: the west strip, furnished at last.
+         *
+         * It was proved reachable and left holding one pot plant, which the contract calls
+         * a decorated void — 120 by 228 of floor with nothing in it to want.
+         *
+         * The shelving goes on the EAST side, against the server room's west face, because
+         * that is the only blind wall the strip has. Its own west wall carries three
+         * windows (y 340, 420, 480) and the south wall carries one at x 1550, so any bank
+         * put there would board up the glazing that lights the room. Back-to-back with the
+         * server room is also how this gets planned in a real building: the deep stacks
+         * take the internal wall and the aisle takes the daylight.
+         *
+         * One continuous run rather than three spaced units. A 4-unit gap between shelves
+         * is not an aisle and not a bank — it audits as a false aisle, which is precisely
+         * the fault this pass spent its time clearing elsewhere.
+         *
+         * The aisle west of the bank is 86 units, comfortably over the 64 a bot needs, and
+         * the run stops at y 508 where the server room's wall does, so it never reaches
+         * across the mouth of the strip's southern opening.
+         */
+        { id: "civic-f2-archive-a", kind: "shelf", x: 1582, y: 330, w: 30, h: 60, facing: "W" },
+        { id: "civic-f2-archive-b", kind: "shelf", x: 1582, y: 390, w: 30, h: 60, facing: "W" },
+        { id: "civic-f2-archive-c", kind: "shelf", x: 1582, y: 450, w: 30, h: 58, facing: "W" },
+        /**
+         * A withdrawals cabinet against the west wall, in the blind slot between windows.
+         *
+         * It went on the north wall first, west of the new shaft door, and the doorway
+         * audit caught it at once: the door at x 1538 is 56 wide, so it spans 1510 to 1566
+         * and there are only 18 units of wall west of it. Nothing 30 units long fits beside
+         * that door, which is worth knowing rather than working around — the landing has to
+         * stay clear, and the whole reason this strip is reachable is that door.
+         *
+         * The west wall is glazed at y 340, 420 and 480, so it is not one blind face but
+         * four short ones. This takes the segment between the first two windows (y 362 to
+         * 398), turned so its 30-unit length runs with the wall. The aisle to the stacks is
+         * then 66 units, still over the 64 a bot needs.
+         */
+        { id: "civic-f2-archive-cabinet", kind: "filingCabinet", x: 1492, y: 364, w: 24, h: 30 },
       ],
       dots: [
+        /**
+         * In the archive aisle, between the window wall and the stacks.
+         *
+         * A room nobody has a reason to enter is scenery, and the whole point of opening
+         * this strip was that it is real floor. North of the plant rather than beside it:
+         * at 1535,430 it sat 36 units from the pot, which clears a bot but puts loot in
+         * the one spot in an empty room where you have to squeeze.
+         */
+        { id: "civic-dot-f2-archive", item: { kind: "powerup", type: "dashOvercharge" }, x: 1545, y: 352 },
         /**
          * In the lane between the north units and the rack row.
          *
