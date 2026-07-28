@@ -1644,3 +1644,22 @@ button {
   border: 1px solid var(--hairline);
   background: #e9ecef;
 }
+
+/* Recently-opened buildings, above the full list. Quieter than the list itself: it is a
+   shortcut, not the index. */
+.studio__recent {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #2b3137;
+}
+
+.studio__rail input[type="search"] {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px 7px;
+  border: 1px solid #2b3137;
+  border-radius: 5px;
+  background: #1b1f23;
+  color: #e6e9ec;
+  font: 11px/1.2 inherit;
+}

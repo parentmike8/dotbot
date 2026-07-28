@@ -25,6 +25,7 @@ import {
   type Handle,
   type Tool,
 } from "../studio/editing";
+import { buildingChoices, filterBuildings, recentChoices, remember } from "../studio/picker";
 
 /**
  * Map Studio — a tweak tool over authored map source.
@@ -45,6 +46,16 @@ import {
 type Status = { tone: "idle" | "ok" | "warn"; text: string };
 
 const GRIDS = [0, 2, 4, 8, 16];
+
+/**
+ * How many buildings before a search box earns its space.
+ *
+ * Below this the list *is* the answer and a field to filter it is furniture. Not zero,
+ * because Downtown has four today and the tool should not grow a search box before there
+ * is anything to search — but the list itself replaces the dropdown either way, since the
+ * dropdown was the part that could not scale.
+ */
+const SEARCH_FROM = 6;
 
 export function MapStudio() {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -71,6 +82,20 @@ export function MapStudio() {
   const [pending, setPending] = useState(0);
   const [status, setStatus] = useState<Status>({ tone: "idle", text: "Ready." });
   const [revision, setRevision] = useState(0);
+  const [query, setQuery] = useState("");
+  const [recents, setRecents] = useState<string[]>(() => (editable[0] ? [editable[0]] : []));
+
+  const choices = useMemo(() => buildingChoices(baseMap, editable), [baseMap, editable]);
+  const matches = useMemo(() => filterBuildings(choices, query), [choices, query]);
+  const recent = useMemo(() => recentChoices(choices, recents), [choices, recents]);
+
+  /** Open a building: remember it, and drop anything that pointed into the last one. */
+  const openBuilding = useCallback((id: string) => {
+    setBuilding(id);
+    setRecents((list) => remember(list, id));
+    setSelection(null);
+    setDraft([]);
+  }, []);
 
   const source = session.sources[building] ?? null;
   const map = useMemo(() => rebuildMap(baseMap, session), [baseMap, session, revision]);
@@ -320,11 +345,43 @@ export function MapStudio() {
 
         <section>
           <h2>Building</h2>
-          <select value={building} onChange={(event) => { setBuilding(event.target.value); setSelection(null); setDraft([]); }}>
-            {editable.map((id) => (
-              <option key={id} value={id}>{BUILDING_SOURCES[id]?.source.name ?? id}</option>
+          {/*
+            A search box and a list, not a dropdown. Four buildings fit in a `<select>`;
+            ninety do not, and ninety is the target — see `studio/picker.ts`. The search
+            field only appears once there are enough to hunt through, so the small case
+            stays as quiet as it was.
+          */}
+          {choices.length > SEARCH_FROM && (
+            <input
+              type="search"
+              value={query}
+              placeholder="Search name, id or kind"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          )}
+          {recent.length > 1 && !query && (
+            <div className="studio__chips studio__recent">
+              {recent.map((choice) => (
+                <button
+                  key={choice.id}
+                  type="button"
+                  className={choice.id === building ? "on" : ""}
+                  onClick={() => openBuilding(choice.id)}
+                >{choice.name}</button>
+              ))}
+            </div>
+          )}
+          <div className="studio__chips">
+            {matches.map((choice) => (
+              <button
+                key={choice.id}
+                type="button"
+                className={choice.id === building ? "on" : ""}
+                onClick={() => openBuilding(choice.id)}
+              >{choice.name}</button>
             ))}
-          </select>
+            {!matches.length && <p className="studio__hint">Nothing matches “{query}”.</p>}
+          </div>
           <h2>Floor</h2>
           <div className="studio__chips">
             {floors.map((label) => (
