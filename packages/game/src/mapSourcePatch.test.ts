@@ -170,6 +170,96 @@ describe("adding an entry", () => {
   });
 });
 
+describe("resizing an entry", () => {
+  it("changes w and h and nothing else", () => {
+    const next = applyEdit(FILE, { op: "resizeObject", floor: "GROUND", id: "demo-rack", w: 30, h: 180 });
+    expect(next).toContain('{ id: "demo-rack", kind: "shelf", x: 100, y: 120, w: 30, h: 180, scannable: true }');
+    expect(otherLines(next, "demo-rack")).toEqual(otherLines(FILE, "demo-rack"));
+  });
+
+  it("keeps the flags and the position a reprint would have dropped", () => {
+    // `scannable: true` survives because the numbers are rewritten in place rather than
+    // the literal being reprinted from a parsed object.
+    const next = applyEdit(FILE, { op: "resizeObject", floor: "GROUND", id: "demo-rack", w: 30, h: 180 });
+    expect(next).toContain("scannable: true");
+    expect(next).toContain("x: 100, y: 120");
+  });
+
+  it("refuses an object it cannot find written out", () => {
+    // A helper-produced fixture has no literal to rewrite, same as for a move.
+    expect(() => applyEdit(FILE, { op: "resizeObject", floor: "GROUND", id: "x-g-pan", w: 30, h: 30 }))
+      .toThrow(PatchError);
+  });
+});
+
+describe("adding into an array the floor does not have yet", () => {
+  /**
+   * `B1` in the fixture has `objects` and `dots` and no `walls`, which is the ordinary
+   * shape of a floor nobody has partitioned. Studio could not put the first wall on one:
+   * the in-memory half coped (`floor.walls ?? []`) and the file patch refused with "Floor
+   * B1 has no walls array" — so the canvas showed a wall that was never going to be
+   * written, which is the one failure this whole module exists to prevent.
+   */
+  const wall = { id: "demo-cellar-partition", thickness: 8, path: [{ x: 40, y: 60 }, { x: 300, y: 60 }] };
+
+  it("writes the array in, with the wall in it", () => {
+    const next = applyEdit(FILE, { op: "addWall", floor: "B1", wall });
+    expect(next).toContain(`walls: [${printLiteral(wall)}],`);
+  });
+
+  it("puts it inside the right floor, not the one above", () => {
+    // GROUND already has a `walls: [`, so a naive search would find that one and append
+    // the cellar's partition to the ground floor.
+    const next = applyEdit(FILE, { op: "addWall", floor: "B1", wall });
+    const b1 = next.indexOf('label: "B1"');
+    expect(next.indexOf("demo-cellar-partition")).toBeGreaterThan(b1);
+    // And GROUND's own wall list is untouched.
+    const groundWalls = next.slice(next.indexOf("walls: ["), b1);
+    expect(groundWalls).not.toContain("demo-cellar-partition");
+  });
+
+  it("leaves every other line of the file alone", () => {
+    const next = applyEdit(FILE, { op: "addWall", floor: "B1", wall });
+    expect(otherLines(next, "demo-cellar-partition")).toEqual(FILE.split("\n"));
+  });
+
+  it("appends to the array when the floor already has one", () => {
+    // The path that already worked has to keep working: GROUND has two walls, so this is
+    // an append and not a synthesis, and it must not produce a second `walls:` key.
+    const next = applyEdit(FILE, { op: "addWall", floor: "GROUND", wall: { ...wall, id: "demo-extra" } });
+    expect(next.match(/walls: \[/g)).toHaveLength(1);
+    expect(next).toContain("demo-extra");
+  });
+
+  it("does the same for a floor with no objects or dots", () => {
+    // All three add ops share the helper, so all three are freed by it.
+    const bare = FILE.replace(/      objects: \[\n        \{ id: "demo-cellar-rack"[^\n]*\n      \],\n      dots: \[\],\n/, "");
+    expect(bare).not.toContain("demo-cellar-rack");
+    const withObject = applyEdit(bare, {
+      op: "addObject",
+      floor: "B1",
+      object: { id: "demo-new", kind: "crateStack", x: 10, y: 10, w: 34, h: 34 },
+    });
+    expect(withObject).toContain("objects: [{ id: \"demo-new\"");
+    const withDot = applyEdit(bare, {
+      op: "addDot",
+      floor: "B1",
+      dot: { id: "demo-new-dot", item: { kind: "powerup", type: "radar" }, x: 10, y: 10 },
+    });
+    expect(withDot).toContain("dots: [{ id: \"demo-new-dot\"");
+  });
+
+  it("still refuses to move something that is not there", () => {
+    /**
+     * The throw is only wrong for the ops that ADD. Finding still has to fail loudly:
+     * a move against a floor with no such array is a stale id, and silently synthesising
+     * an empty array for it would turn that into a no-op the author never sees.
+     */
+    expect(() => applyEdit(FILE, { op: "moveObject", floor: "B1", id: "nope", x: 0, y: 0 }))
+      .toThrow(PatchError);
+  });
+});
+
 describe("adding an opening to a wall", () => {
   it("extends an openings array that already exists, inline", () => {
     const next = applyEdit(FILE, {

@@ -86,6 +86,14 @@ function mutate(source: SourceBuilding, edit: SourceEdit): void {
       }
       return;
     }
+    case "resizeObject": {
+      const object = floorOf(source, edit.floor).objects?.find((item) => item.id === edit.id);
+      if (object) {
+        object.w = edit.w;
+        object.h = edit.h;
+      }
+      return;
+    }
     case "deleteObject": {
       const floor = floorOf(source, edit.floor);
       floor.objects = (floor.objects ?? []).filter((item) => item.id !== edit.id);

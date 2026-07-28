@@ -282,6 +282,25 @@ export function MapStudio() {
     }
   };
 
+  /**
+   * Resize the selected object.
+   *
+   * Guarded at 4 units because a zero-width fixture is a solid with no silhouette — you
+   * cannot see it, you cannot click it again to fix it, and the audits will report it as
+   * every kind of fault at once. The contract's smallest authored fixture is a 16-unit
+   * sink, so 4 is well below anything real and still above nothing.
+   */
+  const setSize = (axis: "w" | "h", value: number) => {
+    if (!selection || !selectedObject || Number.isNaN(value) || value < 4) return;
+    record({
+      op: "resizeObject",
+      floor: selection.floor,
+      id: selection.id,
+      w: axis === "w" ? value : selectedObject.w,
+      h: axis === "h" ? value : selectedObject.h,
+    });
+  };
+
   if (!editable.length) {
     return (
       <div className="studio studio--empty">
@@ -431,7 +450,8 @@ export function MapStudio() {
               <dt>kind</dt><dd>{selectedObject.kind}</dd>
               <dt>x</dt><dd><input type="number" value={selectedObject.x} onChange={(event) => setCoordinate("x", Number(event.target.value))} /></dd>
               <dt>y</dt><dd><input type="number" value={selectedObject.y} onChange={(event) => setCoordinate("y", Number(event.target.value))} /></dd>
-              <dt>size</dt><dd>{selectedObject.w} × {selectedObject.h}</dd>
+              <dt>w</dt><dd><input type="number" min={4} step={2} value={selectedObject.w} onChange={(event) => setSize("w", Number(event.target.value))} /></dd>
+              <dt>h</dt><dd><input type="number" min={4} step={2} value={selectedObject.h} onChange={(event) => setSize("h", Number(event.target.value))} /></dd>
               {selectedObject.facing && <><dt>facing</dt><dd>{selectedObject.facing}</dd></>}
               {selectedObject.scannable && <><dt>flags</dt><dd>scannable</dd></>}
             </dl>

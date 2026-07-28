@@ -20,6 +20,7 @@ import type { SourceDot, SourceObject, SourceOpening, SourceStair, SourceWall } 
 export type SourceEdit =
   | { op: "moveObject"; floor: string; id: string; x: number; y: number }
   | { op: "moveDot"; floor: string; id: string; x: number; y: number }
+  | { op: "resizeObject"; floor: string; id: string; w: number; h: number }
   | { op: "deleteObject"; floor: string; id: string }
   | { op: "deleteDot"; floor: string; id: string }
   | { op: "addObject"; floor: string; object: SourceObject }
@@ -122,6 +123,39 @@ function arraySpan(text: string, floor: string, name: string): Span {
   return { start: open + 1, end: matchBracket(text, open) };
 }
 
+/**
+ * Append into one of a floor's arrays, writing the array in if the floor has none.
+ *
+ * `arraySpan` throws for a missing array, which is right for every edit that has to FIND
+ * something — you cannot move an object on a floor with no objects — and wrong for the
+ * three that add one. Studio could not put the first wall on a floor at all: the
+ * in-memory half handled it (`floor.walls = [...(floor.walls ?? []), wall]`) and the file
+ * patch reported "Floor X has no walls array" and refused, so the canvas and the file
+ * disagreed about whether the edit had happened.
+ *
+ * The new key goes just before the floor's closing brace, at the floor's indent plus two.
+ * `addOpening` already did exactly this for a wall with no `openings` — this is that
+ * fallback, generalised to the level above it.
+ */
+function appendToFloorArray(text: string, floor: string, name: string, literal: string): string {
+  const label = text.indexOf(`label: ${JSON.stringify(floor)}`);
+  if (label < 0) throw new PatchError(`No floor labelled ${floor} in this file`);
+  const floorOpen = text.lastIndexOf("{", label);
+  const floorClose = matchBracket(text, floorOpen);
+
+  const key = text.indexOf(`${name}: [`, label);
+  if (key >= 0 && key < floorClose) {
+    const open = text.indexOf("[", key);
+    return appendEntry(text, { start: open + 1, end: matchBracket(text, open) }, literal);
+  }
+
+  const floorIndent = indentAt(text, floorOpen);
+  const before = text.slice(0, floorClose).replace(/\s+$/, "");
+  // `{` when the floor literal is empty, in which case there is nothing to separate from.
+  const comma = before.endsWith(",") || before.endsWith("{") ? "" : ",";
+  return `${before}${comma}\n${floorIndent}  ${name}: [${literal}],\n${floorIndent}${text.slice(floorClose)}`;
+}
+
 /** The object literal carrying `id: "<id>"` inside a span. */
 function entrySpan(text: string, within: Span, id: string): Span {
   const needle = `id: ${JSON.stringify(id)}`;
@@ -152,6 +186,23 @@ function setNumber(literal: string, key: string, value: number): string {
 function moveEntry(text: string, span: Span, x: number, y: number): string {
   const moved = setNumber(setNumber(text.slice(span.start, span.end), "x", x), "y", y);
   return text.slice(0, span.start) + moved + text.slice(span.end);
+}
+
+/**
+ * Resize an object in place, leaving its position alone.
+ *
+ * Studio showed w and h in the inspector and could not change them, so resizing was the
+ * one property you had to leave the tool to edit — and the audits that care most about
+ * size (aisle width, wedged fixtures, solid overlap) are exactly the ones you want to
+ * re-run immediately after changing it.
+ *
+ * Rewrites the two numbers rather than reprinting the literal, for the same reason `move`
+ * does: an object may carry `facing`, `scannable` or a trailing comment, and reprinting
+ * would quietly drop whichever fields the printer does not know about.
+ */
+function resizeEntry(text: string, span: Span, w: number, h: number): string {
+  const sized = setNumber(setNumber(text.slice(span.start, span.end), "w", w), "h", h);
+  return text.slice(0, span.start) + sized + text.slice(span.end);
 }
 
 /** Remove an entry along with its trailing comma and its now-empty line. */
@@ -193,16 +244,18 @@ export function applyEdit(text: string, edit: SourceEdit): string {
       return moveEntry(text, entrySpan(text, arraySpan(text, edit.floor, "objects"), edit.id), edit.x, edit.y);
     case "moveDot":
       return moveEntry(text, entrySpan(text, arraySpan(text, edit.floor, "dots"), edit.id), edit.x, edit.y);
+    case "resizeObject":
+      return resizeEntry(text, entrySpan(text, arraySpan(text, edit.floor, "objects"), edit.id), edit.w, edit.h);
     case "deleteObject":
       return deleteEntry(text, entrySpan(text, arraySpan(text, edit.floor, "objects"), edit.id));
     case "deleteDot":
       return deleteEntry(text, entrySpan(text, arraySpan(text, edit.floor, "dots"), edit.id));
     case "addObject":
-      return appendEntry(text, arraySpan(text, edit.floor, "objects"), printLiteral(edit.object));
+      return appendToFloorArray(text, edit.floor, "objects", printLiteral(edit.object));
     case "addDot":
-      return appendEntry(text, arraySpan(text, edit.floor, "dots"), printLiteral(edit.dot));
+      return appendToFloorArray(text, edit.floor, "dots", printLiteral(edit.dot));
     case "addWall":
-      return appendEntry(text, arraySpan(text, edit.floor, "walls"), printLiteral(edit.wall));
+      return appendToFloorArray(text, edit.floor, "walls", printLiteral(edit.wall));
     case "addOpening": {
       const wall = entrySpan(text, arraySpan(text, edit.floor, "walls"), edit.wall);
       const key = text.indexOf("openings: [", wall.start);
