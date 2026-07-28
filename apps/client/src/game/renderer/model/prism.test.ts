@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { pathOutline, polygonBounds } from "@dotbot/game/geometry";
+import { insetPolygon, pathOutline, polygonBounds, polygonContains } from "@dotbot/game/geometry";
 import type { Vec2 } from "@dotbot/game/types";
-import { cappedLift, southness, topFace, TOP_FACE_MIN } from "./prism";
+import { awayness, cappedLift, NORTH, southness, topFace, TOP_FACE_MIN } from "./prism";
 
 /** Clockwise on screen, which is what `edgeNormal` reads as outward. */
 function rect(x: number, y: number, w: number, h: number): Vec2[] {
@@ -94,5 +94,109 @@ describe("topFace", () => {
     const top = topFace(r, LIFT);
     expect(top[0]).toEqual({ x: 0, y: 0 });
     expect(top[1]).toEqual({ x: 60, y: 0 });
+  });
+});
+
+/**
+ * Which way the top slides.
+ *
+ * A solid's height is drawn by pulling its top face away from the viewer, and that pull
+ * was nailed to north — so an object's height read as a fixed south band no matter where
+ * the camera stood, while buildings had been sliding their mass with the camera since
+ * #37. These are the tests for the generalisation: the pull is a direction now.
+ *
+ * Nothing passes a direction yet, so every existing drawing is unchanged. That is the
+ * first thing asserted, because a refactor of the primitive the whole language rests on
+ * has to be provably invisible before anything is allowed to use it.
+ */
+describe("an arbitrary pull direction", () => {
+  const dir = (radians: number): Vec2 => ({ x: Math.cos(radians), y: Math.sin(radians) });
+  /** Sixteen directions round the circle, none of them axis-aligned by accident. */
+  const sweep = Array.from({ length: 16 }, (_, i) => dir((i / 16) * Math.PI * 2 + 0.11));
+  const shapes = [
+    rect(0, 0, 100, WALL),
+    rect(0, 0, 60, 60),
+    pathOutline([{ x: 100, y: 100 }, { x: 200, y: 100 }, { x: 200, y: 200 }], WALL),
+    pathOutline([{ x: 0, y: 0 }, { x: 90, y: 40 }], 20),
+  ];
+
+  it("reduces to the fixed north pull, exactly", () => {
+    // The whole safety of this change. `NORTH` has to be bit-for-bit what the old
+    // hardcoded version produced, or every solid in the game moves a little.
+    for (const shape of shapes) {
+      expect(topFace(shape, LIFT, NORTH)).toEqual(topFace(shape, LIFT));
+    }
+  });
+
+  it("agrees with southness on every normal, for a north pull", () => {
+    // Not spot checks: `southness` is now `awayness(_, _, NORTH)`, so they have to
+    // coincide across the circle rather than at the four corners somebody thought of.
+    for (const incoming of sweep) {
+      for (const outgoing of sweep) {
+        expect(awayness(incoming, outgoing, NORTH)).toBeCloseTo(southness(incoming, outgoing), 12);
+      }
+    }
+  });
+
+  it("keeps the silhouette whichever way it pulls", () => {
+    /**
+     * Contract §2, and the reason this generalisation is safe to make at all: the drawn
+     * shape is the collider. A top face that escapes the footprint is a solid you can
+     * see and walk through, or walk into and not see — at any camera angle, for every
+     * object in the world at once.
+     */
+    for (const shape of shapes) {
+      /**
+       * Against the footprint grown by a thousandth of a unit, because a vertex that
+       * does not move stays exactly ON the boundary and `polygonContains` is a strict
+       * interior test. The first pass reported an unmoved corner as an escape. The
+       * tolerance is four orders of magnitude below the real fault this caught — a
+       * north-east corner pulled 1.09 units clean outside a 100-wide rect.
+       */
+      const grown = insetPolygon(shape, -1e-3);
+      for (const pull of sweep) {
+        for (const point of topFace(shape, LIFT, pull)) {
+          expect(
+            polygonContains(grown, point),
+            `pull ${pull.x.toFixed(2)},${pull.y.toFixed(2)} put ${point.x.toFixed(2)},${point.y.toFixed(2)} outside`,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("puts the exposed face on the side away from the pull", () => {
+    // The visible effect: from north of a box you see its south face, and from south of
+    // it you see its north face. Opposite pulls have to expose opposite bands.
+    const r = rect(0, 0, 60, 60);
+    const north = topFace(r, LIFT, NORTH);
+    const south = topFace(r, LIFT, { x: 0, y: 1 });
+    // North pull: the south edge rises, the north edge stays.
+    expect(north[3].y).toBeCloseTo(60 - LIFT, 6);
+    expect(north[0].y).toBe(0);
+    // South pull: the mirror image.
+    expect(south[0].y).toBeCloseTo(LIFT, 6);
+    expect(south[3].y).toBe(60);
+  });
+
+  it("caps against the depth measured along the pull, not along the page", () => {
+    /**
+     * A 100-by-12 slab has 12 units of depth north-south and 100 east-west. Pulled
+     * north its top face is capped hard; pulled east it has room for the whole lift.
+     * Measuring depth with the old vertical scan would have capped both the same way.
+     */
+    const slab = rect(0, 0, 100, WALL);
+    const pulledNorth = topFace(slab, LIFT, NORTH);
+    const pulledWest = topFace(slab, LIFT, { x: -1, y: 0 });
+    expect(WALL - (pulledNorth[2].y - pulledNorth[1].y)).toBeCloseTo(cappedLift(WALL, LIFT), 6);
+    // West pull: the east edge moves the full lift, because there is 100 units to eat.
+    expect(pulledWest[1].x).toBeCloseTo(100 - LIFT, 6);
+  });
+
+  it("leaves the shape flat for a pull of nothing", () => {
+    // A camera exactly over an object has no direction to offer, and the caller should
+    // not have to special-case it: a zero pull is a solid seen from straight above.
+    const r = rect(0, 0, 60, 60);
+    expect(topFace(r, LIFT, { x: 0, y: 0 })).toEqual(r);
   });
 });
