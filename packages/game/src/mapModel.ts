@@ -101,6 +101,74 @@ const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "dumpster",
   "hydrant",
   "lampPost",
+  /**
+   * The interior half of the same promotion, and the same reasoning: you do not walk
+   * through a chair.
+   *
+   * The earlier plan was the other way round — redraw these in a "passable"
+   * vocabulary so a lighter outline would tell the player they could walk through.
+   * Rejected on the evidence of looking at it: at play zoom a fainter outline is not
+   * legible, and the objects it was describing are ones nobody expects to pass
+   * through anyway. Passability is now RARE and loud rather than common and subtle —
+   * `FLAT_KINDS` is the whole of it, those are floor coverings, and they are drawn
+   * flat with no lift and no shadow precisely so you can see the floor through them.
+   *
+   * A cast shadow is the promise. Every kind here was drawn as a lifted volume
+   * throwing a shadow onto the slab while a bot walked straight through it, which is
+   * the map lying about what is cover.
+   */
+  // A post in the ground, so it stops a body like any other post.
+  "sign",
+  "sink",
+  "toilet",
+  "coffeeStation",
+  "washer",
+  "medicalCart",
+  "ivStand",
+  /**
+   * A steel cabinet bolted to a wall, and a pot plant. Six repairs between them, and
+   * every one was a decoration holding a route open:
+   *
+   * - Civic's mail room sat its power box 12 units off the north wall, leaving a
+   *   44-unit slot to the sorting counter — narrower than a bot — so the moment the
+   *   box became solid the room sealed itself away from its own lockers.
+   * - Civic's F7 plant deck had its power box free-standing in the 90-unit gap
+   *   between the HVAC pair and the generator; splitting that into 20 and 44 turned
+   *   the machine row into a wall across the floor, cutting the bench, the tool
+   *   cabinet and both Dots off from the stair cores.
+   * - A lobby plant stood inside the tower's own front door, in the very space that
+   *   floor's brief reserves — "the lobby floor between the entrance and the shaft
+   *   stays completely clear" — and left the lounge couch with no side to put a
+   *   blueprint on.
+   * - An office plant clipped its own office threshold; a clinic plant stood in the
+   *   staff entrance; an F6 plant sat 17 units from a Dot, which is inside a bot
+   *   radius, so the Dot was somewhere you could see and not stand.
+   *
+   * Which is the street-furniture pattern again, exactly: a ghost is invisible
+   * precisely where a collider would have mattered.
+   */
+  "utilityBox",
+  "plant",
+  /**
+   * The last one, and the one everybody assumed would be worst. Six repairs, and
+   * four of them were a chair tucked *into* the furniture it belongs to — an overlap
+   * the instant it collides. Nudged flush instead: touching reads as pushed in, and
+   * two solids sharing an edge is one piece of furniture rather than a contradiction.
+   *
+   * The two that were not overlaps were rooms a stool quietly sealed. Both clinic
+   * exam rooms left 42 units between bed and stool, six short of a bot, so the north
+   * half of each room — including the bed a blueprint had to go beside — was cut off
+   * from its own door. Civic's workshop was the same shape one floor up: stools 16
+   * units off their benches left a 42-unit aisle to the bench opposite, which both
+   * sealed the floor's west end and tripped `wedged-fixture`, the rule written for
+   * exactly that gap. Every one of the six is a stool put where nobody would leave a
+   * stool, and it took a collider to notice.
+   *
+   * A note on chairs and rugs, because it looks alarming and is not: six chairs sit
+   * on rugs, which is what chairs do. `rug` is in `FLAT_KINDS`, so it has no collider
+   * to overlap.
+   */
+  "chair",
 ]);
 
 /**

@@ -139,7 +139,7 @@ If the rendered image does not communicate the original floor brief, revise the 
 - A player crosses the stair midline and continues moving on the next floor without teleporting, stopping, fading, or pressing a button.
 - AI uses the same transition rule.
 - Keep a wide, straight approach on both ends. Do not place furniture, collision, loot, or spawn points in the stair rectangle or its immediate run-up.
-- Flights should be comfortably wider than one DotBot. Current Mercer Parts flights are 104 by 184 world units; do not narrow them without live movement proof.
+- Flights should be comfortably wider than one DotBot. Downtown's flights are 88 by 160 world units; do not narrow them without live movement proof. (This line used to cite Mercer Parts at 104 by 184 — that building was replaced when Downtown was rebuilt street-first, so the figure was unactionable.)
 - Every stair must declare how access is controlled. Use `access: "openEnd"` for a freestanding flight: the dashed/non-enterable half has solid side rails and a solid far-end cap, while the active entry half uses faint passable side guides and remains physically open at its outer end and on both sides. Art, server collision, client prediction, and navigation all derive from the same guard rectangles. Omit it only when authored walls and doors already enclose the flight.
 - Never leave a stair's dashed/non-enterable half accessible from the side. Never rail in the active half: after a floor change, a full-size DotBot must be able to continue along the flight or leave immediately through either side.
 - Keep related flights in one legible stair zone by default. Separate or alternate them only when the travel between them contains authored gameplay—not merely empty walking distance.
@@ -179,7 +179,7 @@ Visual and play checks are also required:
 
 Tests can reject a map. They cannot design a map or approve its feel.
 
-The floor-quality audit is a production authoring gate, not a Mercer-specific snapshot. Add the building-wide assertion when a building is created, then keep it green while placing each floor. Do not wait for manual screenshots to discover the same spacing class one fixture at a time. A fixture gap must make one of two promises: an attached seam of 16 units or less, or a comfortable aisle of at least 64 units. Avoid exceptions; if a special geometry is genuinely necessary, fix the shared audit or model the authored shape accurately instead of suppressing the failure.
+The floor-quality audit is a production authoring gate, not a one-building snapshot. Add the building-wide assertion when a building is created, then keep it green while placing each floor. Do not wait for manual screenshots to discover the same spacing class one fixture at a time. A fixture gap must make one of two promises: an attached seam of 16 units or less, or a comfortable aisle of at least 64 units. Avoid exceptions; if a special geometry is genuinely necessary, fix the shared audit or model the authored shape accurately instead of suppressing the failure.
 
 ## 8. Definition of done
 

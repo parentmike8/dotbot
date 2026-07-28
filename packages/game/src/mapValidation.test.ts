@@ -6,8 +6,10 @@ import { interactionDotReach } from "./interactions";
 import type { BaseLayout } from "./types";
 import { collisionLayers, isGroundFloor, objectCollisionRects, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
 import { auditDotPlacement, auditBuildingFloorQuality, type FloorQualityIssue } from "./mapQuality";
+import { FLAT_KINDS, isSolidObject } from "./mapModel";
+import { findNavigationPath } from "./navigation";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import type { Doorway, MapDocument, Rect, StairLink, Vec2 } from "./types";
+import type { Doorway, MapDocument, MapObject, Rect, StairLink, Vec2 } from "./types";
 
 /**
  * Map validation (spec: "Dot spawn zones do not overlap walls", "Objects do
@@ -227,8 +229,8 @@ describe("downtown map validation", () => {
    */
   const FLOOR_QUALITY_BUDGET: Record<string, Partial<Record<FloorQualityIssue["kind"], number>>> = {
     lot6: {},
-    mercy: { "false-aisle": 1, "solid-overlap": 1 },
-    civic: { "false-aisle": 8, "solid-overlap": 1, "disconnected-area": 3 },
+    mercy: { "solid-overlap": 1 },
+    civic: { "false-aisle": 7, "solid-overlap": 1 },
     // `disconnected-area: 1` is paid off: a shelf in the F1 lounge sealed the
     // roof stair. See beaconHouse.ts for why that room holds a couch and nothing
     // else. The `stair-unreachable` rule added alongside the fix is what should
@@ -302,6 +304,180 @@ describe("downtown map validation", () => {
           distance,
           `bot ${spawn.id} at (${spawn.position.x}, ${spawn.position.y}) on ${world.floorId} spawns in a sealed spot`,
         ).toBeLessThanOrEqual(BOT_RADIUS);
+      }
+    }
+  });
+
+  it("holds the ghost ledger, which may only shrink", () => {
+    /**
+     * A ghost is an object drawn as a lifted volume throwing a shadow onto the slab
+     * that a bot walks straight through. The contract's rule is silhouette ==
+     * footprint == collider and `FLAT_KINDS` is its only sanctioned exception, so
+     * every one of these is the map lying to the player about what is cover.
+     *
+     * A ratchet rather than a target. There were 114; eight kinds have been promoted
+     * (toilet, sink, coffeeStation, washer, medicalCart, ivStand, utilityBox, plant —
+     * 83 objects) and the one that remains is recorded here by name and count. New
+     * ghosts cannot be authored: adding one fails this test. Promoting one fails it too,
+     * which is the point — the number in this file is what you update when you have done
+     * the repairs, and it is how the cost stays visible instead of being discovered
+     * later by a player walking through a chair.
+     *
+     * The cost is never the set edit. A promoted kind is fatal at map-construction
+     * time: `addBlueprintSpawns` throws the first time a scannable object has no
+     * bot-clear side, so each promotion is an authoring pass that ends when the map
+     * builds and the audits are quiet again. `utilityBox` cost two object moves,
+     * `plant` four, and every one of the six was the same thing — a decoration standing
+     * in a doorway, on a Dot, or in the only route through a room.
+     *
+     * `chair` is the last and the largest: 30 objects, seven scannable objects left
+     * with no bot-clear side, two floors cut in half, and four chairs tucked under
+     * tables that become `solid-overlap` the moment they collide. That one needs a
+     * decision about tucked chairs before it needs an authoring pass.
+     */
+    const ghosts = new Map<string, number>();
+    const record = (objects: readonly MapObject[]) => {
+      for (const object of objects) {
+        if (FLAT_KINDS.has(object.kind) || isSolidObject(object)) continue;
+        ghosts.set(object.kind, (ghosts.get(object.kind) ?? 0) + 1);
+      }
+    };
+    record(downtownMap.outdoor.objects);
+    for (const building of downtownMap.buildings) {
+      for (const floor of building.floors) record(floor.objects);
+    }
+
+    expect(Object.fromEntries([...ghosts].sort())).toEqual({
+      // The last ghost on the map, and a deliberate one: a single authored
+      // `solid: false` on the roof terrace planter, which is a low kerb of soil you
+      // step over rather than a box you walk into.
+      planter: 1,
+    });
+    const total = [...ghosts.values()].reduce((sum, count) => sum + count, 0);
+    expect(total, "total ghosts; this number may only go down").toBe(1);
+  });
+
+  it("keeps the walking line through every doorway clear of solid objects", () => {
+    /**
+     * Reported from play, with a screenshot and the appropriate amount of laughter:
+     * "and here the sign blocks the entry."
+     *
+     * It did, and the doorway check above passed it. That one probes a single POINT 38
+     * units off the wall on each side and asks whether a bot can stand there — so an
+     * object beside that point, squarely in the line you actually walk, never touches
+     * it. The blind spot is the shape of the test: a door is not a point, it is a
+     * corridor you pass through.
+     *
+     * So this sweeps the gap itself. The opening's clear width, extended a little way
+     * either side of the wall, must contain no solid object footprint.
+     *
+     * A LITTLE way, and the first version got this wrong in a way worth recording. At a
+     * bot's radius plus slack — a full 32-unit approach on both sides — it flagged nine
+     * objects, six of them bathroom fixtures. An 88-by-68 WC with a 56-unit door cannot
+     * give a bot's full approach depth on both sides of its own door; the corridor was
+     * most of the room. Demanding it would mean bathrooms with nothing in them.
+     *
+     * So the rule is the threshold, not the approach: stand in the gap and you fail.
+     * Getting from the gap to somewhere useful is what the flood-fill checks above are
+     * for, and they are the right shape for it.
+     */
+    const APPROACH = 14;
+    const blockers = new Set<string>();
+    for (const world of worlds) {
+      const solids = new Map<string, Rect[]>();
+      const collect = (objects: readonly MapObject[]) => {
+        for (const object of objects) {
+          if (!isSolidObject(object)) continue;
+          solids.set(object.id, objectCollisionRects(object));
+        }
+      };
+      if (world.floorId === OUTDOOR_FLOOR_ID) collect(downtownMap.outdoor.objects);
+      for (const building of downtownMap.buildings) {
+        for (const floor of building.floors) {
+          if (physicsFloorId(downtownMap, floor.id) === world.floorId) collect(floor.objects);
+        }
+      }
+
+      for (const doorway of world.doorways) {
+        // The corridor: as wide as the opening, as deep as a bot's approach on both
+        // sides. `dir` is the wall's run, so the corridor crosses it.
+        const half = doorway.width / 2;
+        const corridor: Rect = doorway.dir === "h"
+          ? { x: doorway.x - half, y: doorway.y - APPROACH, w: doorway.width, h: APPROACH * 2 }
+          : { x: doorway.x - APPROACH, y: doorway.y - half, w: APPROACH * 2, h: doorway.width };
+        for (const [id, rects] of solids) {
+          for (const rect of rects) {
+            const overlapX = Math.min(corridor.x + corridor.w, rect.x + rect.w) - Math.max(corridor.x, rect.x);
+            const overlapY = Math.min(corridor.y + corridor.h, rect.y + rect.h) - Math.max(corridor.y, rect.y);
+            if (overlapX > 0 && overlapY > 0) {
+              blockers.add(`${id} @ ${doorway.id} (${doorway.x},${doorway.y}) ${world.floorId}`);
+            }
+          }
+        }
+      }
+    }
+    /**
+     * Zero, and it stays zero. Not a ratchet — there is no debt left to record.
+     *
+     * Nine were found the first time this ran. Three of those were fixtures the same
+     * session's bathroom repair had just moved into their own thresholds, which is
+     * exactly what a new check earns its keep on. The other six were pre-existing
+     * authoring: a basin or counter standing in a doorway, each clipping the threshold
+     * by two to six units, none of it visible without measuring.
+     *
+     * Every repair was a nudge along the fixture's own wall. What made them tractable
+     * was doing the arithmetic first — door centre, threshold reach, the fixture's span,
+     * and what else is on that wall — rather than sliding things and re-running. Two of
+     * the three would have gone into a wall if moved the obvious direction.
+     */
+    expect([...blockers].sort()).toEqual([]);
+  });
+
+  it("keeps every bot spawn somewhere the navigator can plan FROM", () => {
+    /**
+     * Reported from play: "this team AI bot still just sits here at the start of the
+     * game and does nothing." It did — for the entire match, having never moved a
+     * single pixel.
+     *
+     * `ally-2` was authored at (240, 890) with a 36x36 rock at (182, 862): a
+     * clearance of exactly 22.00 against a bot radius of 24. `findNavigationPath`
+     * tests the START point for clearance, so it returned an empty path to
+     * *everywhere* — and `steerBotAlongPath` treats an empty path as "do not steer
+     * through geometry" and returns zero. The bot then blacklisted every objective in
+     * turn as unreachable, sixteen of them including the player, and stood still.
+     * Three of thirteen spawns were like this: 22.00, 20.00 and 10.00 of clearance.
+     *
+     * The test above passed all three, and that is the lesson. It floods its own
+     * coarse 8-unit grid and asks whether a spawn is NEAR reachable ground — a
+     * second, more forgiving opinion about navigability than the one the game
+     * actually runs on. Two sources of truth, and the softer one was the one being
+     * checked. So this asks the shipped pathfinder, at the shipped radius, the
+     * question the AI asks every tick: can you plan from here?
+     *
+     * Probed at short range on purpose. A goal 160 units out lands inside a wall on a
+     * small indoor floor and fails for a reason that has nothing to do with the
+     * spawn, which is how a first attempt at this "found" two more broken spawns that
+     * were fine.
+     */
+    for (const world of worlds) {
+      for (const spawn of world.spawns) {
+        let planned = 0;
+        for (let step = 0; step < 8; step += 1) {
+          const angle = (step / 8) * Math.PI * 2;
+          const goal = {
+            x: spawn.position.x + Math.cos(angle) * 60,
+            y: spawn.position.y + Math.sin(angle) * 60,
+          };
+          if (findNavigationPath(downtownMap, world.floorId, spawn.position, goal, BOT_RADIUS).length > 0) {
+            planned += 1;
+          }
+        }
+        expect(
+          planned,
+          `bot ${spawn.id} at (${spawn.position.x}, ${spawn.position.y}) on ${world.floorId}`
+          + ` is wedged: the navigator cannot plan a path from where it stands, in any direction,`
+          + ` so it will never move`,
+        ).toBeGreaterThan(0);
       }
     }
   });

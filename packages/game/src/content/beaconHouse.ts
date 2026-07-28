@@ -119,23 +119,46 @@ export const BEACON_SOURCE: SourceBuilding = {
         // open so the lobby, stair, WC and laundry all connect.
         { id: "beacon-commons-rug", kind: "rug", x: 1700, y: 1240, w: 200, h: 140 },
         { id: "beacon-couch", kind: "couch", x: 1720, y: 1360, w: 110, h: 40, facing: "N", scannable: true },
-        { id: "beacon-commons-table", kind: "table", x: 1770, y: 1280, w: 48, h: 48 },
-        { id: "beacon-commons-chair-w", kind: "chair", x: 1746, y: 1292, w: 20, h: 20, facing: "E" },
-        { id: "beacon-commons-chair-e", kind: "chair", x: 1824, y: 1292, w: 20, h: 20, facing: "W" },
+        /**
+         * The dining cluster sits 26 units further up the rug than it did.
+         *
+         * Couch to table was 32 units — a third of it floor a bot cannot enter — and
+         * that was survivable only while the placer could fall back to somewhere a
+         * chair now stands. At 1254 the gap is 58, so the couch has an approach on its
+         * own north side, which is where you would walk to it anyway.
+         */
+        { id: "beacon-commons-table", kind: "table", x: 1770, y: 1254, w: 48, h: 48 },
+        { id: "beacon-commons-chair-w", kind: "chair", x: 1746, y: 1266, w: 20, h: 20, facing: "E" },
+        { id: "beacon-commons-chair-e", kind: "chair", x: 1824, y: 1266, w: 20, h: 20, facing: "W" },
         { id: "beacon-commons-plant-w", kind: "plant", x: 1676, y: 1386, w: 20, h: 20 },
         { id: "beacon-commons-plant-e", kind: "plant", x: 2044, y: 1210, w: 20, h: 20 },
         // WC.
         { id: "beacon-wc-pan", kind: "toilet", x: 1938, y: 1368, w: 26, h: 34, facing: "S" },
-        { id: "beacon-wc-basin", kind: "sink", x: 1900, y: 1330, w: 22, h: 16 },
+        // East of the door threshold (reaches x=1906) rather than across it, and west of
+        // the pan at 1938. Moving it north instead would have put it in the wall.
+        { id: "beacon-wc-basin", kind: "sink", x: 1910, y: 1330, w: 22, h: 16 },
         // Laundry (SE shaft base): stacked machines along the east wall.
-        { id: "beacon-washer-a", kind: "washer", x: 2016, y: 1260, w: 36, h: 36 },
-        { id: "beacon-washer-b", kind: "washer", x: 2016, y: 1304, w: 36, h: 36 },
-        { id: "beacon-washer-c", kind: "washer", x: 2016, y: 1348, w: 36, h: 36 },
+        /**
+         * Flush to the east wall, not floating 16 units off it.
+         *
+         * The laundry is 92 wide between its own walls and a washer is 36 deep, so
+         * standing the row at 2016 left a 40-unit band to walk down — and a bot is 48
+         * across. The room's own doorway was sealed: `beacon-core-east-d0` measured
+         * 26.08 units to the nearest ground a bot could stand on, against a limit of
+         * 24. Invisible until washers became colliders, which is the entire argument
+         * for making them colliders.
+         */
+        { id: "beacon-washer-a", kind: "washer", x: 2032, y: 1260, w: 36, h: 36 },
+        { id: "beacon-washer-b", kind: "washer", x: 2032, y: 1304, w: 36, h: 36 },
+        { id: "beacon-washer-c", kind: "washer", x: 2032, y: 1348, w: 36, h: 36 },
         { id: "beacon-laundry-sink", kind: "sink", x: 1988, y: 1384, w: 24, h: 16 },
       ],
       dots: [
-        { id: "beacon-dot-commons", item: { kind: "powerup", type: "health" }, x: 1786, y: 1240 },
-        { id: "beacon-dot-kitchen", item: { kind: "powerup", type: "radar" }, x: 2030, y: 1120 },
+        // North of the dining cluster, not under it, and out of the breakfast chair.
+        // Both sat inside a chair or table footprint, which only worked while those
+        // were walk-through.
+        { id: "beacon-dot-commons", item: { kind: "powerup", type: "health" }, x: 1810, y: 1196 },
+        { id: "beacon-dot-kitchen", item: { kind: "powerup", type: "radar" }, x: 2036, y: 1164 },
       ],
     },
     {
@@ -201,26 +224,59 @@ export const BEACON_SOURCE: SourceBuilding = {
         // NW studio: bath NW, bed beside it, kitchenette east wall. The strip
         // south of the bed stays clear — it links the bath to the front door.
         { id: "beacon-nw-bed", kind: "bed", x: 1672, y: 1044, w: 48, h: 92, facing: "N", scannable: true },
-        { id: "beacon-nw-cabinet", kind: "cabinet", x: 1730, y: 1044, w: 44, h: 24 },
-        { id: "beacon-nw-counter", kind: "counter", x: 1776, y: 1076, w: 22, h: 48 },
-        { id: "beacon-nw-chair", kind: "chair", x: 1620, y: 1150, w: 20, h: 20, facing: "E" },
+        /**
+         * Four units of clearance each, so the bed beside them has an approach.
+         *
+         * The bed's east point is the only one of its four that is not a wall, and it
+         * sat 22 units off both of these — two short of a bot on each side. While a
+         * chair was walk-through the placer could fall back to a strip of floor in the
+         * studio next door, which was the wrong room for this bed's blueprint anyway;
+         * once chairs collided that strip closed and the map stopped building. A
+         * shallower cabinet and a counter two units further out fix the cause rather
+         * than the fallback.
+         */
+        { id: "beacon-nw-cabinet", kind: "cabinet", x: 1730, y: 1044, w: 44, h: 20 },
+        { id: "beacon-nw-counter", kind: "counter", x: 1780, y: 1076, w: 22, h: 48 },
+        // Down the rug, clear of the bathroom door's south approach at 1624,1136.
+        { id: "beacon-nw-chair", kind: "chair", x: 1620, y: 1164, w: 20, h: 20, facing: "E" },
         { id: "beacon-nw-rug", kind: "rug", x: 1596, y: 1128, w: 56, h: 56 },
-        { id: "beacon-nw-wc", kind: "toilet", x: 1590, y: 1052, w: 26, h: 34, facing: "N" },
-        { id: "beacon-nw-basin", kind: "sink", x: 1624, y: 1050, w: 22, h: 16 },
+        /**
+         * Fixtures hug one wall, because the room is 88 across and a bot is 48.
+         *
+         * Split across both walls — pan on one side, basin on the other — they left a
+         * 40-unit channel and sealed the bathroom's own door: `beacon-bath-*-d0`
+         * measured 26.9 and 31.6 units to the nearest standable ground against a limit
+         * of 24. Passable fixtures hid it, which is the argument for the promotion, and
+         * a real bathroom puts its fixtures on one wall anyway.
+         */
+        { id: "beacon-nw-wc", kind: "toilet", x: 1580, y: 1048, w: 26, h: 34, facing: "N" },
+        // Clear of the bath door's gap, which starts at 1596. Hugging the wall to open the
+        // room put this one in its own threshold — caught by the doorway sweep, not by eye.
+        { id: "beacon-nw-basin", kind: "sink", x: 1572, y: 1088, w: 22, h: 16 },
         // NE studio: mirrored bath, bed west, dining centre.
         { id: "beacon-ne-bed", kind: "bed", x: 1830, y: 1044, w: 48, h: 92, facing: "N" },
         { id: "beacon-ne-cabinet", kind: "cabinet", x: 1890, y: 1044, w: 44, h: 24 },
         { id: "beacon-ne-table", kind: "table", x: 1888, y: 1096, w: 44, h: 44 },
-        { id: "beacon-ne-chair", kind: "chair", x: 1866, y: 1106, w: 20, h: 20, facing: "E" },
+        /**
+         * On the far side of its own dining table, flush to it.
+         *
+         * It began twelve units under the bed, which is an overlap the moment a chair
+         * collides. East of the bed is no good either: bed and table leave a 10-unit
+         * slot and the chair is 20 wide, so it just swapped one overlap for another.
+         * The table's east face is open floor for eighty units.
+         */
+        { id: "beacon-ne-chair", kind: "chair", x: 1932, y: 1108, w: 20, h: 20, facing: "W" },
         { id: "beacon-ne-fridge", kind: "fridge", x: 1816, y: 1156, w: 30, h: 32, facing: "N" },
-        { id: "beacon-ne-wc", kind: "toilet", x: 2020, y: 1052, w: 26, h: 34, facing: "N" },
-        { id: "beacon-ne-basin", kind: "sink", x: 1990, y: 1050, w: 22, h: 16 },
+        // Mirrored, and on the east wall for the same reason.
+        { id: "beacon-ne-wc", kind: "toilet", x: 2034, y: 1048, w: 26, h: 34, facing: "N" },
+        { id: "beacon-ne-basin", kind: "sink", x: 2046, y: 1088, w: 22, h: 16 },
         // SW studio: bath SW, bed east.
         { id: "beacon-sw-bed", kind: "bed", x: 1790, y: 1300, w: 48, h: 88, facing: "S", scannable: true },
         { id: "beacon-sw-rug", kind: "rug", x: 1694, y: 1288, w: 80, h: 40 },
         { id: "beacon-sw-chair", kind: "chair", x: 1700, y: 1296, w: 20, h: 20, facing: "E" },
-        { id: "beacon-sw-wc", kind: "toilet", x: 1690, y: 1356, w: 26, h: 34, facing: "S" },
-        { id: "beacon-sw-basin", kind: "sink", x: 1722, y: 1378, w: 22, h: 16 },
+        // West wall, clearing the door on the room's north side.
+        { id: "beacon-sw-wc", kind: "toilet", x: 1668, y: 1344, w: 26, h: 34, facing: "S" },
+        { id: "beacon-sw-basin", kind: "sink", x: 1672, y: 1384, w: 22, h: 16 },
         // Lounge: reading corner by the south windows; centre left open so the
         // roof stair door stays approachable.
         /**
@@ -267,7 +323,8 @@ export const BEACON_SOURCE: SourceBuilding = {
         { id: "beacon-potting", kind: "workbench", x: 1600, y: 1360, w: 110, h: 30, facing: "N", scannable: true },
         { id: "beacon-terrace-bench", kind: "bench", x: 1770, y: 1080, w: 100, h: 22, facing: "S" },
         { id: "beacon-terrace-table", kind: "table", x: 1800, y: 1250, w: 48, h: 48 },
-        { id: "beacon-terrace-chair-w", kind: "chair", x: 1782, y: 1262, w: 20, h: 20, facing: "E" },
+        // Two units west, so it touches the terrace table instead of overlapping it.
+        { id: "beacon-terrace-chair-w", kind: "chair", x: 1780, y: 1262, w: 20, h: 20, facing: "E" },
         { id: "beacon-terrace-chair-e", kind: "chair", x: 1852, y: 1262, w: 20, h: 20, facing: "W" },
         { id: "beacon-terrace-plant", kind: "plant", x: 1760, y: 1180, w: 24, h: 24 },
         // Service corner NE.

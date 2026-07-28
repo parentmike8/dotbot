@@ -135,10 +135,42 @@ export const CIVIC_SOURCE: SourceBuilding = {
         ...wcFixtures("g"),
         // Lobby: reception faces the entrance; lounge seat along the west
         // windows with a round side table.
-        { id: "civic-reception", kind: "receptionDesk", x: 1640, y: 300, w: 28, h: 120, facing: "W", scannable: true },
+        /**
+         * Sixteen units south, and it opens the floor.
+         *
+         * The desk's north end and the WC block's south-west corner left a 32-unit
+         * aperture — the only way between the west half of the lobby and the east half
+         * — so Civic's public floor was two disconnected buildings. You came in the main
+         * entrance from Third Ave and could reach the lounge and the NW shaft; the cafe,
+         * the WC stack, the mail room and the NE shaft were reachable only from the side
+         * exit on Main St. To get from one to the other you went back out to the street.
+         *
+         * The audit had been reporting it for as long as it has existed — 57,024 square
+         * units of "open-looking floor disconnected from its arrival route" — and it was
+         * carried in `FLOOR_QUALITY_BUDGET` as debt rather than read as the bug it was.
+         * Moving the desk takes the stranded region from 936 grid cells to one.
+         *
+         * The desk still faces the entrance across the lobby, which is what the floor's
+         * brief asks of it.
+         */
+        { id: "civic-reception", kind: "receptionDesk", x: 1640, y: 316, w: 28, h: 120, facing: "W", scannable: true },
         { id: "civic-lobby-couch", kind: "couch", x: 1504, y: 388, w: 36, h: 92, facing: "E", scannable: true },
         { id: "civic-lobby-table", kind: "table", x: 1556, y: 428, w: 40, h: 40 },
-        { id: "civic-lobby-plant-n", kind: "plant", x: 1500, y: 320, w: 20, h: 20 },
+        /**
+         * Moved off the west windows to the east wall, because at 1500,320 it stood in
+         * the front door.
+         *
+         * The main entrance is the double at 1480,340, so its clear width is y 296–384
+         * and the plant sat inside it, eight units off the jamb — which is also exactly
+         * the space this floor's own brief reserves: "the lobby floor between the
+         * entrance and the shaft stays completely clear." A ghost could stand there; a
+         * collider cannot, and promoting `plant` is what made the difference visible.
+         *
+         * It also freed the lounge couch, whose blueprint had nowhere to go: south is
+         * 14 units off the shell, east is under the side table, west is outside the
+         * footprint, and this plant was 14 units from the north point.
+         */
+        { id: "civic-lobby-plant-n", kind: "plant", x: 2008, y: 300, w: 20, h: 20 },
         { id: "civic-lobby-plant-s", kind: "plant", x: 1500, y: 500, w: 20, h: 20 },
         // Café along the south wall: espresso machine ON the counter, fridge
         // closing its east end, one café table clear of the side exit.
@@ -146,21 +178,32 @@ export const CIVIC_SOURCE: SourceBuilding = {
         { id: "civic-cafe-machine", kind: "coffeeStation", x: 1572, y: 496, w: 40, h: 20 },
         { id: "civic-cafe-fridge", kind: "fridge", x: 1674, y: 484, w: 34, h: 34, facing: "N", scannable: true },
         { id: "civic-cafe-table", kind: "table", x: 1740, y: 430, w: 48, h: 48 },
-        { id: "civic-cafe-chair-w", kind: "chair", x: 1714, y: 444, w: 20, h: 20, facing: "E" },
-        { id: "civic-cafe-chair-e", kind: "chair", x: 1794, y: 444, w: 20, h: 20, facing: "W" },
+        // Pushed in against the table, so neither is a fixture parked six units off one.
+        { id: "civic-cafe-chair-w", kind: "chair", x: 1720, y: 444, w: 20, h: 20, facing: "E" },
+        { id: "civic-cafe-chair-e", kind: "chair", x: 1788, y: 444, w: 20, h: 20, facing: "W" },
         // Mail room SE: lockers along the east wall, sorting counter.
         { id: "civic-mail-locker-a", kind: "locker", x: 1994, y: 416, w: 26, h: 38, scannable: true },
         { id: "civic-mail-locker-b", kind: "locker", x: 1994, y: 458, w: 26, h: 38 },
-        { id: "civic-mail-counter", kind: "counter", x: 1896, y: 484, w: 80, h: 22 },
-        { id: "civic-mail-power", kind: "utilityBox", x: 1900, y: 420, w: 26, h: 20 },
+        // Four units east, off the mail room's own door threshold (reaches x=1898) and
+        // still clear of the lockers at 1994.
+        { id: "civic-mail-counter", kind: "counter", x: 1900, y: 484, w: 80, h: 22 },
+        // Flush to the north wall's inner face (y=408), not floating 12 units off it.
+        // At y=420 it left a 44-unit slot between itself and the sorting counter —
+        // narrower than a bot — so the moment `utilityBox` became solid the mail room
+        // sealed itself and nothing could reach the lockers. Against the wall the slot
+        // is 56, which is a bot plus clearance.
+        { id: "civic-mail-power", kind: "utilityBox", x: 1900, y: 408, w: 26, h: 20 },
         { id: "civic-mail-plant", kind: "plant", x: 1852, y: 330, w: 20, h: 20 },
       ],
       dots: [
-        { id: "civic-dot-cafe", item: { kind: "powerup", type: "incognito" }, x: 1812, y: 452 },
+        // East of the cafe chairs rather than inside the east one. A Dot on a chair was
+        // invisible while chairs were walk-through; a bot cannot stand there now.
+        { id: "civic-dot-cafe", item: { kind: "powerup", type: "incognito" }, x: 1852, y: 452 },
         // In the lobby, which is where its name says it is. At 1950,448 it sat in
         // the mail room 16 units off a locker bank — close enough to a blueprint
         // spawn that the two were one pickup.
-        { id: "civic-dot-lobby", item: { kind: "powerup", type: "radar" }, x: 1700, y: 440 },
+        // Clear of the cafe fridge, which it was standing 14 units inside of.
+        { id: "civic-dot-lobby", item: { kind: "powerup", type: "radar" }, x: 1620, y: 462 },
       ],
     },
     {
@@ -197,9 +240,14 @@ export const CIVIC_SOURCE: SourceBuilding = {
         // Meeting room SE.
         { id: "civic-f1-table", kind: "conferenceTable", x: 1924, y: 420, w: 96, h: 56, scannable: true },
         // Break corner SW.
-        { id: "civic-f1-coffee", kind: "coffeeStation", x: 1500, y: 500, w: 44, h: 22 },
+        // Clear of the desk's west edge at 1540 rather than clipping it by four
+        // units — invisible while a coffee station was walk-through.
+        { id: "civic-f1-coffee", kind: "coffeeStation", x: 1492, y: 500, w: 44, h: 22 },
         { id: "civic-f1-break-table", kind: "table", x: 1560, y: 496, w: 44, h: 44 },
-        { id: "civic-f1-break-chair", kind: "chair", x: 1610, y: 508, w: 20, h: 20, facing: "W" },
+        // Flush under the desk's south edge and against the break table, rather than
+        // tucked 8 units beneath the desk: once a chair collides, an overlap is two
+        // solids claiming the same floor.
+        { id: "civic-f1-break-chair", kind: "chair", x: 1604, y: 516, w: 20, h: 20, facing: "W" },
         { id: "civic-f1-plant", kind: "plant", x: 1810, y: 500, w: 20, h: 20 },
       ],
       dots: [
@@ -218,7 +266,32 @@ export const CIVIC_SOURCE: SourceBuilding = {
       },
       shellOpenings: upperGlazing(),
       walls: [
-        coreA(UP_DOOR),
+        /**
+         * The NW shaft gets a second door, on its south face, into the west strip.
+         *
+         * Without it that strip — 78 by 172, bigger than either ground-floor office —
+         * was floor nobody could enter. It is boxed in by this shaft's south wall and
+         * the server room's west wall, and the only aperture between those two is 24
+         * units wide for a 48-unit bot. No fixture was involved, so no fixture could
+         * fix it; the audit had been carrying 13,504 square units of it as debt.
+         *
+         * A stair landing with a door into the floor's side space is ordinary planning,
+         * and it costs one opening rather than moving the server room and the generator
+         * with it.
+         *
+         * Worth knowing if this ever regresses: the door alone does nothing. The channel
+         * it opens is one grid cell wide, and `civic-f2-plant` used to stand on the
+         * landing directly inside it — 20 units from the only line through, so the strip
+         * stayed sealed and the door looked like it had failed. It took moving the plant
+         * as well. See its own comment below.
+         */
+        {
+          ...coreA(UP_DOOR),
+          openings: [
+            ...(coreA(UP_DOOR).openings ?? []),
+            { kind: "door", width: DOOR, near: { x: 1538, y: 296 } },
+          ],
+        },
         coreB(DOWN_DOOR),
         ...wcBlock(),
         {
@@ -243,7 +316,15 @@ export const CIVIC_SOURCE: SourceBuilding = {
         { id: "civic-f2-filing-a", kind: "filingCabinet", x: 1996, y: 330, w: 30, h: 48 },
         { id: "civic-f2-filing-b", kind: "filingCabinet", x: 1996, y: 382, w: 30, h: 48 },
         { id: "civic-f2-crate", kind: "crateStack", x: 1996, y: 460, w: 34, h: 34 },
-        { id: "civic-f2-plant", kind: "plant", x: 1500, y: 320, w: 20, h: 20 },
+        /**
+         * Down the strip, off the new shaft door's landing.
+         *
+         * At 1500,320 it stood 20 units from the single line through that door — the
+         * whole reason the door read as not working. A pot plant was holding 13,504
+         * square units of floor closed, which is the ghost-hides-a-bug pattern one more
+         * time: it was walk-through until `plant` was promoted earlier today.
+         */
+        { id: "civic-f2-plant", kind: "plant", x: 1500, y: 440, w: 20, h: 20 },
       ],
       dots: [
         /**
@@ -302,7 +383,16 @@ export const CIVIC_SOURCE: SourceBuilding = {
         { id: "civic-office-n-couch", kind: "couch", x: 1504, y: 388, w: 70, h: 34, facing: "N" },
         // Office 2 (south).
         { id: "civic-office-s-desk", kind: "desk", x: 1504, y: 452, w: 80, h: 52, facing: "S" },
-        { id: "civic-office-s-plant", kind: "plant", x: 1626, y: 504, w: 20, h: 20 },
+        /**
+         * Flush to the desk's south face, in the dead strip behind it.
+         *
+         * At 1626,504 it clipped its own office threshold at 1656,478 by eight units
+         * — legal for a ghost, a doorstop for a collider. And parking it two units off
+         * the desk instead of against it just traded that for a `wedged-fixture`: a
+         * 2-unit slot reads as a gap and is not one. Touching, it is one piece of
+         * furniture.
+         */
+        { id: "civic-office-s-plant", kind: "plant", x: 1496, y: 504, w: 20, h: 20 },
         // Lounge centre, kept east of the office doors.
         { id: "civic-f3-rug", kind: "rug", x: 1700, y: 350, w: 150, h: 130 },
         { id: "civic-f3-couch", kind: "couch", x: 1710, y: 360, w: 90, h: 38, facing: "S" },
@@ -360,10 +450,19 @@ export const CIVIC_SOURCE: SourceBuilding = {
         { id: "civic-f5-bench-ne", kind: "workbench", x: 1780, y: 340, w: 150, h: 32, facing: "S" },
         { id: "civic-f5-bench-sw", kind: "workbench", x: 1560, y: 450, w: 150, h: 32, facing: "N" },
         { id: "civic-f5-bench-se", kind: "workbench", x: 1780, y: 450, w: 150, h: 32, facing: "N" },
-        { id: "civic-f5-stool-a", kind: "chair", x: 1600, y: 388, w: 20, h: 20, facing: "N" },
-        { id: "civic-f5-stool-b", kind: "chair", x: 1660, y: 388, w: 20, h: 20, facing: "N" },
-        { id: "civic-f5-stool-c", kind: "chair", x: 1820, y: 388, w: 20, h: 20, facing: "N" },
-        { id: "civic-f5-stool-d", kind: "chair", x: 1880, y: 388, w: 20, h: 20, facing: "N" },
+        /**
+         * Pushed in against the bench they belong to, not parked 16 units off it.
+         *
+         * That 16-unit slot did two things wrong at once once a stool collided: it is
+         * exactly the `wedged-fixture` case — too narrow to enter, too wide to read as
+         * joined — and it left only 42 units between the stool row and the south bench,
+         * six short of a bot, which cut the floor's west end off from its stair. Flush,
+         * the aisle is 58.
+         */
+        { id: "civic-f5-stool-a", kind: "chair", x: 1600, y: 372, w: 20, h: 20, facing: "N" },
+        { id: "civic-f5-stool-b", kind: "chair", x: 1660, y: 372, w: 20, h: 20, facing: "N" },
+        { id: "civic-f5-stool-c", kind: "chair", x: 1820, y: 372, w: 20, h: 20, facing: "N" },
+        { id: "civic-f5-stool-d", kind: "chair", x: 1880, y: 372, w: 20, h: 20, facing: "N" },
         { id: "civic-f5-stock", kind: "shelf", x: 1996, y: 330, w: 26, h: 140 },
         { id: "civic-f5-crate", kind: "crateStack", x: 1520, y: 500, w: 34, h: 34 },
         { id: "civic-f5-plant", kind: "plant", x: 1950, y: 502, w: 20, h: 20 },
@@ -387,17 +486,39 @@ export const CIVIC_SOURCE: SourceBuilding = {
       objects: [
         ...wcFixtures("f6"),
         { id: "civic-f6-rug", kind: "rug", x: 1600, y: 350, w: 240, h: 160 },
-        { id: "civic-f6-couch-n", kind: "couch", x: 1640, y: 360, w: 110, h: 40, facing: "S", scannable: true },
+        /**
+         * Sixteen units east, which is the difference between a squeeze and a way in.
+         *
+         * The gap between the bar counter's east end and this couch was 50 units for a
+         * 48-unit bot: passable with half a unit either side, which is not a route. It was
+         * the only way into the lounge's west strip, so the audit reported 11,136 square
+         * units disconnected — and `civic-f6-couch-w` sat inside it, a couch nobody could
+         * reach. At 66 the opening is a walkable one.
+         */
+        { id: "civic-f6-couch-n", kind: "couch", x: 1656, y: 360, w: 110, h: 40, facing: "S", scannable: true },
         { id: "civic-f6-couch-w", kind: "couch", x: 1610, y: 420, w: 40, h: 90, facing: "E" },
-        { id: "civic-f6-table", kind: "table", x: 1720, y: 410, w: 56, h: 56 },
+        /**
+         * Against the west couch, not 70 units off it.
+         *
+         * That slot was open floor at its centre and sealed at both ends — the couch to
+         * the west, the table to the east, the north couch across the top — so it read as
+         * floor and was not. It is the space inside a seating arrangement, where legs go;
+         * it should never have been a route. A coffee table touching the couch it serves
+         * says that, and takes the lounge to no disconnected floor at all.
+         */
+        { id: "civic-f6-table", kind: "table", x: 1650, y: 410, w: 56, h: 56 },
         { id: "civic-f6-shelf-w", kind: "shelf", x: 1700, y: 498, w: 130, h: 26 },
         { id: "civic-f6-shelf-e", kind: "shelf", x: 1850, y: 498, w: 130, h: 26 },
         { id: "civic-f6-bar", kind: "counter", x: 1500, y: 320, w: 90, h: 24 },
         { id: "civic-f6-coffee", kind: "coffeeStation", x: 1520, y: 296, w: 44, h: 22 },
         { id: "civic-f6-cafe-table", kind: "table", x: 1960, y: 340, w: 48, h: 48 },
-        { id: "civic-f6-cafe-chair-w", kind: "chair", x: 1942, y: 352, w: 20, h: 20, facing: "E" },
+        // Two units west, so it touches the cafe table instead of overlapping it.
+        { id: "civic-f6-cafe-chair-w", kind: "chair", x: 1940, y: 352, w: 20, h: 20, facing: "E" },
         { id: "civic-f6-cafe-chair-e", kind: "chair", x: 2012, y: 352, w: 20, h: 20, facing: "W" },
-        { id: "civic-f6-plant", kind: "plant", x: 1996, y: 440, w: 20, h: 20 },
+        // South-east corner, 43 units off the library Dot. At 1996,440 it sat 17
+        // units from it, which is inside a bot radius — the Dot was somewhere you
+        // could see and not stand.
+        { id: "civic-f6-plant", kind: "plant", x: 2004, y: 470, w: 20, h: 20 },
       ],
       dots: [
         { id: "civic-dot-f6-lounge", item: { kind: "powerup", type: "health" }, x: 1900, y: 420 },
@@ -447,7 +568,17 @@ export const CIVIC_SOURCE: SourceBuilding = {
         { id: "civic-f7-drum-e", kind: "drum", x: 1558, y: 478, w: 24, h: 24 },
         { id: "civic-f7-vent-a", kind: "vent", x: 1520, y: 320, w: 22, h: 22 },
         { id: "civic-f7-vent-b", kind: "vent", x: 1950, y: 504, w: 22, h: 22 },
-        { id: "civic-f7-power", kind: "utilityBox", x: 1770, y: 344, w: 26, h: 20 },
+        /**
+         * Flush against the east HVAC unit, so the plant row is one bank with one
+         * aisle.
+         *
+         * Free-standing at 1770 it sat in the middle of the 90-unit gap between the
+         * HVAC pair and the generator, and splitting that into 20 and 44 turned the
+         * machine row into a wall the moment `utilityBox` became solid: the whole south
+         * half of the floor — bench, tool cabinet, both Dots — was cut off from the
+         * stair cores. Against the unit it powers, the aisle is a single 64.
+         */
+        { id: "civic-f7-power", kind: "utilityBox", x: 1750, y: 344, w: 26, h: 20 },
       ],
       dots: [
         { id: "civic-dot-f7-plant", item: { kind: "powerup", type: "dashOvercharge" }, x: 1750, y: 420 },

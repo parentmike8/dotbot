@@ -751,7 +751,7 @@ function materializeObject(slot: ShellSlot, kind: BaseObjectKind): MapObject {
     kind,
     ...slot.rect,
     facing: slot.facing,
-    solid: true,
+      solid: true,
     slotId: slot.id,
   };
 }

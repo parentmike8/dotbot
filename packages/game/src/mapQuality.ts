@@ -12,6 +12,14 @@ export const MIN_COMFORTABLE_AISLE = 64;
 const CONNECTIVITY_CELL = 8;
 const MIN_DISCONNECTED_AREA = 1_536;
 
+/** Whether `outer` fully encloses `inner`, so the two colliders union to `outer`. */
+function contains(outer: Rect, inner: Rect): boolean {
+  return inner.x >= outer.x
+    && inner.y >= outer.y
+    && inner.x + inner.w <= outer.x + outer.w
+    && inner.y + inner.h <= outer.y + outer.h;
+}
+
 /** Edges this close count as flush, so a seam reads as one continuous bank. */
 const FLUSH_TOLERANCE = 4;
 
@@ -363,6 +371,18 @@ export function auditBuildingFloorQuality(
         const overlapY = positiveOverlap(left.rect.y, left.rect.y + left.rect.h, right.rect.y, right.rect.y + right.rect.h);
 
         if (overlapX > 0 && overlapY > 0) {
+          /**
+           * A fixture set INTO a bigger one is an inset, not a collision.
+           *
+           * A sink in a worktop, a coffee machine standing on a counter: one physical
+           * thing, and the host already blocks that space, so the union of the two
+           * colliders is exactly the host. Nothing about navigation can depend on it,
+           * which is the test — a contained rect cannot open or close a route.
+           *
+           * Only visible once fixtures became colliders, and flagging it would have
+           * meant sliding sinks out of counters to satisfy a checker.
+           */
+          if (contains(left.rect, right.rect) || contains(right.rect, left.rect)) continue;
           if (left.ownerKind === "object" && right.ownerKind === "object") {
             issues.push({
               floorId: floor.id,

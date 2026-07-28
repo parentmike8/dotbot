@@ -92,19 +92,34 @@ export const MERCY_SOURCE: SourceBuilding = {
         { id: "mercy-exam-a-bed", kind: "bed", x: 232, y: 162, w: 48, h: 88, facing: "N", scannable: true },
         { id: "mercy-exam-a-cabinet", kind: "cabinet", x: 216, y: 268, w: 34, h: 22 },
         { id: "mercy-exam-a-sink", kind: "sink", x: 320, y: 158, w: 26, h: 18 },
-        { id: "mercy-exam-a-stool", kind: "chair", x: 322, y: 262, w: 20, h: 20, facing: "W" },
+        /**
+         * Beside the worktop, which is where a clinician's stool lives, and not out in
+         * the middle of the room.
+         *
+         * At 322 it left a 42-unit slot between itself and the bed — six short of a
+         * bot — so the moment a chair collided, the whole north half of exam 1 was cut
+         * off from its own door and the bed had nowhere to put a blueprint. Flush to
+         * the cabinet the room is 102 units clear.
+         */
+        { id: "mercy-exam-a-stool", kind: "chair", x: 250, y: 268, w: 20, h: 20, facing: "E" },
         // Exam 2.
         { id: "mercy-exam-b-bed", kind: "bed", x: 396, y: 162, w: 48, h: 88, facing: "N" },
         { id: "mercy-exam-b-cabinet", kind: "cabinet", x: 384, y: 268, w: 34, h: 22 },
         { id: "mercy-exam-b-sink", kind: "sink", x: 484, y: 158, w: 26, h: 18 },
-        { id: "mercy-exam-b-stool", kind: "chair", x: 486, y: 262, w: 20, h: 20, facing: "W" },
+        // Same fix, same reason: exam 2 sealed its own north-east pocket, which is the
+        // 2048 square units the connectivity audit was reporting.
+        { id: "mercy-exam-b-stool", kind: "chair", x: 418, y: 268, w: 20, h: 20, facing: "E" },
         // Imaging: scanner table and console.
         { id: "mercy-scanner", kind: "cot", x: 566, y: 170, w: 44, h: 84, facing: "N", scannable: true },
         { id: "mercy-console", kind: "serverRack", x: 632, y: 154, w: 26, h: 56 },
         { id: "mercy-imaging-power", kind: "utilityBox", x: 632, y: 220, w: 26, h: 20 },
         // Pharmacy: shelving runs and dispensing worktop.
         { id: "mercy-pharmacy-shelf-a", kind: "shelf", x: 688, y: 168, w: 24, h: 108, scannable: true },
-        { id: "mercy-pharmacy-shelf-b", kind: "shelf", x: 770, y: 168, w: 24, h: 108 },
+        // Six units east, so the pharmacy run is a 64-unit work aisle rather than a
+        // 58-unit one — wide enough to look like a way between the shelves and too
+        // narrow to be one. Read off the plan in the §4.1 pass before the audit was
+        // consulted, which is the order that pass exists to enforce.
+        { id: "mercy-pharmacy-shelf-b", kind: "shelf", x: 776, y: 168, w: 24, h: 108 },
         { id: "mercy-dispensing", kind: "counter", x: 782, y: 286, w: 24, h: 26 },
         { id: "mercy-pharmacy-fridge", kind: "fridge", x: 682, y: 286, w: 30, h: 30, facing: "E" },
         // Corridor: one crash cart, nothing else — it is a lane.
@@ -114,18 +129,30 @@ export const MERCY_SOURCE: SourceBuilding = {
         { id: "mercy-wait-a", kind: "chair", x: 240, y: 480, w: 22, h: 22, facing: "S" },
         { id: "mercy-wait-b", kind: "chair", x: 286, y: 480, w: 22, h: 22, facing: "S" },
         { id: "mercy-wait-c", kind: "chair", x: 332, y: 480, w: 22, h: 22, facing: "S" },
-        { id: "mercy-wait-d", kind: "chair", x: 240, y: 520, w: 22, h: 22, facing: "N" },
-        { id: "mercy-wait-e", kind: "chair", x: 286, y: 520, w: 22, h: 22, facing: "N" },
-        { id: "mercy-wait-f", kind: "chair", x: 332, y: 520, w: 22, h: 22, facing: "N" },
+        /**
+         * Back-to-back with the front row, not 18 units behind it.
+         *
+         * Two rows of seats with an 18-unit slot between them is furniture a bot cannot
+         * pass through that looks like it could — the same defect as a false aisle, and
+         * invisible to that rule because a 22-unit chair is not a long run. Joined, the
+         * six seats read as one bench block, which is what a waiting hall has.
+         */
+        { id: "mercy-wait-d", kind: "chair", x: 240, y: 502, w: 22, h: 22, facing: "N" },
+        { id: "mercy-wait-e", kind: "chair", x: 286, y: 502, w: 22, h: 22, facing: "N" },
+        { id: "mercy-wait-f", kind: "chair", x: 332, y: 502, w: 22, h: 22, facing: "N" },
         { id: "mercy-wait-table", kind: "table", x: 232, y: 424, w: 44, h: 32 },
         { id: "mercy-hall-plant-w", kind: "plant", x: 218, y: 544, w: 20, h: 20 },
         { id: "mercy-hall-plant-e", kind: "plant", x: 566, y: 540, w: 20, h: 20 },
         // Staff WC (west room) and staff room (east room).
         { id: "mercy-wc-pan", kind: "toilet", x: 664, y: 530, w: 26, h: 34, facing: "S" },
-        { id: "mercy-wc-basin", kind: "sink", x: 610, y: 494, w: 24, h: 16 },
+        // Clear of the WC door's threshold, which reaches to x=614. The basin was
+        // clipping it by four units — a fixture standing in its own doorway.
+        { id: "mercy-wc-basin", kind: "sink", x: 618, y: 494, w: 24, h: 16 },
         { id: "mercy-staff-locker-a", kind: "locker", x: 728, y: 490, w: 26, h: 38, scannable: true },
         { id: "mercy-staff-locker-b", kind: "locker", x: 728, y: 532, w: 26, h: 36 },
-        { id: "mercy-staff-plant", kind: "plant", x: 790, y: 548, w: 18, h: 18 },
+        // West along the south wall, out of the staff entrance's walking line: the
+        // door at 820,528 opens into x 794 and the plant reached to 808.
+        { id: "mercy-staff-plant", kind: "plant", x: 762, y: 548, w: 18, h: 18 },
       ],
       dots: [
         { id: "mercy-dot-exam", item: { kind: "powerup", type: "health" }, x: 470, y: 208 },
@@ -185,13 +212,25 @@ export const MERCY_SOURCE: SourceBuilding = {
         { id: "mercy-ward-unit-b", kind: "medicalCabinet", x: 444, y: 166, w: 26, h: 20 },
         { id: "mercy-ward-unit-c", kind: "medicalCabinet", x: 564, y: 166, w: 26, h: 20 },
         { id: "mercy-ward-unit-d", kind: "medicalCabinet", x: 684, y: 166, w: 26, h: 20 },
-        { id: "mercy-iv-a", kind: "ivStand", x: 328, y: 190, w: 16, h: 16 },
-        { id: "mercy-iv-b", kind: "ivStand", x: 690, y: 200, w: 16, h: 16 },
+        // Flush against its bed, not parked 12 units off it. A 12-unit slot beside a
+        // bed is a gap a bot can see and cannot enter; an IV stand stands at the
+        // bedside anyway.
+        { id: "mercy-iv-a", kind: "ivStand", x: 316, y: 190, w: 16, h: 16 },
+        { id: "mercy-iv-b", kind: "ivStand", x: 676, y: 200, w: 16, h: 16 },
         // Nurse station: counter facing the ward, desk tucked behind. Kept
         // narrow so the lanes on both sides of the station stay walkable.
         { id: "mercy-station-counter", kind: "counter", x: 420, y: 380, w: 110, h: 24, scannable: true },
         { id: "mercy-station-desk", kind: "desk", x: 430, y: 414, w: 72, h: 44, facing: "S" },
-        { id: "mercy-ward-cart", kind: "medicalCart", x: 566, y: 388, w: 30, h: 22 },
+        /**
+         * East far enough to leave a lane past the nurse station.
+         *
+         * The counter ends at 530 and the cart stood at 566: a 36-unit gap, against a
+         * 48-unit bot. That sealed the whole ward — 67,584 square units of floor cut
+         * off from its own arrival route — and the comment above about keeping the
+         * lanes walkable was already the intent. A walk-through cart is what let the
+         * lane look open while it was not.
+         */
+        { id: "mercy-ward-cart", kind: "medicalCart", x: 584, y: 388, w: 30, h: 22 },
         // Supply room SW.
         { id: "mercy-supply-shelf-a", kind: "shelf", x: 222, y: 442, w: 24, h: 110 },
         { id: "mercy-supply-shelf-b", kind: "shelf", x: 262, y: 540, w: 90, h: 24 },
