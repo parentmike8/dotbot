@@ -16,7 +16,9 @@ async function mount(): Promise<void> {
   const surface = selectClientSurface(window.location.search);
   const Component = surface === "lab"
     ? (await import("./ui/StyleLab")).StyleLab
-    : surface === "hud"
+    : surface === "skins"
+      ? (await import("./ui/hud/HudSkins")).HudSkins
+      : surface === "hud"
       ? (await import("./ui/downed/HudLab")).HudLab
       : surface === "studio"
         ? (await import("./ui/MapStudio")).MapStudio

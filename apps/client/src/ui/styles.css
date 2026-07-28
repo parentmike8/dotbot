@@ -1663,3 +1663,255 @@ button {
   color: #e6e9ec;
   font: 11px/1.2 inherit;
 }
+
+/* ---------------------------------------------------------------------------
+   Overlay options — `?skins`
+
+   Four materials for the same overlay, so the choice can be made by looking
+   rather than by argument. Each skin is variable overrides plus at most a few
+   rules; no component is restyled, which is the point — whichever wins is a
+   stylesheet change, not a rewrite.
+
+   Every stage is drawn over BOTH a pale interior slab and dark asphalt. That
+   split is doing real work: the shipped plate reads as paper over the slab and
+   almost disappears over the road, and neither failure shows up alone.
+   --------------------------------------------------------------------------- */
+
+.hud-skins {
+  min-height: 100%;
+  padding: 20px 22px 40px;
+  background: #14171a;
+  color: #e7eaed;
+  font: 13px/1.5 var(--font-sans, system-ui, sans-serif);
+}
+
+.hud-skins h1 {
+  margin: 0 0 6px;
+  font: 800 15px/1.2 var(--font-mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.hud-skins header p {
+  max-width: 62ch;
+  margin: 0 0 12px;
+  color: #9ba3ab;
+}
+
+.hud-skins nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+
+.hud-skins nav button {
+  padding: 5px 10px;
+  border: 1px solid #333a41;
+  border-radius: 5px;
+  background: #1c2024;
+  color: #cfd5db;
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.hud-skins nav button[aria-pressed="true"] {
+  border-color: var(--squad-cyan);
+  color: #f2f5f7;
+}
+
+.skin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 22px;
+}
+
+.skin-grid.solo { grid-template-columns: minmax(0, 900px); }
+
+.skin-grid h2 {
+  margin: 0 0 7px;
+  font: 800 11px/1 var(--font-mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: #cfd5db;
+}
+
+.skin-grid section > p {
+  margin: 9px 0 0;
+  max-width: 56ch;
+  color: #8f979f;
+  font-size: 12px;
+}
+
+/* The stage is the world: an interior slab above, asphalt below. */
+.skin-stage {
+  position: relative;
+  height: 300px;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+.skin-ground {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(#eceef0 0 58%, #b9bec4 58% 60%, #7c8288 60% 100%);
+}
+
+/* The touch controls sit bottom-centre in game; keep them in frame here. */
+.skin-stage .touch-controls {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  left: 14px;
+}
+
+/* ---------------------------------------------------------------------------
+   Four takes on glass.
+
+   The first round offered four materials — plate, bare, glass, instrument — and
+   glass won outright; the other three were written off. So this round stays inside
+   glass and varies the things that are actually still open within it: how much of
+   the world comes through, whether the pane has an edge or a lit rim, how much it
+   floats, and where colour is allowed to mean something.
+
+   A is byte-for-byte the option that won, kept as the baseline to judge against.
+   --------------------------------------------------------------------------- */
+
+.skin-glass {
+  --ink: #f3f5f7;
+  --panel: rgba(18, 21, 24, .62);
+  --panel-glass: rgba(18, 21, 24, .55);
+  --hairline: rgba(255, 255, 255, .22);
+  --muted: #9aa2aa;
+  --muted-strong: #c6ccd2;
+  --paper: #1b1e22;
+}
+
+/** Everything that is a pane. Collected once so a variant overrides one list. */
+.skin-glass .hud-plate,
+.skin-glass .bay-bank,
+.skin-glass .run-readout,
+.skin-glass .restart-button,
+.skin-glass .settings-button,
+.skin-glass .bay-button,
+.skin-glass .swap-control {
+  border-radius: 5px;
+  backdrop-filter: blur(10px) saturate(.9);
+}
+
+/**
+ * The readout has to be plated here, and that is a finding about the shipped design
+ * rather than a detail of this one. `.run-readout` deliberately carries no panel —
+ * "two numbers do not need a panel" — which only holds while the ink is dark. In light
+ * ink on a pale interior slab the clock and the headcount vanished completely.
+ */
+.skin-glass .run-readout {
+  padding: 6px 9px;
+  border: 1px solid var(--hairline);
+  background: var(--panel-glass);
+}
+
+.skin-glass .joystick { background: rgba(18, 21, 24, .52); }
+.skin-glass .joystick.active { background: rgba(18, 21, 24, .7); }
+
+/**
+ * The dash ring fills with `--ink`, which is right exactly once: while the ink is
+ * dark. Inverted, a 62%-charged dash became a near-white disc that read as a pale
+ * blob instead of a level. The accent is the honest fill, and it is the cyan already
+ * under the joystick knob, so charge and "you" are the same colour.
+ */
+.skin-glass .dash-button {
+  background:
+    conic-gradient(var(--squad-cyan) calc(var(--dash-progress) * 1turn), var(--paper) 0),
+    var(--paper);
+  color: #eef1f4;
+}
+
+.skin-glass .bay-button:not(:disabled):hover,
+.skin-glass .restart-button:hover,
+.skin-glass .settings-button:hover {
+  border-color: rgba(255, 255, 255, .5);
+  color: #fff;
+}
+
+/* --- B · Deep: heavier pane, no edge, floating -------------------------------
+   More of the pane and less of the world. The border goes entirely — at this
+   opacity the tone alone separates it from the ground, and an outline is the
+   thing that made the old plate read as a sticker. A soft drop shadow puts it in
+   FRONT of the world rather than on it, which is the one thing the overlay is
+   allowed to claim that no object in the world may.
+   --------------------------------------------------------------------------- */
+
+.skin-v-deep {
+  --panel: rgba(14, 16, 19, .8);
+  --panel-glass: rgba(14, 16, 19, .74);
+  --hairline: transparent;
+}
+
+.skin-v-deep .hud-plate,
+.skin-v-deep .bay-bank,
+.skin-v-deep .run-readout,
+.skin-v-deep .restart-button,
+.skin-v-deep .settings-button,
+.skin-v-deep .bay-button,
+.skin-v-deep .swap-control {
+  border-color: transparent;
+  border-radius: 9px;
+  backdrop-filter: blur(18px) saturate(.85);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .34);
+}
+
+.skin-v-deep .bay-button:not(:disabled):hover { background: rgba(30, 34, 39, .86); }
+
+/* --- C · Rimlit: one lit edge, from the same light as the world --------------
+   The world has ONE light, north and slightly west, and every face in it is shaded
+   by that. This is the only variant where the overlay obeys the same rule: instead
+   of an outline all the way round, each pane catches the light on its north edge
+   and nowhere else. It is the most physical of the four — the panes read as
+   actual sheets with a thickness, lit by the same sun as the building below them.
+   --------------------------------------------------------------------------- */
+
+.skin-v-rim {
+  --panel: rgba(16, 19, 22, .68);
+  --panel-glass: rgba(16, 19, 22, .6);
+  --hairline: transparent;
+}
+
+.skin-v-rim .hud-plate,
+.skin-v-rim .bay-bank,
+.skin-v-rim .run-readout,
+.skin-v-rim .restart-button,
+.skin-v-rim .settings-button,
+.skin-v-rim .bay-button,
+.skin-v-rim .swap-control {
+  border: none;
+  border-radius: 4px;
+  backdrop-filter: blur(13px) saturate(.88);
+  /* North rim, west rim at half, and a hairline of shade at the south to give the
+     sheet a bottom. Three insets, one light source. */
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, .34),
+    inset 1px 0 rgba(255, 255, 255, .14),
+    inset 0 -1px rgba(0, 0, 0, .34);
+}
+
+.skin-v-rim .bay-button strong { text-shadow: 0 1px 1px rgba(0, 0, 0, .5); }
+
+/* --- D · Accent: glass with colour only where it means something -------------
+   A's transparency and A's restraint, with the squad cyan let in on exactly the
+   things that are LIVE: the slot numbers over a filled bay, the hold count, the
+   focus edge. Everything else stays achromatic. The test for this one is whether
+   the colour reads as information or as decoration.
+   --------------------------------------------------------------------------- */
+
+.skin-v-accent .bay-bank { border-top: 2px solid var(--squad-cyan); }
+.skin-v-accent .bay-button small { color: var(--squad-cyan); }
+.skin-v-accent .hold-chip strong { color: var(--squad-cyan); }
+.skin-v-accent .run-readout dt { color: var(--squad-cyan); }
+
+.skin-v-accent .bay-button:not(:disabled):hover {
+  border-color: var(--squad-cyan);
+  color: #fff;
+}
