@@ -24,7 +24,7 @@ import {
   predictedImpactDirection,
   type QueuedPredictedImpact,
 } from "./impactPrediction";
-import { drawDotDisc } from "./dotArt";
+import { drawDotDisc, drawDotGloss, drawDotMark } from "./dotArt";
 import { drawCatchLight, drawGroundShadow } from "./grounding";
 import { drawChargedCore, drawDownedBody } from "./bodies";
 import { DOT_COLOR, INK, WEIGHT } from "./style";
@@ -677,7 +677,8 @@ export class GameRenderer {
 
       const color = dot.item.kind === "blueprint" ? DOT_COLOR.blueprint : DOT_COLOR.powerup;
       drawDotDisc(this.maskedGfx, dot.position, dot.radius, color);
-      this.drawDotMark(this.maskedGfx, dot.item, dot.position, dot.radius);
+      drawDotMark(this.maskedGfx, dot.item, dot.position, dot.radius);
+      drawDotGloss(this.maskedGfx, dot.position, dot.radius);
 
       const coverage = snapshot.coverages.find((item) => item.kind === "capture" && item.targetId === dot.id);
       if (coverage) {
@@ -708,44 +709,8 @@ export class GameRenderer {
         .moveTo(x + Math.cos(seamStart) * mine.radius, y + Math.sin(seamStart) * mine.radius)
         .arc(x, y, mine.radius, seamStart, Math.PI * 2 - seamRadians / 2)
         .stroke({ color: INK.structure, width: 2 });
-      this.drawDotMark(this.maskedGfx, { kind: "powerup", type: mine.disguise ?? "health" }, mine.position, mine.radius);
-    }
-  }
-
-  private drawDotMark(g: Graphics, item: Item, center: Vec2, radius: number): void {
-    const size = Math.max(3.5, radius * 0.42);
-    const line = { color: INK.structure, width: Math.max(1.25, radius * 0.14) };
-    const { x, y } = center;
-
-    if (item.kind === "blueprint") {
-      g.moveTo(x - size, y - size * 0.55).lineTo(x + size, y - size * 0.55)
-        .moveTo(x - size, y).lineTo(x + size * 0.45, y)
-        .moveTo(x - size, y + size * 0.55).lineTo(x + size, y + size * 0.55).stroke(line);
-      return;
-    }
-    if (item.kind === "mine") {
-      g.moveTo(x - size, y - size).lineTo(x + size, y + size)
-        .moveTo(x + size, y - size).lineTo(x - size, y + size).stroke(line);
-      return;
-    }
-    if (item.type === "health") {
-      g.moveTo(x - size, y).lineTo(x + size, y).moveTo(x, y - size).lineTo(x, y + size).stroke(line);
-      return;
-    }
-    if (item.type === "radar") {
-      this.drawArcStroke(g, center, size * 0.5, -Math.PI * 0.75, Math.PI * 0.75, { ...line, alpha: 1 });
-      this.drawArcStroke(g, center, size, -Math.PI * 0.75, Math.PI * 0.75, { ...line, alpha: 1 });
-      return;
-    }
-    if (item.type === "dashOvercharge") {
-      g.moveTo(x - size * 0.65, y - size)
-        .lineTo(x + size * 0.45, y)
-        .lineTo(x - size * 0.65, y + size)
-        .stroke(line);
-      return;
-    }
-    for (let index = 0; index < 8; index += 2) {
-      this.drawArcStroke(g, center, size, (index * Math.PI) / 4, ((index + 1) * Math.PI) / 4, { ...line, alpha: 1 });
+      drawDotMark(this.maskedGfx, { kind: "powerup", type: mine.disguise ?? "health" }, mine.position, mine.radius);
+      drawDotGloss(this.maskedGfx, mine.position, mine.radius);
     }
   }
 

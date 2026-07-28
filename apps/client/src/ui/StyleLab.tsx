@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics, Text } from "pixi.js";
+import { defaultGameConfig } from "@dotbot/game/config";
 import { shieldArcSpan } from "@dotbot/game/shields";
 import type { BaseLayout, BaseObjectKind, Building, DotSpawn, FloorPlan, Rect, Vec2 } from "@dotbot/game/types";
 import { downtownMap } from "@dotbot/game/content/downtown";
@@ -16,7 +17,7 @@ import {
 import { buildMapArt } from "../game/renderer/mapArt";
 import { buildFloorModel } from "../game/renderer/model/modelFloor";
 import { buildGeometryProof } from "../game/renderer/model/geometryProof";
-import { drawDotDisc } from "../game/renderer/dotArt";
+import { drawDotDisc, drawDotGloss, drawDotMark } from "../game/renderer/dotArt";
 import { drawCatchLight, drawGroundShadow } from "../game/renderer/grounding";
 import { drawChargedCore, drawDownedBody, type BodyStyle, type CrackKind, type DownedBody, type HullKind } from "../game/renderer/bodies";
 import { V } from "../game/renderer/model/tone";
@@ -229,7 +230,16 @@ function modelWorld(building: Building, floor: FloorPlan, params: LabParams): Co
 
   const actors = new Graphics();
   for (const spawn of floor.dotSpawns) {
-    drawDotDisc(actors, spawn.position, spawn.radius ?? 11, powerupColor(spawn));
+    // The same three calls the game makes, in the same order. The lab used to draw
+    // bare spheres with no mark on them, which made it a nicer picture than the
+    // game and a useless one for judging what a Dot actually looks like.
+    // The size the simulation actually gives a Dot, not the authored hint: every
+    // Dot in a run is `config.dotRadius`, and the lab drawing them a tenth larger
+    // is the lab flattering itself.
+    const radius = defaultGameConfig.dotRadius;
+    drawDotDisc(actors, spawn.position, radius, powerupColor(spawn));
+    drawDotMark(actors, spawn.item, spawn.position, radius);
+    drawDotGloss(actors, spawn.position, radius);
   }
   for (const bot of labBots(floor)) drawLabBot(actors, bot);
   for (const body of labBodies(floor)) drawDownedBody(actors, body);
