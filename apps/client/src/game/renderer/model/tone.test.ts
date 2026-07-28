@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { LIFT, MAX_BLOCK_LIFT, SHADOW_ALPHA, blockShadowRings } from "./tone";
+import type { Graphics } from "pixi.js";
+import type { Rect } from "@dotbot/game/types";
+import {
+  LIFT,
+  MAT,
+  MAX_BLOCK_LIFT,
+  SHADOW_ALPHA,
+  blockShadowRings,
+  faceLight,
+  shade,
+  volume,
+} from "./tone";
 
 /**
  * The block shadow's ramp.
@@ -20,6 +31,166 @@ import { LIFT, MAX_BLOCK_LIFT, SHADOW_ALPHA, blockShadowRings } from "./tone";
 function composite(alphas: number[]): number {
   return 1 - alphas.reduce((keep, alpha) => keep * (1 - alpha), 1);
 }
+
+/**
+ * Enough of Pixi's Graphics to record what `volume` fills, in order.
+ *
+ * Deliberately smaller than the `Recorder` in modelWalls.test / modelStairs.test:
+ * those need polygons, strokes and paths, and this only needs to know which
+ * rectangles got which colour.
+ */
+function filler() {
+  const fills: Array<Rect & { color: number }> = [];
+  let pending: Rect | null = null;
+  const g = {
+    rect(x: number, y: number, w: number, h: number) {
+      pending = { x, y, w, h };
+      return g;
+    },
+    roundRect(x: number, y: number, w: number, h: number) {
+      return g.rect(x, y, w, h);
+    },
+    fill(style: { color: number }) {
+      if (pending) fills.push({ ...pending, color: style.color });
+      pending = null;
+      return g;
+    },
+    stroke() {
+      pending = null;
+      return g;
+    },
+  };
+  return { g: g as unknown as Graphics, fills };
+}
+
+const NORTH = { x: 0, y: -1 };
+const SOUTH = { x: 0, y: 1 };
+const EAST = { x: 1, y: 0 };
+const BOX: Rect = { x: 100, y: 200, w: 60, h: 40 };
+
+describe("a solid's faces are lit by their own normals", () => {
+  /**
+   * The defect this pins, and why no screenshot could have caught it.
+   *
+   * `volume` flooded the footprint with `mat.front` and painted the top over it, so
+   * the exposed band came out in the SOUTH tone wherever it ended up. While the pull
+   * was always north that was invisible — the exposed band always WAS the south face.
+   * The moment an object turned its top toward the camera, a box at the edge of view
+   * showed a dark band on its NORTH side: a shadow on the lit side. That is the whole
+   * reason object parallax shipped disabled.
+   */
+
+  it("darkens the band left on the south when the top is pulled north", () => {
+    const { g, fills } = filler();
+    volume(g, BOX, MAT.steelLit, LIFT.cabinet, 0, NORTH);
+    expect(fills[0].color).toBe(shade(MAT.steelLit.top, faceLight(SOUTH)));
+  });
+
+  it("BRIGHTENS the band left on the north when the top is pulled south", () => {
+    /**
+     * The assertion that would have blocked the bug. A north-facing vertical surface
+     * is square to the light, so it catches MORE of it than the horizontal top does —
+     * `faceLight` at a north normal exceeds 1. Any implementation that reuses one
+     * "front face" tone fails this, which is the point.
+     */
+    const { g, fills } = filler();
+    volume(g, BOX, MAT.steelLit, LIFT.cabinet, 0, SOUTH);
+    const band = fills[0];
+    expect(band.color).toBe(shade(MAT.steelLit.top, faceLight({ x: 0, y: -1 })));
+    expect(faceLight({ x: 0, y: -1 })).toBeGreaterThan(1);
+    expect(band.y).toBeCloseTo(BOX.y, 6);
+  });
+
+  it("puts a west-facing tone on the band a rightward pull leaves behind", () => {
+    // On an axis only one face shows, so the base fill is that face outright.
+    const { g, fills } = filler();
+    volume(g, BOX, MAT.steelLit, LIFT.cabinet, 0, EAST);
+    expect(fills[0].color).toBe(shade(MAT.steelLit.top, faceLight({ x: -1, y: 0 })));
+    expect(fills[0].w).toBeCloseTo(BOX.w, 6);
+  });
+
+  it("shows two differently-lit faces on an oblique pull", () => {
+    /**
+     * The case that only exists once the pull can leave north: pulled south-east, a
+     * box shows its bright north face AND its west flank, and they cannot be the same
+     * tone. The flank is painted over the base, which also settles the shared corner
+     * in favour of the side actually turned toward the viewer.
+     */
+    const { g, fills } = filler();
+    volume(g, BOX, MAT.steelLit, LIFT.cabinet, 0, { x: 0.7, y: 0.7 });
+    const north = shade(MAT.steelLit.top, faceLight({ x: 0, y: -1 }));
+    const west = shade(MAT.steelLit.top, faceLight({ x: -1, y: 0 }));
+    expect(north).not.toBe(west);
+    expect(fills[0].color).toBe(north);
+
+    const flank = fills[1];
+    expect(flank.color).toBe(west);
+    expect(flank.x).toBeCloseTo(BOX.x, 6);
+    // Never wider than the lift it stands for — a face, not an overhang.
+    expect(flank.w).toBeLessThanOrEqual(LIFT.cabinet + 1e-6);
+  });
+
+  it("paints one fill per exposed face and no more", () => {
+    // An axis pull exposes one face; the old code's flood-then-cover always cost two
+    // fills plus the top, and repainting the same colour twice is how a hot path
+    // quietly doubles its work across 31 objects a rebuild.
+    const { g, fills } = filler();
+    volume(g, BOX, MAT.steelLit, LIFT.cabinet, 0, NORTH);
+    const bands = fills.filter((fill) => fill.color !== MAT.steelLit.top && fill.color !== MAT.steelLit.lit);
+    expect(bands).toHaveLength(1);
+  });
+
+  it("no longer draws any face at the old rectangle-only front tone", () => {
+    /**
+     * `material()` built `front` at 0.68 while `faceLight` gives 0.536 at the same
+     * normal, so every rectangle in the game had been drawing its front face a
+     * quarter lighter than every polygon drew the identical face. This pins the
+     * reconciliation rather than trusting it, in the direction chosen: onto the
+     * darker physically-derived value, which reads as more solid.
+     */
+    expect(MAT.steelLit.front).not.toBe(shade(MAT.steelLit.top, faceLight(SOUTH)));
+    for (const pull of [NORTH, SOUTH, EAST, { x: -1, y: 0 }]) {
+      const { g, fills } = filler();
+      volume(g, BOX, MAT.steelLit, LIFT.cabinet, 0, pull);
+      expect(fills.map((fill) => fill.color)).not.toContain(MAT.steelLit.front);
+    }
+  });
+
+  it("keeps every fill inside the authored footprint, at any pull", () => {
+    // The silhouette rule still holds — height is taken inside the shape. A band
+    // shaded by its own normal must not become an excuse to draw an overhang.
+    for (let i = 0; i < 16; i += 1) {
+      const angle = (i / 16) * Math.PI * 2;
+      const { g, fills } = filler();
+      volume(g, BOX, MAT.steelLit, LIFT.cabinet, 0, { x: Math.cos(angle), y: Math.sin(angle) });
+      for (const fill of fills) {
+        expect(fill.x).toBeGreaterThanOrEqual(BOX.x - 1e-6);
+        expect(fill.y).toBeGreaterThanOrEqual(BOX.y - 1e-6);
+        expect(fill.x + fill.w).toBeLessThanOrEqual(BOX.x + BOX.w + 1e-6);
+        expect(fill.y + fill.h).toBeLessThanOrEqual(BOX.y + BOX.h + 1e-6);
+      }
+    }
+  });
+
+  it("paints the lit top after every band, so detail lands on the top face", () => {
+    /**
+     * Three dozen call sites draw detail on the returned rect. If a band were painted
+     * after the top, every one of them would be drawing under a side face.
+     *
+     * Not "the top is the last fill" — the north-edge catch light legitimately lands
+     * after it. What must hold is that no BAND does.
+     */
+    const { g, fills } = filler();
+    const top = volume(g, BOX, MAT.steelLit, LIFT.cabinet, 0, { x: 0.7, y: 0.7 });
+    const topAt = fills.findIndex((fill) => fill.color === MAT.steelLit.top);
+    expect(topAt).toBeGreaterThan(0);
+    expect(fills[topAt].x).toBeCloseTo(top.x, 6);
+    expect(fills[topAt].y).toBeCloseTo(top.y, 6);
+    for (const after of fills.slice(topAt + 1)) {
+      expect(after.color).toBe(MAT.steelLit.lit);
+    }
+  });
+});
 
 /** A one-storey shop, a mid-rise, a tower, and the tallest block that will draw. */
 const LIFTS = [LIFT.wall * 2.4, 50, 101, MAX_BLOCK_LIFT];

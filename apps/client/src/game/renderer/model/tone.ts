@@ -399,6 +399,49 @@ export function withViewPull(pull: Vec2, body: () => void): void {
   }
 }
 
+/** Unit vector from a surface toward the light: north, slightly west. */
+const LIGHT = (() => {
+  const x = -0.35;
+  const y = -1;
+  const length = Math.hypot(x, y);
+  return { x: x / length, y: y / length };
+})();
+
+/**
+ * How lit a face is, from its outward normal. This is the generalisation that
+ * frees the language from axis-aligned boxes: the rectangle rule — south faces
+ * dark, north faces bright — is just this function evaluated at four normals, so
+ * a wall at 30 degrees or a round tower shades correctly with no special case.
+ */
+export function faceLight(normal: Vec2): number {
+  const dot = normal.x * LIGHT.x + normal.y * LIGHT.y;
+  return 0.52 + ((dot + 1) / 2) * 0.56;
+}
+
+/**
+ * The four axis faces, evaluated once.
+ *
+ * `volume` needs these because a box's exposed band is a FACE, and until now it was
+ * not treated as one: the rectangle path flooded the whole footprint with `mat.front`
+ * and painted the top over it, so whichever band was left showing came out in the
+ * south tone no matter which side of the object it was on. That was invisible while
+ * the pull was always north — the exposed band always WAS the south face — and it is
+ * the reason object parallax could not ship: turned far enough, a box showed a dark
+ * band on its north side, a shadow on the lit side.
+ *
+ * Note how far apart the two primitives had drifted: `material()` uses `frontK = 0.68`
+ * while `faceLight` at a south normal gives 0.536. Every rectangle in the game has been
+ * drawing its front face a quarter lighter than every polygon draws the same face.
+ * Unifying moves the rectangles onto the darker, physically-derived value, which is the
+ * direction that reads as more solid rather than less.
+ */
+const BAND = {
+  north: faceLight({ x: 0, y: -1 }),
+  south: faceLight({ x: 0, y: 1 }),
+  east: faceLight({ x: 1, y: 0 }),
+  west: faceLight({ x: -1, y: 0 }),
+};
+
 const EDGE_WIDTH = 0.9;
 
 /**
@@ -416,10 +459,11 @@ const CATCH_WIDTH = 0.9;
 /**
  * Draw an extruded box and return its lit top face.
  *
- * The full authored rect is the silhouette. The south band of depth `lift` is
- * the shaded front face; everything above it is the lit top. Detail belongs on
- * the returned top rect, never on the front face — front faces stay simple so
- * the eye reads them as one continuous shadow line across the room.
+ * The full authored rect is the silhouette. The band of depth `lift` left showing
+ * once the top has been shifted along the pull is a vertical FACE, shaded by its
+ * own outward normal like every other face in the language. Detail belongs on the
+ * returned top rect, never on a side band — bands stay flat so the eye reads them
+ * as one continuous depth line across the room.
  */
 export function volume(
   g: Graphics,
@@ -435,11 +479,48 @@ export function volume(
   const capped = cappedLift(r.h, lift);
   lift = capped;
 
+  /**
+   * Which side each band is on, and therefore which way it faces.
+   *
+   * `topRect` shifts the top ALONG the pull and clips, so the band is left on the
+   * OPPOSITE side: pull north and the south face shows, pull south and the north
+   * face shows — and a north face is brighter than the top it belongs to, because
+   * a vertical surface square to the light catches more of it than a horizontal one.
+   * At most one of each pair can exist, since a single shift cannot expose both.
+   */
+  const northBand = top.y > r.y ? { y: r.y, h: top.y - r.y, k: BAND.north } : null;
+  const southBand =
+    top.y + top.h < r.y + r.h
+      ? { y: top.y + top.h, h: r.y + r.h - (top.y + top.h), k: BAND.south }
+      : null;
+  const westBand = top.x > r.x ? { x: r.x, w: top.x - r.x, k: BAND.west } : null;
+  const eastBand =
+    top.x + top.w < r.x + r.w
+      ? { x: top.x + top.w, w: r.x + r.w - (top.x + top.w), k: BAND.east }
+      : null;
+
+  const upright = northBand ?? southBand;
+  const flank = westBand ?? eastBand;
+
+  /**
+   * The base fill covers the whole footprint so no anti-aliased seam can open between
+   * two bands, and it is the upright band's tone because that is the band an oblique
+   * pull leaves widest — the flank is painted over it, which also settles the shared
+   * corner in favour of the side actually facing the viewer.
+   */
+  const base = shade(mat.top, upright?.k ?? flank?.k ?? BAND.south);
+
+  // Only an oblique pull exposes two faces at once. On an axis the base fill already
+  // IS the one exposed face, so painting the flank again would be the same colour twice.
+  const secondFace = upright && flank ? { ...flank, color: shade(mat.top, flank.k) } : null;
+
   if (radius > 0) {
-    g.roundRect(r.x, r.y, r.w, r.h, radius).fill({ color: mat.front });
+    g.roundRect(r.x, r.y, r.w, r.h, radius).fill({ color: base });
+    if (secondFace) g.rect(secondFace.x, r.y, secondFace.w, r.h).fill({ color: secondFace.color });
     g.roundRect(top.x, top.y, top.w, top.h, radius).fill({ color: mat.top });
   } else {
-    g.rect(r.x, r.y, r.w, r.h).fill({ color: mat.front });
+    g.rect(r.x, r.y, r.w, r.h).fill({ color: base });
+    if (secondFace) g.rect(secondFace.x, r.y, secondFace.w, r.h).fill({ color: secondFace.color });
     g.rect(top.x, top.y, top.w, top.h).fill({ color: mat.top });
   }
 
@@ -464,25 +545,6 @@ export function volume(
 // ---------------------------------------------------------------------------
 // Arbitrary shapes
 // ---------------------------------------------------------------------------
-
-/** Unit vector from a surface toward the light: north, slightly west. */
-const LIGHT = (() => {
-  const x = -0.35;
-  const y = -1;
-  const length = Math.hypot(x, y);
-  return { x: x / length, y: y / length };
-})();
-
-/**
- * How lit a face is, from its outward normal. This is the generalisation that
- * frees the language from axis-aligned boxes: the rectangle rule — south faces
- * dark, north faces bright — is just this function evaluated at four normals, so
- * a wall at 30 degrees or a round tower shades correctly with no special case.
- */
-export function faceLight(normal: Vec2): number {
-  const dot = normal.x * LIGHT.x + normal.y * LIGHT.y;
-  return 0.52 + ((dot + 1) / 2) * 0.56;
-}
 
 function fillPolygon(g: Graphics, points: Vec2[], color: number, alpha = 1): void {
   if (points.length < 3) return;
