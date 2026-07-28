@@ -1,4 +1,4 @@
-import { Application, Container, Graphics } from "pixi.js";
+import { Application, Container, Graphics, Text } from "pixi.js";
 import { clamp, clamp01, colorToNumber, normalize } from "@dotbot/game/math";
 import {
   buildingContaining,
@@ -13,10 +13,11 @@ import { hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/v
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { MatchIntel } from "@dotbot/protocol";
-import { shieldArcSpan } from "@dotbot/game/shields";
+import { CORE_REACH } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
-import { buildMapArt, type MapArt } from "./mapArt";
-import { drawStairDeepHalf } from "./model/modelFloor";
+import { buildMapArt, makeWorldLabel, type MapArt } from "./mapArt";
+import { signReadingAt, signsOnFloor } from "@dotbot/game/signs";
+import { roofParallax } from "./model/modelRoof";
 import {
   applyPredictedImpactOverlays,
   classifyPredictedImpact,
@@ -25,13 +26,20 @@ import {
   type QueuedPredictedImpact,
 } from "./impactPrediction";
 import { drawDotDisc, drawDotGloss, drawDotMark } from "./dotArt";
-import { drawCatchLight, drawGroundShadow } from "./grounding";
-import { drawChargedCore, drawDownedBody } from "./bodies";
-import { DOT_COLOR, INK, WEIGHT } from "./style";
+import { arrowTarget, edgeArrow, type Camera } from "./edgeArrow";
+import { drawGroundShadow } from "./grounding";
+import {
+  drawBareEdges,
+  drawBodyOutline,
+  drawChargedCore,
+  drawDashRing,
+  drawDownedBody,
+  drawInvulnerabilityRing,
+  drawPlates,
+} from "./bodies";
+import { DOT_COLOR, INK, RIVAL_RED, SQUAD_CYAN, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
 
-const SQUAD_CYAN = 0x15aabf;
-const RIVAL_RED = 0xe03131;
 const AMBIENT_GREY = 0x868e96;
 
 export type InteractionChannelVisual = {
@@ -71,6 +79,36 @@ type ImpactView = {
   pulse: Graphics;
 };
 
+
+/**
+ * Ease a view toward where its bot actually is.
+ *
+ * Idempotent within a frame on purpose: a second call with the same `now` sees
+ * zero elapsed time and moves nothing. That is what lets the line-of-sight wash
+ * ask for the viewer's eased position *before* the bodies are drawn, and get the
+ * same answer the body will be drawn at, without the easing running twice.
+ *
+ * Applies to the viewer too. Drawing your own bot raw was tried, on the grounds
+ * that a predicted position is already smooth — it is not, and the whole game
+ * went jittery. Prediction lands on a tick boundary and is then nudged by a
+ * reconciliation offset; this filter is what was absorbing both.
+ */
+function advanceDisplayPosition(view: BotView, target: Vec2, now: number): Vec2 {
+  if (!view.displayPosition || Math.hypot(
+    target.x - view.displayPosition.x,
+    target.y - view.displayPosition.y,
+  ) > 120) {
+    view.displayPosition = { ...target };
+  } else {
+    const elapsed = Math.max(0, Math.min(50, now - view.lastDisplayAt));
+    const smoothing = 1 - Math.exp(-elapsed / 34);
+    view.displayPosition.x += (target.x - view.displayPosition.x) * smoothing;
+    view.displayPosition.y += (target.y - view.displayPosition.y) * smoothing;
+  }
+  view.lastDisplayAt = now;
+  return view.displayPosition;
+}
+
 /**
  * The live-game renderer: static map art (from mapArt.ts, shared with Map
  * Studio) plus the gameplay overlay — bots, dots, rings, noise, fog, and the
@@ -94,11 +132,19 @@ export class GameRenderer {
   private readonly dynamicGfx = new Graphics();
   private readonly dynamicBotsLayer = new Container();
   private readonly impactLayer = new Container();
+  /**
+   * What the sign nearest the viewer says, drawn in the world.
+   *
+   * In `worldLayer`, not on the screen: the contract's objection to UI is that it is
+   * not part of the place, and every other caption in this game — building names,
+   * stair tags, extraction points — is world text at world scale. A sign that answered
+   * in a screen-space bubble would be the only floating panel in the world.
+   */
+  private readonly signLayer = new Container();
+  private readonly signTitle: Text;
+  private readonly signDetail: Text;
   /** Viewport-space markers that must remain legible beyond the camera. */
   private readonly screenGfx = new Graphics();
-  /** Far half of each stair run on the active floor, drawn over the bots so
-   * they slide under the break line while changing floors. */
-  private readonly stairOverlayGfx = new Graphics();
 
   private map: MapDocument;
   private viewport = { width: 1, height: 1 };
@@ -122,12 +168,42 @@ export class GameRenderer {
     this.app = app;
     this.map = map;
     this.art = buildMapArt(map);
+    /**
+     * Structural ink, not label ink.
+     *
+     * `INK.fixture` is what the building captions use, and it is tuned for a name
+     * lying over paper-white slab at map scale. A sign is read at play zoom, standing
+     * on a mid-grey footway, and play could not read it at all: "FYI can't read the
+     * text here." The detail line under it was legible in `INK.opening`, which is the
+     * clue — go darker, not bigger.
+     */
+    this.signTitle = makeWorldLabel(13, 3, INK.structure, "800");
+    this.signDetail = makeWorldLabel(10, 2.4, INK.opening, "700");
+    this.signLayer.addChild(this.signTitle, this.signDetail);
+    this.signLayer.visible = false;
     this.app.stage.addChild(this.worldLayer, this.screenGfx);
     this.maskedBotsLayer.sortableChildren = true;
     this.dynamicBotsLayer.sortableChildren = true;
     this.maskedLayer.addChild(this.maskedGfx, this.maskedBotsLayer, this.visionMaskGfx);
     this.maskedLayer.mask = this.visionMaskGfx;
     this.foregroundFogGfx.mask = this.art.foreground;
+    /**
+     * Only `art.foreground` draws above the bots, and a stair is never in it.
+     *
+     * Every stair run lives in its floor's own view, inside `art.root` — the first
+     * child here, under both bot layers — so a body crossing one is always whole.
+     *
+     * The far half of the flight used to be redrawn into a layer above the bots so a
+     * body crossing the break line passed *under* the treads beyond it: descending
+     * into the shaft rather than sliding across a picture of one. Play read it as
+     * damage, not depth — "it feels like there's a smoother transition where we see
+     * the dotbot entirely as it passes over the stairs without the 'half-half'
+     * approach we have today... there's no 'cover' on top of the dotbot."
+     *
+     * The floor swap at the midline is the whole event, and the tread ramp behind the
+     * bot already says which way it went. Cutting a body in half to repeat that costs
+     * more than it buys, so nothing on a stair goes above this line again.
+     */
     this.worldLayer.addChild(
       this.art.root,
       this.fogGfx,
@@ -135,9 +211,9 @@ export class GameRenderer {
       this.dynamicGfx,
       this.dynamicBotsLayer,
       this.impactLayer,
+      this.signLayer,
       this.art.foreground,
       this.foregroundFogGfx,
-      this.stairOverlayGfx,
     );
   }
 
@@ -310,10 +386,12 @@ export class GameRenderer {
 
     this.worldLayer.scale.set(camera.scale);
     this.worldLayer.position.set(camera.x, camera.y);
+    this.updateRoofParallax(camera.center, player?.floorId);
 
     const playerContext = player ? this.contextKey(player.floorId, player.position) : "outdoor:street";
     this.updateVisibility(player ?? null, playerContext);
     this.updateLineOfSight(snapshot, player ?? null, playerContext);
+    this.updateSignReading(player ?? null);
 
     this.maskedGfx.clear();
     this.dynamicGfx.clear();
@@ -332,11 +410,10 @@ export class GameRenderer {
       this.drawNoises(snapshot, player);
       this.drawPleaSignals(player);
       this.drawMineSignals(player);
-      this.drawDownedSquadmateArrow(snapshot, player);
+      this.drawDownedSquadmateArrow(snapshot, player, camera);
     }
     this.drawImpactFlashes(snapshot, nowMs);
 
-    this.drawStairOverlay(player ?? null);
     // The Application ticker is intentionally disabled: scene mutation and
     // GPU submission happen in this one ordered frame, never a refresh apart.
     this.app.render();
@@ -352,7 +429,7 @@ export class GameRenderer {
     const { x, y } = signal.position;
     const pulse = 1 + Math.sin(snapshot.timeMs / 180) * 0.12;
     this.dynamicGfx.moveTo(x - 9 * pulse, y).lineTo(x - 2, y + 7)
-      .lineTo(x + 11 * pulse, y - 10).stroke({ color: 0x1971c2, width: 3 });
+      .lineTo(x + 11 * pulse, y - 10).stroke({ color: DOT_COLOR.blueprint, width: 3 });
   }
 
   private drawMineSignals(player: DotBotEntity): void {
@@ -393,34 +470,26 @@ export class GameRenderer {
     }
   }
 
-  private drawDownedSquadmateArrow(snapshot: GameSnapshot, player: DotBotEntity): void {
-    const squadmate = snapshot.bots.find((bot) =>
-      bot.id !== player.id && bot.squadId === player.squadId && bot.state === "downed",
-    );
+  /**
+   * An edge arrow toward a downed squadmate you cannot see.
+   *
+   * The geometry lives in `edgeArrow`, which is where the three faults play reported
+   * are documented and pinned. This is the drawing, and the one thing worth saying
+   * here is that it hands over `camera` rather than assuming the player is at the
+   * centre of the frame — `getCamera` returns the transform precisely so a caller
+   * does not invent a second answer, and this was the caller that used to.
+   */
+  private drawDownedSquadmateArrow(
+    snapshot: GameSnapshot,
+    player: DotBotEntity,
+    camera: Camera,
+  ): void {
+    const squadmate = arrowTarget(snapshot.bots, player);
     if (!squadmate) return;
-
-    const dx = squadmate.position.x - player.position.x;
-    const dy = squadmate.position.y - player.position.y;
-    const distance = Math.hypot(dx, dy) || 1;
-    const ux = dx / distance;
-    const uy = dy / distance;
-    const center = { x: this.viewport.width / 2, y: this.viewport.height / 2 };
-    const halfWidth = Math.max(18, center.x - 32);
-    const halfHeight = Math.max(18, center.y - 32);
-    const edgeScale = Math.min(
-      Math.abs(ux) > 0.001 ? halfWidth / Math.abs(ux) : Number.POSITIVE_INFINITY,
-      Math.abs(uy) > 0.001 ? halfHeight / Math.abs(uy) : Number.POSITIVE_INFINITY,
-    );
-    const tip = { x: center.x + ux * edgeScale, y: center.y + uy * edgeScale };
-    const sideX = -uy;
-    const sideY = ux;
-    const base = { x: tip.x - ux * 18, y: tip.y - uy * 18 };
+    const arrow = edgeArrow(squadmate.position, camera, this.viewport);
+    if (!arrow) return;
     this.screenGfx
-      .poly([
-        tip.x, tip.y,
-        base.x + sideX * 8, base.y + sideY * 8,
-        base.x - sideX * 8, base.y - sideY * 8,
-      ])
+      .poly([arrow.tip.x, arrow.tip.y, arrow.left.x, arrow.left.y, arrow.right.x, arrow.right.y])
       .fill({ color: SQUAD_CYAN, alpha: 0.95 })
       .stroke({ color: INK.structure, width: 2 });
   }
@@ -470,19 +539,61 @@ export class GameRenderer {
     this.draftAnimations.delete(objectId);
   }
 
-  /** Redraw the far half of the active floor's stairs above the bot layer. */
-  private drawStairOverlay(player: DotBotEntity | null): void {
-    this.stairOverlayGfx.clear();
-
-    if (!player) {
+  /**
+   * Put the nearest sign's reading next to the sign.
+   *
+   * No key, no aiming: walk near it and it becomes legible, which is how signs work
+   * and is what makes this the general mechanic for text in the world rather than an
+   * interaction. The text fades in over the last fifty-odd units instead of appearing
+   * at a threshold — a caption that pops reads as UI, and the whole point is that it
+   * is not.
+   *
+   * Anchored above the plate and centred on it, so it belongs to the object rather
+   * than to the camera.
+   */
+  private updateSignReading(player: DotBotEntity | null): void {
+    const reading = player
+      ? signReadingAt(this.map, player.floorId, player.position, signsOnFloor(this.map, player.floorId))
+      : null;
+    if (!reading || reading.strength <= 0) {
+      this.signLayer.visible = false;
       return;
     }
+    this.signLayer.visible = true;
+    this.signLayer.alpha = reading.strength;
+    const { sign, open } = reading;
+    this.signTitle.text = reading.title.toUpperCase();
+    this.signDetail.text = reading.detail;
+    this.signDetail.visible = reading.detail.length > 0;
 
-    const planRef = resolvePlan(this.map, player.floorId, player.position);
-    const plan = planRef ? floorPlanById(this.map, planRef.planId) : null;
-
-    for (const stair of plan?.stairs ?? []) {
-      drawStairDeepHalf(this.stairOverlayGfx, stair);
+    /**
+     * Laid out on the sign's OPEN side, away from whatever it names.
+     *
+     * A fixed offset north put the words over whatever happened to be behind them, and
+     * a building's own dark wall band is the one ground no ink survives. `signs.ts`
+     * knows which way the building is, because that is how it found the building, so
+     * the text goes the other way — onto the footway the sign faces.
+     *
+     * Stacked outward from the plate: title first, detail beyond it, so reading order
+     * runs away from the object in both orientations.
+     */
+    const GAP = 10;
+    const block = this.signTitle.height + (this.signDetail.visible ? this.signDetail.height + 2 : 0);
+    const centreX = sign.x + sign.w / 2;
+    const centreY = sign.y + sign.h / 2;
+    if (open.y !== 0) {
+      // Above or below: the block hangs off the near face, title nearest the plate.
+      const edge = open.y < 0 ? sign.y - GAP : sign.y + sign.h + GAP;
+      const top = open.y < 0 ? edge - block : edge;
+      this.signTitle.position.set(centreX - this.signTitle.width / 2, top);
+      this.signDetail.position.set(centreX - this.signDetail.width / 2, top + this.signTitle.height + 2);
+    } else {
+      // Beside it: left-aligned away from the plate so the text reads outward.
+      const widest = Math.max(this.signTitle.width, this.signDetail.width);
+      const left = open.x < 0 ? sign.x - GAP - widest : sign.x + sign.w + GAP;
+      const top = centreY - block / 2;
+      this.signTitle.position.set(left, top);
+      this.signDetail.position.set(left, top + this.signTitle.height + 2);
     }
   }
 
@@ -498,7 +609,23 @@ export class GameRenderer {
     }
 
     const vision = visionContext(this.map, playerContext);
-    const polygon = visibilityPolygon(player.position, vision, this.doorOccluders(snapshot, player.floorId));
+    /**
+     * Cast from where the bot is *drawn*, not from where it is.
+     *
+     * These were two different positions: the body is eased toward the simulated
+     * one over about 34ms, and the wash was cast from the raw one. At a dash's
+     * speed that put the light source and the body twenty units apart — light
+     * spilled round a corner before you reached it, then caught up when you
+     * stopped. Deleting the easing instead was tried and made the whole game
+     * jitter, because the easing is also what absorbs prediction landing on tick
+     * boundaries. So the wash moves to the eased position rather than the body
+     * moving off it.
+     */
+    const polygon = visibilityPolygon(
+      this.viewerDisplayPosition(player),
+      vision,
+      this.doorOccluders(snapshot, player.floorId),
+    );
 
     if (polygon.length < 3) {
       this.visionMaskGfx.rect(0, 0, this.map.width, this.map.height).fill({ color: 0xffffff });
@@ -517,7 +644,19 @@ export class GameRenderer {
     }
   }
 
-  private getCamera(target: Vec2, dashing: boolean): { x: number; y: number; scale: number } {
+  /**
+   * The viewer's eased position, brought forward so the wash and the body agree.
+   *
+   * `advanceDisplayPosition` does nothing on a second call within the same frame,
+   * so running it here costs the later draw nothing and cannot double-ease.
+   */
+  private viewerDisplayPosition(player: DotBotEntity): Vec2 {
+    const view = this.botViews.get(player.id);
+    if (!view) return player.position;
+    return advanceDisplayPosition(view, player.position, performance.now());
+  }
+
+  private getCamera(target: Vec2, dashing: boolean): { x: number; y: number; scale: number; center: Vec2 } {
     const now = performance.now();
     const elapsed = Math.max(0, Math.min(100, now - this.lastCameraAt));
     this.lastCameraAt = now;
@@ -574,7 +713,36 @@ export class GameRenderer {
       x: this.viewport.width / 2 - centerX * scale,
       y: this.viewport.height / 2 - centerY * scale,
       scale,
+      // The world point the view is actually looking at, after clamping to the
+      // sheet. Parallax is measured from here, so returning it beats having the
+      // caller invert the transform and get a slightly different answer.
+      center: { x: centerX, y: centerY },
     };
+  }
+
+  /**
+   * Slide each building's mass a little against its own footprint, away from
+   * whatever the camera is looking at.
+   *
+   * A transform per building per frame, and nothing is redrawn — the geometry is
+   * built once and only its container moves. That is the whole reason to do
+   * parallax this way rather than by rebuilding the roof at a new offset.
+   */
+  private updateRoofParallax(viewCenter: Vec2, playerFloorId: string | undefined): void {
+    for (const art of this.art.buildings) {
+      /**
+       * Not while you are standing on it.
+       *
+       * An authored ROOF plan is both the building's exterior and a floor with
+       * bots on it, and bots are drawn at their true world position. Sliding the
+       * deck out from under them would put a bot several units off the parapet it
+       * is pressed against — the one place in the game where the gap between drawn
+       * and actual is something a player can act on.
+       */
+      const standingOnIt = art.roofFloorId !== null && art.roofFloorId === playerFloorId;
+      const offset = standingOnIt ? { x: 0, y: 0 } : roofParallax(art.building, viewCenter);
+      for (const mass of art.roofMasses) mass.position.set(offset.x, offset.y);
+    }
   }
 
   private addCameraImpulse(direction: Vec2, intensity: number): void {
@@ -627,6 +795,18 @@ export class GameRenderer {
         // A real ROOF plan doubles as the building's roof seen from outside.
         floorView.view.visible = floorView.floor.id === activeFloorId || (isRoofPlan && !isActive);
         floorView.foreground.visible = floorView.view.visible;
+        /**
+         * A roof stair is two different things from two different places, and this is
+         * the one line that knows which place the camera is in. Standing on the deck
+         * you look INTO the stairwell; from the street you look at the roof OF it.
+         * Drawing the housing in both is what play reported as "just a white square,
+         * so it's not obvious it's stairs when on that floor".
+         */
+        if (floorView.stairHousing && floorView.stairWell) {
+          const standingOnTheDeck = floorView.floor.id === activeFloorId;
+          floorView.stairWell.visible = standingOnTheDeck;
+          floorView.stairHousing.visible = !standingOnTheDeck;
+        }
         floorView.view.alpha = floorView.floor.id === activeFloorId ? 1 : indoors ? 0.35 : 1;
         floorView.foreground.alpha = floorView.view.alpha;
       }
@@ -718,7 +898,7 @@ export class GameRenderer {
     for (const ping of player.radarPings) {
       const alpha = clamp01(1 - ping.ageMs / 2000);
       const radius = 5 + (1 - alpha) * 8;
-      this.dynamicGfx.circle(ping.x, ping.y, radius).stroke({ color: 0xe8590c, width: 2, alpha });
+      this.dynamicGfx.circle(ping.x, ping.y, radius).stroke({ color: DOT_COLOR.powerup, width: 2, alpha });
     }
   }
 
@@ -792,6 +972,7 @@ export class GameRenderer {
     const color = this.relationshipColor(bot, viewerSquadId);
     const serrated = !bot.isAmbient && viewerSquadId !== undefined && bot.squadId !== viewerSquadId;
     const now = performance.now();
+    const displayPosition = advanceDisplayPosition(view, bot.position, now);
     const positionChanged = view.lastPosition !== null && Math.hypot(
       bot.position.x - view.lastPosition.x,
       bot.position.y - view.lastPosition.y,
@@ -818,6 +999,28 @@ export class GameRenderer {
     // Quantized, or a continuous value redraws the body on every frame of every
     // cooldown. Twelve steps is finer than the eye tracks on a 24-unit core.
     const dashSteps = Math.round(dashLevel * 12);
+    /**
+     * Which way the sun lies, in the body's own frame, quantized.
+     *
+     * The body is drawn once at facing 0 and spun by its container, which is what
+     * keeps a turning bot off the redraw path — but the sun does not turn with the
+     * bot, so the drawing has to know how far it is about to be spun. Baking the
+     * exact facing would put every turning bot back on that path at 60 Hz.
+     *
+     * Thirty-two buckets is 11.25 degrees, which moves the shadow's alpha-weighted
+     * centroid by at most 0.50 units and its faintest ring by 1.05, against the
+     * 21.49 units a half-turn used to drag the whole shadow across. Sub-pixel, on a
+     * mark with no edge in it, for at most fifteen redraws a second on a bot
+     * turning hard — roughly what the glide animation already costs.
+     */
+    const sunSteps = 32;
+    // The hit flash adds its own rotation to the same container, so it spins the
+    // sun exactly as facing does — for the 240 ms of the flash the light rode
+    // around with the body. It goes in the same bucket rather than being added
+    // afterward, so a shake still costs at most a redraw per 11.25 degrees.
+    const reaction = impactReactionForTarget(this.impactFlashes, bot.id, now, this.reducedMotion);
+    const spin = bot.facing + (reaction?.rotation ?? 0);
+    const spinBucket = Math.round((spin / (Math.PI * 2)) * sunSteps);
     const signature = [
       bot.state,
       bot.radius,
@@ -828,36 +1031,29 @@ export class GameRenderer {
       bot.dashActiveMs > 0 ? 1 : 0,
       bot.invulnerabilityMs > 0 ? 1 : 0,
       dashSteps,
+      spinBucket,
       animation,
     ].join("|");
     if (view.signature !== signature) {
       view.body.clear();
-      this.drawBotBody(view.body, { ...bot, position: { x: 0, y: 0 }, facing: 0 }, viewerSquadId, dashSteps / 12);
+      this.drawBotBody(
+        view.body,
+        { ...bot, position: { x: 0, y: 0 }, facing: 0 },
+        viewerSquadId,
+        dashSteps / 12,
+        (spinBucket / sunSteps) * Math.PI * 2,
+      );
       view.signature = signature;
     }
     view.lastPosition = { ...bot.position };
 
-    if (!view.displayPosition || Math.hypot(
-      bot.position.x - view.displayPosition.x,
-      bot.position.y - view.displayPosition.y,
-    ) > 120) {
-      view.displayPosition = { ...bot.position };
-    } else {
-      const elapsed = Math.max(0, Math.min(50, now - view.lastDisplayAt));
-      const smoothing = 1 - Math.exp(-elapsed / 34);
-      view.displayPosition.x += (bot.position.x - view.displayPosition.x) * smoothing;
-      view.displayPosition.y += (bot.position.y - view.displayPosition.y) * smoothing;
-    }
-    view.lastDisplayAt = now;
-
-    const reaction = impactReactionForTarget(this.impactFlashes, bot.id, now, this.reducedMotion);
     view.root.visible = true;
     view.root.alpha = fade;
     view.root.position.set(
-      view.displayPosition.x + (reaction?.offset.x ?? 0),
-      view.displayPosition.y + (reaction?.offset.y ?? 0),
+      displayPosition.x + (reaction?.offset.x ?? 0),
+      displayPosition.y + (reaction?.offset.y ?? 0),
     );
-    view.root.rotation = bot.facing + (reaction?.rotation ?? 0);
+    view.root.rotation = spin;
     view.root.scale.set(reaction?.scale ?? 1);
     view.root.zIndex = bot.position.y;
 
@@ -877,7 +1073,19 @@ export class GameRenderer {
     }
   }
 
-  private drawBotBody(g: Graphics, bot: DotBotEntity, viewerSquadId: string | undefined, dashLevel = 1): void {
+  /**
+   * @param spin how far the view holding this drawing will be rotated. The body
+   * is drawn at facing 0 and spun by its container, so every mark that encodes a
+   * *world* direction — the sun, and the catch light it lights — has to be
+   * counter-spun here or it rides around with the bot.
+   */
+  private drawBotBody(
+    g: Graphics,
+    bot: DotBotEntity,
+    viewerSquadId: string | undefined,
+    dashLevel = 1,
+    spin = 0,
+  ): void {
     const color = this.relationshipColor(bot, viewerSquadId);
     const serrated = !bot.isAmbient && viewerSquadId !== undefined && bot.squadId !== viewerSquadId;
 
@@ -890,29 +1098,24 @@ export class GameRenderer {
         color,
         carriedCount: bot.carriedCount,
         searched: bot.searched,
+       
+        spin,
       });
       return;
     }
 
-    const coreRadius = bot.radius * 0.4;
-    drawGroundShadow(g, bot.position, bot.radius);
-    this.drawShieldSegments(g, bot, color, serrated, 1);
-    // Hairline hull at the true collision radius: bodies stop where this
-    // line is, so contact renders as contact instead of a 10px air gap
-    // between shield arcs.
-    g.circle(bot.position.x, bot.position.y, bot.radius - 0.5).stroke({ color: INK.structure, width: 1, alpha: 0.22 });
-    drawChargedCore(g, bot.position, coreRadius, dashLevel, INK.structure);
-    // Catch light only on a charged core, so the body reads as a sphere under the
-    // plates and a spent dash reads as a light that has gone out.
-    if (dashLevel >= 1) drawCatchLight(g, bot.position, coreRadius);
+    const coreRadius = bot.radius * CORE_REACH;
+    drawGroundShadow(g, bot.position, bot, { spin });
+    drawPlates(g, bot, color, serrated);
+    drawBodyOutline(g, bot);
+    // The catch light comes with it: one function owns what a core looks like, so
+    // the lab and the game cannot disagree about the sphere.
+    drawChargedCore(g, bot.position, coreRadius, dashLevel, INK.structure, spin);
+    // After the core, because a bare arc's edge *is* the core's edge.
+    drawBareEdges(g, bot, color);
 
-    if (bot.dashActiveMs > 0) {
-      g.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color: INK.structure, width: 3, alpha: 0.45 });
-    }
-
-    if (bot.invulnerabilityMs > 0 && bot.state === "alive") {
-      g.circle(bot.position.x, bot.position.y, bot.radius - 3).stroke({ color: 0x111111, width: 2, alpha: 0.18 });
-    }
+    if (bot.dashActiveMs > 0) drawDashRing(g, bot);
+    if (bot.invulnerabilityMs > 0 && bot.state === "alive") drawInvulnerabilityRing(g, bot);
   }
 
   private relationshipColor(bot: DotBotEntity, viewerSquadId: string | undefined): number {
@@ -920,63 +1123,6 @@ export class GameRenderer {
       return SQUAD_CYAN;
     }
     return bot.isAmbient ? AMBIENT_GREY : RIVAL_RED;
-  }
-
-  /**
-   * Shield plates anchored to the bot's facing (plate 0 dead ahead): intact
-   * plates draw solid, cracked plates split at the middle, broken plates
-   * leave a faint ghost so the exposed side stays readable.
-   */
-  private drawShieldSegments(
-    g: Graphics,
-    bot: DotBotEntity,
-    color: number,
-    serrated: boolean,
-    fade: number,
-    radiusScale = 0.78,
-  ): void {
-    const span = shieldArcSpan(bot.maxShields);
-    const step = (Math.PI * 2) / bot.maxShields;
-    const shieldRadius = bot.radius * radiusScale;
-    const intactWidth = bot.state === "downed" ? 2 : 5;
-
-    for (let index = 0; index < bot.maxShields; index += 1) {
-      const state = bot.shieldSegments[index] ?? 0;
-      const start = bot.facing + index * step - span / 2;
-
-      if (state >= 1) {
-        this.drawArcStroke(g, bot.position, shieldRadius, start, start + span, {
-          color,
-          width: intactWidth,
-          alpha: fade,
-        });
-        if (serrated) {
-          this.drawArcStroke(g, bot.position, shieldRadius + 3, start, start + span, {
-            color,
-            width: 2,
-            alpha: fade,
-          });
-        }
-      } else if (state > 0) {
-        // Cracked: the plate splits into two halves around a central break.
-        for (const [from, to] of [
-          [start, start + span * 0.42],
-          [start + span * 0.58, start + span],
-        ]) {
-          this.drawArcStroke(g, bot.position, shieldRadius, from, to, {
-            color,
-            width: Math.max(2, intactWidth - 2),
-            alpha: 0.9 * fade,
-          });
-        }
-      } else {
-        this.drawArcStroke(g, bot.position, shieldRadius, start, start + span, {
-          color,
-          width: 2,
-          alpha: 0.3 * fade,
-        });
-      }
-    }
   }
 
   // --- Noise rings -----------------------------------------------------------

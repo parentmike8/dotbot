@@ -1114,6 +1114,33 @@ function hydrantGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   cylinder(g, cx, cy, radius * 0.34, MAT.steelLit, 2);
 }
 
+/**
+ * A post with a plate on it.
+ *
+ * Deliberately mute: the sign's job is to be legible as a sign at a glance and then
+ * get out of the way, because what it SAYS is drawn as world text when a bot comes
+ * near it. A plate with marks on it would compete with its own words.
+ */
+function signGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
+  const cx = o.x + o.w / 2;
+  const cy = o.y + o.h / 2;
+  const post = Math.max(3, Math.min(o.w, o.h) * 0.22);
+  contactRound(pad, cx, cy, post * 0.9, LIFT.column);
+  // The plate reads as the wide axis, so an author places a sign by its footprint.
+  const wide = o.w >= o.h;
+  const plate = wide
+    ? { x: o.x, y: cy - post * 0.7, w: o.w, h: post * 1.4 }
+    : { x: cx - post * 0.7, y: o.y, w: post * 1.4, h: o.h };
+  volume(g, plate, MAT.steelLit, LIFT.column);
+  // A darker band along the reading face, which is what makes it a sign rather than
+  // a slab: something is written there, even before the words arrive.
+  inlay(g, wide
+    ? { x: plate.x + 2.4, y: plate.y + 2.2, w: plate.w - 4.8, h: plate.h - 4.4 }
+    : { x: plate.x + 2.2, y: plate.y + 2.4, w: plate.w - 4.4, h: plate.h - 4.8 },
+    shade(MAT.steelLit.top, 0.82));
+  cylinder(g, cx, cy, post * 0.5, MAT.steelDark, 3);
+}
+
 function bollardGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   const cx = o.x + o.w / 2;
   const cy = o.y + o.h / 2;
@@ -1867,6 +1894,7 @@ export const modelGlyphs: Partial<Record<MapObject["kind"], GlyphFn>> = {
   lampPost: lampPostGlyph,
   bench: benchGlyph,
   planter: planterGlyph,
+  sign: signGlyph,
   hydrant: hydrantGlyph,
   bollard: bollardGlyph,
   bikeRack: bikeRackGlyph,

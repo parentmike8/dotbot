@@ -216,6 +216,116 @@ export function contact(pad: ShadowPad, r: Rect, lift: number, radius = 0): void
   }
 }
 
+/**
+ * Composite darkness the nine-step ramp reaches where every layer overlaps.
+ *
+ * `1 - ∏(1 - alpha)`, not the sum: the layers composite over one another. Any
+ * replacement ramp has to land on this number or every surface under a shadow
+ * changes value — a roof deck's tone was picked by eye with this wash already on
+ * it.
+ */
+export const SHADOW_TOTAL = 1 - SHADOW_ALPHA.reduce((keep, alpha) => keep * (1 - alpha), 1);
+
+/**
+ * How fast the shadow lightens away from the object.
+ *
+ * Fitted against the hand-tuned nine-step ramp, which comes out at 1.6 sampled at
+ * a quarter, a half and three quarters of its reach. Without it the shadow
+ * composites to the right total and still looks wrong: a uniform wash and a real
+ * penumbra are the same number at the centre and nothing alike anywhere else.
+ *
+ * It grades the *alpha*, not the spacing. Bunching the rings instead is the same
+ * curve and was the first attempt — but then the widest gap is at the outer edge
+ * and is `bias` times what even spacing would give, so the step count needed to
+ * hide it goes up by the same factor. A test caught that; the screenshot would
+ * not have, because the one visible band was out in the faint tail.
+ */
+const SHADOW_FALLOFF = 1.6;
+
+/** Widest a ring may sit from the next before the eye starts finding the edge. */
+const SHADOW_STEP_MAX = 2.4;
+
+/**
+ * The tallest a block may claim to be, as far as its shadow is concerned.
+ *
+ * Ring count follows reach, so cost is linear in lift and an unclamped one would
+ * let a single absurd building spend hundreds of fills. Clamping here rather than
+ * capping the ring count is deliberate: a cap on rings degrades quietly back into
+ * the banding this whole primitive exists to remove, and a silent degradation is
+ * how the original bug survived. A saturated shadow is honest — past about ten
+ * storeys the pool stops being how you tell buildings apart anyway.
+ */
+export const MAX_BLOCK_LIFT = 124;
+
+/**
+ * Ground shadow for a lone solid, drawn into one Graphics at a step count set by
+ * how far it actually spreads.
+ *
+ * `contact` has a fixed nine steps, and nine was chosen for furniture: at a wall's
+ * lift of 10 the rings land about a unit apart and vanish. Buildings broke that
+ * the moment their shadows started scaling with storey count — at Civic Tower's
+ * lift of 101 the same nine steps are twelve units apart, and the shadow comes out
+ * as six concentric rounded rectangles stepping across the pavement. Exactly the
+ * halo the ramp's own comment says it exists to prevent, just at a lift nobody had
+ * tried.
+ *
+ * So the count follows the spread instead of being a constant. It goes into a
+ * single Graphics rather than a pad because a block casts alone — the pad's
+ * one-Graphics-per-layer arrangement exists so that fifty racks sharing a pad
+ * flatten instead of compounding, and paying sixty display objects per building
+ * for that would be paying for nothing.
+ */
+export type ShadowRing = { dx: number; dy: number; grow: number; alpha: number };
+
+/**
+ * The rings of a block shadow, outermost first. Pure, so the thing that broke —
+ * a step count that was fine at one lift and a stack of visible bands at another
+ * — is checked by arithmetic rather than by squinting at a screenshot.
+ */
+export function blockShadowRings(rawLift: number): ShadowRing[] {
+  if (rawLift <= 0) return [];
+  const lift = Math.min(rawLift, MAX_BLOCK_LIFT);
+  const reach = lift * 1.1;
+  const steps = Math.max(SHADOW_ALPHA.length, Math.ceil(reach / SHADOW_STEP_MAX) + 1);
+
+  /**
+   * How much light still gets through everything from ring `index` outward.
+   *
+   * Each ring is then handed exactly the alpha that takes the running product
+   * from its neighbour's transmission to its own, so the stack telescopes to
+   * `1 - SHADOW_TOTAL` at the centre no matter how many rings there are. That is
+   * what lets the count follow the spread without restyling every surface a
+   * shadow falls on.
+   */
+  const transmission = (index: number): number =>
+    (index >= steps ? 1 : 1 - SHADOW_TOTAL * Math.pow(1 - index / steps, SHADOW_FALLOFF));
+
+  const rings: ShadowRing[] = [];
+  for (let index = steps - 1; index >= 0; index -= 1) {
+    const t = index / (steps - 1);
+    const spread = 0.45 + t * 1.5;
+    rings.push({
+      dx: SUN.x * lift * spread,
+      dy: SUN.y * lift * spread,
+      grow: t * reach + 0.4,
+      alpha: 1 - transmission(index) / transmission(index + 1),
+    });
+  }
+  return rings;
+}
+
+export function contactBlock(g: Graphics, r: Rect, lift: number, radius = 0): void {
+  for (const ring of blockShadowRings(lift)) {
+    g.roundRect(
+      r.x + ring.dx - ring.grow,
+      r.y + ring.dy - ring.grow,
+      r.w + ring.grow * 2,
+      r.h + ring.grow * 2,
+      radius + ring.grow * 0.9,
+    ).fill({ color: 0x000000, alpha: ring.alpha });
+  }
+}
+
 /** Ground shadow for a cylinder. */
 export function contactRound(pad: ShadowPad, cx: number, cy: number, radius: number, lift: number): void {
   for (let i = 0; i < pad.length; i += 1) {

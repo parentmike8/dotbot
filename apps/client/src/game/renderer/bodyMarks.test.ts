@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { NORTH, brokenRingArcs, carryTickAngles, waterlineArc } from "./bodyMarks";
+import { NORTH, brokenRingArcs, carryTickAngles, waterlineArc, waterlineSurface } from "./bodyMarks";
+
+const LEVELS = [0.02, 0.08, 0.2, 0.35, 0.5, 0.65, 0.8, 0.92, 0.99];
+const PHASES = [0, 1, 2.5, 4, Math.PI * 2];
 
 describe("waterlineArc", () => {
   it("draws nothing at empty and the whole disc at full", () => {
@@ -29,6 +32,103 @@ describe("waterlineArc", () => {
       // The chord sits at the waterline: both ends share a y, above the middle.
       expect(Math.sin(from)).toBeCloseTo(Math.sin(to), 10);
       expect(Math.sin(from)).toBeLessThan(Math.sin((from + to) / 2));
+    }
+  });
+});
+
+describe("waterlineSurface", () => {
+  it("has no surface when the core is empty or full", () => {
+    expect(waterlineSurface(0)).toBeNull();
+    expect(waterlineSurface(-1)).toBeNull();
+    expect(waterlineSurface(1)).toBeNull();
+    expect(waterlineSurface(2)).toBeNull();
+  });
+
+  it("never leaves the unit disc, at any level or phase", () => {
+    /**
+     * The core's silhouette is its own radius, and liquid drawn outside the glass
+     * is a burr on the rim rather than an obvious mistake — so it gets an
+     * assertion rather than an eye.
+     *
+     * Swept, not sampled. A handful of tidy levels passed this with the containment
+     * clamp deleted: the envelope holds the surface in on its own everywhere except
+     * within a percent or so of empty, where the rim curves away faster than the
+     * wave decays. That is exactly the case a short list of round numbers skips.
+     */
+    // Reduced to a single assertion over the worst point found. The same sweep
+    // written as a quarter-million `expect` calls took six seconds and flaked
+    // once under parallel load — a slow test is a test that eventually gets
+    // deleted, and the sweep is the part worth keeping.
+    let worst = 0;
+    for (let step = 1; step < 400; step += 1) {
+      const level = step / 400;
+      for (let turn = 0; turn < 24; turn += 1) {
+        const phase = (turn / 24) * Math.PI * 2;
+        for (const point of waterlineSurface(level, phase)!) {
+          worst = Math.max(worst, Math.hypot(point.x, point.y));
+        }
+      }
+    }
+    expect(worst).toBeLessThanOrEqual(1 + 1e-9);
+  });
+
+  it("runs left to right without doubling back", () => {
+    // x must stay monotone or the closed fill crosses itself, and a self-crossing
+    // path cancels its own fill — the failure that ate the cracked core twice.
+    for (const level of LEVELS) {
+      const points = waterlineSurface(level, 2)!;
+      for (let i = 1; i < points.length; i += 1) {
+        expect(points[i].x).toBeGreaterThan(points[i - 1].x);
+      }
+    }
+  });
+
+  it("meets the rim exactly where the closing arc starts and ends", () => {
+    // The fill is this polyline joined to `waterlineArc`. If the two disagree the
+    // liquid gets a notch at the waterline, so they are checked against each other
+    // rather than each against its own idea of the level.
+    for (const level of LEVELS) {
+      for (const phase of PHASES) {
+        const points = waterlineSurface(level, phase)!;
+        const [from, to] = waterlineArc(level)!;
+        const first = points[0];
+        const last = points[points.length - 1];
+        expect(last.x).toBeCloseTo(Math.cos(from), 10);
+        expect(last.y).toBeCloseTo(Math.sin(from), 10);
+        expect(first.x).toBeCloseTo(Math.cos(to), 10);
+        expect(first.y).toBeCloseTo(Math.sin(to), 10);
+      }
+    }
+  });
+
+  it("rises as the core fills", () => {
+    // Screen y grows downward, so a rising level means a smaller mean y. Without
+    // this the gauge can be upside down and still pass every shape check above.
+    let previous = Infinity;
+    for (const level of LEVELS) {
+      const points = waterlineSurface(level, 0)!;
+      const mean = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+      expect(mean).toBeLessThan(previous);
+      previous = mean;
+    }
+  });
+
+  it("waves: the surface is not the flat chord", () => {
+    // The whole point of the shape. A straight line across a disc is a fill bar.
+    const points = waterlineSurface(0.5, 1.2)!;
+    const spread = Math.max(...points.map((p) => p.y)) - Math.min(...points.map((p) => p.y));
+    expect(spread).toBeGreaterThan(0.05);
+  });
+
+  it("keeps the wave inside the liquid it sits on", () => {
+    // A crest taller than the fill itself would break the surface into islands at
+    // a low charge. The amplitude has to shrink with the chord, not stay constant.
+    for (const level of [0.02, 0.05, 0.1]) {
+      const points = waterlineSurface(level, 1.2)!;
+      const waterline = 1 - 2 * level;
+      for (const point of points) expect(point.y).toBeLessThan(1);
+      const rise = waterline - Math.min(...points.map((p) => p.y));
+      expect(rise).toBeLessThan(level * 2);
     }
   });
 });

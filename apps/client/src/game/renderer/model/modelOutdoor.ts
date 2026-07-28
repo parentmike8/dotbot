@@ -2,7 +2,7 @@ import { Container, Graphics } from "pixi.js";
 import type { MapDocument, Rect, Surface } from "@dotbot/game/types";
 import { pathOutline } from "@dotbot/game/geometry";
 import { FLAT_KINDS } from "@dotbot/game/mapModel";
-import { capsuleRuns } from "./modelFloor";
+import { capsuleRuns } from "./modelWalls";
 import { isAcross, outwardBand, perimeterEntrances } from "./entrances";
 import { drawModelObject } from "./modelGlyphs";
 import {

@@ -1,11 +1,13 @@
 import { Container, Graphics } from "pixi.js";
 import { isGroundFloor } from "@dotbot/game/mapModel";
-import type { Building, Rect } from "@dotbot/game/types";
-import { inwardBand, isAcross, perimeterEntrances } from "./entrances";
+import type { Building, Rect, Vec2 } from "@dotbot/game/types";
+import { inwardBand, isAcross, outwardBand, perimeterEntrances, type PerimeterEntrance } from "./entrances";
 import { drawModelObject } from "./modelGlyphs";
+import { drawBarrier, drawWallRects, ROOF_BULKHEAD } from "./modelWalls";
 import {
   AO_ALPHA,
   contact,
+  contactBlock,
   inlay,
   jitter,
   LIFT,
@@ -14,6 +16,7 @@ import {
   seam,
   shade,
   SHADOW_ALPHA,
+  SHADOW_TOTAL,
   V,
   volume,
   type ShadowPad,
@@ -36,6 +39,14 @@ import {
  */
 export type RoofModel = {
   view: Container;
+  /**
+   * Everything above ground level, which is everything that parallaxes. Clipped
+   * to the footprint. The cast shadow and the wall plate stay behind in `view`:
+   * a shadow that slid with the roof would be a building sliding rather than a
+   * building standing up, and it has to spill onto the street, which a clipped
+   * layer cannot do.
+   */
+  mass: Container;
   architecture: Container;
   furniture: Container;
   objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
@@ -62,6 +73,8 @@ const ROOF = {
   soil: 0xadb1b6,
   /** Inside a doorway reveal, below the roof plane and out of the light. */
   reveal: 0x7f858b,
+  /** A floor slab's edge in the south wall: the one horizontal in a vertical face. */
+  slab: 0x2f353b,
 } as const;
 
 /** Where a roof's service zone is: over the deepest wall-backed strip. */
@@ -90,11 +103,67 @@ export function storeyShadowLift(building: Building): number {
   return STOREY_BASE + (aboveGroundStoreys(building) - 1) * STOREY_STEP;
 }
 
+/**
+ * How far a block's roof slides against its own footprint, per unit of apparent
+ * height, per unit of distance from where the camera is looking.
+ *
+ * This is parallax, and it is the whole of what tells you a building is tall
+ * besides its shadow. A static south face was tried first and cut: it commits
+ * every building on the map to a permanent black band on one side, which is only
+ * ever right for a camera sitting due south of it.
+ *
+ * Small on purpose: enough that the eye reads the mass as standing up, far too
+ * little to argue with the collider underneath it. What the slide uncovers on the
+ * trailing side is the building's own wall plate, and the mass is clipped to the
+ * footprint on the leading side, so the silhouette drawn is exactly the rectangle
+ * that blocks you — at every camera position, which is a promise this had to earn
+ * rather than assert.
+ */
+const PARALLAX_PER_UNIT = 0.00028;
+
+/**
+ * Ceiling on the slide, however far off-axis a block sits.
+ *
+ * This was 7, and 7 was the reason a seven-storey tower barely moved: Civic hit
+ * the ceiling at a third of the way across the sheet, so from there out it and a
+ * two-storey clinic slid by exactly the same amount. A cap set below what the
+ * tallest thing on the map wants does not restrain the effect, it deletes the
+ * ranking the effect exists to show. It sits above Civic's reach now, so the cap
+ * is a backstop for absurd geometry rather than a governor on the common case.
+ */
+const PARALLAX_MAX = 26;
+
+/**
+ * How far the roof of a block slides, given where it sits relative to the point
+ * the camera is looking at.
+ *
+ * Real parallax: a point at height h over ground position P appears displaced
+ * from P away from the camera's axis, in proportion to both the height and the
+ * distance off-axis. Which is why the units are per-unit-of-each.
+ */
+export function roofParallax(building: Building, viewCenter: Vec2): Vec2 {
+  const fp = building.footprint;
+  const scale = storeyShadowLift(building) * PARALLAX_PER_UNIT;
+  const dx = (fp.x + fp.w / 2 - viewCenter.x) * scale;
+  const dy = (fp.y + fp.h / 2 - viewCenter.y) * scale;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= PARALLAX_MAX) return { x: dx, y: dy };
+  return { x: (dx / distance) * PARALLAX_MAX, y: (dy / distance) * PARALLAX_MAX };
+}
+
 export function buildRoofModel(building: Building): RoofModel {
   const fp = building.footprint;
+  const roof: Rect = fp;
   const view = new Container();
+  const mass = new Container();
+  const plate = new Graphics();
+  const clip = new Graphics();
+  const wash = new Graphics();
+  const entrances = new Graphics();
   const deck = new Graphics();
   const parapet = new Graphics();
+  /** Structures standing on the deck: bulkheads, machine rooms, shaft heads. */
+  const bulkheads = new Graphics();
   const equipment = new Container();
 
   const pad: ShadowPad = SHADOW_ALPHA.map((alpha) => {
@@ -119,17 +188,23 @@ export function buildRoofModel(building: Building): RoofModel {
    * opted out. Per-floor growth is deliberately small — the shadow falls across
    * the street, and a tower whose shadow swallows the block it stands on has
    * traded one unreadable thing for another.
+   *
+   * `contactBlock`, not `contact`: nine steps is a ramp for furniture, and the
+   * moment this figure started scaling with storeys it stopped being one. See its
+   * own comment — a tower drawn on the shared ramp comes out as a stack of
+   * concentric rounded rectangles.
    */
-  contact(pad, fp, storeyShadowLift(building));
+  const blockShadow = new Graphics();
+  contactBlock(blockShadow, fp, storeyShadowLift(building));
 
   const wall = 12;
-  inlay(deck, fp, ROOF.membrane);
+  inlay(deck, roof, ROOF.membrane);
 
   // Membrane laid in sheets, lapped north to south.
   const sheet = 92;
-  for (let y = fp.y + sheet; y < fp.y + fp.h; y += sheet) {
-    inlay(deck, { x: fp.x, y: y - 1, w: fp.w, h: 2 }, ROOF.lap);
-    inlay(deck, { x: fp.x, y: y - 1, w: fp.w, h: 0.8 }, ROOF.membraneLit);
+  for (let y = roof.y + sheet; y < roof.y + roof.h; y += sheet) {
+    inlay(deck, { x: roof.x, y: y - 1, w: roof.w, h: 2 }, ROOF.lap);
+    inlay(deck, { x: roof.x, y: y - 1, w: roof.w, h: 0.8 }, ROOF.membraneLit);
   }
 
   // Falls: the deck drains toward outlets, so it darkens away from the ridge.
@@ -137,17 +212,17 @@ export function buildRoofModel(building: Building): RoofModel {
     const t = i / 4;
     inlay(
       deck,
-      { x: fp.x + wall, y: fp.y + fp.h - wall - (fp.h * 0.34) * (1 - t), w: fp.w - wall * 2, h: 2 + t * 8 },
+      { x: roof.x + wall, y: roof.y + roof.h - wall - (roof.h * 0.34) * (1 - t), w: roof.w - wall * 2, h: 2 + t * 8 },
       shade(ROOF.membrane, 0.985),
     );
   }
 
   // Soiling in the corners, where nothing sweeps and water sits.
   for (const [cx, cy] of [
-    [fp.x + wall, fp.y + wall],
-    [fp.x + fp.w - wall - 60, fp.y + wall],
-    [fp.x + wall, fp.y + fp.h - wall - 60],
-    [fp.x + fp.w - wall - 60, fp.y + fp.h - wall - 60],
+    [roof.x + wall, roof.y + wall],
+    [roof.x + roof.w - wall - 60, roof.y + wall],
+    [roof.x + wall, roof.y + roof.h - wall - 60],
+    [roof.x + roof.w - wall - 60, roof.y + roof.h - wall - 60],
   ]) {
     inlay(deck, { x: cx, y: cy, w: 60, h: 60 }, ROOF.soil);
   }
@@ -172,20 +247,20 @@ export function buildRoofModel(building: Building): RoofModel {
    * corners of a line that should be continuous. One ring, drawn once, has no
    * corners to get wrong.
    */
-  const inner: Rect = { x: fp.x + wall, y: fp.y + wall, w: fp.w - wall * 2, h: fp.h - wall * 2 };
+  const inner: Rect = { x: roof.x + wall, y: roof.y + wall, w: roof.w - wall * 2, h: roof.h - wall * 2 };
   const reveal = 2.5; // the wall face below the coping: dark, and the building's edge
   const stone = 4.5;
   for (const run of [
-    { x: fp.x, y: fp.y, w: fp.w, h: wall },
-    { x: fp.x, y: fp.y + fp.h - wall, w: fp.w, h: wall },
-    { x: fp.x, y: fp.y + wall, w: wall, h: fp.h - wall * 2 },
-    { x: fp.x + fp.w - wall, y: fp.y + wall, w: wall, h: fp.h - wall * 2 },
+    { x: roof.x, y: roof.y, w: roof.w, h: wall },
+    { x: roof.x, y: roof.y + roof.h - wall, w: roof.w, h: wall },
+    { x: roof.x, y: roof.y + wall, w: wall, h: roof.h - wall * 2 },
+    { x: roof.x + roof.w - wall, y: roof.y + wall, w: wall, h: roof.h - wall * 2 },
   ]) {
     inlay(parapet, run, V.wallCap);
   }
   // The coping is a horizontal top surface, so it takes one value all the way
   // round: under a single light, only faces that turn differ.
-  const cap: Rect = { x: fp.x + reveal, y: fp.y + reveal, w: fp.w - reveal * 2, h: fp.h - reveal * 2 };
+  const cap: Rect = { x: roof.x + reveal, y: roof.y + reveal, w: roof.w - reveal * 2, h: roof.h - reveal * 2 };
   for (const band of [
     { x: cap.x, y: cap.y, w: cap.w, h: stone },
     { x: cap.x, y: cap.y + cap.h - stone, w: cap.w, h: stone },
@@ -202,10 +277,8 @@ export function buildRoofModel(building: Building): RoofModel {
     parapet.rect(inner.x, inner.y, reach, inner.h).fill({ color: 0x000000, alpha: 0.028 });
   }
 
-  drawEntranceRecesses(parapet, building);
-
   // Roof access over the service zone, plus drainage outlets at the low corners.
-  const service = serviceEdge(fp);
+  const service = serviceEdge(roof);
   const hatch: Rect = { x: service.x, y: service.y, w: 54, h: 44 };
   occlude(aoPad, hatch, 7);
   contact(pad, hatch, LIFT.cabinet);
@@ -217,8 +290,8 @@ export function buildRoofModel(building: Building): RoofModel {
   );
 
   for (const [ox, oy] of [
-    [fp.x + wall + 26, fp.y + fp.h - wall - 26],
-    [fp.x + fp.w - wall - 26, fp.y + fp.h - wall - 26],
+    [roof.x + wall + 26, roof.y + roof.h - wall - 26],
+    [roof.x + roof.w - wall - 26, roof.y + roof.h - wall - 26],
   ]) {
     const g = equipmentGraphics(equipment);
     // A dished sump with a straight-barred leaf grate. Bars, not radial spokes:
@@ -235,6 +308,28 @@ export function buildRoofModel(building: Building): RoofModel {
   const objectViews = new Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>();
   const authored = building.floors.find((floor) => floor.label === "ROOF");
   if (authored) {
+    /**
+     * The plan's own walls: bulkheads, machine rooms, the shaft that carries on up.
+     *
+     * These had no drawing path at all. The compiler turns authored path walls into
+     * `barriers`, physics and line-of-sight both consume them, and this function read
+     * neither — so Civic's machine room and its NE stair shaft were colliders and
+     * sight-blockers that put nothing on screen. Play reported the exact symptom from
+     * the deck: "there's a room over to the left. You can see the shadows, but I don't
+     * actually see the walls that are creating the shadows", and the stair behind them
+     * "just a slightly see-through grey box" — the grey being the fog these invisible
+     * walls were casting, with the flight legitimately hidden behind it.
+     *
+     * Which makes it the same defect as every other one this map has had: the collider
+     * and the silhouette came from different code. There is one wall drawing path now,
+     * shared with every interior floor.
+     */
+    drawWallRects(bulkheads, pad, authored.walls, ROOF_BULKHEAD);
+    for (const barrier of authored.barriers ?? []) {
+      // The shell is the parapet's job; drawing it again would double the upstand.
+      if (barrier.id === "ROOF-shell") continue;
+      drawBarrier(bulkheads, pad, barrier, ROOF_BULKHEAD);
+    }
     for (const object of [...authored.objects].sort((a, b) => a.y + a.h - (b.y + b.h))) {
       const g = new Graphics();
       occlude(aoPad, object, 6);
@@ -307,7 +402,7 @@ export function buildRoofModel(building: Building): RoofModel {
         w: 70,
         h: 50,
       };
-      if (unit.x + unit.w > fp.x + fp.w - wall - 8) break;
+      if (unit.x + unit.w > roof.x + roof.w - wall - 8) break;
       const g = new Graphics();
       occlude(aoPad, unit, 6);
       drawModelObject(g, pad, { id: `${building.id}-roof-hvac-${i}`, kind: "hvac", ...unit });
@@ -315,10 +410,124 @@ export function buildRoofModel(building: Building): RoofModel {
     }
   }
 
+  /**
+   * The wall plate: the building's own mass, at the footprint, under everything
+   * that slides.
+   *
+   * This is what makes the parallax safe. The roof rides a few units off-centre,
+   * and whatever it uncovers on the far side has to be *something* — without the
+   * plate it would be a sliver of the site surface showing through, which reads as
+   * a gap under the building. With it, the sliver is wall, which is what is
+   * actually there. The silhouette stays the footprint at every camera position,
+   * so the contract's promise that the drawn shape is the collider survives a
+   * moving camera.
+   */
+  inlay(plate, fp, V.wall);
+
+  /**
+   * The block's shadow rides with the mass rather than staying on the ground.
+   *
+   * Which is not what a shadow does, and is still right here. This shadow has a
+   * second job nobody designed: it is drawn over the deck, so a roof's apparent
+   * tone is its membrane value *under* the wash, and `ROOF.membrane` was picked by
+   * eye that way — "darker than the sidewalk so a block reads as raised". Pinning
+   * the shadow to the ground meant the wall plate blocked it, every roof in the
+   * city went pale, and buildings stopped sitting above the pavement at all.
+   *
+   * The alternative was to restyle the whole roof palette to bake the wash in.
+   * That is the better end state and a much larger change than parallax has any
+   * business dragging in. Riding along costs at most `PARALLAX_MAX` units of drift
+   * on a soft gradient, which is not visible; a flat city is.
+   */
+  /**
+   * Doorways are at ground level, so they are cut last and they do not move.
+   *
+   * They used to be drawn into the parapet, which put them inside the mass — and
+   * the moment the mass started sliding, every door slid with it and stopped
+   * meeting the apron painted on the pavement outside. Worse, the wall plate then
+   * showed *through* the gap between them, so an entrance read as an opening onto
+   * the roof rather than a way into the building.
+   *
+   * Above the mass rather than under it, because that is what an opening is: the
+   * building is missing here, all the way down. Painting it last is the cheapest
+   * true statement of that.
+   */
+  drawEntranceRecesses(entrances, building);
+
+  /**
+   * The mass is clipped to the footprint, and the cast shadow is not.
+   *
+   * Parallax slides the mass, and a comment here used to claim it "never leaves
+   * the footprint". It does — on the leading side. The plate covers the trailing
+   * side, so the silhouette came out as the union of two offset rectangles: a
+   * clean right-angle jog in what should be one straight wall, at the corner of
+   * every building on the map.
+   *
+   * Clipping the mass to the footprint fixes it exactly, and forces something
+   * that was already overdue. The block shadow had been riding inside the mass
+   * because it doubles as the wash that darkens the roof deck — but a shadow has
+   * to spill onto the *street*, and a clipped shadow cannot. So the two jobs are
+   * finally separated: a real cast shadow outside, and an explicit deck wash at
+   * the exact composite the shadow used to deliver, so no roof changes value.
+   */
+  inlay(clip, fp, 0xffffff);
+  wash.rect(fp.x, fp.y, fp.w, fp.h).fill({ color: 0x000000, alpha: SHADOW_TOTAL });
+
   const architecture = new Container();
-  architecture.addChild(deck, ...aoPad, ...pad, parapet);
-  view.addChild(architecture, equipment);
-  return { view, architecture, furniture: equipment, objectViews };
+  architecture.addChild(deck, wash, ...aoPad, ...pad, parapet, bulkheads);
+  mass.addChild(architecture, equipment);
+  mass.mask = clip;
+  view.addChild(blockShadow, plate, mass, clip, entrances);
+  return { view, mass, architecture, furniture: equipment, objectViews };
+}
+
+/**
+ * The step or ramp standing out from a doorway onto the pavement.
+ *
+ * The apron already painted outside every door says "the way in is here" and says
+ * it flat on the ground, which is fine for a plan and not enough for a world with
+ * parallax in it: the mass above now visibly stands up, and the one place you
+ * actually enter it stayed a rectangle of lighter paving.
+ *
+ * A person door gets a step, a vehicle door gets a ramp — a ramp because a
+ * roll-up takes wheels, and a step across it would be a lie a player finds out
+ * about by driving at it. Both are low and walkable, and both sit *outside* the
+ * footprint, which the silhouette rule allows: only solids owe their outline to a
+ * collider. Nothing here blocks anything, and nothing here is drawn dark enough
+ * to claim it does.
+ */
+function drawThreshold(g: Graphics, entrance: PerimeterEntrance, fp: Rect, half: number): void {
+  const { vehicle } = entrance;
+  const across = isAcross(entrance.side);
+  const reach = vehicle ? 15 : 10;
+  const pad = outwardBand(entrance, fp, reach, half + (vehicle ? 4 : 3));
+  const lift = vehicle ? LIFT.flat : LIFT.low;
+
+  // `contactBlock`, not `contact`: the pad form carries its opacity on each
+  // layer's container, so handing it one shared Graphics nine times paints a
+  // solid black blob rather than a shadow.
+  contactBlock(g, pad, lift, 1);
+  const top = volume(g, pad, MAT.steel, lift, 1);
+
+  if (vehicle) {
+    // A ramp is one surface running down to the road, so it takes a gradient
+    // rather than the tread lines a step gets.
+    for (let i = 0; i < 4; i += 1) {
+      const t = (i + 1) / 5;
+      const band = across
+        ? { x: top.x, y: entrance.side === "N" ? top.y : top.y + top.h * (1 - t), w: top.w, h: top.h * 0.25 }
+        : { x: entrance.side === "W" ? top.x : top.x + top.w * (1 - t), y: top.y, w: top.w * 0.25, h: top.h };
+      inlay(g, band, shade(MAT.steel.top, 0.98 - i * 0.015));
+    }
+    return;
+  }
+
+  // Two treads, so a step reads as a step and not as a plate lying in the street.
+  for (const at of [0.38, 0.72]) {
+    inlay(g, across
+      ? { x: top.x + 2, y: top.y + top.h * at, w: top.w - 4, h: 1 }
+      : { x: top.x + top.w * at, y: top.y + 2, w: 1, h: top.h - 4 }, MAT.steel.edge);
+  }
 }
 
 /**
@@ -344,6 +553,8 @@ function drawEntranceRecesses(g: Graphics, building: Building): void {
     const depth = (entrance.door.thickness ?? wall) + 8;
     const reveal = inwardBand(entrance, fp, depth, half);
     const across = isAcross(entrance.side);
+
+    drawThreshold(g, entrance, fp, half);
 
     // Clear the parapet out of the opening, then drop the reveal into shadow.
     inlay(g, reveal, ROOF.reveal);

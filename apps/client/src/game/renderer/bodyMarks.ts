@@ -6,6 +6,8 @@
  * be wrong in a way a screenshot only hints at.
  */
 
+import type { Vec2 } from "@dotbot/game/types";
+
 /** Straight up. Screen y grows downward, so north is negative. */
 export const NORTH = -Math.PI / 2;
 
@@ -33,9 +35,13 @@ export function carryTickAngles(count: number): number[] {
  * The arc of a disc lying below a waterline, for a fill that rises from the
  * bottom. `level` runs 0 (empty) to 1 (full).
  *
- * Returns the arc bounding the filled segment; closing it draws the chord. Screen
- * y grows downward, so "below" is the arc through +y and a full disc is the whole
- * circle rather than a degenerate sliver.
+ * Returns the arc bounding the filled segment — the rim the caller sweeps around
+ * the bottom to close the fill. Screen y grows downward, so "below" is the arc
+ * through +y and a full disc is the whole circle rather than a degenerate sliver.
+ *
+ * Its two ends are exactly the two ends of `waterlineSurface` at the same level.
+ * They have to be: the fill is the surface joined to this arc, and a disagreement
+ * of even a unit opens a notch in the liquid's edge.
  */
 export function waterlineArc(level: number): [number, number] | null {
   if (level <= 0) return null;
@@ -44,6 +50,52 @@ export function waterlineArc(level: number): [number, number] | null {
   const sin = 1 - 2 * level;
   const angle = Math.asin(sin);
   return [angle, Math.PI - angle];
+}
+
+/** How far the surface rides off its own level, as a share of the radius. */
+const WAVE_AMPLITUDE = 0.09;
+/** Crests across the surface. Under two, so it swells rather than ripples. */
+const WAVE_CRESTS = 1.5;
+const WAVE_SAMPLES = 24;
+
+/**
+ * The surface of the liquid in a core, left to right across a unit disc centred
+ * on the origin. Returns null when the core is empty or full, neither of which
+ * has a surface.
+ *
+ * A straight chord is a fill level; a curved one is a liquid, and that difference
+ * is the whole reason this exists. `phase` shifts the crests, so a caller that
+ * ties it to the level gets a surface that moves as the core fills instead of a
+ * shape frozen mid-slosh.
+ *
+ * Two things keep the polyline honest, and both are load-bearing:
+ *
+ *   - The wave is enveloped to nothing at both ends. That is what a meniscus does
+ *     where it meets the glass, and it puts the ends exactly on the rim so they
+ *     meet `waterlineArc`'s.
+ *   - Every point is then clamped inside the disc anyway. The envelope alone does
+ *     not get there: near the ends the rim curves away faster than the wave
+ *     decays, so a crest just inboard of the left edge would sit outside the core
+ *     entirely and the fill would bulge past its own silhouette.
+ */
+export function waterlineSurface(level: number, phase = 0): Vec2[] | null {
+  if (level <= 0 || level >= 1) return null;
+  const waterline = 1 - 2 * level;
+  const halfChord = Math.sqrt(Math.max(0, 1 - waterline * waterline));
+  // A narrow surface has less room to move, and scaling with the chord is also
+  // what keeps a nearly-empty core from showing a wave taller than its own liquid.
+  const amplitude = WAVE_AMPLITUDE * halfChord;
+
+  const points: Vec2[] = [];
+  for (let index = 0; index <= WAVE_SAMPLES; index += 1) {
+    const t = index / WAVE_SAMPLES;
+    const x = -halfChord + 2 * halfChord * t;
+    const envelope = Math.sin(Math.PI * t);
+    const y = waterline + amplitude * envelope * Math.sin(phase + t * WAVE_CRESTS * Math.PI * 2);
+    const bound = Math.sqrt(Math.max(0, 1 - x * x));
+    points.push({ x, y: Math.min(bound, Math.max(-bound, y)) });
+  }
+  return points;
 }
 
 /**

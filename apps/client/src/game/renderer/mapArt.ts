@@ -8,7 +8,7 @@ import type {
   PlacementSlot,
   StairLink,
 } from "@dotbot/game/types";
-import { buildFloorModel, drawStairHead } from "./model/modelFloor";
+import { buildFloorModel, drawStair, drawStairHead } from "./model/modelFloor";
 import { buildOutdoorModel } from "./model/modelOutdoor";
 import { buildRoofModel } from "./model/modelRoof";
 import { SHADOW_ALPHA, V, type ShadowPad } from "./model/tone";
@@ -52,6 +52,21 @@ export type FloorArt = {
   objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
   /** Addressable stair fixtures reuse the fabrication draw-on hook when an expansion commissions. */
   stairViews: Map<string, { stair: StairLink; view: Container }>;
+  /**
+   * Set only on an authored ROOF plan: the part of it that stands above ground.
+   *
+   * A roof plan does double duty — it is the building's exterior seen from the
+   * street *and* a floor you can walk on — so it needs the same parallax handle
+   * the generated exterior has.
+   */
+  roofMass?: Container;
+  /**
+   * A ROOF plan's two stair marks: the closed housing seen from the street, and the
+   * open well seen from the deck. `GameRenderer` shows exactly one. Absent on every
+   * other kind of floor, which is looked at from only one place.
+   */
+  stairHousing?: Container;
+  stairWell?: Container;
   /** Door swings, stair tags, and other plan notation. */
   annotation: Container;
   annotationGfx: Graphics;
@@ -61,6 +76,17 @@ export type BuildingArt = {
   building: Building;
   /** Exterior (roof) view for buildings without an authored ROOF plan. */
   roof: Container;
+  /**
+   * Every above-ground roof mass this building owns, and so everything the camera
+   * parallaxes: the generated exterior, plus an authored ROOF plan if it has one.
+   *
+   * Both are built for every building and only one is ever visible, which is
+   * exactly the trap — the generated exterior is the obvious handle and it is the
+   * hidden one on precisely the buildings tall enough for parallax to matter.
+   */
+  roofMasses: Container[];
+  /** The authored ROOF plan's floor id, if any. Parallax stops when you stand on it. */
+  roofFloorId: string | null;
   /** Street-view entrance marks; visible only when viewed from outside. */
   entranceMarks: Container;
   floors: FloorArt[];
@@ -119,6 +145,17 @@ export function buildMapArt(map: MapDocument): MapArt {
 // ---------------------------------------------------------------------------
 // Labels
 // ---------------------------------------------------------------------------
+
+/**
+ * World text, at world scale.
+ *
+ * Exported as `makeWorldLabel` because signs need it too, and the alternative was a
+ * second `new Text` with its own font and resolution that could drift from every
+ * caption already in the world.
+ */
+export function makeWorldLabel(size: number, letterSpacing: number, color: number, weight = "600"): Text {
+  return makeLabel("", size, letterSpacing, color, weight);
+}
 
 function makeLabel(text: string, size: number, letterSpacing: number, color: number, weight = "600"): Text {
   const label = new Text({
@@ -182,7 +219,8 @@ function buildBuildingArt(
   // shares the roof model with the authored case, so a tower looks the same from
   // the street as it does when you are standing on it.
   const roof = new Container();
-  roof.addChild(buildRoofModel(building).view);
+  const roofModel = buildRoofModel(building);
+  roof.addChild(roofModel.view);
   buildingsLayer.addChild(roof);
 
   /**
@@ -206,7 +244,15 @@ function buildBuildingArt(
   );
   labels.addChild(label);
 
-  return { building, roof, entranceMarks, floors, label };
+  return {
+    building,
+    roof,
+    roofMasses: [roofModel.mass, ...floors.flatMap((art) => (art.roofMass ? [art.roofMass] : []))],
+    roofFloorId: floors.find((art) => art.roofMass)?.floor.id ?? null,
+    entranceMarks,
+    floors,
+    label,
+  };
 }
 
 /**
@@ -305,38 +351,69 @@ function buildRoofArt(building: Building, floor: FloorPlan): FloorArt {
   annotation.addChild(annotationGfx);
 
   const stairViews = new Map<string, { stair: StairLink; view: Container }>();
-  const stairs = new Container();
   /**
-   * Roofs get a stair *head*, not a flight.
+   * A roof stair is drawn twice, because a roof is looked at from two places.
    *
-   * This used to call the line-plan `drawStair`, which draws the treads and a DN
-   * arrow — correct looking down a stairwell, and wrong looking down at a roof,
-   * where the flight is inside a housing you cannot see into. It is the reason
-   * Downtown's towers appeared to have staircases lying open on top of them.
+   * From the street you are seeing the roof OF the stairwell: a closed housing, which
+   * is what `drawStairHead` is for and why it exists — calling the interior
+   * `drawStair` here is what once left Downtown's towers with staircases lying open
+   * on top of them.
+   *
+   * Standing on the deck you are seeing INTO it, and the housing then tells the
+   * opposite lie. Play found that one: "we can't see the stairs going down, it's just
+   * a white square, so it's not obvious it's stairs when on that floor." So the head
+   * is built alongside the interior flight and `GameRenderer` shows whichever matches
+   * where the camera is. Both, not one switched at build time, because the same roof
+   * art serves both views within a single frame.
+   *
+   * The deck view is `drawStair` itself — the identical white-to-black flight every
+   * interior floor draws. A purpose-built roof version was tried first, a housing with
+   * its near wall removed, and play rejected it on two counts: the missing wall read as
+   * a doorway ("it almost looks like the doors are ways to get off the roof") and the
+   * tread ramp is already the familiar language for "down". A stair is a stair.
    */
-  const stairPad: ShadowPad = SHADOW_ALPHA.map((alpha) => {
+  const housing = new Container();
+  const well = new Container();
+  const housingPad: ShadowPad = SHADOW_ALPHA.map((alpha) => {
+    const g = new Graphics();
+    g.alpha = alpha;
+    return g;
+  });
+  const wellPad: ShadowPad = SHADOW_ALPHA.map((alpha) => {
     const g = new Graphics();
     g.alpha = alpha;
     return g;
   });
   for (const stair of floor.stairs) {
     const view = new Container();
-    const g = new Graphics();
-    drawStairHead(g, stairPad, stair);
-    view.addChild(g);
-    stairs.addChild(view);
+    const headGfx = new Graphics();
+    drawStairHead(headGfx, housingPad, stair);
+    housing.addChild(headGfx);
+    const wellGfx = new Graphics();
+    drawStair(wellGfx, wellPad, stair);
+    well.addChild(wellGfx);
+    // The addressable fixture is the well: it is the one a player can be standing on,
+    // so it is the one fabrication would ever draw onto.
+    view.addChild(wellGfx);
     stairViews.set(stair.id, { stair, view });
     const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", 10, 2, 0xf2f3f4, "700");
     placeStairTag(tag, stair);
     annotation.addChild(tag);
   }
-  stairs.addChildAt(new Container(), 0);
-  for (const layer of stairPad) stairs.addChildAt(layer, 0);
-  model.view.addChild(stairs, annotation);
+  for (const layer of housingPad) housing.addChildAt(layer, 0);
+  for (const layer of wellPad) well.addChildAt(layer, 0);
+  const stairs = new Container();
+  stairs.addChild(housing, well);
+  // Into the mass, not the view: a stair head sitting on the roof has to travel
+  // with the roof, or it detaches from the deck the moment the camera moves.
+  model.mass.addChild(stairs, annotation);
 
   return {
     floor,
     view: model.view,
+    roofMass: model.mass,
+    stairHousing: housing,
+    stairWell: well,
     architecture: model.architecture,
     furniture: model.furniture,
     foreground: new Container(),

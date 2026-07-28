@@ -1,7 +1,7 @@
 import { Container, Graphics } from "pixi.js";
 import { bandFromWall, FLAT_KINDS, isVehicleDoor, stairHalves } from "@dotbot/game/mapModel";
-import { isDisc, pathOutline, solidBounds } from "@dotbot/game/geometry";
-import type { Barrier, Building, Doorway, FloorPlan, MapObject, StairLink, Vec2, WallSegment, WindowBand } from "@dotbot/game/types";
+import { pathOutline } from "@dotbot/game/geometry";
+import type { Building, Doorway, FloorPlan, MapObject, StairLink, Vec2, WallSegment, WindowBand } from "@dotbot/game/types";
 import { drawModelObject } from "./modelGlyphs";
 import { findRooms, type Room, type RoomKind } from "./rooms";
 import {
@@ -23,6 +23,8 @@ import {
   type Rect,
   type ShadowPad,
 } from "./tone";
+import { drawStair, drawStairHead } from "./modelStairs";
+import { capsuleRuns, drawBarrier, drawWallRects } from "./modelWalls";
 
 /**
  * One authored floor, drawn as a lit physical model.
@@ -54,8 +56,6 @@ export type FloorModel = {
   annotationGfx: Graphics;
 };
 
-const WALL_MAT = { top: V.wallCap, front: V.wall, edge: 0x0b0e11, lit: 0x4d5359 };
-const PART_MAT = { top: V.partitionCap, front: shade(V.wall, 1.35), edge: 0x14171a, lit: 0x585e64 };
 
 // ---------------------------------------------------------------------------
 // Slab
@@ -496,99 +496,12 @@ function drawWindow(g: Graphics, band: WindowBand, walls: WallSegment[], thickne
  * solid in the frame.
  */
 function drawWalls(g: Graphics, pad: ShadowPad, floor: FloorPlan, fp: Rect): void {
-  for (const wall of floor.walls) {
-    const shell = wall.w >= 11 || wall.h >= 11;
-    const lift = Math.min(LIFT.wall, Math.max(3, (shell ? 10 : 7)));
-    contact(pad, wall, lift);
-    volume(g, wall, shell ? WALL_MAT : PART_MAT, lift);
-  }
+  drawWallRects(g, pad, floor.walls);
   for (const barrier of floor.barriers ?? []) drawBarrier(g, pad, barrier);
   void fp;
 }
 
-/**
- * Group a barrier's capsules back into the contiguous runs they were cut into.
- *
- * A wall stays one named entity in the data — which is what an editor selects and
- * what an author edits — so the renderer recovers the run boundaries by following
- * the chain: consecutive capsules that share an endpoint belong to one stretch, and
- * a break is where a doorway was cut.
- */
-export function capsuleRuns(barrier: Barrier): Array<{ points: Vec2[]; thickness: number }> {
-  const runs: Array<{ points: Vec2[]; thickness: number }> = [];
-  for (const solid of barrier.solids) {
-    if (solid.kind !== "capsule" || isDisc(solid)) continue;
-    const current = runs.at(-1);
-    const tail = current?.points.at(-1);
-    const continues = tail
-      && Math.abs(tail.x - solid.ax) < 0.01
-      && Math.abs(tail.y - solid.ay) < 0.01
-      && current!.thickness === solid.r * 2;
-    if (continues) current!.points.push({ x: solid.bx, y: solid.by });
-    else {
-      runs.push({
-        points: [{ x: solid.ax, y: solid.ay }, { x: solid.bx, y: solid.by }],
-        thickness: solid.r * 2,
-      });
-    }
-  }
 
-  /**
-   * Close the loop.
-   *
-   * Following the chain forwards can never reach the join a closed shell makes at
-   * the point its outline was authored from: the two halves of that one corner
-   * land in the first and last runs, get mitered independently, and leave a
-   * visible step where they fail to meet. Every other corner is interior to the
-   * chain and comes out clean, which is why the defect appears at exactly one
-   * corner per building — Mercy Clinic's outline starts at `200,140`, so it showed
-   * up at the clinic's north-west corner and nowhere else.
-   */
-  const first = runs[0];
-  const last = runs.at(-1);
-  if (runs.length > 1 && first && last && first.thickness === last.thickness) {
-    const head = first.points[0];
-    const tail = last.points.at(-1)!;
-    if (Math.abs(head.x - tail.x) < 0.01 && Math.abs(head.y - tail.y) < 0.01) {
-      last.points.push(...first.points.slice(1));
-      runs.shift();
-    }
-  }
-
-  return runs;
-}
-
-/** A wall at any angle, extruded and shaded by face normal like everything else. */
-function drawBarrier(g: Graphics, pad: ShadowPad, barrier: Barrier): void {
-  for (const run of capsuleRuns(barrier)) {
-    const outline = pathOutline(run.points, run.thickness);
-    if (outline.length < 3) continue;
-    const shell = run.thickness >= 11;
-    const lift = shell ? 10 : 7;
-    contactShape(pad, outline, lift);
-    volumeShape(g, outline, shell ? WALL_MAT : PART_MAT, lift);
-  }
-
-  /**
-   * A pier: the stub of wall left between an opening and the wall's end, too
-   * short to have a spine. It is still a piece of wall and still collides, so it
-   * draws as one rather than being quietly left off the plan.
-   */
-  for (const solid of barrier.solids) {
-    if (solid.kind !== "capsule" || !isDisc(solid)) continue;
-    const shell = solid.r * 2 >= 11;
-    const { x, y, w, h } = solidBounds(solid);
-    contact(pad, { x, y, w, h }, shell ? 10 : 7);
-    volume(g, { x, y, w, h }, shell ? WALL_MAT : PART_MAT, shell ? 10 : 7);
-  }
-
-  // Convex hulls — a ship, a wedge — draw as themselves.
-  for (const solid of barrier.solids) {
-    if (solid.kind !== "poly") continue;
-    contactShape(pad, solid.points, LIFT.wall);
-    volumeShape(g, solid.points, WALL_MAT, LIFT.wall);
-  }
-}
 
 /**
  * Roll-up door: the retracted curtain sitting in the wall thickness, with a
@@ -633,132 +546,6 @@ function drawVehicleDoorHead(g: Graphics, pad: ShadowPad, door: Doorway, walls: 
 // ---------------------------------------------------------------------------
 // Stairs
 // ---------------------------------------------------------------------------
-
-/**
- * A descending flight. Treads darken as they drop, which is the whole reason
- * the language works for a vertical world: depth is a value change, not a
- * change of projection, so a stair down looks like a stair down from directly
- * above and never needs a camera trick.
- */
-type TreadRun = { half: Rect; from: number; to: number };
-
-/**
- * The two runs of a flight, in draw order, with their depth ramps.
- *
- * `beyond` is the run past the break line — the half a bot crossing the stair
- * disappears into. That is the *exit* half whichever way the flight goes, which is
- * not the same as "the last one drawn": on a descending flight the exit run is
- * drawn second, and on an ascending one it is drawn first.
- */
-function treadRuns(stair: StairLink): { runs: TreadRun[]; beyond: TreadRun; vertical: boolean } {
-  const { entry, exit, vertical } = stairHalves(stair);
-  const down = stair.direction === "down";
-  const exitRun: TreadRun = down
-    ? { half: exit, from: 0.55, to: 0.98 }
-    : { half: exit, from: 0.98, to: 0.55 };
-  const entryRun: TreadRun = down
-    ? { half: entry, from: 0.02, to: 0.55 }
-    : { half: entry, from: 0.55, to: 0.02 };
-  return {
-    runs: down ? [entryRun, exitRun] : [exitRun, entryRun],
-    beyond: exitRun,
-    vertical,
-  };
-}
-
-function drawTreadRun(g: Graphics, run: TreadRun, vertical: boolean): void {
-  const span = vertical ? run.half.h : run.half.w;
-  const treads = Math.max(4, Math.round(span / 16));
-  for (let i = 0; i < treads; i += 1) {
-    const depth = run.from + (run.to - run.from) * (i / treads);
-    const tread: Rect = vertical
-      ? { x: run.half.x, y: run.half.y + (span / treads) * i, w: run.half.w, h: span / treads }
-      : { x: run.half.x + (span / treads) * i, y: run.half.y, w: span / treads, h: run.half.h };
-    // Tread nose lit, riser in shadow, both darkening with depth.
-    const k = 1 - depth * 0.72;
-    inlay(g, tread, shade(MAT.steel.top, k));
-    inlay(
-      g,
-      vertical
-        ? { x: tread.x, y: tread.y + tread.h - 1.6, w: tread.w, h: 1.6 }
-        : { x: tread.x + tread.w - 1.6, y: tread.y, w: 1.6, h: tread.h },
-      shade(MAT.steel.edge, k),
-    );
-    inlay(
-      g,
-      vertical ? { x: tread.x, y: tread.y, w: tread.w, h: 0.8 } : { x: tread.x, y: tread.y, w: 0.8, h: tread.h },
-      shade(MAT.steel.lit, k),
-    );
-  }
-}
-
-function drawStair(g: Graphics, pad: ShadowPad, stair: StairLink): void {
-  const r = stair.rect;
-
-  // The shaft opening: a hole in the slab, dark at the bottom.
-  contact(pad, r, LIFT.wall);
-  inlay(g, r, 0x23272b);
-
-  const { runs, vertical } = treadRuns(stair);
-  for (const run of runs) drawTreadRun(g, run, vertical);
-
-  // Stringers down both flanks.
-  for (const end of [0, 1]) {
-    const side: Rect = vertical
-      ? { x: r.x + (end ? r.w - 3 : 0), y: r.y, w: 3, h: r.h }
-      : { x: r.x, y: r.y + (end ? r.h - 3 : 0), w: r.w, h: 3 };
-    volume(g, side, MAT.steelDeep, 5);
-  }
-}
-
-/**
- * The deep run of a flight, redrawn above the bot layer.
- *
- * A bot crossing the break line changes floor mid-stride, and this is what makes
- * that legible: the far treads pass over it, so it visibly descends into the
- * shaft rather than sliding across a picture of one. Deliberately the same
- * `drawTreadRun` the floor uses, so the overlay cannot drift out of register with
- * the stair underneath it.
- */
-export function drawStairDeepHalf(g: Graphics, stair: StairLink): void {
-  const { beyond, vertical } = treadRuns(stair);
-  drawTreadRun(g, beyond, vertical);
-}
-
-/**
- * The same stair, seen from the roof above it.
- *
- * From up here you cannot see the flight — it is inside a housing, and what shows
- * is a small box with a door in one side. Drawing the open treads on a roof is
- * what put "stairs visible through the roof" on this map: the flight was right
- * for every floor below and simply wrong for the one on top, because a roof is
- * the only floor that looks *down* onto a stair from outside it.
- */
-export function drawStairHead(g: Graphics, pad: ShadowPad, stair: StairLink): void {
-  const r = stair.rect;
-  const { entry, vertical } = stairHalves(stair);
-
-  contact(pad, r, LIFT.column);
-  /**
-   * Built of the same stuff as the parapet, not of interior wall.
-   *
-   * A housing drawn in `V.wallCap` is nearly black against the roof membrane, so
-   * it reads as a hole punched in the deck — the very thing this replaced. It is
-   * a small structure standing *on* a roof in full daylight, so it is the
-   * lightest thing up there.
-   */
-  const top = volume(g, r, MAT.steelLit, LIFT.column);
-  inlay(g, { x: top.x + 2.6, y: top.y + 2.6, w: top.w - 5.2, h: top.h - 5.2 }, shade(MAT.steelLit.top, 0.95));
-
-  // The door, on whichever face the flight is entered from.
-  const span = (vertical ? r.w : r.h) * 0.46;
-  const thick = 5;
-  const atLowSide = vertical ? entry.y <= r.y + 0.5 : entry.x <= r.x + 0.5;
-  inlay(g, vertical
-    ? { x: r.x + (r.w - span) / 2, y: atLowSide ? r.y : r.y + r.h - thick, w: span, h: thick }
-    : { x: atLowSide ? r.x : r.x + r.w - thick, y: r.y + (r.h - span) / 2, w: thick, h: span },
-    shade(MAT.steelLit.top, 0.38));
-}
 
 // ---------------------------------------------------------------------------
 // Build
@@ -907,3 +694,5 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
 export function objectJitter(o: MapObject): number {
   return jitter(o.id);
 }
+
+export { drawStair, drawStairHead } from "./modelStairs";
