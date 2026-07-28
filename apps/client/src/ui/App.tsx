@@ -1,31 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
-import type { Item, MapDocument } from "@dotbot/game/types";
+import { useMemo, useState } from "react";
+import type { MapDocument } from "@dotbot/game/types";
 import { defaultGameConfig } from "@dotbot/game";
-import { floorHeight, locationLabel, resolvePlan } from "@dotbot/game/mapModel";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
 import { ManifestScreen } from "./ManifestScreen";
-import { arrivalSparkline } from "../game/session/netgraph";
 import { FeedbackControls } from "./FeedbackControls";
 import { selectMapDocument } from "../mapSelection";
 import { BodyPromptView, DownedSelfView } from "./downed/DownedPrompts";
 import { useDownedPrompts } from "./downed/useDownedPrompts";
-import { itemGlyph, itemLabel } from "./items";
+import {
+  BayBank, DebugPanel, FloorRail, HoldPicker, RunReadout, SettingsPanel, TouchControls,
+} from "./hud/Overlay";
+import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "./hud/hud";
 
 const coachFadeAtMs = 12_000;
 const coachDismissAtMs = 15_000;
-
-function formatRunClock(timeMs: number): string {
-  const totalSeconds = Math.max(0, Math.floor(timeMs / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-/** The bank always shows every bay, so an empty one still reads as a slot. */
-function bayStrip(bays: (Item | null)[] | undefined): (Item | null)[] {
-  return Array.from({ length: defaultGameConfig.baySlots }, (_, index) => bays?.[index] ?? null);
-}
 
 export function App() {
   // Remounting the session tears down and rebuilds the simulation and
@@ -37,95 +26,29 @@ export function App() {
 
 function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRestart: () => void }) {
   const {
-    hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, legendVisible, toggleLegend,
+    hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, settingsVisible, toggleSettings,
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, leaveRun, selectDownedVerb, plea,
     takeFromBody, setBodyAction, spectating,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ map: requestedMap, spectate: true });
   const [swapBay, setSwapBay] = useState<number | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
-  const playerCoverage = snapshot?.coverages.find((coverage) => coverage.actorId === playerId || coverage.targetId === playerId);
   const { prompt, self: downed, onVerb } = useDownedPrompts({
     snapshot, events, playerId, spectating, runOver: runResult !== null,
     selectDownedVerb, takeFromBody, setBodyAction,
   });
   const dashProgress = player ? 1 - clamp01(player.dashCooldownMs / defaultGameConfig.dashCooldownMs) : 1;
   const remainingRunMs = Math.max(0, defaultGameConfig.runDurationMs - (snapshot?.timeMs ?? 0));
-  const runClock = formatRunClock(remainingRunMs);
-  const activeRivalCount = player
-    ? (snapshot?.bots.filter((bot) => bot.squadId !== player.squadId && bot.state === "alive").length ?? 0)
-    : 0;
-  const floorContext = useMemo(() => {
-    if (!snapshot || !player) {
-      return null;
-    }
-
-    const activePlan = resolvePlan(map, player.floorId, player.position);
-    const building = activePlan ? map.buildings.find((candidate) => candidate.id === activePlan.buildingId) : undefined;
-
-    if (!activePlan || !building) {
-      return null;
-    }
-
-    return {
-      building,
-      activeFloorId: activePlan.planId,
-      floors: [...building.floors].sort((a, b) => floorHeight(b.label) - floorHeight(a.label)),
-    };
-  }, [map, player, snapshot]);
-  const currentLocation = player ? locationLabel(map, player.floorId, player.position) : map.name.toUpperCase();
+  const column = useMemo(
+    () => (player ? floorColumn(map, player.floorId, player.position) : null),
+    [map, player],
+  );
   const downCounts = useMemo(() => {
     const spawnById = new Map(map.botSpawns.map((spawn) => [spawn.id, spawn]));
-    const viewerSquadId = spawnById.get(playerId)?.squadId;
-    let ai = 0;
-    let players = 0;
-
-    for (const event of events) {
-      if (event.type !== "downed" || !event.byBotId || spawnById.get(event.byBotId)?.squadId !== viewerSquadId) {
-        continue;
-      }
-
-      if (spawnById.get(event.botId)?.isAmbient) {
-        ai += 1;
-      } else {
-        players += 1;
-      }
-    }
-
-    return { ai, players };
+    return squadDownCounts(events, (botId) => spawnById.get(botId), playerId);
   }, [events, map, playerId]);
   const coachPhase =
     snapshot && snapshot.timeMs < coachDismissAtMs ? (snapshot.timeMs >= coachFadeAtMs ? "is-leaving" : "") : null;
-  const statusText = useMemo(() => {
-    if (!snapshot || !player) {
-      return "Starting";
-    }
-
-    if (player.state === "downed") {
-      return "Downed";
-    }
-
-    if (playerCoverage?.kind === "capture") {
-      return "Capturing";
-    }
-
-    if (playerCoverage?.kind === "extract") {
-      return "Extracting";
-    }
-
-    if (playerCoverage?.kind === "loot") {
-      // The channel opens a body; it takes nothing. "Looting" named the wrong half.
-      return playerCoverage.actorId === player.id ? "Searching" : "Being searched";
-    }
-
-    if (playerCoverage?.kind === "revive") {
-      return playerCoverage.actorId === player.id ? "Picking up" : "Being picked up";
-    }
-
-    if (playerCoverage?.kind === "swap") return "Swapping";
-
-    return "Explore";
-  }, [player, playerCoverage, snapshot]);
 
   return (
     <main
@@ -138,36 +61,11 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
     >
       <div ref={hostRef} className="game-canvas" />
 
-      {snapshot ? (
-        <div className="hud location-label" aria-label="Current location">
-          {currentLocation}
-        </div>
-      ) : null}
-
-      <section className="hud hud-top-left" aria-label="Run status">
-        <div className="bot-readout">
-          <div className="status-block">
-            <span className="hud-caption">Status</span>
-            <div className="status-line">{statusText}</div>
-          </div>
-          <div className="shield-row" aria-label={`${player?.shields ?? 0} shields`}>
-            {(player?.shieldSegments ?? Array.from({ length: 3 }, () => 0)).map((plate, index) => (
-              <span key={index} className={`shield ${plate >= 1 ? "filled" : plate > 0 ? "cracked" : ""}`} />
-            ))}
-          </div>
-          <dl className="run-readout">
-            <div>
-              <dt>Run</dt>
-              <dd>
-                <time dateTime={`PT${Math.floor(remainingRunMs / 1000)}S`}>{runClock}</time>
-              </dd>
-            </div>
-            <div>
-              <dt>Rivals</dt>
-              <dd aria-label={`${activeRivalCount} active rivals`}>{activeRivalCount}</dd>
-            </div>
-          </dl>
-        </div>
+      <RunReadout
+        remainingRunMs={remainingRunMs}
+        rivals={rivalsAlive(snapshot?.bots, player?.squadId)}
+        onSettings={toggleSettings}
+      >
         <button
           type="button"
           className="restart-button"
@@ -179,69 +77,30 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
         >
           ↻ Restart run
         </button>
-      </section>
+      </RunReadout>
 
-      <section className="hud hud-top-right" aria-label="Inventory">
-        <div className="inventory-readout">
-          <div className="inventory-heading">
-            <span className="hud-caption">Bays</span>
-            <button type="button" onClick={toggleLegend}>L / Key</button>
-          </div>
-          <div className="bay-strip">
-            {bayStrip(player?.bays).map((item, index) => (
-              <div className="bay-slot" key={index}>
-                <button
-                  type="button"
-                  className={`bay-button ${item?.kind ?? "empty"}`}
-                  onClick={() => useBay(index)}
-                  disabled={!item || player?.state !== "alive"}
-                  aria-label={`Bay ${index + 1}${item ? `: ${itemLabel(item)}` : ": empty"}`}
-                >
-                  <small>{index + 1}</small><strong>{itemGlyph(item)}</strong>
-                </button>
-                <button
-                  type="button"
-                  className="swap-control"
-                  onClick={() => setSwapBay(index)}
-                  disabled={!player?.hold.length || player.state !== "alive"}
-                >SWAP</button>
-              </div>
-            ))}
-          </div>
-          <div className="hold-chip" aria-label={`${player?.hold.length ?? 0} items in hold`}>
-            HOLD <strong>{player?.hold.length ?? 0}</strong> / {defaultGameConfig.holdSlots}
-          </div>
-        </div>
-      </section>
+      <BayBank
+        player={player}
+        slots={defaultGameConfig.baySlots}
+        holdSlots={defaultGameConfig.holdSlots}
+        onUse={useBay}
+        onSwapRequest={setSwapBay}
+      />
 
       {swapBay !== null && player?.hold.length ? (
-        <aside className="hold-picker" aria-label={`Choose a hold item for bay ${swapBay + 1}`}>
-          <header><strong>HOLD → BAY {swapBay + 1}</strong><button type="button" onClick={() => setSwapBay(null)}>×</button></header>
-          <p>2 second stationary, noisy swap</p>
-          <div>
-            {player?.hold.map((item, index) => (
-              <button type="button" key={`${itemLabel(item)}-${index}`} onClick={() => {
-                swapBayItem(swapBay, index);
-                setSwapBay(null);
-              }}><span>{itemGlyph(item)}</span>{itemLabel(item)}</button>
-            ))}
-          </div>
-        </aside>
+        <HoldPicker
+          bay={swapBay}
+          hold={player.hold}
+          onClose={() => setSwapBay(null)}
+          onChoose={(holdIndex) => {
+            swapBayItem(swapBay, holdIndex);
+            setSwapBay(null);
+          }}
+        />
       ) : null}
 
-      {legendVisible ? (
-        <aside className="item-legend" aria-label="Item legend">
-          <header><strong>DOTBOT / ITEM KEY</strong><button type="button" onClick={toggleLegend}>×</button></header>
-          <dl>
-            <div><dt className="powerup-mark">+</dt><dd>Health</dd></div>
-            <div><dt className="powerup-mark">◎</dt><dd>Radar</dd></div>
-            <div><dt className="powerup-mark">›</dt><dd>Dash overcharge</dd></div>
-            <div><dt className="powerup-mark">◌</dt><dd>Incognito</dd></div>
-            <div><dt className="blueprint-mark">⌑</dt><dd>Blueprint</dd></div>
-            <div><dt className="interaction-mark">○</dt><dd>INTERACTION — STAND ON</dd></div>
-            <div><dt>×</dt><dd>Squad mine / radar-revealed mine</dd></div>
-            <div><dt className="powerup-mark">◜</dt><dd>Some dots are not dots — watch for the hairline seam</dd></div>
-          </dl>
+      {settingsVisible ? (
+        <SettingsPanel onClose={toggleSettings}>
           <FeedbackControls
             preferences={feedbackPreferences}
             audioStatus={audioStatus}
@@ -250,32 +109,10 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
             onToggleReducedMotion={toggleReducedMotion}
             onTestSound={testSound}
           />
-          <small>Press L to close</small>
-        </aside>
+        </SettingsPanel>
       ) : null}
 
-      {floorContext ? (
-        <aside className="hud floor-rail" aria-label={`${floorContext.building.name} floor guide`}>
-          <span className="floor-rail-name">{floorContext.building.name}</span>
-          <ol>
-            {floorContext.floors.map((floor) => {
-              const isActive = floor.id === floorContext.activeFloorId;
-              return (
-                <li key={floor.id} className={isActive ? "active" : ""} aria-current={isActive ? "location" : undefined}>
-                  <span className="floor-label">{floor.label}</span>
-                  <span className="floor-tick" />
-                </li>
-              );
-            })}
-          </ol>
-        </aside>
-      ) : null}
-
-      {playerCoverage ? (
-        <div className="coverage-meter" aria-label="Coverage progress">
-          <span style={{ width: `${clamp01(playerCoverage.progressMs / playerCoverage.durationMs) * 100}%` }} />
-        </div>
-      ) : null}
+      {column ? <FloorRail column={column} /> : null}
 
       {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}
 
@@ -295,76 +132,29 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
             </li>
             <li>
               <strong>Collect</strong>
-              <span>Cover a Dot</span>
+              <span>Stand on a Dot</span>
             </li>
             <li>
-              <strong>Extract</strong>
-              <span>Exit on a pad</span>
+              <strong>Leave</strong>
+              <span>Stand on an exit pad</span>
             </li>
           </ol>
         </section>
       ) : null}
 
-      <div className="touch-controls" aria-label="Touch controls">
-        <div
-          className={`joystick ${joystick.active ? "active" : ""}`}
-          role="application"
-          aria-label="Movement joystick"
-          {...joystickHandlers}
-        >
-          <span
-            className="joystick-knob"
-            style={{
-              transform: `translate(${joystick.knob.x}px, ${joystick.knob.y}px)`,
-            }}
-          />
-        </div>
-        <button
-          className="dash-button"
-          type="button"
-          onPointerDown={(event) => {
-            event.preventDefault();
-            queueDash();
-          }}
-          style={{ "--dash-progress": dashProgress } as React.CSSProperties}
-          disabled={runResult !== null || !player || player.state !== "alive" || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)}
-          aria-label="Dash"
-        >
-          Dash
-        </button>
-      </div>
+      <TouchControls
+        joystick={joystick}
+        joystickHandlers={joystickHandlers}
+        onDash={queueDash}
+        dashProgress={dashProgress}
+        dashDisabled={
+          runResult !== null || !player || player.state !== "alive"
+          || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)
+        }
+      />
 
       {debugVisible && snapshot ? (
-        <aside className="debug-panel" aria-label="Debug panel">
-          <div>
-            FPS{" "}
-            {networkDebug?.frameP50Ms
-              ? Math.round(1_000 / networkDebug.frameP50Ms)
-              : snapshot.debug.fps}
-          </div>
-          <div>Tick {snapshot.debug.tickCount}</div>
-          <div>Bodies {snapshot.debug.activeBodies}</div>
-          <div>Dots {snapshot.debug.activeDots}</div>
-          <div>Capture {defaultGameConfig.dotCaptureDurationMs}ms</div>
-          <div>Cover {defaultGameConfig.coverDurationMs}ms</div>
-          <div>Damage {defaultGameConfig.damageSpeed}</div>
-          {networkDebug ? (
-            <div className="netgraph" aria-label="Network graph">
-              <div className="netgraph-spark" aria-label="Snapshot inter-arrival sparkline">
-                {arrivalSparkline(networkDebug.snapshotIntervalsMs)}
-              </div>
-              <div>Snap {Math.round(networkDebug.snapshotP50Ms)}/{Math.round(networkDebug.snapshotP90Ms)}/{Math.round(networkDebug.snapshotP99Ms)}ms p50/90/99</div>
-              <div>RTT {networkDebug.rttMs === null ? "—" : `${Math.round(networkDebug.rttMs)}ms`}</div>
-              <div>Buffer {networkDebug.bufferDepthSnapshots} @ {networkDebug.interpolationDelayMs}→{networkDebug.interpolationTargetMs}ms</div>
-              <div>Error {networkDebug.predictionErrorPx.toFixed(1)}px</div>
-              <div>Corrections {networkDebug.correctionsPerSecond}/s</div>
-              <div>Frame {Math.round(networkDebug.frameP50Ms)}/{Math.round(networkDebug.frameP90Ms)}/{Math.round(networkDebug.frameP99Ms)}ms p50/90/99 · max {Math.round(networkDebug.frameMaxMs)}</div>
-              <div>Work {networkDebug.frameWorkP90Ms.toFixed(1)}ms p90 · max {networkDebug.frameWorkMaxMs.toFixed(1)} · long {networkDebug.longFrameCount}</div>
-              <div>Hit draw {networkDebug.hitPresentationP50Ms.toFixed(1)}/{networkDebug.hitPresentationP90Ms.toFixed(1)}/{networkDebug.hitPresentationP99Ms.toFixed(1)}ms p50/90/99</div>
-              <div>Hit ack {Math.round(networkDebug.hitConfirmationP50Ms)}/{Math.round(networkDebug.hitConfirmationP90Ms)}/{Math.round(networkDebug.hitConfirmationP99Ms)}ms p50/90/99 · max {Math.round(networkDebug.hitConfirmationMaxMs)}</div>
-            </div>
-          ) : null}
-        </aside>
+        <DebugPanel snapshot={snapshot} config={defaultGameConfig} networkDebug={networkDebug} />
       ) : null}
 
       {runResult ? (

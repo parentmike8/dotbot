@@ -20,8 +20,10 @@ export function FeedbackControls({
   const audioStatusText = audioStatusLabel(audioStatus);
   return (
     <section className="feedback-controls" aria-label="Game feedback settings">
+      {/* No section heading: the only panel this appears in is already called Settings,
+          and "FEEDBACK" above three switches labelled Sound, Haptics and Reduced motion
+          was a word that named nothing the switches did not. */}
       <header>
-        <strong>FEEDBACK</strong>
         <output className={`audio-status ${audioStatus}`} aria-live="polite">{audioStatusText}</output>
       </header>
       <div>

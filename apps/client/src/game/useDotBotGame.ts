@@ -101,7 +101,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("netgraph"),
   );
   const [networkDebug, setNetworkDebug] = useState<NetworkDebugStats | null>(null);
-  const [legendVisible, setLegendVisible] = useState(false);
+  const [settingsVisible, setSettingsVisible] = useState(false);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
   const [feedbackPreferences, setFeedbackPreferences] = useState(loadFeedbackPreferences);
   const [audioStatus, setAudioStatus] = useState<AudioFeedbackStatus>(
@@ -322,7 +322,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
       if (event.code === "KeyL") {
         event.preventDefault();
-        setLegendVisible((visible) => !visible);
+        setSettingsVisible((visible) => !visible);
         return;
       }
 
@@ -599,8 +599,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     spectating,
     debugVisible,
     networkDebug,
-    legendVisible,
-    toggleLegend: () => setLegendVisible((visible) => !visible),
+    settingsVisible,
+    toggleSettings: () => setSettingsVisible((visible) => !visible),
     feedbackPreferences,
     audioStatus,
     toggleSound: () => toggleFeedbackPreference("sound"),

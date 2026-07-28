@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { defaultGameConfig } from "@dotbot/game/config";
+import { downtownMap } from "@dotbot/game/content/downtown";
 import type { CoverageSnapshot, DotBotEntity, Item } from "@dotbot/game/types";
 import { bodyPrompt, downedSelf, type BodyPrompt, type DownedSelf } from "./prompt";
 import { BodyPromptView, DownedSelfView } from "./DownedPrompts";
+import { BayBank, FloorRail, HoldPicker, RunReadout, SettingsPanel } from "../hud/Overlay";
+import { floorColumn } from "../hud/hud";
+import { FeedbackControls } from "../FeedbackControls";
 
 /**
  * `?hud` — the overlay against fixed states, with no game running.
@@ -11,6 +15,11 @@ import { BodyPromptView, DownedSelfView } from "./DownedPrompts";
  * downed, or standing on a body somebody has already searched. Reviewing those by
  * playing until they happen is how they went unreviewed long enough to drift out
  * of the world's drawing language entirely.
+ *
+ * The corner readouts are here for the same reason, one step removed: they are easy
+ * to reach in play and impossible to *judge* there, because judging a panel means
+ * looking at its edge and its tone against the ground behind it while nothing moves.
+ * The restyle onto the world's plate tones was reviewed here.
  *
  * Dev-only. Nothing here is a game surface — every state is a literal.
  */
@@ -149,11 +158,21 @@ function poseState(pose: Pose): { prompt: BodyPrompt; self: DownedSelf | null } 
   };
 }
 
+/** The floor rail against a real building, so the column is the authored stack. */
+const tower = downtownMap.buildings.find((building) => building.floors.length > 2)!;
+const towerFloor = tower.floors.find((floor) => floor.label === "F2") ?? tower.floors[0];
+const column = floorColumn(downtownMap, towerFloor.id, towerFloor.dotSpawns[0].position);
+
+const carrying: Item[] = [blueprint, health];
+
 export function HudLab() {
   const [selected, setSelected] = useState(0);
+  const [corners, setCorners] = useState(true);
+  const [panel, setPanel] = useState<"none" | "hold" | "settings">("none");
   const pose = POSES[selected];
   const { prompt, self } = poseState(pose);
   const noop = () => {};
+  const feedback = { sound: true, haptics: false, reducedMotion: false };
 
   return (
     <main className="hud-lab">
@@ -167,8 +186,43 @@ export function HudLab() {
           >{candidate.name}</button>
         ))}
       </nav>
+      <nav aria-label="Surfaces">
+        <button type="button" aria-pressed={corners} onClick={() => setCorners((on) => !on)}>corners</button>
+        <button type="button" aria-pressed={panel === "hold"} onClick={() => setPanel(panel === "hold" ? "none" : "hold")}>hold picker</button>
+        <button type="button" aria-pressed={panel === "settings"} onClick={() => setPanel(panel === "settings" ? "none" : "settings")}>settings</button>
+      </nav>
       <p className="hud-lab-note">{pose.note}</p>
       <div className="hud-lab-stage">
+        {corners ? (
+          <>
+            <RunReadout remainingRunMs={252_000} rivals={7} onSettings={() => setPanel("settings")}>
+              <button type="button" className="restart-button">↻ Restart run</button>
+            </RunReadout>
+            <BayBank
+              player={actor({ bays: [health, blueprint, null], hold: carrying })}
+              slots={defaultGameConfig.baySlots}
+              holdSlots={defaultGameConfig.holdSlots}
+              onUse={noop}
+              onSwapRequest={() => setPanel("hold")}
+            />
+            {column ? <FloorRail column={column} /> : null}
+          </>
+        ) : null}
+        {panel === "hold" ? (
+          <HoldPicker bay={0} hold={carrying} onChoose={noop} onClose={() => setPanel("none")} />
+        ) : null}
+        {panel === "settings" ? (
+          <SettingsPanel onClose={() => setPanel("none")}>
+            <FeedbackControls
+              preferences={feedback}
+              audioStatus="ready"
+              onToggleSound={noop}
+              onToggleHaptics={noop}
+              onToggleReducedMotion={noop}
+              onTestSound={noop}
+            />
+          </SettingsPanel>
+        ) : null}
         {self ? <DownedSelfView self={self} onPlea={noop} onLeave={noop} /> : null}
         <BodyPromptView prompt={prompt} onVerb={noop} onTake={noop} onTakeAll={noop} />
       </div>

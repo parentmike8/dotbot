@@ -1,7 +1,35 @@
 :root {
-  --ink: #111111;
+  /**
+   * The overlay is made of the world's material.
+   *
+   * These were a blueprint's colours — pure #ffffff paper, pure #111111 ink — from when
+   * the game was meant to read as a floor plan on paper. The world moved on: it is lit
+   * volumes in achromatic greys under one north-west light, and the HUD kept the old
+   * palette, so the two did not look like parts of the same thing.
+   *
+   * So the overlay's four structural tones are now the renderer's own, by name:
+   * `--ink` is `INK.structure`, `--hairline` is `INK.hairline`, and `--panel` is
+   * `INK.plate`, the lightest surface the world draws. `style.test.ts` reads this file
+   * and asserts each against its entry, because a shared palette that is only a
+   * convention drifts the first time somebody picks a colour by eye.
+   */
+  --ink: #17191c;
   --paper: #ffffff;
-  --paper-glass: rgba(255, 255, 255, 0.91);
+  --panel: #f4f5f6;
+  --panel-glass: rgba(244, 245, 246, 0.92);
+  /**
+   * Deliberately darker than `INK.fixture`, which is the world's own secondary.
+   *
+   * `INK.fixture` (#7d838a) gives 3.9 against `--panel`, and the overlay's captions are
+   * small. This is the one tone that does not match the world by name, because matching
+   * it would cost legibility, and the whole point of a caption is to be read.
+   *
+   * ONE RULE FOR THE TWO SECONDARIES, and `style.test.ts` enforces it: `--muted` is for
+   * 9px and up, `--muted-strong` for anything smaller. Eleven rules were breaking it —
+   * the floor rail's building name at 7px, the bay numbers, SWAP at 6px — and they were
+   * the thing play kept reporting as unreadable. At 6-8px in a mono face there is not
+   * enough glyph left to carry a low-contrast tone.
+   */
   --muted: #6d7278;
   /**
    * A secondary that survives a pale floor.
@@ -30,7 +58,7 @@
    * is built on, so it is left as a known edge rather than traded away.
    */
   --muted-strong: #3d4247;
-  --hairline: rgba(17, 17, 17, 0.18);
+  --hairline: #b9bec4;
   --squad-cyan: #15aabf;
   /**
    * The item palette, matching `DOT_COLOR` in the renderer's style module.
@@ -129,147 +157,113 @@ button {
   right: max(14px, env(safe-area-inset-right));
 }
 
-.location-label {
-  z-index: 6;
-  top: max(14px, env(safe-area-inset-top));
-  left: 50%;
-  max-width: min(42vw, 420px);
-  overflow: hidden;
-  transform: translateX(-50%);
-  padding: 7px 14px;
-  border: 1px solid var(--ink);
-  background: var(--paper-glass);
-  box-shadow: 0 2px 0 rgba(17, 17, 17, 0.08);
-  font-size: 10px;
-  font-weight: 850;
-  letter-spacing: 2.4px;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
+/* ---------------------------------------------------------------------------
+   Panels: plates, not cards.
+
+   Every panel here used to be white stock with a full-weight black outline and a
+   hard 2px offset shadow — a sticker laid on the drawing. The body prompts below
+   already state the rule this follows: one hairline, one weight of ink, no offset
+   shadow. A shadow means an object standing in the light, and the overlay is not
+   in the world; it is a mark on the glass in front of it.
+
+   So a panel is the world's lightest plate tone, a hairline edge, and nothing
+   else. It keeps the tight geometry and the fixed-width caps that made the old
+   HUD read as an instrument, and drops the parts that made it read as paper.
+   --------------------------------------------------------------------------- */
+
+.hud-plate,
+.bay-bank,
+.debug-panel,
+.hold-picker,
+.settings-panel,
+.insertion-card,
+.net-game-connection {
+  border: 1px solid var(--hairline);
+  background: var(--panel-glass);
   backdrop-filter: blur(8px);
 }
 
-.bot-readout,
-.inventory-readout,
-.debug-panel {
-  border: 1px solid var(--ink);
-  background: var(--paper-glass);
-  box-shadow: 0 2px 0 rgba(17, 17, 17, 0.08);
-  backdrop-filter: blur(8px);
-}
-
-.bot-readout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  width: 174px;
-  gap: 9px 10px;
-  padding: 10px 11px 9px;
-}
-
-.status-block {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.hud-caption,
-.run-readout dt {
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 1.2px;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.status-line {
-  overflow: hidden;
-  min-height: 13px;
-  font-size: 11px;
-  font-weight: 900;
-  line-height: 1.15;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.shield-row {
+.hud-actions {
   display: flex;
-  gap: 4px;
-  align-items: end;
-  padding-bottom: 2px;
+  gap: 6px;
+  pointer-events: auto;
 }
 
-.shield {
-  width: 19px;
-  height: 9px;
-  border: 1.5px solid var(--ink);
-  border-radius: 999px;
-  background: var(--paper);
-}
-
-.shield.filled {
-  background: var(--squad-cyan);
-}
-
-.shield.cracked {
-  background: linear-gradient(90deg, var(--squad-cyan) 0 42%, var(--paper) 42% 58%, var(--squad-cyan) 58% 100%);
-}
-
+/**
+ * The clock and the headcount, side by side with no plate under them.
+ *
+ * Two numbers do not need a panel: at 17px in tabular mono they carry themselves,
+ * and a box around them is one more rectangle between the player and the world.
+ */
 .run-readout {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: 1fr 1fr;
-  margin: 0;
-  padding-top: 8px;
-  border-top: 1px solid var(--hairline);
+  display: flex;
+  gap: 15px;
+  margin: 0 0 7px;
 }
 
 .run-readout > div {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding-right: 9px;
+  display: grid;
+  gap: 3px;
 }
 
-.run-readout > div + div {
-  padding-right: 0;
-  padding-left: 9px;
-  border-left: 1px solid var(--hairline);
+.run-readout dt {
+  color: var(--muted-strong);
+  font: 800 8px/1 var(--font-mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
 }
 
 .run-readout dd {
   margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-  font-weight: 800;
+  font: 800 17px/1 var(--font-mono);
   font-variant-numeric: tabular-nums;
-  line-height: 1;
 }
 
-.inventory-readout {
-  min-width: 250px;
-  padding: 8px;
+.restart-button,
+.settings-button,
+.room-chip,
+.leave-to-base {
+  padding: 5px 8px;
+  border: 1px solid var(--hairline);
+  background: var(--panel-glass);
+  color: var(--muted-strong);
+  font: 800 8px/1 var(--font-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+
+.room-chip {
+  cursor: default;
+}
+
+.restart-button:hover,
+.settings-button:hover,
+.leave-to-base:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.bay-bank {
+  padding: 7px;
   pointer-events: auto;
 }
 
-.inventory-heading,
 .hold-picker header,
-.item-legend header {
+.settings-panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
 }
 
-.inventory-heading button,
 .hold-picker header button,
-.item-legend header button {
+.settings-panel header button {
   border: 0;
   background: transparent;
-  color: var(--ink);
-  font: 800 9px/1 ui-monospace, monospace;
-  letter-spacing: .1em;
+  color: var(--muted-strong);
+  font: 800 12px/1 var(--font-mono);
   cursor: pointer;
 }
 
@@ -280,7 +274,6 @@ button {
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
   gap: 5px;
-  margin-top: 7px;
 }
 
 .bay-slot { display: grid; gap: 2px; }
@@ -291,25 +284,28 @@ button {
   place-items: center;
   min-width: 48px;
   height: 44px;
-  border: 1px solid var(--ink);
-  background: var(--paper);
+  border: 1px solid var(--hairline);
+  background: var(--panel);
   color: var(--ink);
   cursor: pointer;
 }
 
+/* The accent is the Dot's own colour, so a slot and the thing it holds match. */
 .bay-button.powerup { box-shadow: inset 0 -4px var(--item-powerup); }
 .bay-button.blueprint { box-shadow: inset 0 -4px var(--item-blueprint); }
 .bay-button:disabled { cursor: default; opacity: .48; }
-.bay-button small { position: absolute; top: 3px; left: 4px; font: 700 7px/1 ui-monospace, monospace; }
-.bay-button strong { font: 900 21px/1 ui-monospace, monospace; }
+.bay-button:not(:disabled):hover { border-color: var(--ink); }
+.bay-button small { position: absolute; top: 3px; left: 4px; color: var(--muted-strong); font: 700 7px/1 var(--font-mono); }
+.bay-button strong { font: 900 21px/1 var(--font-mono); }
 
 .swap-control {
   padding: 3px 0;
   border: 1px solid var(--hairline);
-  background: var(--paper);
-  color: var(--muted);
-  font: 800 6px/1 ui-monospace, monospace;
+  background: var(--panel);
+  color: var(--muted-strong);
+  font: 800 6px/1 var(--font-mono);
   letter-spacing: .08em;
+  text-transform: uppercase;
   cursor: pointer;
 }
 
@@ -317,39 +313,45 @@ button {
   margin-top: 6px;
   padding-top: 5px;
   border-top: 1px solid var(--hairline);
-  font: 700 8px/1 ui-monospace, monospace;
+  color: var(--muted-strong);
+  font: 700 8px/1 var(--font-mono);
   letter-spacing: .12em;
+  text-transform: uppercase;
 }
 
+.hold-chip strong { color: var(--ink); }
+
 .hold-picker,
-.item-legend {
+.settings-panel {
   position: absolute;
   z-index: 15;
   width: min(320px, calc(100vw - 28px));
-  border: 2px solid var(--ink);
-  background: var(--paper-glass);
-  box-shadow: 6px 6px 0 rgba(17, 17, 17, .14);
   padding: 12px;
   pointer-events: auto;
-  font: 800 9px/1.2 ui-monospace, monospace;
-  text-transform: uppercase;
-  backdrop-filter: blur(8px);
+  font: 800 9px/1.2 var(--font-mono);
+  letter-spacing: .08em;
 }
 
-.hold-picker { top: 140px; right: 14px; }
-.hold-picker p { color: var(--muted); font-size: 7px; letter-spacing: .08em; }
+.hold-picker { top: 132px; right: 14px; }
+.hold-picker p { margin: 8px 0; color: var(--muted-strong); font-size: 7px; letter-spacing: .08em; }
 .hold-picker > div { display: grid; gap: 4px; }
-.hold-picker > div button { display: flex; gap: 8px; padding: 7px; border: 1px solid var(--ink); background: var(--paper); text-align: left; cursor: pointer; }
+.hold-picker > div button {
+  display: flex;
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.hold-picker > div button:hover { border-color: var(--ink); }
+.hold-picker > div button .powerup { color: var(--item-powerup); }
+.hold-picker > div button .blueprint { color: var(--item-blueprint); }
 
-.item-legend { top: 50%; left: 50%; transform: translate(-50%, -50%); }
-.item-legend dl { display: grid; gap: 5px; margin: 12px 0; }
-.item-legend dl div { display: grid; grid-template-columns: 36px 1fr; align-items: center; }
-.item-legend dt { display: grid; place-items: center; width: 28px; height: 28px; margin: 0; border: 1px solid var(--ink); color: var(--ink); font-size: 18px; }
-.item-legend dd { margin: 0; letter-spacing: .08em; }
-.item-legend .powerup-mark { background: var(--item-powerup); }
-.item-legend .blueprint-mark { background: var(--item-blueprint); }
-.item-legend .interaction-mark { background: var(--item-interaction); color: var(--ink); }
-.item-legend small { color: var(--muted); }
+.settings-panel { top: 50%; left: 50%; transform: translate(-50%, -50%); }
+.settings-panel small { display: block; margin-top: 4px; color: var(--muted-strong); font-size: 7px; }
+
 .feedback-controls {
   display: grid;
   gap: 7px;
@@ -357,23 +359,31 @@ button {
   padding-top: 10px;
   border-top: 1px solid var(--hairline);
 }
-.feedback-controls > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.feedback-controls > header { display: flex; align-items: center; justify-content: end; gap: 8px; }
+/**
+ * Audio state in the ink hierarchy, not in green and red.
+ *
+ * The overlay is achromatic apart from two meanings: allegiance, and which item a
+ * mark stands for. A status line in its own green/red was a third family with a third
+ * grammar, in the smallest text on the panel. Working audio is quiet; audio that
+ * needs you is full ink. That is the same "quiet unless it matters" the rest of the
+ * overlay runs on, and it survives being read by someone who cannot see the hue.
+ */
 .feedback-controls .audio-status {
-  color: var(--muted);
-  font: 800 7px/1 ui-monospace, monospace;
+  color: var(--muted-strong);
+  font: 800 7px/1 var(--font-mono);
   letter-spacing: .06em;
 }
-.feedback-controls .audio-status.ready { color: #087f5b; }
 .feedback-controls .audio-status.needsGesture,
 .feedback-controls .audio-status.interrupted,
-.feedback-controls .audio-status.error { color: #c92a2a; }
+.feedback-controls .audio-status.error { color: var(--ink); font-weight: 900; }
 .feedback-controls > div { display: flex; flex-wrap: wrap; gap: 5px; }
 .feedback-controls button {
   padding: 6px 7px;
   border: 1px solid var(--hairline);
-  background: var(--paper);
-  color: var(--muted);
-  font: 800 7px/1 ui-monospace, monospace;
+  background: var(--panel);
+  color: var(--muted-strong);
+  font: 800 7px/1 var(--font-mono);
   letter-spacing: .07em;
   text-transform: uppercase;
   cursor: pointer;
@@ -382,45 +392,91 @@ button {
 .feedback-controls button[aria-pressed="true"] {
   border-color: var(--ink);
   background: var(--ink);
-  color: var(--paper);
+  color: var(--panel);
 }
-.feedback-controls small { color: var(--muted); font-size: 7px; letter-spacing: .04em; text-transform: none; }
-.intel-density { display: grid; gap: 2px; margin: 8px 0 0; font-size: 9px; letter-spacing: .08em; }
-.intel-density div { display: flex; justify-content: space-between; gap: 16px; }
-.intel-density dt, .intel-density dd { margin: 0; }
+.feedback-controls small { color: var(--muted-strong); font-size: 7px; letter-spacing: .04em; text-transform: none; }
 
-.dot-count {
+/* ---------------------------------------------------------------------------
+   Net-only surfaces: the things a match has and a sandbox does not.
+
+   These carried no styling at all — bare `aside` and `button` in the browser's
+   default sans — which is a large part of why the multiplayer overlay looked
+   nothing like the one being tuned in the sandbox.
+   --------------------------------------------------------------------------- */
+
+.insertion-card {
+  position: absolute;
+  z-index: 8;
+  top: max(14px, env(safe-area-inset-top));
+  left: 50%;
   display: grid;
-  grid-template-columns: 18px 1fr;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 7px;
+  width: min(280px, calc(100vw - 28px));
+  padding: 10px 12px;
+  transform: translateX(-50%);
+  color: var(--ink);
+  font: 800 9px/1.3 var(--font-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  pointer-events: none;
 }
 
-.dot-count + .dot-count {
-  border-top: 1px solid var(--hairline);
+.insertion-card dl { display: grid; gap: 2px; margin: 0; padding-top: 7px; border-top: 1px solid var(--hairline); }
+.insertion-card dl div { display: flex; justify-content: space-between; gap: 16px; }
+.insertion-card dt { margin: 0; color: var(--muted-strong); font-weight: 700; }
+.insertion-card dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.net-game-connection {
+  position: absolute;
+  z-index: 25;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  padding: 16px 20px;
+  transform: translate(-50%, -50%);
+  color: var(--ink);
+  font: 800 10px/1.4 var(--font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  pointer-events: auto;
 }
 
-.dot-count-mark {
-  width: 17px;
-  height: 17px;
-  border: 2px solid var(--ink);
-  border-radius: 999px;
-  background: #f2c94c;
+.net-game-connection button {
+  padding: 7px 10px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--panel);
+  font: 800 8px/1 var(--font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  cursor: pointer;
 }
 
-.inventory-value {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 9px;
+.spectating-chip {
+  position: absolute;
+  z-index: 9;
+  bottom: max(150px, calc(env(safe-area-inset-bottom) + 144px));
+  left: 50%;
+  padding: 6px 10px;
+  transform: translateX(-50%);
+  border: 1px solid var(--hairline);
+  background: var(--panel-glass);
+  color: var(--muted-strong);
+  font: 800 8px/1 var(--font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
 }
 
-.inventory-value strong {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 15px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
+.leave-to-base {
+  position: absolute;
+  z-index: 9;
+  bottom: max(24px, calc(env(safe-area-inset-bottom) + 18px));
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .floor-rail {
@@ -435,7 +491,7 @@ button {
 .floor-rail-name {
   max-width: 112px;
   overflow: hidden;
-  color: var(--muted);
+  color: var(--muted-strong);
   font-size: 7px;
   font-weight: 850;
   letter-spacing: 1.3px;
@@ -486,33 +542,20 @@ button {
 .floor-tick {
   width: 7px;
   height: 7px;
-  border: 1px solid var(--ink);
+  border: 1px solid var(--muted);
   border-radius: 999px;
-  background: var(--paper);
+  background: var(--panel);
 }
 
 .floor-rail li.active .floor-label {
   background: var(--ink);
-  color: var(--paper);
+  color: var(--panel);
 }
 
 .floor-rail li.active .floor-tick {
+  border-color: var(--ink);
   background: var(--ink);
-  box-shadow: 0 0 0 2px var(--paper);
-}
-
-.coverage-meter {
-  position: absolute;
-  z-index: 7;
-  left: 50%;
-  bottom: max(102px, calc(env(safe-area-inset-bottom) + 96px));
-  width: min(280px, calc(100vw - 48px));
-  height: 8px;
-  overflow: hidden;
-  transform: translateX(-50%);
-  border: 1px solid var(--ink);
-  background: rgba(255, 255, 255, 0.9);
-  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--panel-glass);
 }
 
 .netgraph {
@@ -524,15 +567,9 @@ button {
 .netgraph-spark {
   max-width: 32ch;
   overflow: hidden;
-  color: #e8590c;
+  color: var(--item-powerup);
   letter-spacing: -1px;
   white-space: nowrap;
-}
-
-.coverage-meter span {
-  display: block;
-  height: 100%;
-  background: var(--ink);
 }
 
 /* ---------------------------------------------------------------------------
@@ -617,7 +654,7 @@ button {
   width: 22px;
   height: 22px;
   border: 1px solid var(--ink);
-  background: var(--paper-glass);
+  background: var(--panel-glass);
   font: 800 10px/1 var(--font-mono);
 }
 
@@ -669,7 +706,7 @@ button {
   width: 34px;
   height: 34px;
   border: 1px solid var(--ink);
-  background: var(--paper-glass);
+  background: var(--panel-glass);
   color: var(--ink);
   font: 900 17px/1 var(--font-mono);
   cursor: pointer;
@@ -691,9 +728,8 @@ button {
   align-items: stretch;
   overflow: hidden;
   transform: translateX(-50%);
-  border: 1px solid var(--ink);
-  background: var(--paper-glass);
-  box-shadow: 0 2px 0 rgba(17, 17, 17, 0.08);
+  border: 1px solid var(--hairline);
+  background: var(--panel-glass);
   color: var(--ink);
   pointer-events: none;
   transition:
@@ -756,7 +792,7 @@ button {
 }
 
 .quick-coach li span {
-  color: var(--muted);
+  color: var(--muted-strong);
   font-size: 7px;
   font-weight: 750;
   letter-spacing: 0.35px;
@@ -794,6 +830,13 @@ button {
   opacity: 0.5;
 }
 
+/**
+ * The knob is your own colour.
+ *
+ * It was #ff3b6b — a hot pink from an era with no palette, and the last chromatic
+ * value in the overlay with no meaning attached. Cyan already means "you and yours"
+ * everywhere else in the game, and the thumb under this knob is exactly that.
+ */
 .joystick-knob {
   position: absolute;
   top: 38px;
@@ -802,8 +845,8 @@ button {
   height: 38px;
   border: 2px solid var(--ink);
   border-radius: 999px;
-  background: var(--paper);
-  box-shadow: inset 0 0 0 10px #ff3b6b;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 10px var(--squad-cyan);
   will-change: transform;
 }
 
@@ -839,11 +882,11 @@ button {
 }
 
 .dash-button:disabled {
-  color: #747980;
+  color: var(--muted);
 }
 
 .dash-button:disabled::before {
-  background: #f8f8f8;
+  background: var(--panel);
 }
 
 .debug-panel {
@@ -853,9 +896,8 @@ button {
   left: max(14px, env(safe-area-inset-left));
   min-width: 156px;
   padding: 10px 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
-  line-height: 1.5;
+  color: var(--muted-strong);
+  font: 11px/1.5 var(--font-mono);
   pointer-events: none;
 }
 
@@ -884,7 +926,6 @@ button {
 
   .joystick,
   .dash-button {
-    box-shadow: 0 3px 0 rgba(17, 17, 17, 0.18);
     -webkit-tap-highlight-color: transparent;
   }
 }
@@ -898,17 +939,10 @@ button {
 }
 
 @media (max-width: 620px) {
-  .location-label {
-    top: max(10px, env(safe-area-inset-top));
-    max-width: calc(100vw - 120px);
-    padding: 6px 11px;
-    font-size: 9px;
-    letter-spacing: 1.7px;
-  }
-
+  /* Nothing is centred at the top any more, so both corners keep their own row. */
   .hud-top-left,
   .hud-top-right {
-    top: max(48px, calc(env(safe-area-inset-top) + 42px));
+    top: max(10px, env(safe-area-inset-top));
   }
 
   .hud-top-left {
@@ -919,22 +953,12 @@ button {
     right: max(10px, env(safe-area-inset-right));
   }
 
-  .bot-readout {
-    width: 154px;
-    gap: 8px;
-    padding: 8px 9px;
+  .run-readout dd {
+    font-size: 15px;
   }
 
-  .shield {
-    width: 17px;
-  }
-
-  .inventory-readout {
-    min-width: 218px;
-  }
-
-  .dot-count {
-    padding: 7px 8px;
+  .insertion-card {
+    top: max(70px, calc(env(safe-area-inset-top) + 64px));
   }
 
   .floor-rail {
@@ -1003,15 +1027,7 @@ button {
 }
 
 @media (max-width: 430px) {
-  .bot-readout {
-    width: 146px;
-    padding-right: 8px;
-    padding-left: 8px;
-  }
-
-  .inventory-readout {
-    width: 198px;
-    min-width: 0;
+  .bay-bank {
     padding: 6px;
   }
 
@@ -1325,10 +1341,10 @@ button {
 }
 
 .studio-savebar > * { pointer-events: auto; }
-.studio-savebar > span { margin-right: auto; padding: 6px 9px; border: 1px solid var(--hairline); border-radius: 6px; background: var(--paper-glass); color: var(--muted); font: 700 10px/1 ui-monospace, monospace; }
+.studio-savebar > span { margin-right: auto; padding: 6px 9px; border: 1px solid var(--hairline); border-radius: 6px; background: var(--panel-glass); color: var(--muted); font: 700 10px/1 ui-monospace, monospace; }
 .studio-savebar > span.dirty { color: #9a4d00; border-color: #d97706; }
 .studio-savebar button,
-.studio-savebar a { padding: 6px 9px; border: 1px solid var(--hairline); border-radius: 6px; background: var(--paper-glass); color: var(--ink); text-decoration: none; font-size: 11px; cursor: pointer; }
+.studio-savebar a { padding: 6px 9px; border: 1px solid var(--hairline); border-radius: 6px; background: var(--panel-glass); color: var(--ink); text-decoration: none; font-size: 11px; cursor: pointer; }
 .studio-savebar .primary { border-color: var(--ink); background: var(--ink); color: var(--paper); }
 .studio-savebar button:disabled { opacity: .4; cursor: default; }
 
@@ -1374,7 +1390,7 @@ button {
   padding: 12px;
   border: 1px solid var(--hairline);
   border-radius: 10px;
-  background: var(--paper-glass);
+  background: var(--panel-glass);
   backdrop-filter: blur(8px);
   font-size: 11px;
 }
@@ -1409,7 +1425,7 @@ button {
   padding: 10px;
   border: 1px solid var(--hairline);
   border-radius: 10px;
-  background: var(--paper-glass);
+  background: var(--panel-glass);
   backdrop-filter: blur(8px);
 }
 .studio-assets > .studio-section-title { grid-column: 1; grid-row: 1; }
@@ -1421,7 +1437,7 @@ button {
 .studio-asset-grid button:hover { border-color: var(--ink); }
 .studio-asset-grid img { width: 100%; height: 52px; object-fit: contain; image-rendering: pixelated; }
 .studio-asset-grid span { overflow: hidden; color: var(--ink); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.studio-asset-grid small { position: absolute; top: 3px; right: 3px; padding: 2px; background: rgba(255,255,255,.8); color: var(--muted); font: 7px/1 ui-monospace, monospace; }
+.studio-asset-grid small { position: absolute; top: 3px; right: 3px; padding: 2px; background: rgba(255,255,255,.8); color: var(--muted-strong); font: 7px/1 ui-monospace, monospace; }
 .studio-pagination { grid-column: 3; grid-row: 1 / 3; display: grid; align-content: start; gap: 5px; text-align: center; color: var(--muted); font-size: 9px; }
 .studio-pagination button { padding: 5px; border: 1px solid var(--hairline); border-radius: 5px; background: var(--paper); cursor: pointer; }
 .studio-assets > .studio-help { grid-column: 1 / 2; grid-row: 3; }
@@ -1438,31 +1454,10 @@ button {
   .studio-asset-grid { grid-column: 2; }
 }
 
+/* The clock, then whatever the surface puts under it — restart, or a room chip. */
 .hud-top-left {
   display: grid;
   justify-items: start;
-  gap: 8px;
-}
-
-.restart-button {
-  pointer-events: auto;
-  padding: 6px 11px;
-  border: 1px solid var(--ink);
-  border-radius: 0;
-  background: var(--paper-glass);
-  box-shadow: 0 2px 0 rgba(17, 17, 17, 0.08);
-  color: var(--ink);
-  font-size: 9px;
-  font-weight: 850;
-  letter-spacing: 1.6px;
-  text-transform: uppercase;
-  cursor: pointer;
-  backdrop-filter: blur(8px);
-}
-
-.restart-button:hover {
-  background: var(--ink);
-  color: var(--paper);
 }
 
 .manifest-overlay {
@@ -1479,9 +1474,8 @@ button {
 
 .manifest-panel {
   width: min(520px, 100%);
-  border: 2px solid var(--ink);
-  background: var(--paper);
-  box-shadow: 8px 8px 0 rgba(17, 17, 17, 0.14);
+  border: 1px solid var(--hairline);
+  background: var(--panel);
   color: var(--ink);
   text-transform: uppercase;
 }
@@ -1490,10 +1484,8 @@ button {
   display: grid;
   gap: 12px;
   padding: 18px 20px;
-  border-bottom: 1px solid var(--ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 9px;
-  font-weight: 800;
+  border-bottom: 1px solid var(--hairline);
+  font: 800 9px/1.4 var(--font-mono);
   letter-spacing: 1.8px;
 }
 
@@ -1555,7 +1547,7 @@ button {
 
 .manifest-grid dt {
   margin-bottom: 12px;
-  color: var(--muted);
+  color: var(--muted-strong);
   font-size: 8px;
   font-weight: 850;
   letter-spacing: 1.4px;
@@ -1599,9 +1591,17 @@ button {
    Dev surface: the stage stands in for the canvas the prompts normally sit on.
    --------------------------------------------------------------------------- */
 
+/**
+ * A column, not a fixed grid.
+ *
+ * This was `grid-template-rows: auto auto 1fr`, which counted the children — so adding
+ * one more row of controls pushed the stage into an implicit auto row, and since
+ * everything on the stage is absolutely positioned it collapsed to 2px and the lab
+ * showed nothing at all. Flex takes no position on how many rows there are.
+ */
 .hud-lab {
-  display: grid;
-  grid-template-rows: auto auto 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   height: 100%;
   padding: 14px;
@@ -1634,10 +1634,12 @@ button {
   font: 500 11px/1.5 var(--font-mono);
 }
 
-/* A flat mid tone: light enough for the prompts' paper-glass to read, dark
-   enough that a hairline on white is not being judged against white. */
+/* A flat mid tone: light enough for the panels' glass to read, dark enough that a
+   hairline on white is not being judged against white. */
 .hud-lab-stage {
   position: relative;
+  flex: 1;
+  min-height: 420px;
   overflow: hidden;
   border: 1px solid var(--hairline);
   background: #e9ecef;
