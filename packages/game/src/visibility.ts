@@ -1,6 +1,6 @@
 import { floorPlanById, isGroundFloor } from "./mapModel";
-import { solidSegments } from "./geometry";
-import type { Barrier, MapDocument, Rect, Vec2 } from "./types";
+import { pointToSegmentDistanceSquared, pointToSolidDistanceSquared, rectSolid, solidSegments } from "./geometry";
+import type { Barrier, MapDocument, Rect, Solid, Vec2 } from "./types";
 
 /**
  * Line-of-sight geometry. One rule everywhere: only walls occlude.
@@ -21,12 +21,38 @@ export type Segment = {
 export type VisionContext = {
   /** Occluding wall segments — used for both the polygon and LOS tests. */
   walls: Segment[];
+  /**
+   * The solids `walls` was built from — rect walls and barrier capsules and hulls
+   * alike — kept so the polygon can ask whether an origin is standing *inside*
+   * one. Rebuilding the segment list without a solid is rare enough to pay for on
+   * the spot.
+   */
+  wallSolids: Solid[];
   /** Arena boundary segments — rays terminate here. */
   bounds: Segment[];
   boundsRect: Rect;
 };
 
 const contextCache = new WeakMap<MapDocument, Map<string, VisionContext>>();
+
+/**
+ * How far inside a solid a point must be before it counts as standing *in* it.
+ *
+ * Strictly interior, not merely touching. A bot resting against a wall sits
+ * exactly on that wall's outline, and letting contact count as containment would
+ * turn every wall a player leans on into glass — the opposite failure, and a much
+ * worse one than the flash this exists to prevent.
+ */
+const ENCLOSED_MARGIN = 0.5;
+
+function enclosesStrictly(point: Vec2, solid: Solid): boolean {
+  if (pointToSolidDistanceSquared(point, solid) > 0) return false;
+  let toOutline = Infinity;
+  for (const edge of solidSegments(solid)) {
+    toOutline = Math.min(toOutline, pointToSegmentDistanceSquared(point, edge.ax, edge.ay, edge.bx, edge.by));
+  }
+  return toOutline > ENCLOSED_MARGIN * ENCLOSED_MARGIN;
+}
 
 function rectSegments(rect: Rect): Segment[] {
   const { x, y, w, h } = rect;
@@ -80,11 +106,13 @@ export function visionContext(map: MapDocument, context: string): VisionContext 
     boundsRect = building?.footprint ?? { x: 0, y: 0, w: map.width, h: map.height };
   }
 
+  const wallSolids: Solid[] = [
+    ...wallRects.map(rectSolid),
+    ...barriers.flatMap((barrier) => barrier.solids),
+  ];
   const result: VisionContext = {
-    walls: [
-      ...wallRects.flatMap(rectSegments),
-      ...barriers.flatMap((barrier) => barrier.solids.flatMap(solidSegments)),
-    ],
+    walls: wallSolids.flatMap(solidSegments),
+    wallSolids,
     bounds: rectSegments(boundsRect),
     boundsRect,
   };
@@ -165,6 +193,51 @@ export function hasLineOfSight(
 const VERTEX_MERGE = 0.25;
 
 /**
+ * How far a vertex may sit off the line through its neighbours before it is real.
+ *
+ * Distance-merging alone left the polygon churning. It is a hard cutoff, so as the
+ * origin moves, pairs drift across it and vertices pop in and out — measured over
+ * a strafe across Mercy Clinic, the vertex count changed on 227 of 799 quarter-unit
+ * steps while the lit *area* held to within 0.07%. The shape was right and the
+ * triangulation was different every few frames, which is precisely the crawl the
+ * merge was added to stop.
+ *
+ * Collinearity has no such cutoff to drift across. The slivers this is aimed at are
+ * pairs of rays that hit the *same wall*, so they are exactly collinear with the
+ * run they sit on, at any origin — a vertex mid-wall is redundant whether the
+ * player is a unit away or a hundred. Vertices at real corners are never near
+ * collinear and always survive.
+ */
+const COLLINEAR_TOLERANCE = 0.05;
+
+/**
+ * Drop vertices that lie on the line through their neighbours.
+ *
+ * Runs after the distance merge rather than instead of it: exact duplicates have
+ * no line to be collinear with, so they still need their own rule.
+ */
+function dropCollinear(polygon: Vec2[]): Vec2[] {
+  if (polygon.length < 4) return polygon;
+  const kept: Vec2[] = [];
+  for (let index = 0; index < polygon.length; index += 1) {
+    const previous = kept.at(-1) ?? polygon[(index - 1 + polygon.length) % polygon.length];
+    const point = polygon[index];
+    const next = polygon[(index + 1) % polygon.length];
+    const ax = point.x - previous.x;
+    const ay = point.y - previous.y;
+    const bx = next.x - previous.x;
+    const by = next.y - previous.y;
+    const span = Math.hypot(bx, by);
+    // Perpendicular distance from the point to the chord its neighbours span.
+    const offset = span < 1e-9 ? Math.hypot(ax, ay) : Math.abs(ax * by - ay * bx) / span;
+    if (offset > COLLINEAR_TOLERANCE) kept.push(point);
+  }
+  // Never simplify a polygon out of existence: three vertices is the floor, and
+  // `updateLineOfSight` reads anything under it as "no occlusion at all".
+  return kept.length >= 3 ? kept : polygon;
+}
+
+/**
  * Visibility polygon from an origin: rays cast at every occluder corner
  * (plus epsilon offsets), clipped to the nearest wall or the arena bounds.
  */
@@ -177,12 +250,47 @@ export function visibilityPolygon(origin: Vec2, context: VisionContext, dynamicO
    * on first. Treating that rect as an occluder walls the bot inside a 56x12 box
    * and the floor goes dark for a frame or two.
    */
-  const blinding = dynamicOccluders.filter((rect) =>
-    origin.x > rect.x && origin.x < rect.x + rect.w && origin.y > rect.y && origin.y < rect.y + rect.h);
+  const contains = (rect: Rect): boolean =>
+    origin.x > rect.x && origin.x < rect.x + rect.w && origin.y > rect.y && origin.y < rect.y + rect.h;
+
+  const blinding = dynamicOccluders.filter(contains);
   const occluders = blinding.length
     ? dynamicOccluders.filter((rect) => !blinding.includes(rect))
     : dynamicOccluders;
-  const segments = [...context.walls, ...occluders.flatMap(rectSegments), ...context.bounds];
+
+  /**
+   * The same rule, applied to static walls — which is where it was missing.
+   *
+   * The escape above was written for doors, because a bot is inside a door rect
+   * every time one closes on it. Walls were left out on the assumption that a
+   * bot's own radius keeps its centre out of them. That assumption does not hold
+   * for the origin this is actually called with: the renderer casts from the
+   * *rendered* position, which is the predicted position plus a reconciliation
+   * offset applied after collision — so a correction can put the origin inside a
+   * wall while the simulated bot is nowhere near one.
+   *
+   * The failure is total rather than subtle. Standing inside Lot 6's eight-unit
+   * partition, every ray hits that partition from the inside and the polygon
+   * becomes the wall's own interior: an 8 x 92 sliver, and the floor's lit area
+   * drops from 210559 to 710 within a unit of travel. That is a black flash
+   * across a whole room, and corrections happen exactly when you are moving.
+   *
+   * Tested against solids rather than rects, because the partition that found
+   * this is a *barrier* — a first attempt checked only rect walls and did not
+   * fire on it at all.
+   *
+   * Straight about what this buys: it converts a black flash into a bright one,
+   * not into nothing. An origin inside a wall is already a state with no right
+   * answer, and seeing too much for a frame is far less alarming than the room
+   * going dark. The actual cure is for the rendered origin never to be inside a
+   * wall in the first place; this is the net under that.
+   */
+  const insideWalls = context.wallSolids.filter((solid) => enclosesStrictly(origin, solid));
+  const wallSegments = insideWalls.length
+    ? context.wallSolids.filter((solid) => !insideWalls.includes(solid)).flatMap(solidSegments)
+    : context.walls;
+
+  const segments = [...wallSegments, ...occluders.flatMap(rectSegments), ...context.bounds];
   const angles: number[] = [];
 
   for (const segment of segments) {
@@ -238,5 +346,5 @@ export function visibilityPolygon(origin: Vec2, context: VisionContext, dynamicO
     && Math.abs(first.x - last.x) < VERTEX_MERGE && Math.abs(first.y - last.y) < VERTEX_MERGE) {
     polygon.pop();
   }
-  return polygon;
+  return dropCollinear(polygon);
 }
