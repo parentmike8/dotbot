@@ -11,9 +11,9 @@ import {
 function target(shieldSegments = [1, 1, 1]): DotBotEntity {
   return {
     id: "target", name: "Target", squadId: "bravo", isAmbient: false, color: "#fff", state: "alive",
-    position: { x: 100, y: 100 }, radius: 24, floorId: "outdoor", facing: 0,
+    position: { x: 100, y: 100 }, radius: 24, floorId: "outdoor", facing: 0, moving: false,
     maxShields: 3, shields: shieldSegments.reduce((sum, value) => sum + value, 0), shieldSegments,
-    bays: [null, null, null, null], hold: [], carriedCount: 0, searched: false, radarActiveMs: 0, radarPings: [],
+    bays: [null, null, null, null], hold: [], carriedCount: 0, searched: false, pleaded: false, radarActiveMs: 0, radarPings: [],
     dashOverchargeCharges: 0, incognitoMs: 0, dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
   };
 }

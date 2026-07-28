@@ -1,8 +1,17 @@
 import { collectSolids, separateCircleFromRect } from "./collision";
 import { buildSolidIndex, withExtraSolids, type SolidIndex, type SolidSource } from "./solidIndex";
 import { rectSolid } from "./geometry";
-import { integrateWithWalls, pointSegmentDistance, resolveAgainstSolids, separationPush } from "./kinematics";
-import { defaultGameConfig } from "./config";
+import { buildContactShape, contactDistance, makeContactShape, type ContactShape } from "./bodyContact";
+import {
+  coincidentSeparationAxis,
+  integrateWithWalls,
+  pointSegmentDistance,
+  resolveAgainstSolids,
+  separationAxis,
+  separationPush,
+  stableHash,
+} from "./kinematics";
+import { MOVING_SPEED, defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import {
   buildingContaining,
@@ -23,11 +32,18 @@ import {
   stairGuardRects,
   stairHalves,
 } from "./mapModel";
-import { canTakeFromBody, interactionDotReach, withinDownedCoverRange, withinInteractionDotRange } from "./interactions";
+import { canReviveBody, canTakeFromBody, interactionDotReach, withinDownedCoverRange, withinInteractionDotRange } from "./interactions";
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, hasRoom, insertItem, removeCarriedAt } from "./inventory";
-import { applyArmourHit, platesForCount, plateSum, restoreShieldPlate } from "./shields";
+import {
+  applyArmourHit,
+  contactReach,
+  normalizeAngle,
+  plateSum,
+  platesForCount,
+  restoreShieldPlate,
+} from "./shields";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import { hasLineOfSight } from "./visibility";
 import type {
@@ -71,6 +87,82 @@ const DEFAULT_DOOR_NOISE = 0.42;
  * badly lagged attackers hit deep into the past. */
 const MAX_REWIND_TICKS = 18;
 
+/**
+ * How far outside contact a hunter is told to hold station.
+ *
+ * Zero would put the steer's "arrived" exactly on the separation solver's
+ * "apart", where a pixel of float noise flips between commanding forward and
+ * being shoved back. Two pixels sits inside the attack test's own four-pixel
+ * forgiveness ring (`attackConnects`), so a hunter parked here is still close
+ * enough that the dash it is waiting to throw connects on the tick it starts.
+ */
+const AI_CONTACT_MARGIN = 2;
+/**
+ * How far past touching still counts as a hit, and how far inside touching still
+ * counts as worth swinging at.
+ *
+ * One constant for both, deliberately. The hit test and the AI's decision to throw
+ * a dash have to answer the same question or the AI stands in poses it could hit
+ * from and declines to — which is what happened when the dash gate was `<
+ * contactGap` and the separation pass rested pairs at exactly `contactGap`.
+ */
+const CONTACT_FORGIVENESS_PX = 4;
+
+/**
+ * Where a bot is told to stand to work on a downed body, as a share of its
+ * radius.
+ *
+ * 0.42 (10.08 px) was authored for a body you walk onto. Two looters at 10.08
+ * from the same corpse would be 20.16 apart, and the smallest centre distance any
+ * two bodies can reach is 19.20 — 48 when both present a live plate. So
+ * `steerToward` never returned zero and N looters pressed inward at a fixed
+ * nonzero speed forever: measured over 1800 ticks, N=2 settled 24.00 from the
+ * body still commanded at 37.8 px/s, N=3 at 27.9 px / 48.5 px/s, N=4 at 33.9 px /
+ * 64.8 px/s, none of them ever settling.
+ *
+ * 1.25 (30 px) is a ring two, and three, bodies can actually occupy, and it is
+ * inside what `withinDownedCoverRange` accepts — that ceiling is
+ * `actorRadius + targetRadius * 0.55` = 1.55 radii for equal bodies, so the
+ * relationship holds at any radius, not just at 24. Four looters still cannot all
+ * fit (they would need 33.94), and no single stand-off distance can seat six;
+ * that wants a ring assignment, not a constant.
+ */
+const BODY_CHANNEL_STAND_OFF = 1.25;
+/**
+ * A stall is asking for movement and not getting it. Ninety ticks is a second and
+ * a half — long enough that ordinary shouldering and a shared doorway are not a
+ * stall, short enough that a jam drains before a player watching it decides the
+ * game is broken.
+ */
+const AI_STALL_TICKS = 90;
+/** Below this the request is a standing bot's rounding, not an intent to travel. */
+const AI_STALL_REQUEST = 0.2;
+/** A quarter of a body. Less than this over the window and it went nowhere. */
+const AI_STALL_PROGRESS_PX = 6;
+/** How long a stalled objective stays off this bot's list, doubled by its roll. */
+const AI_STALL_AVOID_MS = 1400;
+/**
+ * How much room past its own radius a wedged bot tries to win back.
+ *
+ * The navigator wants a full `botRadius` of clearance to plan from a point, so
+ * escaping to exactly that leaves the bot on the boundary and one rounding error
+ * from being wedged again. A couple of units of slack makes the escape stick.
+ */
+const WEDGE_ESCAPE_MARGIN = 3;
+/**
+ * How far apart two hunters' slots are kept, whatever the target's plate state.
+ *
+ * Two fully plated bodies rest at 48, which is the widest any pair can ever want, so
+ * this is that plus a little air. Deliberately NOT derived from the target's own
+ * contact gap: the stand-off breathes with its plating and this must not, or the
+ * queue tightens exactly when the crowd is biggest.
+ */
+const SLOT_CHORD = 62;
+/** Close enough to a slot to be standing in it. */
+const AI_SLOT_ARRIVAL = 6;
+/** Past this a bot is travelling toward a fight, not queueing at one. */
+const AI_SLOT_CLAIM_RANGE = 420;
+
 const NOISE_LOUDNESS = {
   dash: 0.8,
   impact: 1.0,
@@ -88,6 +180,13 @@ type InternalBot = DotBotEntity & {
   lastAim: Vec2;
   /** Velocity applied this tick (movement + knockback); combat reads this. */
   velocity: Vec2;
+  /**
+   * The movement half of `velocity`, without the knockback.
+   *
+   * The ram rule needs to know how hard a body is driving ITSELF, because a body
+   * wearing a 320 px/s shove is not a body attacking — see `ramSpeedToward`.
+   */
+  moveVelocity: Vec2;
   knockbackVel: Vec2;
   knockbackMs: number;
   /** Position at the start of the tick, for stair midline-crossing checks. */
@@ -99,11 +198,27 @@ type InternalBot = DotBotEntity & {
   aiWanderTarget: Vec2;
   aiRetargetMs: number;
   aiPath: Vec2[];
+  /** Where the current leg started, so a waypoint can be retired on progress
+   * along the leg rather than on proximity alone. See `waypointRetired`. */
+  aiPathLegStart: Vec2;
   aiPathTarget: Vec2;
   aiPathFloorId: string;
   aiRepathMs: number;
   aiPathProjected: boolean;
   aiAvoidTargets: Map<string, number>;
+  /** Consecutive ticks of asking to move and not moving. See `noteAiStall`. */
+  aiStallTicks: number;
+  /** Where the current stall window started measuring from. */
+  aiStallFrom: Vec2;
+  /**
+   * This body decomposed into convex primitives for `contactDistance`, rebuilt
+   * only when the pose it was built from changes. Every candidate pair reads it
+   * and there are O(n^2) of those, so building it per read cost more than the
+   * contact test itself.
+   */
+  contactShape: ContactShape;
+  shapeFacing: number;
+  shapeSegments: number[];
   pleaCooldownMs: number;
   radarPingElapsedMs: number;
   activeSwap?: { bayIndex: BayIndex; holdIndex: number; progressMs: number };
@@ -314,6 +429,7 @@ export class DotBotSimulation {
       state,
       floorId,
       facing: 0,
+      moving: false,
       maxShields,
       shields: plateSum(shieldSegments),
       shieldSegments,
@@ -321,6 +437,7 @@ export class DotBotSimulation {
       hold: spawn.isAmbient ? [] : (spawn.hold ?? []).slice(0, this.config.holdSlots),
       carriedCount: 0,
       searched: false,
+      pleaded: false,
       radarActiveMs: 0,
       radarPings: [],
       radarPingElapsedMs: 0,
@@ -334,6 +451,7 @@ export class DotBotSimulation {
       desiredMove: zeroVec(),
       lastAim: { x: 1, y: 0 },
       velocity: zeroVec(),
+      moveVelocity: zeroVec(),
       knockbackVel: zeroVec(),
       knockbackMs: 0,
       prevPosition: { ...spawn.position },
@@ -342,11 +460,19 @@ export class DotBotSimulation {
       aiWanderTarget: { ...spawn.position },
       aiRetargetMs: 0,
       aiPath: [],
+      aiPathLegStart: { ...spawn.position },
       aiPathTarget: { ...spawn.position },
       aiPathFloorId: floorId,
       aiRepathMs: 0,
       aiPathProjected: false,
       aiAvoidTargets: new Map(),
+      aiStallTicks: 0,
+      aiStallFrom: { ...spawn.position },
+      contactShape: makeContactShape(maxShields),
+      // NaN, so the first read always builds rather than trusting a zero that
+      // happens to match a bot facing due east.
+      shapeFacing: Number.NaN,
+      shapeSegments: [],
       pleaCooldownMs: 0,
     };
 
@@ -661,6 +787,22 @@ export class DotBotSimulation {
   private updateHumanIntents(): void {
     for (const bot of this.bots.values()) {
       const controller = this.controllers.get(bot.id);
+      /**
+       * Anyone on the floor who is not a player calls for help on their own, and keeps
+       * calling.
+       *
+       * Ahead of the controller checks below on purpose. Without it the recruit rule is
+       * dead in solo: being picked up by a rival is gated on having pleaded, only a
+       * human could plea, and every rival in a solo run is an AI. `frozen` gets it too
+       * — that flag means "does not move", and a downed body does not move anyway.
+       *
+       * A player still pleas deliberately, on the key, because for them it is a
+       * decision with a cooldown and a button. For everyone else it is what a body on
+       * the floor would obviously do, and the cooldown is what stops it being a siren.
+       */
+      if (controller !== "human" && bot.state === "downed" && !bot.isAmbient && bot.pleaCooldownMs <= 0) {
+        this.pleaFor(bot);
+      }
       if (controller === "frozen") {
         bot.desiredMove = zeroVec();
         continue;
@@ -672,8 +814,7 @@ export class DotBotSimulation {
       if (bot.state !== "alive") {
         const input = this.inputs.get(bot.id);
         if (bot.state === "downed" && input?.plea && !bot.isAmbient && bot.pleaCooldownMs <= 0) {
-          bot.pleaCooldownMs = this.config.pleaCooldownMs;
-          this.events.push({ type: "plea", botId: bot.id, squadId: bot.squadId, position: { ...bot.position }, floorId: bot.floorId });
+          this.pleaFor(bot);
         }
         if (input?.dash || input?.useBay !== undefined || input?.swapBay || input?.plea) {
           this.inputs.set(bot.id, { move: zeroVec(), dash: false, plea: false });
@@ -820,14 +961,36 @@ export class DotBotSimulation {
     this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation);
 
     if (armourHit.core) {
-      target.shieldSegments = platesForCount(target.maxShields, 0);
-      target.shields = 0;
-      target.state = "downed";
-      target.dashActiveMs = 0;
-      target.velocity = zeroVec();
-      target.knockbackMs = 0;
-      this.events.push({ type: "downed", botId: target.id, byBotId: mine.placedByBotId });
+      this.putBotDown(target, mine.placedByBotId);
     }
+  }
+
+  /**
+   * One way for a body to go down, because there were two and they disagreed.
+   *
+   * A mine cleared the plate array; a dash left it exactly as it was. Nothing in the
+   * simulation reads a downed bot's plates — combat, separation and contact all skip
+   * anything that is not alive, and `reviveBot` writes a fresh array of its own — so
+   * the difference was invisible until the HUD, which renders `shieldSegments`
+   * straight. Play reported it: "when I'm downed, the legend still shows that I have
+   * one shield, despite the downed status."
+   *
+   * Clearing is the right answer of the two. Going down through a bare arc while
+   * still holding good plating is exactly what the core rule is for — the closest
+   * thing this game has to a headshot — but those plates stop existing the moment
+   * you are on the floor, and a bank that still shows them is telling the player
+   * they have protection they cannot use.
+   */
+  private putBotDown(target: InternalBot, byBotId: string): void {
+    // A plea belongs to the down it was made in.
+    target.pleaded = false;
+    target.shieldSegments = platesForCount(target.maxShields, 0);
+    target.shields = 0;
+    target.state = "downed";
+    target.dashActiveMs = 0;
+    target.velocity = zeroVec();
+    target.knockbackMs = 0;
+    this.events.push({ type: "downed", botId: target.id, byBotId });
   }
 
   private updateBotAi(): void {
@@ -837,6 +1000,16 @@ export class DotBotSimulation {
       }
 
       const objective = this.pickBotTarget(bot);
+      if (this.noteAiStall(bot, objective)) {
+        // Blacklisted this tick: the objective it has been leaning on is gone, so
+        // re-decide rather than spend one more tick walking into the same body.
+        const replacement = this.pickBotTarget(bot);
+        const routed = this.routeAiTarget(bot, replacement);
+        bot.desiredMove = this.steerBotAlongPath(bot, routed);
+        if (length(bot.desiredMove) > 0.05) bot.lastAim = bot.desiredMove;
+        this.tryAiDash(bot, replacement);
+        continue;
+      }
       const routedTarget = this.routeAiTarget(bot, objective);
       const desired = this.steerBotAlongPath(bot, routedTarget);
       bot.desiredMove = desired;
@@ -845,12 +1018,266 @@ export class DotBotSimulation {
         bot.lastAim = desired;
       }
 
-      this.tryAiDash(bot, objective, desired);
+      this.tryAiDash(bot, objective);
     }
   }
 
   private sameArena(bot: InternalBot, floorId: string, position: Vec2): boolean {
     return contextKey(this.map, bot.floorId, bot.position) === contextKey(this.map, floorId, position);
+  }
+
+  /**
+   * A bot that asks to move and goes nowhere eventually stops asking.
+   *
+   * Nothing in the AI knows another bot exists: the navigator plans on static
+   * geometry only, and steering is a raw vector at the goal with no repulsion term.
+   * So N bots after one objective are commanded at one identical point every tick
+   * and separation is the only thing that knows two bodies cannot share space.
+   * Measured in a corner: three bots asking for 27, 178 and 400 units of travel and
+   * receiving exactly 0.0000, for 299 consecutive ticks, while the solver held every
+   * pair correctly at its own rest distance. Not a physics failure — the same
+   * scenario freezes identically with plain circular bodies and a LARGER unmet
+   * demand. A legitimate traffic jam that nobody was willing to leave.
+   *
+   * So leave it. Ask for movement for a second and a half, get less than a quarter
+   * of a body, and the objective goes on the bot's own avoid list — the same list an
+   * unreachable objective already uses. It picks something else, walks away, and the
+   * jam drains from the back. Per-bot and time-limited, so a jam of five clears as
+   * five separate decisions rather than one stampede.
+   *
+   * Returns true if the objective was just dropped, so the caller re-decides
+   * instead of spending this tick walking into the same body.
+   */
+  private noteAiStall(bot: InternalBot, objective: AiTarget): boolean {
+    /**
+     * Two ways to be stuck, and the second one is the quieter of the two.
+     *
+     * The obvious one is asking to travel and not travelling — a body in the way.
+     * The other is a bot that has somewhere to be and asks for NOTHING, which is
+     * what `steerToward` returns whenever it thinks it has arrived. Measured on the
+     * real map: a bot on the clinic's first floor hunting a player 595 units away
+     * across a floor boundary, producing exactly zero thrust, indefinitely, because
+     * the last waypoint its own floor could offer was already inside the stop
+     * distance for a target on the other side of it. `path.length === 0` has a
+     * fallback; a path that ends short does not, and it looked identical from the
+     * outside: a bot standing in a room doing nothing.
+     *
+     * So the test is arrival, not thrust. Either the bot is where it meant to be, or
+     * it is going somewhere. Standing still short of your own objective is the
+     * failure, however the AI arrived at it.
+     */
+    const arrived = distance(bot.position, objective.position) <= objective.stopDistance + AI_STALL_PROGRESS_PX;
+    const travelling = length(bot.desiredMove) > AI_STALL_REQUEST
+      && distance(bot.position, bot.aiStallFrom) > AI_STALL_PROGRESS_PX;
+    // A channel is a deliberate stand-still, not a stall.
+    const channelling = this.controllers.get(bot.id) === "frozen" || bot.activeSwap !== undefined;
+    if (arrived || travelling || channelling) {
+      bot.aiStallTicks = 0;
+      bot.aiStallFrom = { ...bot.position };
+      return false;
+    }
+    bot.aiStallTicks += 1;
+    if (bot.aiStallTicks < AI_STALL_TICKS) {
+      return false;
+    }
+    bot.aiStallTicks = 0;
+    bot.aiStallFrom = { ...bot.position };
+    bot.aiPath = [];
+    if (objective.targetId === undefined) {
+      // Wander has no target to avoid; the destination itself is the problem.
+      bot.aiWanderTarget = this.pickWanderTarget(bot);
+      return true;
+    }
+    bot.aiAvoidTargets.set(objective.targetId, AI_STALL_AVOID_MS + this.nextRandom() * AI_STALL_AVOID_MS);
+    return true;
+  }
+
+  /**
+   * Where to stand while hunting: a slot on a ring around the target, not its centre.
+   *
+   * There is no bot-vs-bot avoidance anywhere in this game. The navigator plans on
+   * static geometry only — no bot position ever enters it — and `steerToward` is a
+   * raw vector at the goal with no repulsion term. So N hunters locked on one target
+   * were all commanded at the *same world point* every tick, and the separation pass
+   * was the only thing on the whole tick that knew two bodies cannot share space.
+   * That is the pile-up play kept reporting.
+   *
+   * A slot fixes it at the source: each hunter is sent somewhere different. The
+   * assignment has to be a pure function of the snapshot, or two bots reach different
+   * conclusions and swap slots every tick — so a hunter's slot is its RANK BY ID
+   * among everyone hunting the same target, which every bot computes identically from
+   * state alone with nothing written down.
+   *
+   * The ring breathes with the target's plate state, because `contactGap` does: a
+   * hunter stands at 50 off a fully plated bot and 35.6 off a bare core, so a swarm
+   * visibly closes in on a damaged side. What must NOT breathe is the spacing between
+   * hunters — that is a queueing distance, not a contact one — so the ring is widened
+   * whenever the slots would otherwise sit closer together than two full bodies.
+   */
+  private huntTarget(bot: InternalBot, target: InternalBot): AiTarget {
+    const standOff = this.huntStopDistance(bot, target);
+    const claimants = this.huntClaimants(target);
+    const index = claimants.indexOf(bot.id);
+    const slots = claimants.length;
+    /**
+     * A lone hunter walks straight at its target, exactly as before.
+     *
+     * Slotting it too was the first version, and it turned every duel into an orbit:
+     * the bot was sent to a fixed bearing off the target rather than at it, so a
+     * player walking in was chased by a bot sidestepping to keep its assigned angle.
+     * Measured, it settled 92 units away instead of coming to rest on contact at
+     * 35.6. A slot exists to keep hunters off each other, so with nobody to avoid
+     * there is nothing for it to do.
+     */
+    if (slots < 2 || index < 0) {
+      return makeAiTarget(target.position, target.floorId, standOff, bot.radius * 4.5, "hunt", target.id);
+    }
+    /**
+     * Chord between adjacent slots is `2 * r * sin(pi / slots)`, so the radius that
+     * keeps them a body apart is `SLOT_CHORD / (2 * sin(pi / slots))`. At four
+     * hunters the contact ring is already wide enough; past six it is not, and
+     * without this they would be assigned slots inside each other.
+     */
+    const spread = slots > 1 ? SLOT_CHORD / (2 * Math.sin(Math.PI / slots)) : 0;
+    const ring = Math.max(standOff, spread);
+    // Anchored to the target's own identity rather than to its facing, or the whole
+    // ring would spin every time it turned and drag every hunter around with it.
+    const base = (stableHash(target.id) % 360) * (Math.PI / 180);
+    const bearing = base + (this.slotFor(bot, target, claimants) * Math.PI * 2) / slots;
+    const slot = {
+      x: target.position.x + Math.cos(bearing) * ring,
+      y: target.position.y + Math.sin(bearing) * ring,
+    };
+    /**
+     * A slot is a preference, not a demand. Inside a building, or against a target
+     * backed into a corner, most of the ring is wall — so a slot the navigator cannot
+     * reach falls back to the old behaviour of walking at the target, which is worse
+     * for crowding and still correct.
+     */
+    const reachable = findNavigationPath(this.map, bot.floorId, bot.position, slot, bot.radius).length > 0;
+    return reachable
+      ? makeAiTarget(slot, target.floorId, AI_SLOT_ARRIVAL, bot.radius * 4.5, "hunt", target.id)
+      : makeAiTarget(target.position, target.floorId, standOff, bot.radius * 4.5, "hunt", target.id);
+  }
+
+  /**
+   * Which slot on the ring is this bot's.
+   *
+   * Rank by id was the first answer and it was measurably worse than it looks: it
+   * hands out bearings with no regard for where anybody already is, so hunters cross
+   * the ring — and each other — to reach an arbitrary angle. Measured over 900 ticks
+   * with five hunters, that doubled the ticks with any pair in contact, 11.4% to
+   * 25.2%, purely in shallow traffic on the way to a slot.
+   *
+   * So slots go to whoever is already nearest them: claimants in id order each take
+   * the closest unclaimed bearing. Greedy rather than optimal, which is fine — the
+   * property that matters is that every bot is somewhere different, not that the
+   * assignment minimises total travel. Id order keeps it deterministic, so the server
+   * and any observer derive the same answer from the same snapshot.
+   */
+  private slotFor(bot: InternalBot, target: InternalBot, claimants: string[]): number {
+    const slots = claimants.length;
+    const base = (stableHash(target.id) % 360) * (Math.PI / 180);
+    const taken = new Array<boolean>(slots).fill(false);
+    let mine = 0;
+    for (const id of claimants) {
+      const claimant = this.bots.get(id);
+      const bearing = claimant
+        ? Math.atan2(claimant.position.y - target.position.y, claimant.position.x - target.position.x)
+        : base;
+      let best = -1;
+      let bestOff = Infinity;
+      for (let slot = 0; slot < slots; slot += 1) {
+        if (taken[slot]) continue;
+        const off = Math.abs(normalizeAngle(bearing - (base + (slot * Math.PI * 2) / slots)));
+        if (off < bestOff) {
+          bestOff = off;
+          best = slot;
+        }
+      }
+      if (best < 0) best = 0;
+      taken[best] = true;
+      if (id === bot.id) mine = best;
+    }
+    return mine;
+  }
+
+  /**
+   * Everyone with a claim on this target, by id, so slot ranks agree everywhere.
+   *
+   * Derived from hostility and proximity rather than from anybody's current
+   * objective, which would be circular: the objective is what the slot is being
+   * chosen for.
+   */
+  private huntClaimants(target: InternalBot): string[] {
+    const claimants: string[] = [];
+    for (const bot of this.bots.values()) {
+      if (bot.state !== "alive" || bot.id === target.id) continue;
+      if (this.controllers.get(bot.id) !== "ai") continue;
+      if (bot.floorId !== target.floorId || areFriendly(bot, target)) continue;
+      if (distance(bot.position, target.position) > AI_SLOT_CLAIM_RANGE) continue;
+      claimants.push(bot.id);
+    }
+    return claimants.sort((left, right) => left.localeCompare(right));
+  }
+
+  /**
+   * Whether another bot has a better claim on this body than `bot` does.
+   *
+   * A downed body is a channel, and a channel is for one bot. Sending the whole
+   * squad meant they pressed inward on a ring none of them could share: measured
+   * over 1800 ticks, two bots settled 24.0 units from the body still commanded at
+   * 37.8 px/s, three at 27.9 and 48.5 px/s, four at 33.9 and 64.8 — never settling,
+   * because four plated bodies need 33.94 units of spacing around a corpse and the
+   * range that lets you channel it tops out at 37.2. Six cannot be seated at any
+   * distance at all.
+   *
+   * Nearest wins, id breaks a tie, so every bot in the squad reaches the same
+   * conclusion from the same snapshot without anybody writing a claim down. The
+   * losers fall through to the next objective in their own list, which is what they
+   * should have been doing.
+   */
+  /**
+   * Ask to be picked up. One path, so a human's plea and an AI's are the same event.
+   *
+   * `pleaded` is standing consent rather than a momentary one: having asked once, a
+   * rival may carry you until you are back on your feet or back on the floor. A
+   * one-tick flag would mean the recruit had to land inside the same tick as the
+   * shout, which is not a thing a player can aim at.
+   */
+  private pleaFor(bot: InternalBot): void {
+    bot.pleaCooldownMs = this.config.pleaCooldownMs;
+    bot.pleaded = true;
+    this.events.push({ type: "plea", botId: bot.id, squadId: bot.squadId, position: { ...bot.position }, floorId: bot.floorId });
+  }
+
+  /** `canReviveBody` against this simulation's live squad sizes. */
+  private canRecruit(actor: InternalBot, body: InternalBot): boolean {
+    return canReviveBody(actor, body, this.squadSize(actor.squadId), this.config.maxSquadSize);
+  }
+
+  /** How many bodies belong to this squad, standing or down. */
+  private squadSize(squadId: string): number {
+    let count = 0;
+    for (const bot of this.bots.values()) {
+      // A downed squadmate still counts: they are coming back, and the slot is theirs.
+      if (bot.squadId === squadId) count += 1;
+    }
+    return count;
+  }
+
+  private outclaimed(bot: InternalBot, body: InternalBot): boolean {
+    const mine = distance(bot.position, body.position);
+    for (const other of this.bots.values()) {
+      if (other.id === bot.id || other.state !== "alive") continue;
+      if (this.controllers.get(other.id) !== "ai") continue;
+      if (other.floorId !== bot.floorId) continue;
+      if (other.aiAvoidTargets.has(body.id)) continue;
+      if (areFriendly(bot, body) !== areFriendly(other, body)) continue;
+      const theirs = distance(other.position, body.position);
+      if (theirs < mine || (theirs === mine && other.id < bot.id)) return true;
+    }
+    return false;
   }
 
   private pickBotTarget(bot: InternalBot): AiTarget {
@@ -867,12 +1294,13 @@ export class DotBotSimulation {
 
     const friendlyDowned = rank(
       [...this.bots.values()].filter(
-        (target) => target.id !== bot.id && target.state === "downed" && areFriendly(bot, target) && localOrVertical(target) && available(target),
+        (target) => target.id !== bot.id && target.state === "downed" && areFriendly(bot, target) && localOrVertical(target) && available(target)
+          && !this.outclaimed(bot, target),
       ),
     );
 
     if (friendlyDowned && this.strategicDistance(bot, friendlyDowned) < 760) {
-      return makeAiTarget(friendlyDowned.position, friendlyDowned.floorId, bot.radius * 0.42, bot.radius * 3, "revive", friendlyDowned.id);
+      return makeAiTarget(friendlyDowned.position, friendlyDowned.floorId, bot.radius * BODY_CHANNEL_STAND_OFF, bot.radius * 3, "revive", friendlyDowned.id);
     }
 
     const shouldFlee = carriedCount(bot) > 0 && bot.shields <= 1;
@@ -887,12 +1315,13 @@ export class DotBotSimulation {
 
     const hostileDowned = rank(
       [...this.bots.values()].filter(
-        (target) => target.id !== bot.id && target.state === "downed" && !areFriendly(bot, target) && localOrVertical(target) && available(target),
+        (target) => target.id !== bot.id && target.state === "downed" && !areFriendly(bot, target) && localOrVertical(target) && available(target)
+          && !this.outclaimed(bot, target),
       ),
     );
 
     if (hostileDowned && this.strategicDistance(bot, hostileDowned) < 760) {
-      return makeAiTarget(hostileDowned.position, hostileDowned.floorId, bot.radius * 0.42, bot.radius * 3, "strip", hostileDowned.id);
+      return makeAiTarget(hostileDowned.position, hostileDowned.floorId, bot.radius * BODY_CHANNEL_STAND_OFF, bot.radius * 3, "strip", hostileDowned.id);
     }
 
     const visibleHostile = rank(
@@ -915,7 +1344,7 @@ export class DotBotSimulation {
     );
 
     if (visibleHostile) {
-      return makeAiTarget(visibleHostile.position, visibleHostile.floorId, bot.radius * 1.85, bot.radius * 4.5, "hunt", visibleHostile.id);
+      return this.huntTarget(bot, visibleHostile);
     }
 
     const dot = rank(
@@ -944,7 +1373,7 @@ export class DotBotSimulation {
     );
 
     if (strategicHostile && this.strategicDistance(bot, strategicHostile) < 900) {
-      return makeAiTarget(strategicHostile.position, strategicHostile.floorId, bot.radius * 1.85, bot.radius * 4.5, "hunt", strategicHostile.id);
+      return this.huntTarget(bot, strategicHostile);
     }
 
     const heard = [...this.noises]
@@ -996,7 +1425,7 @@ export class DotBotSimulation {
         ))
       .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
     if (hostile) {
-      return makeAiTarget(hostile.position, hostile.floorId, bot.radius * 1.85, bot.radius * 4.5, "hunt", hostile.id);
+      return this.huntTarget(bot, hostile);
     }
 
     const heard = [...this.noises].reverse().find((noise) =>
@@ -1007,7 +1436,7 @@ export class DotBotSimulation {
       .filter((target) => target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && available(target))
       .sort((a, b) => this.strategicDistance(bot, a) - this.strategicDistance(bot, b))[0];
     if (strategic && this.strategicDistance(bot, strategic) < 900) {
-      return makeAiTarget(strategic.position, strategic.floorId, bot.radius * 1.85, bot.radius * 4.5, "hunt", strategic.id);
+      return this.huntTarget(bot, strategic);
     }
 
     if (bot.aiRetargetMs <= 0 || distance(bot.position, bot.aiWanderTarget) < 48) {
@@ -1211,15 +1640,18 @@ export class DotBotSimulation {
           bot.aiRetargetMs = 0;
         }
 
-        // An empty A* result is not permission to steer through geometry.
-        return zeroVec();
+        // An empty A* result is not permission to steer through geometry — but it
+        // may mean the bot is standing somewhere the planner will not plan FROM, and
+        // then no objective will ever produce a path and it stands there forever.
+        return this.escapeFromWedge(bot);
       }
 
       bot.aiPath = path.length > 1 ? path.slice(1) : [];
+      bot.aiPathLegStart = { ...(path[0] ?? bot.position) };
     }
 
-    while (bot.aiPath.length > 1 && distance(bot.position, bot.aiPath[0]) < bot.radius * 0.8) {
-      bot.aiPath.shift();
+    while (bot.aiPath.length > 1 && waypointRetired(bot.position, bot.aiPathLegStart, bot.aiPath[0], bot.radius * 0.8)) {
+      bot.aiPathLegStart = bot.aiPath.shift()!;
     }
 
     const waypoint = bot.aiPath[0] ?? target.position;
@@ -1230,6 +1662,40 @@ export class DotBotSimulation {
         ? { ...target, position: waypoint, stopDistance: bot.aiPathProjected ? 1 : target.stopDistance }
         : { ...target, position: waypoint, stopDistance: 4, slowDistance: bot.radius * 2.5 },
     );
+  }
+
+  /**
+   * Where to walk when the navigator will not plan from where you are.
+   *
+   * `findNavigationPath` tests the START point for clearance, so a bot standing
+   * closer to scenery than its own radius gets an empty path to EVERYWHERE. Nothing
+   * downstream distinguishes that from "the goal is unreachable": the bot blacklists
+   * the objective, picks another, gets the same empty path, and works through its
+   * whole list. Reported from play as a squadmate that "just sits here at the start
+   * of the game and does nothing" — measured, it had blacklisted sixteen objectives
+   * including the player and had moved 0 units in thirty seconds.
+   *
+   * Three authored spawns were inside their own clearance (22.00, 20.00 and 10.00
+   * against a radius of 24) and `mapValidation.test.ts` now fails on that. This is
+   * the runtime half, because authoring is not the only way in: knockback,
+   * `placeBot`'s clamp against the sheet edge, revive placement and a separation
+   * shove into a corner can all put a body somewhere it could not have walked.
+   *
+   * Deterministic and cheap: pick the nearest surface, walk directly away from it. No
+   * path, no plan — this is the one situation where steering without a plan is
+   * correct, because the plan is what is unavailable. Once the bot has its clearance
+   * back the normal planner takes over on the next tick.
+   */
+  private escapeFromWedge(bot: InternalBot): Vec2 {
+    const solids = this.solidsForFloor(bot.floorId);
+    const clear = resolveAgainstSolids(bot.position, bot.radius + WEDGE_ESCAPE_MARGIN, solids);
+    const away = subtract(clear, bot.position);
+    if (length(away) > 0.001) {
+      return normalize(away);
+    }
+    // Nothing pushed back, so the block is not local geometry — the goal really is
+    // unreachable. Standing still is right, and the stall rule will re-decide.
+    return zeroVec();
   }
 
   /**
@@ -1283,8 +1749,19 @@ export class DotBotSimulation {
     return null;
   }
 
-  private tryAiDash(bot: InternalBot, target: AiTarget, desired: Vec2): void {
-    if (target.intent !== "hunt" || !target.targetId || bot.dashCooldownMs > 0 || bot.dashActiveMs > 0 || length(desired) < 0.01) {
+  /**
+   * A hunter that has arrived attacks.
+   *
+   * This used to bail on `length(desired) < 0.01` and aim the dash down the
+   * steering vector, which meant a bot that had reached its stop distance — the
+   * entire point of hunting something — had no aim left and never swung. The
+   * whole approach was a bot walking to a spot and then standing there. A dash
+   * needs a direction, not a leftover, and the direction is the target: the gate
+   * below already requires clear line of sight to it, so aiming straight at it
+   * cannot fire into geometry.
+   */
+  private tryAiDash(bot: InternalBot, target: AiTarget): void {
+    if (target.intent !== "hunt" || !target.targetId || bot.dashCooldownMs > 0 || bot.dashActiveMs > 0) {
       return;
     }
 
@@ -1294,8 +1771,28 @@ export class DotBotSimulation {
     }
 
     const targetDistance = distance(bot.position, hostile.position);
+    /**
+     * Don't spend a dash from inside contact — there is nothing left to close.
+     *
+     * This was a flat `radius * 1.9` = 45.6, which outranged contact against
+     * anything but a fully plated target: a hunter holding station 35.6 from a
+     * stripped core (contact 33.6) was permanently below the gate and never threw
+     * the dash its whole plan was built around. So the gate was moved onto the same
+     * geometry as the stop distance, and that was worse in a way that took a
+     * playtest to find — bare `< contactGap` is the SAME NUMBER the separation pass
+     * rests the pair at, and separation converges on it from below. Measured on the
+     * real map: two hostiles at rest 48.0 apart with a contact gap of 48.0, and
+     * `d - gap` of -7.105e-15. The gate fired on a rounding error, forever, on
+     * every pair that ever reached contact — and because the steer had also
+     * arrived, thrust was zero too. Two bots nose to nose, dash ready, doing
+     * nothing, which is exactly what play reported.
+     *
+     * So it reads the hit test's own forgiveness instead. The AI now throws the
+     * dash on precisely the poses `attackConnects` would call contact, and no
+     * epsilon sits between the two.
+     */
     if (
-      targetDistance < bot.radius * 1.9 ||
+      targetDistance < this.contactGap(bot, hostile, hostile.position) - CONTACT_FORGIVENESS_PX ||
       targetDistance > 290 ||
       !hasLineOfSight(
         this.map,
@@ -1308,7 +1805,11 @@ export class DotBotSimulation {
       return;
     }
 
-    bot.lastAim = normalize(desired);
+    const toHostile = normalize(subtract(hostile.position, bot.position));
+    if (length(toHostile) < 0.5) {
+      return;
+    }
+    bot.lastAim = toHostile;
     bot.dashActiveMs = this.config.dashDurationMs;
     bot.dashCooldownMs = this.config.dashCooldownMs + 250 + this.nextRandom() * 450;
     this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
@@ -1340,6 +1841,7 @@ export class DotBotSimulation {
       if (bot.state !== "alive") {
         // Corpses are immovable by construction: no integration, no forces.
         bot.velocity = zeroVec();
+        bot.moveVelocity = zeroVec();
         bot.knockbackMs = 0;
         continue;
       }
@@ -1368,6 +1870,7 @@ export class DotBotSimulation {
        */
       const direction = frozen ? zeroVec() : bot.dashActiveMs > 0 ? bot.lastAim : bot.desiredMove;
       let velocity = scale(direction, speed);
+      bot.moveVelocity = velocity;
 
       // Bounded, decaying knockback replaces the old solver shove.
       if (bot.knockbackMs > 0) {
@@ -1407,24 +1910,87 @@ export class DotBotSimulation {
         if (a.floorId !== b.floorId) {
           continue;
         }
-        const aMoving = length(a.velocity) > 5;
-        const bMoving = length(b.velocity) > 5;
+        const aMoving = length(a.velocity) > MOVING_SPEED;
+        const bMoving = length(b.velocity) > MOVING_SPEED;
         const yieldA = aMoving === bMoving ? 0.5 : aMoving ? 1 : 0;
         const yieldB = aMoving === bMoving ? 0.5 : bMoving ? 1 : 0;
-        const pushA = separationPush(a.position, a.radius, b.position, b.radius, maxPushPx, yieldA);
-        const pushB = separationPush(b.position, b.radius, a.position, a.radius, maxPushPx, yieldB);
+        /**
+         * Bodies push apart at the distance their real silhouettes touch, so a bot
+         * with a plate missing is genuinely smaller on that side and another body
+         * comes to rest against its bare core. A bot is not a circle.
+         *
+         * Separating at the full radius instead leaves what play reported as "an
+         * invisible barrier around the core": you stop 48 units from the centre of
+         * a bot whose core surface is at 9.6, with thirty-odd units of nothing in
+         * between.
+         *
+         * Separating at the SUM OF TWO RAY REACHES was the next attempt and it is
+         * what welded bodies together. That predicate is necessary and not
+         * sufficient — see `contactGap` — so the solver had a stable, force-free,
+         * OVERLAPPING resting place, and once a pair found it nothing on the tick
+         * ever pushed them apart again.
+         *
+         * The distance moves as either bot turns, which is real and is bounded:
+         * `contactDistance` is always inside [core+core, radius+radius], so no turn
+         * of any size can change it by more than 28.8 units, and the pair closes
+         * that at 10 units a tick. Worst case is three ticks of jostling while
+         * somebody swings a good plate round to meet you. Which is what turning
+         * into a threat ought to feel like.
+         *
+         * *World* collision deliberately does not do this: a body that shrinks
+         * against static geometry can enter gaps the navigator plans around at full
+         * radius and then has no route out. Bots have no such planner between them.
+         */
+        const span = a.radius + b.radius;
+        if (Math.hypot(b.position.x - a.position.x, b.position.y - a.position.y) >= span) {
+          // No pose of any two bodies requires more than both full radii, so this
+          // retires the overwhelming majority of pairs before any geometry runs.
+          continue;
+        }
+        const awayFromB = separationAxis(a.position, b.position, coincidentSeparationAxis(a.id, b.id));
+        const awayFromA = scale(awayFromB, -1);
+        const need = this.contactGapAlong(a, b, -awayFromB.x, -awayFromB.y);
+        const pushA = separationPush(a.position, b.position, need, maxPushPx, yieldA, awayFromB);
+        const pushB = separationPush(b.position, a.position, need, maxPushPx, yieldB, awayFromA);
         if (pushA.x === 0 && pushA.y === 0 && pushB.x === 0 && pushB.y === 0) {
           continue;
         }
+        /**
+         * A wall can eat all or part of a yielder's correction, and the yield
+         * split means nobody else was going to try. Measured: 28.0 px of
+         * PERMANENT interpenetration against a flat wall, 31.03 px in a 60x60
+         * dead-end pocket, both unchanged after 30 ticks — the mover's push was
+         * the wall normal, `resolveAgainstSolids` cancelled 100% of it, and the
+         * anchor's yield of 0 meant the pair simply stayed welded.
+         *
+         * So measure what the world actually delivered and hand the shortfall to
+         * the counterpart in the same tick. Not a constraint solver — one relay
+         * each way, and each body still capped at `maxPushPx` for the tick, so a
+         * body pinned on both sides stays pinned instead of squirting out.
+         */
         const solids = this.solidsForFloor(a.floorId);
-        if (pushA.x !== 0 || pushA.y !== 0) {
-          this.placeBot(a, resolveAgainstSolids(add(a.position, pushA), a.radius, solids));
-        }
-        if (pushB.x !== 0 || pushB.y !== 0) {
-          this.placeBot(b, resolveAgainstSolids(add(b.position, pushB), b.radius, solids));
+        const wantA = length(pushA);
+        const gotA = this.pushBotBy(a, pushA, awayFromB, solids);
+        const wantB = length(pushB);
+        const relayToB = Math.max(0, Math.min(wantA - gotA, maxPushPx - wantB));
+        const gotB = this.pushBotBy(b, add(pushB, scale(awayFromA, relayToB)), awayFromA, solids);
+        const relayToA = Math.max(0, Math.min(wantB + relayToB - gotB, maxPushPx - Math.max(gotA, 0)));
+        if (relayToA > 0) {
+          this.pushBotBy(a, scale(awayFromB, relayToA), awayFromB, solids);
         }
       }
     }
+  }
+
+  /** Move `bot` by `push` and report how much of it the world let through,
+   * measured along `axis`. Zero back means a wall took the whole thing. */
+  private pushBotBy(bot: InternalBot, push: Vec2, axis: Vec2, solids: SolidSource): number {
+    if (push.x === 0 && push.y === 0) {
+      return 0;
+    }
+    const before = bot.position;
+    this.placeBot(bot, resolveAgainstSolids(add(bot.position, push), bot.radius, solids));
+    return (bot.position.x - before.x) * axis.x + (bot.position.y - before.y) * axis.y;
   }
 
   /** Single write path for bot positions, clamped to the sheet. */
@@ -1505,7 +2071,91 @@ export class DotBotSimulation {
       return false;
     }
     const sweep = pointSegmentDistance(perceived.position, attacker.prevPosition, attacker.position);
-    return sweep - attacker.radius - victim.radius <= 4;
+    return sweep - this.contactGap(attacker, victim, perceived.position) <= CONTACT_FORGIVENESS_PX;
+  }
+
+  /**
+   * How close two bots have to be to touch, given which way each is facing and
+   * which plates each still has.
+   *
+   * Not `attacker.radius + victim.radius`. That circle is nowhere on either bot:
+   * the plates are drawn well inside it, so a dash "connected" while the two were
+   * still visibly apart, and a bot stripped of its plates was every bit as wide as
+   * one with all three. Both bots contribute their own reach along the line
+   * between them, so closing on a bare core means actually getting to the core.
+   */
+  /**
+   * How close a hunting bot has to get before its dash can land.
+   *
+   * A flat `radius * 1.85` was right while every bot was the same circle, then it
+   * became `min(radius * 1.85, gap)` = min(44.4, gap) when bodies stopped being
+   * circles. The clamp only ever bit at gap 48 — two live plates facing each
+   * other, the ordinary case — so a hunter was told to stand 3.6 units INSIDE the
+   * distance the separation solver holds. Measured: pinned there for 815 of 900
+   * ticks, creeping 0.1585 px/tick in and being shoved 0.1585 px/tick back out,
+   * forever. Worse than the jitter, that is 9.5 px/s of standing still, over the
+   * 5 px/s moving threshold, so a hunter parked on a target read as MOVING, yielded
+   * 1.0 to every other body, and could never become an anchor.
+   *
+   * The steer's "arrived" and the solver's "apart" have to be the same number.
+   * This is that number, plus a margin so float noise cannot flip the comparison.
+   */
+  private huntStopDistance(bot: InternalBot, target: InternalBot): number {
+    return this.contactGap(bot, target, target.position) + AI_CONTACT_MARGIN;
+  }
+
+  /**
+   * How far apart two bodies have to be, centre to centre, to be just touching
+   * along the line between them.
+   *
+   * The one number every consumer shares: the separation pass, the attack test,
+   * where a connecting dash stops, and how close a hunter is told to stand. They
+   * must agree or the game argues with itself — a steer that arrives inside the
+   * distance the solver holds is a permanent push-war, and a dash that stops at a
+   * distance the hit test never called contact is a ghost pass-through.
+   *
+   * NOT `contactReach(a, u) + contactReach(b, -u)`. That sum is what welded bodies
+   * together: it samples a single ray of a body that is a core disc with plate
+   * sectors bolted on, so it is blind to the plates either side of the notch it
+   * happens to be pointing down. 31% of poses satisfied it while the two bodies
+   * genuinely intersected. It survives here only as the seed — it is a valid lower
+   * bound, so it prunes most of the search.
+   */
+  private contactGap(a: InternalBot, b: InternalBot, bAt: Vec2): number {
+    const dx = bAt.x - a.position.x;
+    const dy = bAt.y - a.position.y;
+    const dist = Math.hypot(dx, dy);
+    return dist > 0.001
+      ? this.contactGapAlong(a, b, dx / dist, dy / dist)
+      : this.contactGapAlong(a, b, 1, 0);
+  }
+
+  /** The same distance along a direction the caller already has. Separation has
+   * one — including at coincident centres, where it is invented and both bodies
+   * have to be told the same story. */
+  private contactGapAlong(a: InternalBot, b: InternalBot, ux: number, uy: number): number {
+    const toB = Math.atan2(uy, ux);
+    const seed = contactReach(a.radius, a.facing, a.shieldSegments, toB)
+      + contactReach(b.radius, b.facing, b.shieldSegments, toB + Math.PI);
+    return contactDistance(this.shapeOf(a), this.shapeOf(b), ux, uy, seed);
+  }
+
+  /** This bot's convex decomposition, rebuilt only when its pose has moved on. */
+  private shapeOf(bot: InternalBot): ContactShape {
+    const segments = bot.shieldSegments;
+    let stale = bot.shapeFacing !== bot.facing || bot.shapeSegments.length !== segments.length;
+    for (let index = 0; !stale && index < segments.length; index += 1) {
+      stale = bot.shapeSegments[index] !== segments[index];
+    }
+    if (stale) {
+      buildContactShape(bot.contactShape, bot.radius, bot.facing, segments);
+      bot.shapeFacing = bot.facing;
+      bot.shapeSegments.length = segments.length;
+      for (let index = 0; index < segments.length; index += 1) {
+        bot.shapeSegments[index] = segments[index];
+      }
+    }
+    return bot.contactShape;
   }
 
   /**
@@ -1518,7 +2168,9 @@ export class DotBotSimulation {
   private stopDashAtContact(attacker: InternalBot, victim: InternalBot): void {
     attacker.dashActiveMs = 0;
     const target = this.perceivedTarget(attacker, victim).position;
-    const touching = attacker.radius + victim.radius;
+    // The same reach the hit test used, or a dash stops at a distance the contact
+    // test never agreed was contact.
+    const touching = this.contactGap(attacker, victim, target);
     const travel = subtract(attacker.position, attacker.prevPosition);
     const fromTarget = subtract(attacker.prevPosition, target);
     const travelLengthSquared = travel.x * travel.x + travel.y * travel.y;
@@ -1585,14 +2237,49 @@ export class DotBotSimulation {
           continue;
         }
 
+        /**
+         * The ram: a body driving itself into another at dash-class speed hurts it,
+         * even outside a dash window. Two conditions, and both had to be added.
+         *
+         * Reported twice from play: "this bot was just a core and he hit me, broke my
+         * shield, but died himself without me dashing at all." Instrumented, on the
+         * shipped map, with a human who keeps walking:
+         *
+         *   t1713  RAM player -> enemy-4  |vel| 550  knockMs 123  closing -550
+         *          targetPlates 000  << TARGET DIED
+         *
+         * The stripped attacker's dash connected and broke a plate. The hit knocked
+         * the player back at `knockbackSpeed` 320, and `bot.velocity` is movement PLUS
+         * knockback — so the player was carrying 230 + 320 = 550 with neither body
+         * dashing, still inside the four-unit contact band because a wall was taking
+         * the displacement, and this rule handed the faster body the hit. Against an
+         * attacker with nothing left, one hit anywhere is fatal. So the attacker died
+         * of the knockback it had itself caused, and the player never pressed a key.
+         *
+         * Hence: ram speed is the body's OWN movement, because wearing a shove is not
+         * attacking and knockback is meant to be bounded feedback rather than a
+         * weapon. And the rammer has to be CLOSING — knockback points straight away
+         * from whoever landed the hit, so the "rammer" was travelling backwards at
+         * 550. Every ram hit in that measurement had a negative closing speed.
+         *
+         * A first attempt at this was reverted for want of evidence, on a measurement
+         * taken where the human never moved — and a body standing still cannot reach
+         * 360 on knockback alone. Only a walker can. The scenario matters as much as
+         * the instrument.
+         */
         const gap = distance(a.position, b.position) - a.radius - b.radius;
-        if (gap > 4 || Math.max(aSpeed, bSpeed) < this.config.damageSpeed) {
+        if (gap > 4) {
+          continue;
+        }
+        const aRam = this.ramSpeedToward(a, b);
+        const bRam = this.ramSpeedToward(b, a);
+        if (Math.max(aRam, bRam) < this.config.damageSpeed) {
           continue;
         }
 
-        if (aSpeed > bSpeed + 20) {
+        if (aRam > bRam + 20) {
           this.damageBot(b, a);
-        } else if (bSpeed > aSpeed + 20) {
+        } else if (bRam > aRam + 20) {
           this.damageBot(a, b);
         } else {
           this.damageBot(a, b);
@@ -1600,6 +2287,22 @@ export class DotBotSimulation {
         }
       }
     }
+  }
+
+  /**
+   * How fast `bot` is driving itself INTO `other`, in px/s.
+   *
+   * Its own movement only — `moveVelocity`, not `velocity` — and only the component
+   * pointing at the other body. Zero if it is moving away, however fast it is going.
+   */
+  private ramSpeedToward(bot: InternalBot, other: InternalBot): number {
+    const dx = other.position.x - bot.position.x;
+    const dy = other.position.y - bot.position.y;
+    const away = Math.hypot(dx, dy);
+    if (away < 0.001) {
+      return length(bot.moveVelocity);
+    }
+    return Math.max(0, (bot.moveVelocity.x * dx + bot.moveVelocity.y * dy) / away);
   }
 
   /** Applies one hit; returns whether damage actually landed (false while
@@ -1638,11 +2341,7 @@ export class DotBotSimulation {
     if (armourHit.core) {
       // Losing every plate is not what puts a bot down — being hit where a plate
       // used to be is. A stripped bot can still run, still extract, still be saved.
-      target.state = "downed";
-      target.dashActiveMs = 0;
-      target.velocity = zeroVec();
-      target.knockbackMs = 0;
-      this.events.push({ type: "downed", botId: target.id, byBotId: source.id });
+      this.putBotDown(target, source.id);
       return true;
     }
 
@@ -1726,13 +2425,48 @@ export class DotBotSimulation {
       });
     const downedBots = [...this.bots.values()].filter((bot) => bot.state === "downed");
 
+    /**
+     * One body per pair of hands.
+     *
+     * This used to be decided the other way round — every downed body looked for
+     * anyone standing on it — so a bot straddling two bodies opened a channel on
+     * BOTH from one press. Play reported the consequence and read it as an overlap
+     * bug, which it was: "when I press F over top of these two downed bots, the
+     * search bar appears then disappears."
+     *
+     * It disappears because the overlay clears the verb whenever the body it is
+     * prompting for changes, which is right — otherwise one press of F latches and
+     * every body walked over afterwards searches itself. With two channels running,
+     * the overlay showed whichever coverage happened to sit first in the array, that
+     * was not the body the player had chosen, and the mismatch cancelled the verb one
+     * frame later.
+     *
+     * So an actor claims its NEAREST body in range, by the same centre distance the
+     * overlay sorts by, and covers only that one. Two agreeing rules instead of two
+     * disagreeing ones.
+     */
+    const claim = new Map<string, string>();
+    for (const bot of aliveBots) {
+      let nearest: InternalBot | null = null;
+      let nearestAway = Infinity;
+      for (const downed of downedBots) {
+        if (bot.id === downed.id || bot.floorId !== downed.floorId) continue;
+        if (!withinDownedCoverRange(bot.position, bot.radius, downed.position, downed.radius, this.config.coverCenterTolerance)) {
+          continue;
+        }
+        const away = distance(bot.position, downed.position);
+        // Ties break on id so the server and the overlay cannot disagree about which
+        // of two exactly-coincident bodies is "nearest".
+        if (away < nearestAway || (away === nearestAway && nearest !== null && downed.id < nearest.id)) {
+          nearest = downed;
+          nearestAway = away;
+        }
+      }
+      if (nearest) claim.set(bot.id, nearest.id);
+    }
+
     for (const downed of downedBots) {
-      const coveringBot = aliveBots.find(
-        (bot) =>
-          bot.id !== downed.id &&
-          bot.floorId === downed.floorId &&
-          withinDownedCoverRange(bot.position, bot.radius, downed.position, downed.radius, this.config.coverCenterTolerance),
-      );
+      const coveringBot = aliveBots.find((bot) => claim.get(bot.id) === downed.id);
       const coverageKey = `downed:${downed.id}`;
 
       if (!coveringBot) {
@@ -1744,6 +2478,12 @@ export class DotBotSimulation {
       if (areFriendly(coveringBot, downed)) {
         // A squadmate is here to pick you up. There is nothing to choose.
         kind = "revive";
+      } else if (this.inputs.get(coveringBot.id)?.downedVerb === "revive" && !this.canRecruit(coveringBot, downed)) {
+        // Asked to pick up a rival who did not plead, or whose squad is full. Refusing
+        // the channel here rather than at the end is what keeps the overlay honest —
+        // it reads the same predicate, so it never offers this in the first place.
+        this.coverages.delete(coverageKey);
+        continue;
       } else {
         const controller = this.controllers.get(coveringBot.id);
         // An AI standing over a body strips it and moves on. It cannot finish the
@@ -1877,6 +2617,27 @@ export class DotBotSimulation {
   }
 
   private reviveBot(target: InternalBot, reviver: InternalBot): void {
+    /**
+     * Picking up a rival who asked for it recruits them.
+     *
+     * Squads load in at three and the cap is four, so this is the only way a squad ever
+     * grows — and the only way a bot ever changes side. Gated on the plea by
+     * `canReviveBody`, which the overlay reads too: a squad you did not ask to join
+     * would be a capture, not a rescue.
+     *
+     * Changing `squadId` is the whole of it. `areFriendly` is squad equality, so
+     * friend-or-foe, no-friendly-fire, revive-versus-strip, squad vision and the AI's
+     * own target selection all follow from this line without knowing it happened.
+     */
+    if (!areFriendly(reviver, target)) {
+      const from = target.squadId;
+      target.squadId = reviver.squadId;
+      // Their objective was chosen as a rival's. It is not one any more.
+      target.aiPath = [];
+      target.aiAvoidTargets.clear();
+      this.events.push({ type: "recruited", botId: target.id, byBotId: reviver.id, fromSquadId: from, squadId: reviver.squadId });
+    }
+    target.pleaded = false;
     target.state = "alive";
     // Back on its feet, and closed back up: whatever is left is its own again.
     target.searched = false;
@@ -1981,6 +2742,9 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     state: bot.state,
     floorId: bot.floorId,
     facing: bot.facing,
+    // The same threshold `resolveBotSeparation` splits responsibility on, so the
+    // predictor is reading the server's own answer rather than re-deriving one.
+    moving: length(bot.velocity) > MOVING_SPEED,
     maxShields: bot.maxShields,
     shields: bot.shields,
     shieldSegments: [...bot.shieldSegments],
@@ -1988,6 +2752,7 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     hold: bot.hold.map((item) => ({ ...item })),
     carriedCount: carriedCount(bot),
     searched: bot.searched,
+    pleaded: bot.pleaded,
     radarActiveMs: bot.radarActiveMs,
     radarPings: bot.radarPings.map((ping) => ({ ...ping })),
     dashOverchargeCharges: bot.dashOverchargeCharges,
@@ -2025,6 +2790,36 @@ function makeAiTarget(
     projectionAllowed: intent === "loot" || intent === "revive" || intent === "strip",
     targetId,
   };
+}
+
+/**
+ * Is this leg of the path finished?
+ *
+ * Proximity alone was the whole rule, at `radius * 0.8` = 19.20, and 19.20 is
+ * exactly the smallest centre distance any two bodies can reach (bare core
+ * against bare core) — and 19.20 is not < 19.20. Every other pairing is worse:
+ * 33.60 with one plate between them, 48.00 with two. So a bot could NEVER retire
+ * a waypoint another bot was standing on, and `findNavigationPath` plans on
+ * static geometry only, so the repath handed back the identical blocked
+ * waypoint. Measured: a mover stalled 24.000 px short of its waypoint, pressing
+ * 1.0 px/tick for 900 ticks against a bot that never moved, and never retired.
+ *
+ * Progress along the leg is the honest test. Once the bot is past the plane
+ * through the waypoint perpendicular to the leg it walked, that leg is done
+ * however far to the side it ended up. Proximity stays as the OR: it is the right
+ * answer for the last leg and for a tight corner the bot rounds early.
+ */
+export function waypointRetired(position: Vec2, legStart: Vec2, waypoint: Vec2, retireRadius: number): boolean {
+  if (distance(position, waypoint) < retireRadius) {
+    return true;
+  }
+  const leg = subtract(waypoint, legStart);
+  const legLengthSquared = leg.x * leg.x + leg.y * leg.y;
+  if (legLengthSquared < 0.000001) {
+    return true;
+  }
+  const travelled = subtract(position, legStart);
+  return travelled.x * leg.x + travelled.y * leg.y >= legLengthSquared;
 }
 
 function steerToward(position: Vec2, target: AiTarget): Vec2 {

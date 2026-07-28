@@ -5,9 +5,9 @@ import { capRemoteRecovery, fastForwardCombatState, sampleTimeline } from "./int
 function bot(id: string, x: number): DotBotEntity {
   return {
     id, name: id, squadId: "alpha", isAmbient: false, color: "#fff", state: "alive",
-    position: { x, y: 100 }, radius: 24, floorId: "outdoor", facing: 0,
+    position: { x, y: 100 }, radius: 24, floorId: "outdoor", facing: 0, moving: false,
     maxShields: 3, shields: 3, shieldSegments: [1, 1, 1], bays: [null, null, null, null],
-    hold: [], carriedCount: 0, searched: false, radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0,
+    hold: [], carriedCount: 0, searched: false, pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0,
     incognitoMs: 0, dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
   };
 }

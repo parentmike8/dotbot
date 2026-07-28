@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     const authoritative: MirrorState = {
       position: { x: own.p[0], y: own.p[1] },
       facing: own.f ?? 0,
-      dashCooldownMs: own.d?.[0] ?? 0,
+          dashCooldownMs: own.d?.[0] ?? 0,
       dashActiveMs: own.d?.[1] ?? 0,
     };
     if (!state) {

@@ -150,6 +150,8 @@ export type SimEvent =
   /** Items actually left this body. One event per take, `items` is what moved. */
   | { type: "looted"; botId: string; byBotId: string; items: Item[] }
   | { type: "revived"; botId: string; byBotId: string }
+  /** A rival who pleaded was picked up, and changed side doing it. */
+  | { type: "recruited"; botId: string; byBotId: string; fromSquadId: string; squadId: string }
   | { type: "plea"; botId: string; squadId: string; position: Vec2; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
   | { type: "extracted"; botId: string; squadId: string; items: Item[] }
@@ -222,6 +224,8 @@ export type WindowBand = {
 };
 
 export type ObjectKind =
+  /** A post with a plate on it. What it says is derived from the map — see signs.ts. */
+  | "sign"
   | "bed"
   | "cot"
   | "cabinet"
@@ -543,6 +547,17 @@ export type DotBotEntity = GameEntity & {
   floorId: string;
   /** Radians; the last direction of travel. Shield plates anchor to it. */
   facing: number;
+  /**
+   * Was this body under its own power on the tick it was snapshotted?
+   *
+   * On the wire purely so the client predictor can mirror separation. The server
+   * splits responsibility for an overlap by velocity — the mover yields, a standing
+   * bot is an anchor — and it reads the ATTEMPTED velocity, so a body walking into a
+   * wall counts as moving. Without this the predictor guessed from whether a
+   * snapshotted position had changed, which gets that exact case backwards and
+   * rubber-bands the player's own body by up to 2.5 units a tick on the contact.
+   */
+  moving: boolean;
   maxShields: number;
   /** Sum of shieldSegments, kept for HUD and AI threshold checks. */
   shields: number;
@@ -558,6 +573,19 @@ export type DotBotEntity = GameEntity & {
    * closes the body back up.
    */
   searched: boolean;
+  /**
+   * This body has asked to be picked up, since the last time it went down.
+   *
+   * The gate on joining someone else's squad. A rival can carry you only if you
+   * asked — otherwise a revive would be something done TO you, and a squad you did
+   * not choose is a hostage situation rather than a rescue. Cleared on going down, so
+   * every down needs its own plea, and cleared on revive.
+   *
+   * On the wire because the overlay has to offer PICK UP on exactly the bodies the
+   * simulation will accept it for; a verb the server refuses is a prompt that appears
+   * and vanishes.
+   */
+  pleaded: boolean;
   radarActiveMs: number;
   radarPings: RadarPing[];
   dashOverchargeCharges: number;
@@ -678,6 +706,11 @@ export type GameConfig = {
   pleaCooldownMs: number;
   minInsertionSpacing: number;
   coverCenterTolerance: number;
+  /**
+   * Biggest a squad can get. Three load in; a fourth can only arrive by being picked
+   * up after pleading, so the cap is what stops a run turning into one long convoy.
+   */
+  maxSquadSize: number;
   extractionDurationMs: number;
   runDurationMs: number;
 };

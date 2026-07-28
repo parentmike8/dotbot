@@ -104,10 +104,12 @@ function toWireBot(bot: DotBotEntity): WireBot {
   if (bot.floorId !== OUTDOOR_FLOOR_ID) wire.fl = bot.floorId;
   if (bot.state !== "alive") wire.s = bot.state;
   if (bot.shieldSegments.some((segment) => segment !== 1)) wire.sh = bot.shieldSegments.map(roundFloat);
+  if (bot.moving) wire.mv = true;
   if (bays.some((item) => item !== null)) wire.b = bays;
   if (bot.hold.length) wire.h = bot.hold.map(itemToCode);
   if (bot.carriedCount !== 0) wire.c = bot.carriedCount;
   if (bot.searched) wire.sr = true;
+  if (bot.pleaded) wire.pl = true;
 
   if (bot.dashCooldownMs !== 0 || bot.dashActiveMs !== 0) {
     // Dash timers keep centi-ms precision: reconciliation replays the dash
@@ -172,6 +174,7 @@ function fromWireBot(bot: WireBot, metaIndex: ReadonlyMap<string, EntityMeta>): 
     maxShields: meta.maxShields,
     position: { x: bot.p[0], y: bot.p[1] },
     facing: bot.f ?? 0,
+    moving: bot.mv === true,
     floorId: bot.fl ?? OUTDOOR_FLOOR_ID,
     state: bot.s ?? "alive",
     shieldSegments,
@@ -182,6 +185,7 @@ function fromWireBot(bot: WireBot, metaIndex: ReadonlyMap<string, EntityMeta>): 
     hold: (bot.h ?? []).map(itemFromCode),
     carriedCount: bot.c ?? 0,
     searched: bot.sr === true,
+    pleaded: bot.pl === true,
     dashCooldownMs: bot.d?.[0] ?? 0,
     dashActiveMs: bot.d?.[1] ?? 0,
     invulnerabilityMs: bot.iv ?? 0,

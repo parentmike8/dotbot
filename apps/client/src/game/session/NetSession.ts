@@ -689,6 +689,14 @@ export class NetSession implements GameSession {
         id: bot.id,
         position: { ...bot.position },
         radius: bot.radius,
+        // Contact follows the plates now, so prediction needs to know where the
+        // other bot's plates are — not just how big it nominally is.
+        facing: bot.facing,
+        // The server's own answer, not a guess from whether the snapshotted position
+        // changed — which reads a body walking into a wall as standing when the
+        // server calls it moving, and diverges the yield split by 2.5 units a tick.
+        moving: bot.moving,
+        shieldSegments: [...bot.shieldSegments],
         hostile: own !== undefined && bot.squadId !== own.squadId && bot.invulnerabilityMs <= 0,
       })));
   }
@@ -731,6 +739,9 @@ export class NetSession implements GameSession {
       carriedCount: freshest.carriedCount,
       position,
       facing: predicted.facing,
+      // The viewer's own body: predicted locally, so its motion is whatever the
+      // predictor just integrated rather than anything off the wire.
+      moving: predicted.moving,
       floorId: predicted.floorId,
       dashCooldownMs: predicted.dashCooldownMs,
       dashActiveMs: predicted.dashActiveMs,

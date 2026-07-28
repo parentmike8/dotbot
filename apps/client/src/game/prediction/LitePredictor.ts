@@ -2,13 +2,23 @@ import { collectSolids } from "@dotbot/game/collision";
 import { buildSolidIndex, withExtraSolids, type SolidIndex } from "@dotbot/game/solidIndex";
 import { rectSolid } from "@dotbot/game/geometry";
 import { doorEntityCollisionRect } from "@dotbot/game/mapModel";
-import { integrateWithWalls, pointSegmentDistance, resolveAgainstSolids, separationPush } from "@dotbot/game/kinematics";
+import {
+  coincidentSeparationAxis,
+  integrateWithWalls,
+  pointSegmentDistance,
+  resolveAgainstSolids,
+  separationAxis,
+  separationPush,
+} from "@dotbot/game/kinematics";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
+import { MOVING_SPEED } from "@dotbot/game/config";
+import { contactReach } from "@dotbot/game/shields";
+import { buildContactShape, contactDistance, makeContactShape } from "@dotbot/game/bodyContact";
 import type { DoorEntity, DotBotEntity, GameConfig, InputCommand, MapDocument, Solid, Vec2 } from "@dotbot/game";
 
 export type PredictedOwnBot = Pick<
   DotBotEntity,
-  "id" | "position" | "radius" | "floorId" | "facing" | "dashCooldownMs" | "dashActiveMs"
+  "id" | "position" | "radius" | "floorId" | "facing" | "dashCooldownMs" | "dashActiveMs" | "shieldSegments" | "moving"
 >;
 
 export type PredictedDashContact = {
@@ -18,12 +28,74 @@ export type PredictedDashContact = {
 
 /** Another bot the predicted bot must shoulder past, from the latest
  * snapshot. Hostile obstacles also stop a predicted dash at contact,
- * mirroring the server's stop-at-contact rule. */
-export type PredictionObstacle = { id: string; position: Vec2; radius: number; hostile: boolean };
+ * mirroring the server's stop-at-contact rule.
+ *
+ * Facing and plates travel with it because contact is no longer a circle: a bot
+ * reaches as far as its plate on the side you approach, and only as far as its
+ * core where that plate is gone. Predicting with a plain radius while the server
+ * uses the plate profile is a desync on every single contact. */
+export type PredictionObstacle = {
+  id: string;
+  position: Vec2;
+  radius: number;
+  facing: number;
+  shieldSegments: number[];
+  hostile: boolean;
+  /**
+   * Was this body moving on the tick it was snapshotted?
+   *
+   * The server splits separation responsibility by velocity — mover yields,
+   * stander anchors, both-or-neither splits it evenly — and the wire does not
+   * carry velocity. Supplying it here is the only way the predictor can be an
+   * exact mirror; when it is absent the predictor falls back to whether the
+   * body's snapshotted position changed, which is right for everything except a
+   * body walking into a wall (the server calls that moving, the fallback calls it
+   * still). A body seen for the first time has no history to compare against and
+   * is read as standing: the evidence so far is that it has not moved.
+   */
+  moving?: boolean;
+};
+
+/**
+ * The gap at which the predicted bot and an obstacle touch, along the line
+ * between them. The server's `contactGap`, and it has to stay that way — which is
+ * why it is the server's `contactDistance` and not a re-derivation of it. Two
+ * shapes, reused: a frame builds at most one own-bot pose and one obstacle pose at
+ * a time, and prediction re-runs the whole input buffer every frame.
+ */
+const ownShape = makeContactShape(8);
+const otherShape = makeContactShape(8);
+
+function contactGap(state: PredictedOwnBot, obstacle: PredictionObstacle, from: Vec2): number {
+  const dx = obstacle.position.x - from.x;
+  const dy = obstacle.position.y - from.y;
+  const dist = Math.hypot(dx, dy);
+  const ux = dist > 0.001 ? dx / dist : 1;
+  const uy = dist > 0.001 ? dy / dist : 0;
+  return contactGapAlong(state, obstacle, ux, uy);
+}
+
+function contactGapAlong(
+  state: PredictedOwnBot,
+  obstacle: PredictionObstacle,
+  ux: number,
+  uy: number,
+): number {
+  const toward = Math.atan2(uy, ux);
+  const seed = contactReach(state.radius, state.facing, state.shieldSegments, toward)
+    + contactReach(obstacle.radius, obstacle.facing, obstacle.shieldSegments, toward + Math.PI);
+  buildContactShape(ownShape, state.radius, state.facing, state.shieldSegments);
+  buildContactShape(otherShape, obstacle.radius, obstacle.facing, obstacle.shieldSegments);
+  return contactDistance(ownShape, otherShape, ux, uy, seed);
+}
 
 const cloneState = (bot: PredictedOwnBot): PredictedOwnBot => ({
   ...bot,
   position: { ...bot.position },
+  // Copied, not aliased. Reconciliation resets from a live snapshot every frame,
+  // and a plate array shared across the prediction boundary is a mutation waiting
+  // to be blamed on the netcode.
+  shieldSegments: [...bot.shieldSegments],
 });
 
 /**
@@ -37,6 +109,10 @@ export class LitePredictor {
   private state: PredictedOwnBot;
   private lastAim: Vec2 = { x: 1, y: 0 };
   private obstacles: PredictionObstacle[] = [];
+  /** Per-obstacle motion state for this snapshot: explicit when the caller knows
+   * it, otherwise inferred from the previous snapshot's position. */
+  private readonly obstacleMoving = new Map<string, boolean>();
+  private readonly lastObstaclePositions = new Map<string, Vec2>();
   private channelFrozen = false;
   /** Contact point of the most recent predicted dash stop; a side channel
    * (survives replay resets) so the session can flash impact FX instantly. */
@@ -69,6 +145,17 @@ export class LitePredictor {
   /** Latest known other bots (alive, same floor); refreshed per snapshot. */
   setObstacles(obstacles: PredictionObstacle[]): void {
     this.obstacles = obstacles;
+    this.obstacleMoving.clear();
+    for (const obstacle of obstacles) {
+      const previous = this.lastObstaclePositions.get(obstacle.id);
+      this.obstacleMoving.set(
+        obstacle.id,
+        obstacle.moving
+          ?? (previous !== undefined
+            && Math.hypot(obstacle.position.x - previous.x, obstacle.position.y - previous.y) > 0.001),
+      );
+      this.lastObstaclePositions.set(obstacle.id, { ...obstacle.position });
+    }
   }
 
   /** Authoritative moving-door collision from the latest rendered snapshot. */
@@ -164,12 +251,12 @@ export class LitePredictor {
       for (const obstacle of this.obstacles) {
         if (!obstacle.hostile) continue;
         const sweep = pointSegmentDistance(obstacle.position, previous, position);
-        if (sweep - state.radius - obstacle.radius > 4) continue;
+        if (sweep - contactGap(state, obstacle, position) > 4) continue;
         state.dashActiveMs = 0;
         const dx = position.x - obstacle.position.x;
         const dy = position.y - obstacle.position.y;
         const dist = Math.hypot(dx, dy);
-        const touching = state.radius + obstacle.radius;
+        const touching = contactGap(state, obstacle, position);
         if (dist - touching <= 16) {
           const nx = dist > 0.001 ? dx / dist : 1;
           const ny = dist > 0.001 ? dy / dist : 0;
@@ -190,17 +277,45 @@ export class LitePredictor {
       }
     }
 
-    // Shoulder past other bots like the server's separation pass. Mirror its
-    // anchor rule: when this bot is not moving it cannot be displaced, and
-    // when it is the mover it yields the full capped push.
-    const moving = this.channelFrozen ? false : state.dashActiveMs > 0 || Math.hypot(move.x, move.y) > 0.05;
-    if (moving) {
-      const maxPushPx = (this.config.botSeparationSpeed * elapsedMs) / 1000;
-      for (const obstacle of this.obstacles) {
-        const push = separationPush(position, state.radius, obstacle.position, obstacle.radius, maxPushPx, 1);
-        if (push.x !== 0 || push.y !== 0) {
-          position = resolveAgainstSolids({ x: position.x + push.x, y: position.y + push.y }, state.radius, solids);
-        }
+    /**
+     * Shoulder past other bots exactly the way the server's separation pass
+     * does — the same yield rule, over the same bodies, in the same order.
+     *
+     * It used to be an `if (moving)` gate around a hardcoded `yieldFraction = 1`.
+     * Both halves were wrong against the server, which uses
+     * `aMoving === bMoving ? 0.5 : aMoving ? 1 : 0` and therefore also pushes two
+     * bodies that are both standing still. Two movers in contact were predicted
+     * with twice the server's correction and two standers with none of it: up to
+     * 2.5 px/tick, 150 px/s of rubber-band on the player's own body, on every
+     * single shoulder.
+     *
+     * The one thing this cannot mirror is the server's wall-shortfall relay,
+     * which needs to know whether the OTHER body's push got through. That is
+     * information the client does not have, like a hit or another player's input,
+     * and reconciliation is what it is for.
+     */
+    const speedNow = Math.hypot(direction.x, direction.y) * speed;
+    const selfMoving = speedNow > MOVING_SPEED;
+    // Published, because the renderer reads it off the snapshot for the viewer's own
+    // body the same way it reads it for everyone else's.
+    state.moving = selfMoving;
+    const maxPushPx = (this.config.botSeparationSpeed * elapsedMs) / 1000;
+    for (const obstacle of this.obstacles) {
+      const otherMoving = this.obstacleMoving.get(obstacle.id) ?? true;
+      const yieldFraction = selfMoving === otherMoving ? 0.5 : selfMoving ? 1 : 0;
+      const span = state.radius + obstacle.radius;
+      const away = separationAxis(position, obstacle.position, coincidentSeparationAxis(state.id, obstacle.id));
+      if (Math.hypot(obstacle.position.x - position.x, obstacle.position.y - position.y) >= span) {
+        // The server's prune, so the two agree about which pairs are even tested.
+        continue;
+      }
+      // The pair's real contact distance, off the same axis the push uses — the
+      // server derives `need` the same way, including at coincident centres where
+      // the axis is invented.
+      const need = contactGapAlong(state, obstacle, -away.x, -away.y);
+      const push = separationPush(position, obstacle.position, need, maxPushPx, yieldFraction, away);
+      if (push.x !== 0 || push.y !== 0) {
+        position = resolveAgainstSolids({ x: position.x + push.x, y: position.y + push.y }, state.radius, solids);
       }
     }
 

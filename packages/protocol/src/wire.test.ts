@@ -17,6 +17,7 @@ const bot: DotBotEntity = {
   state: "alive",
   floorId: "outdoor",
   facing: 1.23456,
+  moving: true,
   maxShields: 3,
   shields: 2.5,
   shieldSegments: [1, 1, 0.5],
@@ -24,6 +25,7 @@ const bot: DotBotEntity = {
   hold: [],
   carriedCount: 2,
   searched: false,
+  pleaded: false,
   radarActiveMs: 0,
   radarPings: [],
   dashOverchargeCharges: 0,
@@ -98,12 +100,15 @@ describe("snapshot wire mapping", () => {
     const defaultBot = {
       ...bot,
       facing: 0,
+      // Standing is the default, so it must not reach the wire at all.
+      moving: false,
       floorId: "outdoor",
       shieldSegments: [1, 1, 1],
       shields: 3,
       bays: emptyBays,
       carriedCount: 0,
       searched: false,
+      pleaded: false,
       dashCooldownMs: 0,
       dashActiveMs: 0,
       invulnerabilityMs: 0,
@@ -119,12 +124,14 @@ describe("snapshot wire mapping", () => {
     expect(payload.bots[0]).toEqual({ i: defaultBot.id, p: [123.46, 987.65] });
     expect(fromWireSnapshot(payload, new Map([[defaultBot.id, toEntityMeta(defaultBot)]]), []).bots[0]).toMatchObject({
       facing: 0,
+      moving: false,
       floorId: "outdoor",
       state: "alive",
       shieldSegments: [1, 1, 1],
       bays: emptyBays,
       carriedCount: 0,
       searched: false,
+      pleaded: false,
     });
   });
 

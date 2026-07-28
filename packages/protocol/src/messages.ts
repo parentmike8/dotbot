@@ -39,6 +39,8 @@ export type WireBot = {
   fl?: string;
   s?: "downed";
   sh?: number[];
+  /** Moving under its own power. Absent means standing. See `DotBotEntity.moving`. */
+  mv?: true;
   /** Detailed inventory is present only for the viewer's squad. */
   b?: (WireItemCode | null)[];
   h?: WireItemCode[];
@@ -46,6 +48,8 @@ export type WireBot = {
   c?: number;
   /** Searched: this body is open, so `b`/`h` are sent to everyone who can see it. */
   sr?: true;
+  /** Pleaded: this body has asked to be picked up. See `DotBotEntity.pleaded`. */
+  pl?: true;
   d?: [number, number];
   iv?: number;
   r?: [number, RadarPing[]?];
@@ -143,6 +147,7 @@ export type WireSimEvent =
   | { type: "searched"; botId: string; byBotId: string }
   | { type: "looted"; botId: string; byBotId: string; items: WireItemCode[] }
   | { type: "revived"; botId: string; byBotId: string }
+  | { type: "recruited"; botId: string; byBotId: string; fromSquadId: string; squadId: string }
   | { type: "plea"; botId: string; squadId: string; position: { x: number; y: number }; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
   | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[] }

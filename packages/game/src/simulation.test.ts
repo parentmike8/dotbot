@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
-import { interactionDotReach } from "./interactions";
+import { interactionDotReach, withinDownedCoverRange } from "./interactions";
 import { classifyNoise, physicsFloorId, planningTableSurfaceRect } from "./mapModel";
 import { carriedCount } from "./inventory";
-import { DotBotSimulation } from "./simulation";
+import { DotBotSimulation, waypointRetired } from "./simulation";
+import { buildContactShape, contactDistance, makeContactShape } from "./bodyContact";
+import { contactReach } from "./shields";
 import { hasLineOfSight } from "./visibility";
-import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, MapDocument, WallSegment } from "./types";
+import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, MapDocument, Vec2, WallSegment } from "./types";
 
 const healthItem = { kind: "powerup", type: "health" } as const;
 const radarItem = { kind: "powerup", type: "radar" } as const;
@@ -17,6 +19,9 @@ const mineItem = { kind: "mine" } as const;
 const testBays = (count: number) =>
   Array.from({ length: defaultGameConfig.baySlots }, (_, index) => index < count ? healthItem : null);
 const emptyBays = () => testBays(0);
+/** `AI_STALL_TICKS` in simulation.ts, plus room for the couple of ticks it takes
+ * to notice and re-decide. A bot may lean on a jam for one window, not two. */
+const AI_STALL_TICKS_BOUND = 120;
 
 const testConfig: Partial<GameConfig> = {
   dotCaptureDurationMs: 120,
@@ -402,6 +407,219 @@ describe("DotBotSimulation", () => {
     runTicks(simulation, 10);
     expect(simulation.getSnapshot().mines[0].revealedToBotIds).toEqual([]);
     simulation.dispose();
+  });
+
+
+  it("lets a body come to rest against a bare core, not around it", async () => {
+    /**
+     * "It just seems odd that there's an invisible barrier around the core."
+     *
+     * Reported from play, and the exact symptom of separating at a fixed radius
+     * while the core is drawn at four tenths of one: you stop 48 units from the
+     * centre of a bot whose core surface is at 9.6, leaving thirty-odd units of
+     * nothing between your edge and the thing you are trying to reach.
+     *
+     * Bodies settle at the sum of their reaches, so a fully plated bot's hull comes
+     * to rest exactly on a stripped bot's core. Asserted against the sum rather
+     * than a constant, and separately against the old circle, so neither a retune
+     * of the reaches nor a quiet revert to `radius` can pass.
+     */
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 200, y: 180 }, maxShields: 3, shields: 3 }),
+      enemySpawn({ position: { x: 232, y: 180 }, maxShields: 3, shields: 0, isAmbient: false }),
+    ]);
+    // Walk into them and hold, so separation has something to resolve every tick.
+    for (let tick = 0; tick < 90; tick += 1) {
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+      simulation.step();
+    }
+    const bots = simulation.getSnapshot().bots;
+    const a = bots.find((bot) => bot.id === "player")!;
+    const b = bots.find((bot) => bot.id === "enemy")!;
+    const gap = Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y);
+    simulation.dispose();
+
+    const toward = Math.atan2(b.position.y - a.position.y, b.position.x - a.position.x);
+    const expected = contactReach(a.radius, a.facing, a.shieldSegments, toward)
+      + contactReach(b.radius, b.facing, b.shieldSegments, toward + Math.PI);
+    expect(gap).toBeLessThan(expected + 2);
+    // And decisively inside the circle two bodies used to hold each other at.
+    expect(gap).toBeLessThan(a.radius + b.radius - 8);
+  });
+
+  it("does not let a squad walking in file rest inside itself", async () => {
+    /**
+     * The welding, as one number.
+     *
+     * Bodies were held apart by `contactReach(a, u) + contactReach(b, -u)`, which
+     * samples ONE ray of a body that is a core disc with plate sectors bolted on.
+     * That predicate is necessary and NOT sufficient, and this is the pose where
+     * that bites hardest — the commonest clump in the game, two bots walking one
+     * behind the other:
+     *
+     *   follower, plates up, reads its own +x  -> plate 0            -> 24.0
+     *   leader,   one plate gone, reads its -x -> EXACTLY ANTIPODAL
+     *
+     * Exactly antipodal is a three-way tie in `coveringPlate`: for a 3-plate bot
+     * the reverse direction is 60 degrees from two plate centres at once, and which
+     * one wins is decided by comparing two floating-point numbers that are
+     * mathematically equal. It lands on the broken plate, so the leader reports 9.6
+     * and the pair settles at 33.6 — with 14.4 units of the follower's hull inside
+     * the leader's live plating, at ZERO push, forever. Not a fight the solver was
+     * losing; a fight it had finished in the wrong place.
+     *
+     * The real contact distance is 48.0, which `contactDistance` gets right because
+     * a closed union of plate sectors has nothing to tie-break: the seam belongs to
+     * the plate either way.
+     *
+     * Both bots are human-controlled and driven by input, so there is no AI, no
+     * pathing and no wander that could supply motion and hide a stalled solver. The
+     * leader walks into the east wall and stops; the follower closes on its back.
+     */
+    const simulation = await makeSimulation([
+      playerSpawn({ id: "follower", name: "Follower", position: { x: 400, y: 180 }, maxShields: 3, shields: 3 }),
+      playerSpawn({ id: "leader", name: "Leader", squadId: "alpha", position: { x: 440, y: 180 }, maxShields: 3, shields: 2 }),
+    ]);
+    for (let tick = 0; tick < 120; tick += 1) {
+      simulation.applyInput("follower", { move: { x: 1, y: 0 }, dash: false });
+      simulation.applyInput("leader", { move: { x: 1, y: 0 }, dash: false });
+      simulation.step();
+    }
+    const bots = simulation.getSnapshot().bots;
+    simulation.dispose();
+    const follower = bots.find((bot) => bot.id === "follower")!;
+    const leader = bots.find((bot) => bot.id === "leader")!;
+    // Both ended up facing the way they walked, which is what puts the leader's
+    // broken plate exactly astern. If that stops being true the test is measuring
+    // something else, so it is asserted rather than assumed.
+    expect(follower.facing).toBeCloseTo(0, 6);
+    expect(leader.facing).toBeCloseTo(0, 6);
+    expect(leader.shieldSegments).toEqual([1, 1, 0]);
+
+    const gap = leader.position.x - follower.position.x;
+    // 48.0 is where two 24-radius bodies touch, and a plate IS the body's surface.
+    // The ray predicate rests at 33.600 here, so this fails by 14.4 units.
+    expect(gap).toBeGreaterThan(47.9);
+  });
+
+  it("never leaves a crowd at rest inside itself", async () => {
+    /**
+     * The same rule as the test above, stated as an invariant over a scrum rather
+     * than a hand-built pose, and checked against the exact geometry.
+     *
+     * Steering is switched off for the second half deliberately. Penetration DURING
+     * a scrum is legitimate and transient — a bot that turns can grow 14.4 units
+     * into a neighbour in a single tick, and the capped push takes two or three
+     * ticks to undo it. What may never happen is penetration that SURVIVES with
+     * nobody pushing. So: jam five bodies together, let go, and leave separation as
+     * the only thing running.
+     *
+     * This one is broad rather than sharp. It did NOT fail on the ray predicate at
+     * this seed: five bodies settled into poses where the ray sum happened to agree
+     * with the truth, which is the trouble with sampling a 31%-of-poses defect
+     * five pairs at a time. It is kept because it pins the general property the
+     * pose test above pins one instance of — and the pose test is the one that
+     * bites.
+     */
+    const CROWD = [
+      { id: "a", position: { x: 250, y: 180 }, shields: 2, drive: { x: 1, y: 0 } },
+      { id: "b", position: { x: 268, y: 186 }, shields: 1, drive: { x: -1, y: 0 } },
+      { id: "c", position: { x: 258, y: 200 }, shields: 3, drive: { x: 0, y: -1 } },
+      { id: "d", position: { x: 236, y: 194 }, shields: 0, drive: { x: 0.7, y: -0.7 } },
+      { id: "e", position: { x: 244, y: 166 }, shields: 2, drive: { x: -0.6, y: 0.8 } },
+    ];
+    const simulation = await makeSimulation(
+      CROWD.map((bot) => playerSpawn({
+        id: bot.id,
+        name: bot.id,
+        squadId: "alpha",
+        position: bot.position,
+        maxShields: 3,
+        shields: bot.shields,
+      })),
+    );
+    // Drive them into each other so the facings end up mixed and unaligned — the
+    // poses where a ray test and the real geometry disagree are the awkward ones,
+    // not the tidy head-on ones a hand-built case would produce.
+    for (let tick = 0; tick < 180; tick += 1) {
+      for (const bot of CROWD) simulation.applyInput(bot.id, { move: bot.drive, dash: false });
+      simulation.step();
+    }
+    // Then let go. No thrust, no steering, no AI: separation alone.
+    for (let tick = 0; tick < 240; tick += 1) {
+      for (const bot of CROWD) simulation.applyInput(bot.id, { move: { x: 0, y: 0 }, dash: false });
+      simulation.step();
+    }
+    const bots = simulation.getSnapshot().bots;
+    simulation.dispose();
+
+    const shapeOf = (bot: GameSnapshot["bots"][number]) => {
+      const shape = makeContactShape(bot.shieldSegments.length);
+      buildContactShape(shape, bot.radius, bot.facing, bot.shieldSegments);
+      return shape;
+    };
+    let worst = { pair: "", penetration: 0 };
+    for (let i = 0; i < bots.length; i += 1) {
+      for (let j = i + 1; j < bots.length; j += 1) {
+        const a = bots[i];
+        const b = bots[j];
+        const dx = b.position.x - a.position.x;
+        const dy = b.position.y - a.position.y;
+        const dist = Math.hypot(dx, dy);
+        const need = contactDistance(shapeOf(a), shapeOf(b), dx / dist, dy / dist);
+        if (need - dist > worst.penetration) {
+          worst = { pair: `${a.id}|${b.id}`, penetration: need - dist };
+        }
+      }
+    }
+    // A tenth of a unit: the solver closes at 10 units a tick, so anything it has
+    // actually finished with is exact. This fails by 12.5 units on the ray test.
+    expect(worst.penetration, `deepest resting overlap: ${worst.pair}`).toBeLessThan(0.1);
+  });
+
+  it("a dash reaches a bare arc closer than it reaches a plate", async () => {
+    /**
+     * The whole point of the plate rule, as an observable.
+     *
+     * Bodies separate at their full radius whatever their plates are doing — that
+     * is the solver's business and it needs a body that keeps its shape. Only the
+     * attack test follows the plates, and this is what that buys: a dash coming in
+     * where a plate is missing gets nearer the victim's centre than one that lands
+     * on armour, because there is less of the victim there.
+     *
+     * Sampled on the tick the hit lands, not at rest. Measured at rest it proves
+     * nothing at all — separation pushes both cases back out to a full body width
+     * within a few ticks, and the test passed with the plate rule deleted.
+     */
+    const landedAt = async (shields: number): Promise<number> => {
+      const simulation = await DotBotSimulation.create({
+        map: makeMap([
+          playerSpawn({ position: { x: 160, y: 180 } }),
+          enemySpawn({ position: { x: 260, y: 180 }, maxShields: 3, shields }),
+        ]),
+        config: testConfig,
+      });
+      const before = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")!;
+      let landed = Infinity;
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+      for (let tick = 0; tick < 24 && landed === Infinity; tick += 1) {
+        simulation.step();
+        const bots = simulation.getSnapshot().bots;
+        const a = bots.find((bot) => bot.id === "player")!;
+        const b = bots.find((bot) => bot.id === "enemy")!;
+        const hit = b.state !== before.state
+          || b.shieldSegments.join("") !== before.shieldSegments.join("");
+        if (hit) landed = Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y);
+      }
+      simulation.dispose();
+      return landed;
+    };
+
+    const ontoPlate = await landedAt(3);
+    const intoTheGap = await landedAt(0);
+    expect(ontoPlate).toBeLessThan(Infinity);
+    expect(intoTheGap).toBeLessThan(Infinity);
+    expect(intoTheGap).toBeLessThan(ontoPlate - 8);
   });
 
   it("uses exactly three overcharged dashes through an existing cooldown", async () => {
@@ -905,6 +1123,63 @@ describe("DotBotSimulation", () => {
     expect(simulation.drainEvents().filter((event) => event.type === "searched")).toEqual([]);
     expect(simulation.getSnapshot().coverages.filter((entry) => entry.kind === "loot")).toEqual([]);
     simulation.dispose();
+  });
+
+  it("grows a squad to four by picking up a rival that asked, and no further", async () => {
+    /**
+     * The only way a squad ever grows, and the only way a bot ever changes side.
+     * Three load in; four is the cap.
+     *
+     * Gated on the plea, because a squad you did not ask to join is a capture rather
+     * than a rescue. A downed AI asks on its own — otherwise the whole rule would be
+     * dead in solo, where every rival is one — so the plea here needs no input, just a
+     * tick on the floor.
+     */
+    const revive = Math.ceil((testConfig.coverDurationMs ?? 0) / (1000 / defaultGameConfig.tickHz)) + 2;
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ id: "recruit", squadId: "rival-1", isAmbient: false, controller: "frozen", position: { x: 100, y: 180 }, state: "downed", shields: 0 }),
+    ]);
+    // One tick on the floor is the plea.
+    simulation.step();
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "recruit")!.pleaded).toBe(true);
+
+    for (let tick = 0; tick < revive; tick += 1) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "revive" });
+      simulation.step();
+    }
+    const recruit = simulation.getSnapshot().bots.find((bot) => bot.id === "recruit")!;
+    simulation.dispose();
+
+    expect(recruit.state).toBe("alive");
+    // Changed side. `areFriendly` is squad equality, so this one field carries
+    // friend-or-foe, no-friendly-fire, revive-versus-strip and squad vision with it.
+    expect(recruit.squadId).toBe("alpha");
+    // And the plea is spent: the next time it goes down it has to ask again.
+    expect(recruit.pleaded).toBe(false);
+  });
+
+  it("will not pick up a rival that never asked", async () => {
+    // An ambient bot never pleas — nothing is coming for it and it knows. So it is the
+    // one body that stays un-recruitable, which makes it the clean negative case.
+    const revive = Math.ceil((testConfig.coverDurationMs ?? 0) / (1000 / defaultGameConfig.tickHz)) + 2;
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ id: "stray", squadId: "rival-1", isAmbient: true, controller: "frozen", position: { x: 100, y: 180 }, state: "downed", shields: 0 }),
+    ]);
+    for (let tick = 0; tick < revive; tick += 1) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "revive" });
+      simulation.step();
+    }
+    const stray = simulation.getSnapshot().bots.find((bot) => bot.id === "stray")!;
+    // No channel was ever allowed to run, so there is nothing to show for it either.
+    const coverages = simulation.getSnapshot().coverages;
+    simulation.dispose();
+
+    expect(stray.pleaded).toBe(false);
+    expect(stray.state).toBe("downed");
+    expect(stray.squadId).toBe("rival-1");
+    expect(coverages.filter((coverage) => coverage.targetId === "stray")).toEqual([]);
   });
 
   it("closes a searched body back up when it is revived", async () => {
@@ -1788,5 +2063,742 @@ describe("combat lag compensation", () => {
     expect(coverage?.actorId).toBe("player");
     expect(coverage?.kind).toBe("loot");
     simulation.dispose();
+  });
+});
+
+/**
+ * The AI's commands and the separation solver have to agree about where a body
+ * can be. When they do not, nothing looks broken from the outside — a bot
+ * pinned against something it is being commanded into is indistinguishable in a
+ * snapshot from one that has arrived — so these checks read the commanded
+ * steering as well as the resulting positions.
+ */
+describe("AI commands and the separation solver agree", () => {
+  /** `desiredMove` is the steering the AI produced this tick; no snapshot
+   * carries it, and "did the bot stop asking" is the whole question here. */
+  type AiInternals = { desiredMove: Vec2; velocity: Vec2; dashCooldownMs: number };
+  const aiInternals = (simulation: DotBotSimulation): Map<string, AiInternals> =>
+    (simulation as unknown as { bots: Map<string, AiInternals> }).bots;
+
+  /** Dashes off the table: `dashCooldownMs` only ever decrements, so one large
+   * write disables `tryAiDash` for a whole run and leaves pure locomotion. */
+  const disableDashes = (simulation: DotBotSimulation): void => {
+    for (const bot of aiInternals(simulation).values()) bot.dashCooldownMs = 1e9;
+  };
+
+  const requiredGap = (a: GameSnapshot["bots"][number], b: GameSnapshot["bots"][number]): number => {
+    const toB = Math.atan2(b.position.y - a.position.y, b.position.x - a.position.x);
+    return contactReach(a.radius, a.facing, a.shieldSegments, toB)
+      + contactReach(b.radius, b.facing, b.shieldSegments, toB + Math.PI);
+  };
+
+  it("parks a hunter outside contact instead of grinding against its target forever", async () => {
+    /**
+     * `huntStopDistance` was `min(radius * 1.85, gap)` = min(44.40, gap), and the
+     * clamp bit exactly when two live plates faced each other at 48 — the ordinary
+     * case. The hunter was told to stand 3.6 units inside the distance the solver
+     * holds, so it crept in 0.1585 px/tick and was shoved back out 0.1585 px/tick,
+     * for 815 of 900 measured ticks.
+     *
+     * The tell is not the position, which oscillates around a fixed point and
+     * therefore looks settled. It is the SPEED: 0.1585 px/tick is 9.5 px/s, over
+     * the 5 px/s threshold the anchor rule uses, so a hunter parked on a target
+     * read as permanently MOVING, yielded 1.0 to every other body and could never
+     * anchor. Asserted against that same threshold, not against a magic number.
+     */
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 250, y: 180 } }),
+      enemySpawn({ id: "hunter", position: { x: 430, y: 180 }, maxShields: 3, shields: 3 }),
+    ]);
+    disableDashes(simulation);
+
+    let worstCommandedSpeed = 0;
+    let worstPenetration = 0;
+    for (let tick = 0; tick < 600; tick += 1) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
+      simulation.step();
+      const bots = simulation.getSnapshot().bots;
+      const hunter = bots.find((bot) => bot.id === "hunter")!;
+      const target = bots.find((bot) => bot.id === "player")!;
+      if (tick > 300) {
+        const gap = Math.hypot(hunter.position.x - target.position.x, hunter.position.y - target.position.y);
+        worstPenetration = Math.max(worstPenetration, requiredGap(hunter, target) - gap);
+        // The COMMANDED velocity, not the position delta. The creep in and the
+        // shove back out happen inside a single tick, so end-of-tick positions
+        // sit at a rock-steady fixed point and hide the grind completely — the
+        // first version of this check passed with the bug fully restored.
+        const velocity = aiInternals(simulation).get("hunter")!.velocity;
+        worstCommandedSpeed = Math.max(worstCommandedSpeed, Math.hypot(velocity.x, velocity.y));
+      }
+    }
+    simulation.dispose();
+
+    // It arrived: no part of the run has it inside the distance the solver holds.
+    expect(worstPenetration).toBeLessThan(0.01);
+    // And it is STILL, by the same 5 px/s rule the anchor split uses — a hunter
+    // parked on a target has to be able to become an anchor.
+    expect(worstCommandedSpeed).toBeLessThan(5);
+  });
+
+  it("lets a hunter parked at its stop distance still land a dash", async () => {
+    /**
+     * The other half of the same agreement. Stop distance and dash gate have to
+     * read the same geometry: the gate was a flat `radius * 1.9` = 45.6, so a
+     * hunter holding station 35.6 from a stripped 9.6-unit core (contact 33.6)
+     * was permanently under the gate and never swung — and it bailed outright
+     * when the steering vector went to zero, which is exactly what arriving
+     * means.
+     *
+     * Spawned already at its stop distance, so the dash it throws is the parked
+     * one and not an opportunist on the way in.
+     */
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 250, y: 180 }, maxShields: 3, shields: 0 }),
+      enemySpawn({ id: "hunter", position: { x: 286, y: 180 }, maxShields: 3, shields: 3 }),
+    ]);
+
+    let downedBy: string | undefined;
+    for (let tick = 0; tick < 90 && !downedBy; tick += 1) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
+      simulation.step();
+      const downed = simulation.drainEvents().find((event) => event.type === "downed" && event.botId === "player");
+      downedBy = downed?.type === "downed" ? downed.byBotId : undefined;
+    }
+    simulation.dispose();
+
+    expect(downedBy).toBe("hunter");
+  });
+
+  it("stands looters on a ring two bodies can share, and inside cover range", async () => {
+    /**
+     * Revive and strip commanded `radius * 0.42` = 10.08. Two looters that close
+     * to the same corpse would be 20.16 apart, and the smallest centre distance
+     * any two bodies can reach is 19.20 — 48 when both show a live plate. So
+     * `steerToward` never returned zero: measured over 1800 ticks, two looters
+     * settled 24.00 from the body and were still commanded inward at 37.8 px/s,
+     * forever.
+     *
+     * Pinned from both sides on purpose. Too close and the steering never stops;
+     * too far and `withinDownedCoverRange` refuses the channel the standing was
+     * for. Measured alone, so the claim rule below cannot be what stops the
+     * pressing.
+     */
+    const simulation = await makeSimulation([
+      enemySpawn({ id: "body", isAmbient: false, controller: "frozen", position: { x: 250, y: 180 }, state: "downed" }),
+      allySpawn({ id: "looter", position: { x: 100, y: 180 } }),
+    ]);
+    disableDashes(simulation);
+    runTicks(simulation, 1200);
+
+    const bots = simulation.getSnapshot().bots;
+    const body = bots.find((bot) => bot.id === "body")!;
+    const looter = bots.find((bot) => bot.id === "looter")!;
+    const steering = aiInternals(simulation).get("looter")!.desiredMove;
+    // Steering is a unit-ish vector; scale it to px/s so the number the old rule
+    // produced (37.8 px/s, forever) is what this compares against.
+    expect(Math.hypot(steering.x, steering.y) * defaultGameConfig.botSpeed).toBeLessThan(0.01);
+    expect(withinDownedCoverRange(looter.position, looter.radius, body.position, body.radius, defaultGameConfig.coverCenterTolerance)).toBe(true);
+    simulation.dispose();
+  });
+
+  it("does not let the body you knocked back kill the body that hit it", async () => {
+    /**
+     * Reported twice from play: "this bot was just a core and he hit me, broke my
+     * shield, but died himself without me dashing at all." It did, and its own hit
+     * killed it one tick later.
+     *
+     * Found by instrumenting every hit on the shipped map with a human who keeps
+     * walking:
+     *
+     *   t1713  RAM player -> enemy-4  |vel| 550  knockMs 123  closing -550
+     *          targetPlates 000  << TARGET DIED
+     *
+     * The chain: the stripped attacker's dash connects and breaks a plate. The victim
+     * is knocked back at `knockbackSpeed` 320, and `bot.velocity` is movement PLUS
+     * knockback — so the victim carries 230 + 320 = 550 with neither body dashing,
+     * still inside the four-unit contact band, and the ram rule hands the faster body
+     * the hit. Against an attacker with nothing left, one hit anywhere is fatal.
+     *
+     * Two details of the scenario are load-bearing, and getting either wrong is how a
+     * first attempt at this test passed with the bug still in.
+     *
+     * The victim has to be WALKING. A body standing still cannot reach 360 on
+     * knockback alone — 320 is under the threshold on purpose. Only a walker can add
+     * its own 230 to the shove.
+     *
+     * And a wall has to take the displacement. At 550 px/s the victim would otherwise
+     * clear the contact band in a single tick and the ram would never fire. Pressed
+     * into a wall, its velocity stays 550 while its position does not move at all,
+     * which is exactly the cornered fight where play met this.
+     */
+    const simulation = await makeSimulation([
+      // Hard against the east wall, holding into it, and never dashing.
+      playerSpawn({ id: "victim", position: { x: 452, y: 180 }, maxShields: 3, shields: 3 }),
+      enemySpawn({ id: "attacker", squadId: "rival-1", isAmbient: false, position: { x: 380, y: 180 }, maxShields: 3, shields: 0 }),
+    ]);
+    let attackerDied = false;
+    let victimWasHit = false;
+    for (let tick = 0; tick < 600; tick += 1) {
+      simulation.applyInput("victim", { move: { x: 1, y: 0 }, dash: false });
+      simulation.step();
+      const bots = simulation.getSnapshot().bots;
+      if (bots.find((bot) => bot.id === "attacker")!.state !== "alive") attackerDied = true;
+      if (bots.find((bot) => bot.id === "victim")!.shields < 3) victimWasHit = true;
+    }
+    simulation.dispose();
+
+    // The attack has to have happened, or this passes on two bots that never met.
+    expect(victimWasHit).toBe(true);
+    expect(attackerDied, "the attacker died to the knockback it caused").toBe(false);
+  });
+
+  it("does not make being hit a way to kill whoever is behind you", async () => {
+    /**
+     * The other half of the same rule, and the reason ram speed is the body's own
+     * movement rather than everything acting on it.
+     *
+     * A shove points away from whoever landed the hit, which means straight into
+     * whatever is on your other side — and in a clump there always is something. If
+     * knockback counted toward the ram, getting hit from the front would let you kill
+     * the bot behind you, at up to 320 px/s you never asked for. Direction alone does
+     * not cover this one: you really are closing on the body behind you.
+     *
+     * Three bodies in a line, the middle one walking west toward a stripped bot while
+     * a live one dashes it from the east.
+     */
+    const simulation = await makeSimulation([
+      enemySpawn({ id: "behind", squadId: "rival-1", isAmbient: false, controller: "frozen", position: { x: 200, y: 180 }, maxShields: 3, shields: 0 }),
+      playerSpawn({ id: "victim", position: { x: 248, y: 180 }, maxShields: 3, shields: 3 }),
+      enemySpawn({ id: "ahead", squadId: "rival-2", isAmbient: false, position: { x: 340, y: 180 }, maxShields: 3, shields: 3 }),
+    ]);
+    let behindDied = false;
+    let victimWasHit = false;
+    for (let tick = 0; tick < 600; tick += 1) {
+      simulation.applyInput("victim", { move: { x: -1, y: 0 }, dash: false });
+      simulation.step();
+      const bots = simulation.getSnapshot().bots;
+      if (bots.find((bot) => bot.id === "behind")!.state !== "alive") behindDied = true;
+      if (bots.find((bot) => bot.id === "victim")!.shields < 3) victimWasHit = true;
+    }
+    simulation.dispose();
+
+    expect(victimWasHit).toBe(true);
+    expect(behindDied, "the bot behind died to a shove the victim did not choose").toBe(false);
+  });
+
+  it("walks a wedged bot back out instead of leaving it there", async () => {
+    /**
+     * Reported from play: "this team AI bot still just sits here at the start of the
+     * game and does nothing." It had moved 0 units in thirty seconds and blacklisted
+     * sixteen objectives, the player among them.
+     *
+     * `findNavigationPath` tests the START point for clearance, so a bot standing
+     * closer to scenery than its own radius gets an empty path to EVERYWHERE — and
+     * nothing downstream could tell that apart from "this objective is unreachable".
+     * It worked through its whole objective list getting the same empty answer and
+     * then stood still. Three authored spawns were inside their own clearance (22.00,
+     * 20.00 and 10.00 against a radius of 24); `mapValidation.test.ts` fails on that
+     * now.
+     *
+     * This is the runtime half, and it needs to exist even with the map correct,
+     * because authoring is not the only way in: knockback, `placeBot`'s clamp against
+     * the sheet edge, revive placement and a separation shove into a corner can all
+     * leave a body somewhere it could never have walked to.
+     *
+     * The bot starts 20 units from a block — four short of the clearance the planner
+     * demands — with an objective clear across the map.
+     */
+    const simulation = await DotBotSimulation.create({
+      map: {
+        ...makeMap([
+          allySpawn({ id: "wedged", position: { x: 120, y: 180 } }),
+          enemySpawn({ id: "far", squadId: "rival-1", isAmbient: false, controller: "frozen", position: { x: 430, y: 180 } }),
+        ]),
+        outdoor: {
+          roads: [], parks: [], objects: [], dotSpawns: [],
+          // A block whose east face is at x=100, so a bot centred at 120 has 20.
+          walls: [...bounds(500, 360), { id: "block", x: 40, y: 140, w: 60, h: 80 }],
+        },
+      },
+      config: testConfig,
+    });
+    const start = { x: 120, y: 180 };
+    let freed = 0;
+    for (let tick = 0; tick < 300; tick += 1) {
+      simulation.step();
+      const bot = simulation.getSnapshot().bots.find((entry) => entry.id === "wedged")!;
+      if (Math.hypot(bot.position.x - start.x, bot.position.y - start.y) > 12) freed = tick;
+    }
+    const bot = simulation.getSnapshot().bots.find((entry) => entry.id === "wedged")!;
+    const travelled = Math.hypot(bot.position.x - start.x, bot.position.y - start.y);
+    simulation.dispose();
+
+    // It has to get out, and it has to get out promptly rather than after a stall
+    // window: the escape steers every tick the planner comes back empty.
+    expect(travelled, "distance from the wedge after five seconds").toBeGreaterThan(24);
+    expect(freed).toBeGreaterThan(0);
+  });
+
+  it("channels one body at a time, however many you are standing on", async () => {
+    /**
+     * Reported from play: "when I press F over top of these two downed bots, the
+     * search bar appears then disappears."
+     *
+     * Three things compounding, and the root one is here. Coverage was decided body
+     * by body — every downed body looked for anyone standing on it — so a player
+     * straddling two bodies opened a channel on BOTH from one press. Measured: two
+     * coverages, same actor, both counting.
+     *
+     * The overlay then showed whichever coverage happened to sit first in the array,
+     * which was not the body the player had chosen from. And the overlay clears the
+     * verb whenever the body it is prompting for changes — which is correct, because
+     * otherwise one press of F latches and every body walked over afterwards searches
+     * itself — so the mismatch cancelled the channel one frame after it started.
+     *
+     * Fixing the overlay would have hidden it. A pair of hands works one body.
+     */
+    // A search window longer than the run, so finishing one body and correctly
+    // moving to the next cannot be mistaken for the cancel this is looking for.
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ id: "looter", position: { x: 250, y: 180 } }),
+        enemySpawn({ id: "body-near", squadId: "rival-1", isAmbient: false, controller: "frozen", position: { x: 246, y: 178 }, state: "downed" }),
+        enemySpawn({ id: "body-far", squadId: "rival-1", isAmbient: false, controller: "frozen", position: { x: 256, y: 184 }, state: "downed" }),
+      ]),
+      config: { ...testConfig, lootDurationMs: 3000 },
+    });
+    let seenAtOnce = 0;
+    let progress = 0;
+    let reset = false;
+    for (let tick = 0; tick < 30; tick += 1) {
+      simulation.applyInput("looter", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
+      simulation.step();
+      const mine = simulation.getSnapshot().coverages.filter((coverage) => coverage.actorId === "looter");
+      seenAtOnce = Math.max(seenAtOnce, mine.length);
+      expect(mine[0]?.targetId, "the channel jumped to the other body mid-search").toBe("body-near");
+      // The channel has to keep counting: a cancel shows up as progress going
+      // backwards, which is exactly what play saw.
+      const now = mine[0]?.progressMs ?? 0;
+      if (now < progress) reset = true;
+      progress = now;
+    }
+    simulation.dispose();
+
+    expect(seenAtOnce, "channels running at once for one actor").toBe(1);
+    expect(reset, "the channel restarted instead of counting through").toBe(false);
+    expect(progress).toBeGreaterThan(0);
+  });
+
+  it("clears the plate bank when a body goes down, however it went down", async () => {
+    /**
+     * Reported from play: "when I'm downed, the legend at the top still shows that I
+     * have one shield, despite the downed status."
+     *
+     * There were two ways down and they disagreed. A mine cleared the plate array; a
+     * dash left it exactly as it was. Nothing in the simulation reads a downed bot's
+     * plates — combat, separation and contact all skip anything not alive, and
+     * `reviveBot` writes a fresh array — so the difference stayed invisible right up
+     * to the HUD, which renders `shieldSegments` straight.
+     *
+     * Going down with good plating still on you is the point of the core rule: one
+     * hit through the arc where a plate used to be, however many are left elsewhere.
+     * The plates just stop mattering the moment you are on the floor, and a bank
+     * still showing them promises protection that does not exist.
+     *
+     * The victim has to go down WITH plates still on it, or the test proves nothing:
+     * a bot whose plating is already gone reads [0,0,0] either way, which is how a
+     * first version of this passed with the fix reverted. So the victim is frozen
+     * facing +x with two plates, and the dash comes in on the bare arc astern — plate
+     * 2, at facing + 240 degrees — which reaches the core past intact plating.
+     */
+    const simulation = await makeSimulation([
+      // On the bare arc's bearing, 240 degrees from a victim facing +x.
+      playerSpawn({ id: "attacker", position: { x: 190, y: 76 } }),
+      enemySpawn({
+        id: "victim", squadId: "rival-1", isAmbient: false, controller: "frozen",
+        position: { x: 250, y: 180 }, maxShields: 3, shields: 2,
+      }),
+    ]);
+    let downedWith: number[] | null = null;
+    let facedWith: number | null = null;
+    for (let tick = 0; tick < 200 && downedWith === null; tick += 1) {
+      simulation.applyInput("attacker", { move: { x: 0.5, y: 0.866 }, dash: true });
+      simulation.step();
+      const victim = simulation.getSnapshot().bots.find((bot) => bot.id === "victim")!;
+      if (victim.state === "downed") downedWith = [...victim.shieldSegments];
+      else facedWith = victim.shieldSegments.reduce((total, plate) => total + plate, 0);
+    }
+    simulation.dispose();
+
+    expect(downedWith, "the victim never went down, so this proves nothing").not.toBeNull();
+    // It was still plated on the tick before it dropped — that is the case that
+    // distinguishes the fix, and a stripped victim would read [0,0,0] regardless.
+    expect(facedWith, "the victim was already stripped before it went down").toBeGreaterThan(0);
+    expect(downedWith).toEqual([0, 0, 0]);
+  });
+
+  it("spreads a pack of hunters around a target instead of stacking them on one side", async () => {
+    /**
+     * The pile-up, from every screenshot play has sent: three or four bots crowded
+     * onto one face of a target, grinding.
+     *
+     * There is no bot-vs-bot avoidance anywhere in this game — the navigator plans on
+     * static geometry only and `steerToward` is a raw vector at the goal — so N
+     * hunters on one target were all commanded at the SAME world point every tick and
+     * the separation pass was the only thing that knew two bodies cannot share space.
+     *
+     * Measured, five hunters on a stationary target over 900 ticks:
+     *
+     *                      bearings around the target        outliers   tail contact
+     *   no slots           -174 -116 -59 -27 -1 (173 deg)    one at 87   n/a
+     *   slots              -113 -46 26 110 176 (full ring)   none        0/300 ticks
+     *
+     * Two properties are asserted and they are different in kind. The SPREAD is the
+     * feature: a pack must occupy the whole ring, not one face of it. The quiet TAIL
+     * is the proof it is stable rather than merely spread on the tick it was sampled
+     * — assignments are sticky (measured: zero reassignments in 900 ticks), so once
+     * the ring forms nobody is touching anybody.
+     */
+    const HUNTERS = 5;
+    const simulation = await DotBotSimulation.create({
+      map: {
+        ...makeMap([
+          playerSpawn({ id: "quarry", position: { x: 250, y: 180 } }),
+          ...Array.from({ length: HUNTERS }, (_, index) => enemySpawn({
+            id: `hunter-${index}`,
+            squadId: "rival-1",
+            isAmbient: false,
+            position: { x: 120 + index * 30, y: 60 },
+          })),
+        ]),
+        width: 500,
+        height: 360,
+      },
+      // Dashes off: this is about where they stand, and a dash landing would down
+      // the quarry and end the measurement.
+      config: { ...testConfig, dashCooldownMs: 1e9 },
+    });
+    let tailContactTicks = 0;
+    for (let tick = 0; tick < 900; tick += 1) {
+      simulation.applyInput("quarry", { move: { x: 0, y: 0 }, dash: false });
+      simulation.step();
+      if (tick < 600) continue;
+      const alive = simulation.getSnapshot().bots.filter((bot) => bot.state === "alive");
+      let touching = false;
+      for (let i = 0; i < alive.length; i += 1) {
+        for (let j = i + 1; j < alive.length; j += 1) {
+          const dx = alive[j].position.x - alive[i].position.x;
+          const dy = alive[j].position.y - alive[i].position.y;
+          const away = Math.hypot(dx, dy);
+          if (away >= alive[i].radius + alive[j].radius) continue;
+          const shapeOf = (bot: GameSnapshot["bots"][number]) => {
+            const shape = makeContactShape(bot.shieldSegments.length);
+            buildContactShape(shape, bot.radius, bot.facing, bot.shieldSegments);
+            return shape;
+          };
+          if (contactDistance(shapeOf(alive[i]), shapeOf(alive[j]), dx / away, dy / away) - away > 0.01) touching = true;
+        }
+      }
+      if (touching) tailContactTicks += 1;
+    }
+    const bots = simulation.getSnapshot().bots;
+    const quarry = bots.find((bot) => bot.id === "quarry")!;
+    const bearings = bots
+      .filter((bot) => bot.id !== "quarry" && bot.state === "alive")
+      .map((bot) => Math.atan2(bot.position.y - quarry.position.y, bot.position.x - quarry.position.x))
+      .sort((left, right) => left - right);
+    simulation.dispose();
+
+    expect(bearings.length).toBe(HUNTERS);
+    /**
+     * Widest gap between neighbours around the ring, wrapping. Evenly spread over
+     * five slots is 72 degrees each; one-sided stacking leaves a gap of nearly 190.
+     * Anything under 180 means no hemisphere is empty.
+     */
+    let widestGap = bearings[0] + Math.PI * 2 - bearings[bearings.length - 1];
+    for (let index = 1; index < bearings.length; index += 1) {
+      widestGap = Math.max(widestGap, bearings[index] - bearings[index - 1]);
+    }
+    expect(widestGap * (180 / Math.PI), "widest empty arc around the target").toBeLessThan(150);
+    expect(tailContactTicks, "ticks in the last 300 with any pair in contact").toBeLessThan(15);
+  });
+
+  it("makes two AI bots that have closed on each other actually fight", async () => {
+    /**
+     * Reported from play as "AI bots are just stopping together like this a lot
+     * without doing anything", with a screenshot of two bodies nose to nose.
+     *
+     * Both halves of the lock-up were mine. Making the steer's "arrived" agree with
+     * the solver's "apart" removed a permanent 3.6-unit push-war — and that
+     * push-war had been the only thing keeping `desiredMove` non-zero, which was
+     * incidentally the only thing keeping the dash firing. Then the dash gate was
+     * moved onto `< contactGap`, which is the SAME NUMBER separation rests the pair
+     * at, and separation converges on it from below. Measured on the real map: two
+     * hostiles at rest 48.0 apart, contact gap 48.0, `d - gap` = -7.105e-15. The
+     * gate fired on a rounding error, on every pair that ever reached contact,
+     * forever. Nine of ten AI bots idle after ten seconds.
+     *
+     * Run on the shipped map, not a two-bot box. A hand-built pair kept landing
+     * hits on the way IN and knocking each other apart again, so "did anyone get
+     * hit" passed with the bug still in — the standoff only settles once a pair has
+     * actually come to rest. The real map produces that within seconds.
+     *
+     * What is counted is the declined swing: a hunting AI within the hit test's own
+     * forgiveness of contact, dash off cooldown, not dashing. That is the bug
+     * stated directly, and it cannot be satisfied by anything incidental.
+     */
+    const simulation = await DotBotSimulation.create({ map: downtownMap });
+    const sim = simulation as unknown as {
+      bots: Map<string, { id: string; state: string; floorId: string; position: Vec2; dashCooldownMs: number; dashActiveMs: number }>;
+      controllers: Map<string, string>;
+      pickBotTarget: (bot: unknown) => { intent: string; targetId?: string };
+      contactGap: (a: unknown, b: unknown, at: Vec2) => number;
+    };
+    let declinedTicks = 0;
+    let longestRun = 0;
+    let run = 0;
+    let everInRange = false;
+    for (let tick = 0; tick < 900; tick += 1) {
+      simulation.step();
+      let declined = 0;
+      for (const bot of sim.bots.values()) {
+        if (bot.state !== "alive" || sim.controllers.get(bot.id) !== "ai") continue;
+        const objective = sim.pickBotTarget.call(sim, bot);
+        if (objective.intent !== "hunt" || !objective.targetId) continue;
+        const hostile = sim.bots.get(objective.targetId);
+        if (!hostile || hostile.floorId !== bot.floorId) continue;
+        const away = Math.hypot(hostile.position.x - bot.position.x, hostile.position.y - bot.position.y)
+          - sim.contactGap.call(sim, bot, hostile, hostile.position);
+        if (away > 4) continue;
+        // Measured before the dash state, or the fix hides its own evidence: with
+        // the gate working, a bot in range is always already dashing or cooling.
+        everInRange = true;
+        if (bot.dashCooldownMs <= 0 && bot.dashActiveMs <= 0) declined += 1;
+      }
+      if (declined > 0) { declinedTicks += 1; run += 1; longestRun = Math.max(longestRun, run); } else run = 0;
+    }
+    simulation.dispose();
+
+    // Somebody has to have got into range, or this passes on a map where nobody met.
+    expect(everInRange).toBe(true);
+    /**
+     * Measured 0 and 0 with the gate reading the hit test's forgiveness, against
+     * 1434 declined ticks and an unbroken run of 1265 out of 1800 with the gate at
+     * bare `contactGap`. A handful of ticks is the tick-order slack between deciding
+     * and swinging; a run of hundreds is the standoff.
+     */
+    expect(declinedTicks).toBeLessThan(30);
+    expect(longestRun).toBeLessThan(10);
+  });
+
+  it("leaves a jam it cannot get through instead of pressing into it forever", async () => {
+    /**
+     * The freeze, as an assertion, and it is not a physics bug.
+     *
+     * Nothing in the AI knows another bot exists — the navigator plans on static
+     * geometry, steering is a raw vector at the goal with no repulsion term — so N
+     * bots after one objective are commanded at one identical point every tick.
+     * Measured in a corner: three bots asking for 27, 178 and 400 units of travel
+     * and receiving 0.0000 for 299 consecutive ticks, while the solver held every
+     * pair correctly at its own rest distance. It reproduces identically with plain
+     * circular bodies and a LARGER unmet demand, so it is a queueing problem, not a
+     * shape problem, and reverting the body would not touch it.
+     *
+     * Built as a corridor here rather than a corner, because a corridor is the
+     * honest version: the blocker genuinely cannot be walked around, so the only
+     * way out is for the blocked bot to want something else. A frozen ally plugs a
+     * 56-unit doorway, which admits exactly one 48-wide body, and a second ally is
+     * left on the wrong side of it with a hostile beyond.
+     */
+    const DOOR = 56;
+    const simulation = await DotBotSimulation.create({
+      map: {
+        ...makeMap([
+          allySpawn({ id: "plug", controller: "frozen", position: { x: 250, y: 180 } }),
+          allySpawn({ id: "blocked", position: { x: 180, y: 180 } }),
+          enemySpawn({ id: "bait", isAmbient: false, controller: "frozen", position: { x: 340, y: 180 } }),
+        ]),
+        outdoor: {
+          roads: [], parks: [], objects: [], dotSpawns: [],
+          walls: [
+            ...bounds(500, 360),
+            { id: "wall-north", x: 240, y: 20, w: 20, h: 180 - DOOR / 2 - 20 },
+            { id: "wall-south", x: 240, y: 180 + DOOR / 2, w: 20, h: 340 - (180 + DOOR / 2) },
+          ],
+        },
+      },
+      config: testConfig,
+    });
+    disableDashes(simulation);
+
+    // Long enough to cross the 90-tick stall window twice over.
+    let stuckTicks = 0;
+    let longestLean = 0;
+    let run = 0;
+    let previous = { x: 180, y: 180 };
+    for (let tick = 0; tick < 400; tick += 1) {
+      simulation.step();
+      const blocked = simulation.getSnapshot().bots.find((bot) => bot.id === "blocked")!;
+      const steer = aiInternals(simulation).get("blocked")!.desiredMove;
+      const moved = Math.hypot(blocked.position.x - previous.x, blocked.position.y - previous.y);
+      // Leaning: asking to travel, and not travelling.
+      if (Math.hypot(steer.x, steer.y) > 0.2 && moved < 0.05) {
+        run += 1;
+        longestLean = Math.max(longestLean, run);
+        stuckTicks += 1;
+      } else {
+        run = 0;
+      }
+      previous = { ...blocked.position };
+    }
+    simulation.dispose();
+
+    /**
+     * The sharp assertion. Without the stall rule the bot leans for all 400 ticks
+     * of the run in one unbroken stretch — it would lean for the rest of the match.
+     * With it, the longest single lean measures 88, which is the 90-tick window
+     * minus the two ticks it takes to notice, and the assertion is that window plus
+     * slack rather than the measurement, so retuning the window does not silently
+     * void the test.
+     */
+    expect(longestLean).toBeLessThan(AI_STALL_TICKS_BOUND);
+    /**
+     * And the softer one. The bot does come back — the plug is the only route to
+     * the only hostile on the map, so after the avoid timer runs out it tries again,
+     * which is what a bot with nothing better to do should do. Measured 162 of 400.
+     * What matters is that it is now punctuated instead of permanent.
+     */
+    expect(stuckTicks).toBeLessThan(250);
+  });
+
+  it("sends one bot to a body, not the whole squad", async () => {
+    /**
+     * A downed body is a channel and a channel is for one bot, so the standing
+     * distance only ever has to seat one.
+     *
+     * It could not seat more. Four plated bodies need 33.94 units of spacing around
+     * a corpse and `withinDownedCoverRange` tops out at 37.2; six cannot be seated
+     * at any distance at all. Sending the squad meant they pressed inward on a ring
+     * none of them could share — measured over 1800 ticks, two looters settled 24.0
+     * from the body still commanded at 37.8 px/s, three at 27.9 and 48.5, four at
+     * 33.9 and 64.8, never settling. That is the pile-and-grind from play, and no
+     * amount of retuning the distance fixes it, because the problem is the number
+     * of claimants.
+     *
+     * Nearest wins and the id breaks a tie, so every bot reaches the same answer
+     * from the same snapshot with nothing written down. Spawned equidistant here
+     * precisely so the tie-break is what decides it.
+     */
+    const simulation = await makeSimulation([
+      enemySpawn({ id: "body", isAmbient: false, controller: "frozen", position: { x: 250, y: 180 }, state: "downed" }),
+      allySpawn({ id: "loot-west", position: { x: 100, y: 180 } }),
+      allySpawn({ id: "loot-east", position: { x: 400, y: 180 } }),
+    ]);
+    disableDashes(simulation);
+    runTicks(simulation, 1200);
+
+    const bots = simulation.getSnapshot().bots;
+    const body = bots.find((bot) => bot.id === "body")!;
+    const claimants = ["loot-west", "loot-east"].filter((id) => {
+      const looter = bots.find((bot) => bot.id === id)!;
+      return withinDownedCoverRange(looter.position, looter.radius, body.position, body.radius, defaultGameConfig.coverCenterTolerance);
+    });
+    expect(claimants).toHaveLength(1);
+    // And the one that got there is standing, not still pressing inward.
+    const steering = aiInternals(simulation).get(claimants[0])!.desiredMove;
+    expect(Math.hypot(steering.x, steering.y) * defaultGameConfig.botSpeed).toBeLessThan(0.01);
+    simulation.dispose();
+  });
+
+  it("separates two bodies that share a centre instead of walking them off together", async () => {
+    /**
+     * `separationPush` runs twice per pair with the arguments swapped, and its
+     * fallback direction at distance zero was a fixed `(1, 0)` for BOTH calls: the
+     * pair welded and translated at the full 5 px/tick cap — 200 px in 40 ticks,
+     * measured — instead of separating. Reachable from spawn, from `placeBot`'s
+     * independent x/y clamps, from revive placement and from knockback.
+     *
+     * Two assertions, because the bug satisfies neither: they have to come apart,
+     * and their midpoint has to stay put while they do.
+     */
+    const simulation = await makeSimulation([
+      playerSpawn({ id: "stack-a", controller: "frozen", position: { x: 250, y: 180 } }),
+      playerSpawn({ id: "stack-b", controller: "frozen", position: { x: 250, y: 180 } }),
+    ]);
+    runTicks(simulation, 20);
+
+    const bots = simulation.getSnapshot().bots;
+    const a = bots.find((bot) => bot.id === "stack-a")!;
+    const b = bots.find((bot) => bot.id === "stack-b")!;
+    simulation.dispose();
+
+    expect(Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y)).toBeGreaterThan(requiredGap(a, b) - 0.01);
+    expect(Math.hypot((a.position.x + b.position.x) / 2 - 250, (a.position.y + b.position.y) / 2 - 180)).toBeLessThan(0.01);
+  });
+
+  it("hands a wall-blocked yielder's undelivered push to the other body", async () => {
+    /**
+     * The mover yields and the stander anchors, which is right until the mover has
+     * nowhere to go: pinned against a wall with the centre line along the wall
+     * normal, `resolveAgainstSolids` cancelled 100% of its push and the anchor's
+     * yield of 0 meant nobody else tried. Measured 32.0 px of permanent
+     * interpenetration here, and 31.03 px in a dead-end pocket, unchanged after 30
+     * ticks.
+     */
+    const simulation = await makeSimulation([
+      playerSpawn({ id: "pinned", position: { x: 44, y: 180 } }),
+      playerSpawn({ id: "stander", position: { x: 60, y: 180 } }),
+    ]);
+    simulation.setController("stander", "human");
+
+    for (let tick = 0; tick < 30; tick += 1) {
+      simulation.applyInput("pinned", { move: { x: -1, y: 0 }, dash: false });
+      simulation.applyInput("stander", { move: { x: 0, y: 0 }, dash: false });
+      simulation.step();
+    }
+
+    const bots = simulation.getSnapshot().bots;
+    const pinned = bots.find((bot) => bot.id === "pinned")!;
+    const stander = bots.find((bot) => bot.id === "stander")!;
+    simulation.dispose();
+
+    // The pinned body really is still against the wall — otherwise this proves
+    // nothing about an undelivered push.
+    expect(pinned.position.x).toBeLessThan(45);
+    expect(Math.hypot(pinned.position.x - stander.position.x, pinned.position.y - stander.position.y))
+      .toBeGreaterThan(requiredGap(pinned, stander) - 0.01);
+  });
+});
+
+describe("waypointRetired", () => {
+  /**
+   * Retiring on proximity alone used `radius * 0.8` = 19.20, which is exactly the
+   * smallest centre distance two bodies can reach — and 19.20 is not < 19.20. A
+   * bot could therefore NEVER retire a waypoint another body was standing on, and
+   * `findNavigationPath` plans on static geometry, so the repath returned the
+   * identical blocked waypoint.
+   */
+  const RETIRE = defaultGameConfig.botRadius * 0.8;
+
+  it("retires a waypoint the bot is past, however far to the side it stopped", () => {
+    // Walked east along y = 100; stopped 48 px north of the waypoint but beyond it.
+    expect(waypointRetired({ x: 320, y: 52 }, { x: 100, y: 100 }, { x: 300, y: 100 }, RETIRE)).toBe(true);
+    // Exactly on the perpendicular counts: the leg is done.
+    expect(waypointRetired({ x: 300, y: 40 }, { x: 100, y: 100 }, { x: 300, y: 100 }, RETIRE)).toBe(true);
+  });
+
+  it("keeps a waypoint the bot has not reached yet, however close to the line it is", () => {
+    // Dead on the leg, still 60 px short.
+    expect(waypointRetired({ x: 240, y: 100 }, { x: 100, y: 100 }, { x: 300, y: 100 }, RETIRE)).toBe(false);
+    // Stalled 24.000 px short against a parked body — the measured case. Outside
+    // the retire radius and no progress made, so the leg stays open: retirement
+    // is not a licence to give up on a waypoint the bot is genuinely short of.
+    expect(waypointRetired({ x: 276, y: 100 }, { x: 100, y: 100 }, { x: 300, y: 100 }, RETIRE)).toBe(false);
+  });
+
+  it("still retires on proximity, for the last leg and for corners cut early", () => {
+    expect(waypointRetired({ x: 296, y: 104 }, { x: 100, y: 100 }, { x: 300, y: 100 }, RETIRE)).toBe(true);
+    // A zero-length leg has nothing left to progress along.
+    expect(waypointRetired({ x: 900, y: 900 }, { x: 300, y: 100 }, { x: 300, y: 100 }, RETIRE)).toBe(true);
   });
 });

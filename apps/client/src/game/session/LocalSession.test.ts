@@ -68,6 +68,7 @@ describe("LocalSession run-state ownership", () => {
         state: "alive",
         floorId: "outdoor",
         facing: 0,
+        moving: false,
         maxShields: 3,
         shields: 3,
         shieldSegments: [1, 1, 1],
@@ -75,6 +76,7 @@ describe("LocalSession run-state ownership", () => {
         hold: [],
         carriedCount: 3,
         searched: false,
+        pleaded: false,
         radarActiveMs: 0,
         radarPings: [],
         dashOverchargeCharges: 0,
@@ -94,10 +96,11 @@ describe("LocalSession run-state ownership", () => {
   it("ends a downed solo run through LEAVE RUN with an itemized loss", async () => {
     const downed = snapshot(50, [{
       id: "player", name: "Player", squadId: "alpha", isAmbient: false, color: "#fff",
-      position: { x: 10, y: 10 }, radius: 24, state: "downed", floorId: "outdoor", facing: 0,
+      position: { x: 10, y: 10 }, radius: 24, state: "downed", floorId: "outdoor", facing: 0, moving: false,
       maxShields: 3, shields: 0, shieldSegments: [0, 0, 0], bays: [health, null, null], hold: [],
       carriedCount: 1,
       searched: false,
+      pleaded: false,
       radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0, incognitoMs: 0,
       dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
     }]);

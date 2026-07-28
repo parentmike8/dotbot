@@ -1,6 +1,6 @@
 import { defaultGameConfig, downtownMap, type DotBotEntity, type InputCommand } from "@dotbot/game";
 import { DotBotSimulation } from "@dotbot/game/simulation";
-import type { MapDocument } from "@dotbot/game/types";
+import type { MapDocument, Vec2 } from "@dotbot/game/types";
 import { describe, expect, it } from "vitest";
 import { LitePredictor } from "./LitePredictor";
 import { classifyCorrection, decayCorrectionOffset, preventBackwardMotion, replayPendingInputs } from "./reconciliation";
@@ -16,6 +16,7 @@ const makeBot = (overrides: Partial<DotBotEntity> = {}): DotBotEntity => ({
   radius: defaultGameConfig.botRadius,
   floorId: "outdoor",
   facing: 0,
+  moving: false,
   maxShields: 3,
   shields: 3,
   shieldSegments: [1, 1, 1],
@@ -23,6 +24,7 @@ const makeBot = (overrides: Partial<DotBotEntity> = {}): DotBotEntity => ({
   hold: [],
   carriedCount: 0,
   searched: false,
+  pleaded: false,
   radarActiveMs: 0,
   radarPings: [],
   dashOverchargeCharges: 0,
@@ -85,7 +87,7 @@ describe("LitePredictor", () => {
 
   it("stops a predicted dash at a hostile body and recoils to touching", () => {
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
-    predictor.setObstacles([{ id: "target", position: { x: 1260, y: 850 }, radius: 24, hostile: true }]);
+    predictor.setObstacles([{ id: "target", position: { x: 1260, y: 850 }, radius: 24, facing: Math.PI, shieldSegments: [1, 1, 1], hostile: true }]);
 
     predictor.step({ ...moveRight, dash: true });
     for (let tick = 0; tick < 12; tick += 1) {
@@ -105,7 +107,7 @@ describe("LitePredictor", () => {
 
   it("passes a predicted dash through friendly bodies untouched", () => {
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
-    predictor.setObstacles([{ id: "friendly", position: { x: 1260, y: 850 }, radius: 24, hostile: false }]);
+    predictor.setObstacles([{ id: "friendly", position: { x: 1260, y: 850 }, radius: 24, facing: Math.PI, shieldSegments: [1, 1, 1], hostile: false }]);
 
     predictor.step({ ...moveRight, dash: true });
     for (let tick = 0; tick < 30; tick += 1) {
@@ -213,5 +215,216 @@ describe("LitePredictor", () => {
     expect(replay.corrected.dashActiveMs).toBeCloseTo(authoritative.dashActiveMs, 4);
     expect(replay.corrected.dashCooldownMs).toBeCloseTo(authoritative.dashCooldownMs, 4);
     simulation.dispose();
+  });
+});
+
+/**
+ * Separation is the one place the predictor runs a rule with two sides to it, and
+ * it had the rule wrong on both: an `if (moving)` gate plus a hardcoded
+ * `yieldFraction = 1`, where the server uses
+ * `aMoving === bMoving ? 0.5 : aMoving ? 1 : 0` and therefore pushes two standing
+ * bodies apart as well. Two movers in contact were predicted with twice the
+ * server's correction and two standers with none of it — up to 2.5 px/tick,
+ * 150 px/s of rubber-band on the player's own body, on every shoulder.
+ *
+ * These step the real simulation and the predictor side by side and demand the
+ * same number, not a similar one. The predictor is fed the obstacle exactly as
+ * the server's separation pass sees it: `applyMovement` runs immediately before
+ * `resolveBotSeparation` with nothing in between, so the obstacle's contact
+ * position is its previous end-of-tick position plus one tick of its commanded
+ * velocity. In open geometry that is an exact equality, not an approximation.
+ */
+describe("LitePredictor mirrors the server's separation", () => {
+  const openMap = (bots: MapDocument["botSpawns"]): MapDocument => ({
+    id: "separation-parity",
+    name: "Separation parity",
+    width: 600,
+    height: 400,
+    outdoor: { roads: [], parks: [], walls: [], objects: [], dotSpawns: [] },
+    buildings: [],
+    extractionPoints: [],
+    insertionPoints: [],
+    botSpawns: bots,
+  });
+
+  const tickMs = 1000 / defaultGameConfig.tickHz;
+
+  /** One tick of commanded travel, the way `applyMovement` integrates it with no
+   * solids in range. */
+  const advanced = (from: Vec2, move: Vec2): Vec2 => ({
+    x: from.x + (move.x * defaultGameConfig.playerSpeed * tickMs) / 1000,
+    y: from.y + (move.y * defaultGameConfig.playerSpeed * tickMs) / 1000,
+  });
+
+  async function runParity(bumperMove: Vec2, viewerMove: Vec2, ticks: number): Promise<number> {
+    const map = openMap([
+      { id: "viewer", name: "Viewer", squadId: "alpha", color: "#15aabf", position: { x: 280, y: 200 }, controller: "human" },
+      { id: "bumper", name: "Bumper", squadId: "alpha", color: "#f2994a", position: { x: 320, y: 200 }, controller: "human" },
+    ]);
+    const simulation = await DotBotSimulation.create({ map });
+    const initial = simulation.getSnapshot().bots.find(({ id }) => id === "viewer")!;
+    const predictor = new LitePredictor(map, defaultGameConfig, initial);
+    const bumperMoving = Math.hypot(bumperMove.x, bumperMove.y) * defaultGameConfig.playerSpeed > 5;
+    let worstDivergence = 0;
+
+    for (let tick = 0; tick < ticks; tick += 1) {
+      const bumper = simulation.getSnapshot().bots.find(({ id }) => id === "bumper")!;
+      predictor.setObstacles([{
+        id: "bumper",
+        position: advanced(bumper.position, bumperMove),
+        radius: bumper.radius,
+        facing: bumperMoving ? Math.atan2(bumperMove.y, bumperMove.x) : bumper.facing,
+        shieldSegments: [...bumper.shieldSegments],
+        hostile: false,
+        moving: bumperMoving,
+      }]);
+
+      simulation.applyInput("viewer", { move: viewerMove, dash: false });
+      simulation.applyInput("bumper", { move: bumperMove, dash: false });
+      simulation.step();
+      const predicted = predictor.step({ move: viewerMove, dash: false });
+      const authoritative = simulation.getSnapshot().bots.find(({ id }) => id === "viewer")!;
+      worstDivergence = Math.max(
+        worstDivergence,
+        Math.hypot(predicted.position.x - authoritative.position.x, predicted.position.y - authoritative.position.y),
+      );
+    }
+
+    simulation.dispose();
+    return worstDivergence;
+  }
+
+  it("mirrors the server shouldering a body that is walking into a wall", async () => {
+    /**
+     * Parity for a wall-adjacent shoulder, built the way
+     * `NetSession.setPredictionObstacles` builds obstacles — straight off the
+     * snapshot's own `moving`, which is now on the wire.
+     *
+     * WHAT THIS DOES NOT PROVE, stated because the docstring said otherwise for a
+     * while. `moving` went on the wire because the server splits responsibility for an
+     * overlap by ATTEMPTED velocity, so a body walking into a wall counts as moving
+     * while its position never changes — and the predictor used to guess from exactly
+     * that changed position, getting the case backwards. This test passes with the
+     * flag removed, and the reason is worth keeping: the bumper here is still pushed
+     * along a CLEAR axis, so its position does move and the old guess reads it
+     * correctly too.
+     *
+     * A body whose position is genuinely frozen while it reports moving has to be
+     * blocked on the same axis it is pushed along — and that is the server's
+     * wall-shortfall relay, which the predictor cannot mirror at all (it would need to
+     * know whether the OTHER body's push got through) and which dominates the
+     * measurement: 3.87 units, against the 2.5 the flag is worth. So the flag removes
+     * a guess rather than fixing a divergence this suite can isolate, and what is
+     * pinned here is the parity that the relay does not eat.
+     *
+     * The bumper walks INTO the wall while the shoulder happens ALONGSIDE it, on a
+     * different axis, which matters. Pressing the bumper into the wall on the same
+     * axis as the push instead lands on the server's wall-shortfall relay — the
+     * yielder's correction is eaten by geometry and handed to its counterpart — and
+     * the predictor cannot mirror that, because it needs to know whether the OTHER
+     * body's push got through. That is documented in LitePredictor and left to
+     * reconciliation; measured here it diverges 3.87 units and would have made this
+     * test look like a `moving` failure when it is not one.
+     */
+    const map: MapDocument = {
+      ...openMap([
+        { id: "viewer", name: "Viewer", squadId: "alpha", color: "#15aabf", position: { x: 284, y: 276 }, controller: "human" },
+        { id: "bumper", name: "Bumper", squadId: "alpha", color: "#f2994a", position: { x: 320, y: 276 }, controller: "human" },
+      ]),
+      // Wide, because the pair drifts east as they shoulder: run them into the sheet's
+      // own edge and `placeBot`'s clamp puts the relay back in play.
+      width: 2400,
+      outdoor: {
+        roads: [], parks: [], objects: [], dotSpawns: [],
+        // South face at y = 300, so a body centred at 276 is flush against it.
+        walls: [{ id: "south", x: 0, y: 300, w: 2400, h: 100 }],
+      },
+    };
+    const simulation = await DotBotSimulation.create({ map });
+    const initial = simulation.getSnapshot().bots.find(({ id }) => id === "viewer")!;
+    const predictor = new LitePredictor(map, defaultGameConfig, initial);
+    const intoTheWall = { x: 0, y: 1 };
+    const alongTheWall = { x: 1, y: 0 };
+    let worstDivergence = 0;
+    let bumperMovedAtAll = 0;
+
+    for (let tick = 0; tick < 240; tick += 1) {
+      const bumper = simulation.getSnapshot().bots.find(({ id }) => id === "bumper")!;
+      predictor.setObstacles([{
+        id: "bumper",
+        position: { ...bumper.position },
+        radius: bumper.radius,
+        facing: bumper.facing,
+        shieldSegments: [...bumper.shieldSegments],
+        hostile: false,
+        moving: bumper.moving,
+      }]);
+      const before = bumper.position.y;
+      simulation.applyInput("viewer", { move: alongTheWall, dash: false });
+      simulation.applyInput("bumper", { move: intoTheWall, dash: false });
+      simulation.step();
+      const predicted = predictor.step({ move: alongTheWall, dash: false });
+      const authoritative = simulation.getSnapshot().bots.find(({ id }) => id === "viewer")!;
+      const after = simulation.getSnapshot().bots.find(({ id }) => id === "bumper")!;
+      bumperMovedAtAll = Math.max(bumperMovedAtAll, Math.abs(after.position.y - before));
+      worstDivergence = Math.max(
+        worstDivergence,
+        Math.hypot(predicted.position.x - authoritative.position.x, predicted.position.y - authoritative.position.y),
+      );
+    }
+    const bumper = simulation.getSnapshot().bots.find(({ id }) => id === "bumper")!;
+    simulation.dispose();
+
+    // The scenario has to be the one described: a body that reports moving while its
+    // position does not change, which is what defeats the position-delta fallback.
+    expect(bumper.moving, "the bumper should report moving under its own power").toBe(true);
+    expect(bumperMovedAtAll, "the wall should be absorbing the bumper's travel").toBeLessThan(0.5);
+    expect(worstDivergence).toBeLessThan(1e-9);
+  });
+
+  it("splits the overlap evenly when both bodies are moving", async () => {
+    // Head-on and held there: every one of the 300 ticks is a live contact, which
+    // is where the hardcoded yield of 1 doubled the correction.
+    expect(await runParity({ x: -1, y: 0 }, { x: 1, y: 0 }, 300)).toBeLessThan(1e-9);
+  });
+
+  it("pushes a standing body apart from another standing body", async () => {
+    // Neither one moving: the server splits this 0.5/0.5 and the `if (moving)`
+    // gate predicted no push at all.
+    expect(await runParity({ x: 0, y: 0 }, { x: 0, y: 0 }, 300)).toBeLessThan(1e-9);
+  });
+
+  it("anchors the predicted body when it is standing and the other one walks", async () => {
+    expect(await runParity({ x: -1, y: 0 }, { x: 0, y: 0 }, 300)).toBeLessThan(1e-9);
+  });
+
+  it("yields the whole capped push when it is the only one moving", async () => {
+    expect(await runParity({ x: 0, y: 0 }, { x: -1, y: 0 }, 300)).toBeLessThan(1e-9);
+  });
+
+  it("infers motion from the snapshot when the caller does not say", () => {
+    // Distinct ids so the two histories cannot contaminate each other, and an
+    // overlap small enough that neither yield fraction is clipped by the cap.
+    const at = (id: string) => ({
+      id,
+      position: { x: 1250, y: 850 },
+      radius: defaultGameConfig.botRadius,
+      facing: Math.PI,
+      shieldSegments: [1, 1, 1],
+      hostile: false,
+    });
+    const walker = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    // Told outright that it is moving: the pair splits the overlap.
+    walker.setObstacles([{ ...at("walker"), moving: true }]);
+    const split = walker.step({ move: { x: 1, y: 0 }, dash: false }).position.x;
+
+    const stander = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    // Not told anything, and seen twice in the same place: inferred standing, so
+    // the mover yields all of it.
+    stander.setObstacles([at("parked")]);
+    stander.setObstacles([at("parked")]);
+    const whole = stander.step({ move: { x: 1, y: 0 }, dash: false }).position.x;
+
+    expect(whole).toBeLessThan(split);
   });
 });

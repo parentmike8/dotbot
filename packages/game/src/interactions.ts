@@ -48,6 +48,31 @@ type BodyReach = Pick<DotBotEntity, "id" | "squadId" | "state" | "position" | "r
  * The same predicate gates the simulation, the picker UI, and which inventories
  * cross the wire, so the client can never show a slot the server will refuse.
  */
+/**
+ * Whether `actor` can pick this body up — the one rule, read by the simulation and by
+ * the overlay that offers the verb.
+ *
+ * A squadmate is always a rescue. A rival is a recruitment, and it needs two things:
+ * the body has to have ASKED (`pleaded`), because a squad you did not choose is not a
+ * rescue; and the actor's squad has to have room, because three load in and four is
+ * the cap.
+ *
+ * Written once because the alternative is the overlay offering a verb the simulation
+ * refuses, which play has already reported once as a channel that appears and
+ * vanishes.
+ */
+export function canReviveBody(
+  actor: BodyReach,
+  body: BodyReach & Pick<DotBotEntity, "pleaded">,
+  squadSize: number,
+  maxSquadSize: number,
+): boolean {
+  if (actor.id === body.id || actor.state !== "alive" || body.state !== "downed") return false;
+  if (actor.floorId !== body.floorId) return false;
+  if (actor.squadId === body.squadId) return true;
+  return body.pleaded && squadSize < maxSquadSize;
+}
+
 export function canTakeFromBody(
   actor: BodyReach,
   body: BodyReach & Pick<DotBotEntity, "searched">,

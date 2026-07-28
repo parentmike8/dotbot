@@ -1,5 +1,15 @@
 import type { GameConfig } from "./types";
 
+/**
+ * Above this a body counts as moving under its own power (px/s).
+ *
+ * Shared, because separation splits responsibility for an overlap on it — the mover
+ * yields, a standing bot is an anchor — and the client predictor has to split it the
+ * same way or it rubber-bands the player's own body on every shoulder. It is also
+ * what `DotBotEntity.moving` reports on the wire.
+ */
+export const MOVING_SPEED = 5;
+
 export const defaultGameConfig: GameConfig = {
   tickHz: 60,
   botRadius: 24,
@@ -53,6 +63,7 @@ export const defaultGameConfig: GameConfig = {
   pleaCooldownMs: 10_000,
   minInsertionSpacing: 900,
   coverCenterTolerance: 12,
+  maxSquadSize: 4,
   extractionDurationMs: 4000,
   runDurationMs: 480_000,
 };
