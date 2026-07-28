@@ -1,10 +1,9 @@
 import { Application, Container, Graphics } from "pixi.js";
-import { arcLengthNearest, pointAtArcLength } from "@dotbot/game/geometry";
 import type { SourceBuilding, SourceWall } from "@dotbot/game/mapSource";
-import { resolvePath } from "@dotbot/game/mapSource";
 import type { MapDocument, Rect, Vec2 } from "@dotbot/game/types";
 import { buildMapArt, type MapArt } from "../game/renderer/mapArt";
 import { handlesFor, pick, type Handle } from "./editing";
+import { screenToWorld, snapToGrid, wallNear } from "./viewport";
 
 /**
  * The Studio canvas.
@@ -125,11 +124,7 @@ export class StudioCanvas {
   // -------------------------------------------------------------------------
 
   private screenToWorld(clientX: number, clientY: number): Vec2 {
-    const box = this.app.canvas.getBoundingClientRect();
-    return {
-      x: this.centre.x + (clientX - box.left - box.width / 2) / this.scale,
-      y: this.centre.y + (clientY - box.top - box.height / 2) / this.scale,
-    };
+    return screenToWorld(clientX, clientY, this.app.canvas.getBoundingClientRect(), this.centre, this.scale);
   }
 
   private applyCamera(): void {
@@ -156,9 +151,7 @@ export class StudioCanvas {
   // -------------------------------------------------------------------------
 
   private snap(point: Vec2): Vec2 {
-    const grid = this.view?.grid ?? 0;
-    if (!grid) return point;
-    return { x: Math.round(point.x / grid) * grid, y: Math.round(point.y / grid) * grid };
+    return snapToGrid(point, this.view?.grid ?? 0);
   }
 
   private bind(canvas: HTMLCanvasElement, callbacks: CanvasCallbacks): void {
@@ -249,20 +242,9 @@ export class StudioCanvas {
 
   /** The authored wall nearest a point, and the point snapped onto its centreline. */
   private wallNear(point: Vec2): { wall: SourceWall; at: Vec2 } | null {
-    const view = this.view;
-    if (!view?.source) return null;
-    const floor = view.source.floors.find((candidate) => candidate.label === view.floor);
-    let best: { wall: SourceWall; at: Vec2; distance: number } | null = null;
-    for (const wall of floor?.walls ?? []) {
-      const path = resolvePath(wall.path, wall.closed);
-      const arc = arcLengthNearest(path, point, wall.closed ?? false);
-      const at = pointAtArcLength(path, arc, wall.closed ?? false).at;
-      const distance = Math.hypot(at.x - point.x, at.y - point.y);
-      if (!best || distance < best.distance) best = { wall, at, distance };
-    }
-    // Beyond half a bot's width from any wall the click was not meant for one.
-    return best && best.distance < 24 ? { wall: best.wall, at: best.at } : null;
+    return wallNear(this.view?.source ?? null, this.view?.floor ?? "", point);
   }
+
 
   // -------------------------------------------------------------------------
   // Drawing
