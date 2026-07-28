@@ -18,7 +18,7 @@ import { buildFloorModel } from "../game/renderer/model/modelFloor";
 import { buildGeometryProof } from "../game/renderer/model/geometryProof";
 import { drawDotDisc } from "../game/renderer/dotArt";
 import { drawCatchLight, drawGroundShadow } from "../game/renderer/grounding";
-import { drawDownedBody, type BodyStyle, type CrackKind, type DownedBody, type HullKind } from "../game/renderer/bodies";
+import { drawChargedCore, drawDownedBody, type BodyStyle, type CrackKind, type DownedBody, type HullKind } from "../game/renderer/bodies";
 import { V } from "../game/renderer/model/tone";
 
 /**
@@ -319,6 +319,28 @@ function bodiesWorld(): Container {
   // Reference: what a bot looks like still standing, at the same size.
   drawLabBot(g, { at: { x: originX, y: 46 }, facing: -Math.PI / 2, color: RIVAL, shields: [1, 0.5, 1], radius: 24 });
   world.addChild(label("ALIVE, FOR SCALE", originX + 34, 42));
+
+  // The dash gauge, drained and refilling. Drawn on rivals too, so "can that thing
+  // still dash at me" is something you read rather than guess.
+  const charge = [0, 0.25, 0.5, 0.75, 1];
+  charge.forEach((level, index) => {
+    const x = originX + 360 + index * 74;
+    const at = { x, y: 46 };
+    // The plates, then the core — but never the reference bot's own filled core
+    // underneath, which would put the gauge's dim half on top of solid ink and
+    // hide exactly the contrast this row exists to judge.
+    drawGroundShadow(g, at, 24);
+    const span = shieldArcSpan(3);
+    for (let plate = 0; plate < 3; plate += 1) {
+      const start = -Math.PI / 2 + (plate * Math.PI * 2) / 3 - span / 2;
+      arc(g, at, 24 * 0.78, start, start + span, SQUAD, 5, 1);
+    }
+    g.circle(x, 46, 24 - 0.5).stroke({ color: HULL, width: 1, alpha: 0.22 });
+    drawChargedCore(g, at, 24 * 0.4, level, HULL);
+    if (level >= 1) drawCatchLight(g, at, 24 * 0.4);
+    world.addChild(label(`${Math.round(level * 100)}%`, x - 10, 78));
+  });
+  world.addChild(label("DASH CHARGE  \u00b7  spent, refilling, ready", originX + 360, 98));
 
   HULLS.forEach((hull, row) => {
     CRACKS.forEach((crack, column) => {

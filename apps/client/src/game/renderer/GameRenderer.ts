@@ -26,7 +26,7 @@ import {
 } from "./impactPrediction";
 import { drawDotDisc } from "./dotArt";
 import { drawCatchLight, drawGroundShadow } from "./grounding";
-import { drawDownedBody } from "./bodies";
+import { drawChargedCore, drawDownedBody } from "./bodies";
 import { DOT_COLOR, INK, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
 
@@ -61,6 +61,8 @@ type BotView = {
   displayPosition: Vec2 | null;
   lastDisplayAt: number;
   movingUntil: number;
+  /** Longest cooldown seen on this bot — the gauge's full mark. */
+  dashPeakMs: number;
 };
 
 type ImpactView = {
@@ -816,6 +818,7 @@ export class GameRenderer {
         displayPosition: null,
         lastDisplayAt: performance.now(),
         movingUntil: 0,
+        dashPeakMs: 0,
       };
       this.botViews.set(bot.id, view);
     }
@@ -837,6 +840,19 @@ export class GameRenderer {
         : moved
           ? (Math.floor(now / 150) % 2 === 0 ? "glide-a" : "glide-b")
           : "idle";
+    /**
+     * How full the dash gauge is, from the longest cooldown this bot has been seen
+     * to carry. Reading it off a config would mean the renderer and the server each
+     * holding a copy of the same number; the bot itself already reports it.
+     */
+    if (bot.dashCooldownMs > view.dashPeakMs) view.dashPeakMs = bot.dashCooldownMs;
+    const dashReady = bot.dashOverchargeCharges > 0 || bot.dashCooldownMs <= 0;
+    const dashLevel = dashReady || view.dashPeakMs <= 0
+      ? 1
+      : clamp01(1 - bot.dashCooldownMs / view.dashPeakMs);
+    // Quantized, or a continuous value redraws the body on every frame of every
+    // cooldown. Twelve steps is finer than the eye tracks on a 24-unit core.
+    const dashSteps = Math.round(dashLevel * 12);
     const signature = [
       bot.state,
       bot.radius,
@@ -846,11 +862,12 @@ export class GameRenderer {
       serrated ? 1 : 0,
       bot.dashActiveMs > 0 ? 1 : 0,
       bot.invulnerabilityMs > 0 ? 1 : 0,
+      dashSteps,
       animation,
     ].join("|");
     if (view.signature !== signature) {
       view.body.clear();
-      this.drawBotBody(view.body, { ...bot, position: { x: 0, y: 0 }, facing: 0 }, viewerSquadId);
+      this.drawBotBody(view.body, { ...bot, position: { x: 0, y: 0 }, facing: 0 }, viewerSquadId, dashSteps / 12);
       view.signature = signature;
     }
     view.lastPosition = { ...bot.position };
@@ -895,7 +912,7 @@ export class GameRenderer {
     }
   }
 
-  private drawBotBody(g: Graphics, bot: DotBotEntity, viewerSquadId: string | undefined): void {
+  private drawBotBody(g: Graphics, bot: DotBotEntity, viewerSquadId: string | undefined, dashLevel = 1): void {
     const color = this.relationshipColor(bot, viewerSquadId);
     const serrated = !bot.isAmbient && viewerSquadId !== undefined && bot.squadId !== viewerSquadId;
 
@@ -919,10 +936,10 @@ export class GameRenderer {
     // line is, so contact renders as contact instead of a 10px air gap
     // between shield arcs.
     g.circle(bot.position.x, bot.position.y, bot.radius - 0.5).stroke({ color: INK.structure, width: 1, alpha: 0.22 });
-    g.circle(bot.position.x, bot.position.y, coreRadius).fill({ color: INK.structure, alpha: 0.95 });
-    g.circle(bot.position.x, bot.position.y, coreRadius).stroke({ color: INK.structure, width: 2 });
-    // Catch light on the core, so the body reads as a sphere under the plates.
-    drawCatchLight(g, bot.position, coreRadius);
+    drawChargedCore(g, bot.position, coreRadius, dashLevel, INK.structure);
+    // Catch light only on a charged core, so the body reads as a sphere under the
+    // plates and a spent dash reads as a light that has gone out.
+    if (dashLevel >= 1) drawCatchLight(g, bot.position, coreRadius);
 
     if (bot.dashActiveMs > 0) {
       g.circle(bot.position.x, bot.position.y, bot.radius - 1).stroke({ color: INK.structure, width: 3, alpha: 0.45 });

@@ -30,6 +30,23 @@ export function carryTickAngles(count: number): number[] {
 }
 
 /**
+ * The arc of a disc lying below a waterline, for a fill that rises from the
+ * bottom. `level` runs 0 (empty) to 1 (full).
+ *
+ * Returns the arc bounding the filled segment; closing it draws the chord. Screen
+ * y grows downward, so "below" is the arc through +y and a full disc is the whole
+ * circle rather than a degenerate sliver.
+ */
+export function waterlineArc(level: number): [number, number] | null {
+  if (level <= 0) return null;
+  if (level >= 1) return [0, Math.PI * 2];
+  // sin of the waterline angle: +1 at the bottom of the disc, -1 at the top.
+  const sin = 1 - 2 * level;
+  const angle = Math.asin(sin);
+  return [angle, Math.PI - angle];
+}
+
+/**
  * The footprint ring, broken into arcs.
  *
  * A downed body is walkable — bots pass straight over it — and the contract is

@@ -1,7 +1,7 @@
 import type { Graphics } from "pixi.js";
 import type { Vec2 } from "@dotbot/game/types";
 import { INK, WEIGHT } from "./style";
-import { brokenRingArcs, carryTickAngles } from "./bodyMarks";
+import { brokenRingArcs, carryTickAngles, waterlineArc } from "./bodyMarks";
 
 /**
  * The one arc primitive. Pixi's `arc` continues the current path, so an arc drawn
@@ -127,6 +127,36 @@ function crackPiece(
     true,
   );
   g.closePath();
+}
+
+/**
+ * The core as a charge gauge: a dash empties it, and it fills back from the bottom.
+ *
+ * This is the one mark every bot already has, so putting the dash on it costs no
+ * new vocabulary and — because it is drawn on rivals too — turns "can that thing
+ * still dash at me" into something you read off the world instead of guess.
+ */
+export function drawChargedCore(
+  g: Graphics,
+  at: Vec2,
+  radius: number,
+  level: number,
+  color: number,
+): void {
+  // The drained core is not empty, it is dim: a hollow ring would read as a
+  // downed bot's searched core.
+  g.circle(at.x, at.y, radius).fill({ color, alpha: 0.18 });
+
+  const arc = waterlineArc(level);
+  if (arc) {
+    const [from, to] = arc;
+    g.moveTo(at.x + Math.cos(from) * radius, at.y + Math.sin(from) * radius);
+    g.arc(at.x, at.y, radius, from, to);
+    g.closePath();
+    g.fill({ color, alpha: 0.95 });
+  }
+
+  g.circle(at.x, at.y, radius).stroke({ color, width: 2 });
 }
 
 export type DownedBody = {

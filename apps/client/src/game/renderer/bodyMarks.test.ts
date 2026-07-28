@@ -1,5 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { NORTH, brokenRingArcs, carryTickAngles } from "./bodyMarks";
+import { NORTH, brokenRingArcs, carryTickAngles, waterlineArc } from "./bodyMarks";
+
+describe("waterlineArc", () => {
+  it("draws nothing at empty and the whole disc at full", () => {
+    expect(waterlineArc(0)).toBeNull();
+    expect(waterlineArc(-1)).toBeNull();
+    expect(waterlineArc(1)).toEqual([0, Math.PI * 2]);
+    expect(waterlineArc(2)).toEqual([0, Math.PI * 2]);
+  });
+
+  it("fills from the bottom, so half is the lower half", () => {
+    // Screen y grows downward: the filled segment has to be the arc through +y,
+    // or the gauge drains upward and reads as the opposite of what it means.
+    const [from, to] = waterlineArc(0.5)!;
+    expect(from).toBeCloseTo(0, 10);
+    expect(to).toBeCloseTo(Math.PI, 10);
+    const midpoint = (from + to) / 2;
+    expect(Math.sin(midpoint)).toBeGreaterThan(0);
+  });
+
+  it("rises monotonically, and every level keeps its segment below the line", () => {
+    let previous = -Infinity;
+    for (let level = 0.05; level < 1; level += 0.05) {
+      const [from, to] = waterlineArc(level)!;
+      const swept = to - from;
+      expect(swept).toBeGreaterThan(previous);
+      previous = swept;
+      // The chord sits at the waterline: both ends share a y, above the middle.
+      expect(Math.sin(from)).toBeCloseTo(Math.sin(to), 10);
+      expect(Math.sin(from)).toBeLessThan(Math.sin((from + to) / 2));
+    }
+  });
+});
 
 describe("carryTickAngles", () => {
   it("draws nothing for a body that has been emptied", () => {
