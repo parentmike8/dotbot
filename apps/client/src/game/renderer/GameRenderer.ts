@@ -16,6 +16,7 @@ import type { MatchIntel } from "@dotbot/protocol";
 import { CORE_REACH } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
 import { buildMapArt, makeWorldLabel, type MapArt } from "./mapArt";
+import { CAPTION } from "./worldCaption";
 import { signReadingAt, signsOnFloor } from "@dotbot/game/signs";
 import { roofParallax } from "./model/modelRoof";
 import {
@@ -177,8 +178,8 @@ export class GameRenderer {
      * text here." The detail line under it was legible in `INK.opening`, which is the
      * clue — go darker, not bigger.
      */
-    this.signTitle = makeWorldLabel(13, 3, INK.structure, "800");
-    this.signDetail = makeWorldLabel(10, 2.4, INK.opening, "700");
+    this.signTitle = makeWorldLabel(CAPTION.signTitle);
+    this.signDetail = makeWorldLabel(CAPTION.signDetail);
     this.signLayer.addChild(this.signTitle, this.signDetail);
     this.signLayer.visible = false;
     this.app.stage.addChild(this.worldLayer, this.screenGfx);

@@ -14,6 +14,7 @@ import { buildRoofModel } from "./model/modelRoof";
 import { SHADOW_ALPHA, V, type ShadowPad } from "./model/tone";
 import { drawDotDisc } from "./dotArt";
 import { DOT_COLOR, INK, OVERLAY_WHITE, WEIGHT } from "./style";
+import { CAPTION, type Caption } from "./worldCaption";
 
 /**
  * Static map drawing, shared verbatim between the live game and Map Studio.
@@ -152,20 +153,25 @@ export function buildMapArt(map: MapDocument): MapArt {
  * Exported as `makeWorldLabel` because signs need it too, and the alternative was a
  * second `new Text` with its own font and resolution that could drift from every
  * caption already in the world.
+ *
+ * Both take a `Caption` rather than loose size and colour arguments. Every one of these
+ * used to be spelled out at the call site, and two of the six were unreadable on the
+ * ground they landed on — see `worldCaption.ts`, which declares each site's grounds and
+ * has a test that measures them.
  */
-export function makeWorldLabel(size: number, letterSpacing: number, color: number, weight = "600"): Text {
-  return makeLabel("", size, letterSpacing, color, weight);
+export function makeWorldLabel(caption: Caption): Text {
+  return makeLabel("", caption);
 }
 
-function makeLabel(text: string, size: number, letterSpacing: number, color: number, weight = "600"): Text {
+function makeLabel(text: string, caption: Caption): Text {
   const label = new Text({
     text,
     style: {
       fontFamily: LABEL_FONT,
-      fontSize: size,
-      fontWeight: weight as "600",
-      letterSpacing,
-      fill: color,
+      fontSize: caption.size,
+      fontWeight: caption.weight as "600",
+      letterSpacing: caption.tracking,
+      fill: caption.ink,
     },
   });
   label.resolution = 2;
@@ -178,7 +184,7 @@ function drawExtractionLabels(layer: Container, map: MapDocument): void {
     // tag. The generic map caption beneath it is redundant and visually clips
     // into the sealed threshold.
     if (point.id === "base-deployment") continue;
-    const label = makeLabel(point.name, 11, 3, INK.opening, "700");
+    const label = makeLabel(point.name, CAPTION.extractionName);
     label.anchor.set(0.5, 0);
     label.position.set(point.rect.x + point.rect.w / 2, point.rect.y + point.rect.h + 8);
     layer.addChild(label);
@@ -236,7 +242,7 @@ function buildBuildingArt(
   const entranceMarks = new Container();
   buildingsLayer.addChild(entranceMarks);
 
-  const label = makeLabel(building.name, 16, 3.5, INK.fixture, "800");
+  const label = makeLabel(building.name, CAPTION.buildingName);
   label.anchor.set(0.5, 0.5);
   label.position.set(
     building.footprint.x + building.footprint.w / 2,
@@ -283,7 +289,7 @@ function buildFloorArt(
   model.furniture.addChildAt(slotGfx, 0);
 
   for (const stair of floor.stairs) {
-    const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", 10, 2, 0xf2f3f4, "700");
+    const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", CAPTION.stairTag);
     placeStairTag(tag, stair);
     model.annotation.addChild(tag);
   }
@@ -396,7 +402,7 @@ function buildRoofArt(building: Building, floor: FloorPlan): FloorArt {
     // so it is the one fabrication would ever draw onto.
     view.addChild(wellGfx);
     stairViews.set(stair.id, { stair, view });
-    const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", 10, 2, 0xf2f3f4, "700");
+    const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", CAPTION.stairTag);
     placeStairTag(tag, stair);
     annotation.addChild(tag);
   }
@@ -455,7 +461,7 @@ function interactionLabel(dot: InteractionDot, floor: FloorPlan): string | null 
 
 function makeInteractionLabel(text: string, dot: InteractionDot): Container {
   const tag = new Container();
-  const label = makeLabel(text, 9, 1.4, INK.structure, "800");
+  const label = makeLabel(text, CAPTION.interactionTag);
   label.anchor.set(0.5, 0.5);
   const padX = 5;
   const padY = 3;
