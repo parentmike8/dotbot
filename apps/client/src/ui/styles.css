@@ -3,8 +3,53 @@
   --paper: #ffffff;
   --paper-glass: rgba(255, 255, 255, 0.91);
   --muted: #6d7278;
+  /**
+   * A secondary that survives a pale floor.
+   *
+   * `--muted` is tuned against `--paper`, and these prompts do not sit on paper — they
+   * sit over the world, and the world under them is often near-white slab. Play could
+   * not read the second line of the downed panel at all: "NOBODY LEFT TO COME BACK" in
+   * `--muted` on a light floor. It is 9px at 0.14em, so the glyphs are thin as well as
+   * low-contrast.
+   *
+   * Two steps down the ramp instead of four. Still visibly secondary to `--ink`, which
+   * is the hierarchy the prompts are built on. Matches `INK.anchor` in the world palette
+   * so the overlay and the drawing agree about what "one step quieter" means.
+   *
+   * Measured contrast, against the grounds these prompts actually float over:
+   *
+   *                      --muted   --muted-strong   (--ink)
+   *   slab floor           3.60         7.53         14.01
+   *   paper-glass panel    4.65         9.73         18.09
+   *   road carriageway     1.84         3.84          7.15
+   *
+   * At 9px bold with 0.14em tracking the honest bar is 4.5 and 3.0 is the floor. So the
+   * slab case play reported is comfortably fixed, and going down on a ROAD is still
+   * marginal at 3.84 — above the floor, under the bar. Darkening further would close
+   * that and collapse the step against `--ink`, which is the hierarchy the whole prompt
+   * is built on, so it is left as a known edge rather than traded away.
+   */
+  --muted-strong: #3d4247;
   --hairline: rgba(17, 17, 17, 0.18);
   --squad-cyan: #15aabf;
+  /**
+   * The item palette, matching `DOT_COLOR` in the renderer's style module.
+   *
+   * These were typed out six times between the bay buttons, the loot slots, the legend
+   * marks and the netgraph spark, which is six chances for a chip to disagree with the
+   * Dot it stands for. `style.test.ts` asserts each against its `DOT_COLOR` entry.
+   */
+  --item-powerup: #e8590c;
+  --item-blueprint: #1971c2;
+  /**
+   * `INK.hairline`, which is what an interaction Dot is actually drawn in.
+   *
+   * The legend chip was #7d838a — `INK.fixture`, two steps darker — so the swatch
+   * claiming to show you an interaction Dot was a different grey from the Dot. It was
+   * darkened to carry white text; the text is dark ink now instead, which is the right
+   * end of the problem to fix.
+   */
+  --item-interaction: #b9bec4;
   --app-height: 100dvh;
   /**
    * Eight rules already asked for this and none of them got it: an undefined
@@ -252,8 +297,8 @@ button {
   cursor: pointer;
 }
 
-.bay-button.powerup { box-shadow: inset 0 -4px #e8590c; }
-.bay-button.blueprint { box-shadow: inset 0 -4px #1971c2; }
+.bay-button.powerup { box-shadow: inset 0 -4px var(--item-powerup); }
+.bay-button.blueprint { box-shadow: inset 0 -4px var(--item-blueprint); }
 .bay-button:disabled { cursor: default; opacity: .48; }
 .bay-button small { position: absolute; top: 3px; left: 4px; font: 700 7px/1 ui-monospace, monospace; }
 .bay-button strong { font: 900 21px/1 ui-monospace, monospace; }
@@ -301,9 +346,9 @@ button {
 .item-legend dl div { display: grid; grid-template-columns: 36px 1fr; align-items: center; }
 .item-legend dt { display: grid; place-items: center; width: 28px; height: 28px; margin: 0; border: 1px solid var(--ink); color: var(--ink); font-size: 18px; }
 .item-legend dd { margin: 0; letter-spacing: .08em; }
-.item-legend .powerup-mark { background: #e8590c; }
-.item-legend .blueprint-mark { background: #1971c2; }
-.item-legend .interaction-mark { background: #7d838a; color: #fff; }
+.item-legend .powerup-mark { background: var(--item-powerup); }
+.item-legend .blueprint-mark { background: var(--item-blueprint); }
+.item-legend .interaction-mark { background: var(--item-interaction); color: var(--ink); }
 .item-legend small { color: var(--muted); }
 .feedback-controls {
   display: grid;
@@ -539,7 +584,12 @@ button {
 }
 
 .prompt-line span {
-  color: var(--muted);
+  /**
+   * Both prompts use this: the downed panel's watch line, and the body prompt's
+   * "EMPTY" / "N CARRIED" / "ROOM FOR N". All of them float over world floor rather
+   * than over paper, so all of them need the stronger secondary.
+   */
+  color: var(--muted-strong);
   font-weight: 600;
 }
 
@@ -591,7 +641,8 @@ button {
   border: 0;
   border-bottom: 1px solid var(--hairline);
   background: none;
-  color: var(--muted);
+  /* LEAVE RUN, in the same panel over the same world floor as the line above it. */
+  color: var(--muted-strong);
   font: 700 9px/1.6 var(--font-mono);
   letter-spacing: 0.14em;
   cursor: pointer;
@@ -624,8 +675,8 @@ button {
   cursor: pointer;
 }
 
-.loot-slot.powerup { box-shadow: inset 0 -3px #e8590c; }
-.loot-slot.blueprint { box-shadow: inset 0 -3px #1971c2; }
+.loot-slot.powerup { box-shadow: inset 0 -3px var(--item-powerup); }
+.loot-slot.blueprint { box-shadow: inset 0 -3px var(--item-blueprint); }
 .loot-slot:not(:disabled):hover { background: var(--ink); color: var(--paper); }
 .loot-slot:disabled { cursor: default; opacity: 0.4; }
 

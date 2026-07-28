@@ -34,6 +34,17 @@ export const INK = {
   plate: 0xf4f5f6,
 } as const;
 
+/**
+ * Squad and rival, the only two colours that mean allegiance.
+ *
+ * Here rather than in `GameRenderer`, because they are palette and the renderer is a
+ * consumer of palette. The stylesheet carries `--squad-cyan` for the overlay chips and
+ * `style.test.ts` pins the two together — one colour with two spellings is how a squad
+ * ring and a squad chip drift apart.
+ */
+export const SQUAD_CYAN = 0x15aabf;
+export const RIVAL_RED = 0xe03131;
+
 /** Permanent semantic dot palette. Keep interaction neutral and world items chromatic. */
 export const DOT_COLOR = {
   powerup: 0xe8590c,
