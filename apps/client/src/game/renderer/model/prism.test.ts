@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { insetPolygon, pathOutline, polygonBounds, polygonContains } from "@dotbot/game/geometry";
 import type { Vec2 } from "@dotbot/game/types";
-import { awayness, cappedLift, NORTH, southness, topFace, TOP_FACE_MIN } from "./prism";
+import { awayness, cappedLift, NORTH, southness, topFace, topRect, TOP_FACE_MIN } from "./prism";
 
 /** Clockwise on screen, which is what `edgeNormal` reads as outward. */
 function rect(x: number, y: number, w: number, h: number): Vec2[] {
@@ -191,6 +191,55 @@ describe("an arbitrary pull direction", () => {
     expect(WALL - (pulledNorth[2].y - pulledNorth[1].y)).toBeCloseTo(cappedLift(WALL, LIFT), 6);
     // West pull: the east edge moves the full lift, because there is 100 units to eat.
     expect(pulledWest[1].x).toBeCloseTo(100 - LIFT, 6);
+  });
+
+  describe("the rectangle fast path", () => {
+    /**
+     * `volume` draws rectangles and returns their top face as a `Rect`, which three dozen
+     * call sites use to place the detail on a fixture's lid. `topFace` would turn that into
+     * a general quad on an oblique pull and there would be nowhere to put the detail — so
+     * the rect path uses `topRect`, which shifts the whole face and clips instead of moving
+     * each vertex, and stays a rectangle.
+     */
+    const slab = { x: 0, y: 0, w: 100, h: WALL };
+    const square = { x: 10, y: 20, w: 60, h: 60 };
+
+    it("reproduces the rect minus a south band, exactly", () => {
+      // What `volume` computed inline for as long as it has existed.
+      expect(topRect(slab, LIFT)).toEqual({ x: 0, y: 0, w: 100, h: WALL - cappedLift(WALL, LIFT) });
+      expect(topRect(square, LIFT)).toEqual({ x: 10, y: 20, w: 60, h: 60 - LIFT });
+    });
+
+    it("keeps the top face inside the footprint, whichever way it pulls", () => {
+      // True by construction here — an intersection cannot leave either operand — which is
+      // why this path needs no angle sweep to be safe, unlike the polygon one.
+      for (const pull of sweep) {
+        for (const r of [slab, square]) {
+          const top = topRect(r, LIFT, pull);
+          expect(top.x).toBeGreaterThanOrEqual(r.x);
+          expect(top.y).toBeGreaterThanOrEqual(r.y);
+          expect(top.x + top.w).toBeLessThanOrEqual(r.x + r.w + 1e-9);
+          expect(top.y + top.h).toBeLessThanOrEqual(r.y + r.h + 1e-9);
+        }
+      }
+    });
+
+    it("caps against the extent along the pull, not always the height", () => {
+      /**
+       * `volume` capped against `r.h` outright, which was right only because the pull could
+       * not turn. Pulled east this 100-by-12 slab has 100 units to eat, and capping it
+       * against 12 would hold the exposed face to 5.4 when it has room for the whole lift.
+       */
+      expect(topRect(slab, LIFT, { x: -1, y: 0 }).w).toBeCloseTo(100 - LIFT, 6);
+      expect(WALL - topRect(slab, LIFT, NORTH).h).toBeCloseTo(cappedLift(WALL, LIFT), 6);
+    });
+
+    it("moves the face away from the pull, so the exposed band swaps sides", () => {
+      // Pulled north the top hugs the north edge and the south band shows; pulled south the
+      // mirror image. That swap is the whole visible effect.
+      expect(topRect(square, LIFT, NORTH).y).toBe(20);
+      expect(topRect(square, LIFT, { x: 0, y: 1 }).y).toBeCloseTo(20 + LIFT, 6);
+    });
   });
 
   it("leaves the shape flat for a pull of nothing", () => {

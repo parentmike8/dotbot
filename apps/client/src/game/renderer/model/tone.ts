@@ -38,7 +38,7 @@
 import type { Graphics } from "pixi.js";
 import { edgeNormal, insetPolygon } from "@dotbot/game/geometry";
 import type { Vec2 } from "@dotbot/game/types";
-import { cappedLift, topFace } from "./prism";
+import { cappedLift, NORTH, topFace, topRect } from "./prism";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -395,10 +395,12 @@ export function volume(
   mat: Material,
   lift: number,
   radius = 0,
+  pull: Vec2 = NORTH,
 ): Rect {
-  // Never let the front face eat the top: see `cappedLift`.
+  // Never let the front face eat the top: see `cappedLift`. `topRect` measures the
+  // depth along the pull, so an east-west pull is capped against width, not height.
+  const top = topRect(r, lift, pull);
   const capped = cappedLift(r.h, lift);
-  const top: Rect = { x: r.x, y: r.y, w: r.w, h: Math.max(1, r.h - capped) };
   lift = capped;
 
   if (radius > 0) {

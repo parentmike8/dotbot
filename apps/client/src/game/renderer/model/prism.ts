@@ -1,5 +1,5 @@
 import { edgeNormal, polygonContains } from "@dotbot/game/geometry";
-import type { Vec2 } from "@dotbot/game/types";
+import type { Rect, Vec2 } from "@dotbot/game/types";
 
 /**
  * Where an extruded solid's top face lands.
@@ -158,6 +158,49 @@ function depthAlong(points: Vec2[], from: Vec2, pull: Vec2): number {
  * `NORTH` reproduces the fixed drawing exactly, which is the contract that lets this
  * generalise without changing a single pixel until a caller passes something else.
  */
+/**
+ * The extent of a rectangle along a direction, which is what its cap measures against.
+ *
+ * `r.h` for a north pull and `r.w` for an east one, blended between. `volume` used `r.h`
+ * outright, which was correct only because the pull could not turn: pulled east, a
+ * 100-by-12 slab has 100 units to eat and was being capped against 12.
+ */
+function rectDepth(r: Rect, pull: Vec2): number {
+  return Math.abs(pull.x) * r.w + Math.abs(pull.y) * r.h;
+}
+
+/**
+ * The top face of an extruded RECTANGLE, and still a rectangle.
+ *
+ * This is the fast path `volume` draws, and the reason it can take a pull at all. Today's
+ * top face is "the rect minus a south band of depth `lift`" — which is exactly the rect
+ * intersected with itself shifted north by `lift`. Written that way the rule generalises
+ * for free: shift along `pull` instead of north, and intersect. Two axis-aligned
+ * rectangles intersect in a rectangle, so `volume` keeps returning a `Rect` and the three
+ * dozen call sites that place detail on it are untouched.
+ *
+ * `topFace` moves each vertex along the pull instead, which is the right rule for an
+ * arbitrary outline and the wrong one here: on an oblique pull it turns a rectangle into
+ * a general quad, and there is nowhere to put the detail a fixture draws on its lid.
+ *
+ * The intersection is inside the footprint by construction, so the silhouette contract
+ * holds without needing to be checked at every angle — unlike the polygon path, where it
+ * had to be.
+ */
+export function topRect(r: Rect, lift: number, pull: Vec2 = NORTH): Rect {
+  const shift = cappedLift(rectDepth(r, pull), lift);
+  const dx = pull.x * shift;
+  const dy = pull.y * shift;
+  const x = Math.max(r.x, r.x + dx);
+  const y = Math.max(r.y, r.y + dy);
+  return {
+    x,
+    y,
+    w: Math.max(1, r.w - Math.abs(dx)),
+    h: Math.max(1, r.h - Math.abs(dy)),
+  };
+}
+
 export function topFace(points: Vec2[], lift: number, pull: Vec2 = NORTH): Vec2[] {
   if (points.length < 3) return points.map((point) => ({ ...point }));
   const count = points.length;
