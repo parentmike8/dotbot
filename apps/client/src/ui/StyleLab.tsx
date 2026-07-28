@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics, Text } from "pixi.js";
 import { defaultGameConfig } from "@dotbot/game/config";
-import { shieldArcSpan } from "@dotbot/game/shields";
+import { CORE_REACH, PLATE_REACH } from "@dotbot/game/shields";
 import type { BaseLayout, BaseObjectKind, Building, DotSpawn, FloorPlan, Rect, Vec2 } from "@dotbot/game/types";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { quaysideMap } from "@dotbot/game/content/quaysideDepot";
@@ -18,8 +18,20 @@ import { buildMapArt } from "../game/renderer/mapArt";
 import { buildFloorModel } from "../game/renderer/model/modelFloor";
 import { buildGeometryProof } from "../game/renderer/model/geometryProof";
 import { drawDotDisc, drawDotGloss, drawDotMark } from "../game/renderer/dotArt";
-import { drawCatchLight, drawGroundShadow } from "../game/renderer/grounding";
-import { drawChargedCore, drawDownedBody, type BodyStyle, type CrackKind, type DownedBody, type HullKind } from "../game/renderer/bodies";
+import { drawGroundShadow } from "../game/renderer/grounding";
+import { roofParallax } from "../game/renderer/model/modelRoof";
+import {
+  drawBareEdges,
+  drawBodyOutline,
+  drawChargedCore,
+  drawDashRing,
+  drawDownedBody,
+  drawPlates,
+  type BodyStyle,
+  type CrackKind,
+  type DownedBody,
+  type HullKind,
+} from "../game/renderer/bodies";
 import { V } from "../game/renderer/model/tone";
 
 /**
@@ -29,7 +41,7 @@ import { V } from "../game/renderer/model/tone";
  * simulation, so the same floor can be re-rendered and screenshotted hundreds
  * of times while an art language is being tuned. `?lab` selects it.
  *
- *   ?lab&view=model|city|base|quay|geometry|bodies   what to draw
+ *   ?lab&view=model|city|base|quay|geometry|bodies|clump   what to draw
  *   ?lab&zoom=fit|play|close     camera
  *   ?lab&focus=racks|dock|shop|office
  *   ?lab&floor=GROUND|B1
@@ -39,7 +51,7 @@ import { V } from "../game/renderer/model/tone";
 const BUILDING_ID = "lot6";
 
 type LabParams = {
-  view: "model" | "city" | "base" | "geometry" | "quay" | "bodies";
+  view: "model" | "city" | "base" | "geometry" | "quay" | "bodies" | "clump";
   zoom: "fit" | "play" | "close";
   focus: string;
   floorLabel: string;
@@ -51,7 +63,11 @@ function readParams(search: string): LabParams {
   const view = p.get("view");
   const zoom = p.get("zoom");
   return {
-    view: view === "city" || view === "base" || view === "geometry" || view === "quay" || view === "bodies" ? view : "model",
+    view:
+      view === "city" || view === "base" || view === "geometry" || view === "quay"
+      || view === "bodies" || view === "clump"
+        ? view
+        : "model",
     zoom: zoom === "play" || zoom === "close" ? zoom : "fit",
     focus: p.get("focus") ?? "racks",
     floorLabel: (p.get("floor") ?? "GROUND").toUpperCase(),
@@ -81,41 +97,54 @@ type LabBot = {
   color: number;
   shields: number[];
   radius: number;
+  /** Mid-dash, so the ring that used to be a hard circle is on show. */
+  dashing?: boolean;
 };
 
-/** The shipped plate language, drawn with the production grounding primitives. */
-function drawLabBot(g: Graphics, bot: LabBot): void {
-  const { at, radius } = bot;
-  drawGroundShadow(g, at, radius);
-
-  const max = bot.shields.length;
-  const span = shieldArcSpan(max);
-  const step = (Math.PI * 2) / max;
-  const shieldRadius = radius * 0.78;
-
-  g.circle(at.x, at.y, radius - 0.5).stroke({ color: HULL, width: 1, alpha: 0.22 });
-
-  for (let i = 0; i < max; i += 1) {
-    const state = bot.shields[i];
-    const start = bot.facing + i * step - span / 2;
-    if (state >= 1) {
-      arc(g, at, shieldRadius, start, start + span, bot.color, 5, 1);
-    } else if (state > 0) {
-      arc(g, at, shieldRadius, start, start + span * 0.42, bot.color, 3, 0.9);
-      arc(g, at, shieldRadius, start + span * 0.58, start + span, bot.color, 3, 0.9);
-    } else {
-      arc(g, at, shieldRadius, start, start + span, bot.color, 2, 0.3);
-    }
-  }
-
-  g.circle(at.x, at.y, radius * 0.4).fill({ color: HULL, alpha: 0.95 });
-  g.circle(at.x, at.y, radius * 0.4).stroke({ color: HULL, width: 2 });
-  drawCatchLight(g, at, radius * 0.4);
+/**
+ * A standing bot, drawn with the production primitives in the production order.
+ *
+ * Every mark here used to be a hand-rolled copy — plates stroked at 0.78 of the
+ * radius long after the game moved them out to the hull — which made the review
+ * surface a nicer picture than the game and a useless one for judging it. The lab
+ * calls what ships, or it is not a lab.
+ *
+ * `spin` mirrors what `GameRenderer.drawBotBody` is passed: the game draws a bot
+ * once at facing 0 and rotates its container, so the caller says how far that
+ * rotation will be. Pass 0 to draw a bot outright at its own facing.
+ */
+function drawLabBot(g: Graphics, bot: LabBot, spin = 0): void {
+  const body = {
+    position: bot.at,
+    radius: bot.radius,
+    facing: bot.facing,
+      shieldSegments: bot.shields,
+  };
+  drawGroundShadow(g, bot.at, body, { spin });
+  drawPlates(g, body, bot.color, false);
+  drawBodyOutline(g, body);
+  drawChargedCore(g, bot.at, bot.radius * CORE_REACH, 1, HULL, spin);
+  drawBareEdges(g, body, bot.color);
+  if (bot.dashing) drawDashRing(g, body);
 }
 
-function arc(g: Graphics, at: Vec2, r: number, from: number, to: number, color: number, width: number, alpha: number): void {
-  g.moveTo(at.x + Math.cos(from) * r, at.y + Math.sin(from) * r);
-  g.arc(at.x, at.y, r, from, to).stroke({ color, width, alpha });
+/**
+ * The same bot the way the game actually assembles it: drawn at facing 0 into a
+ * Graphics, then spun by its container.
+ *
+ * This is not pedantry about plumbing. Everything that encodes a direction in the
+ * world — the sun above all — is inside that rotation, so a lab that draws bots
+ * outright at their facing is the one surface that cannot show a light riding
+ * around with its bot.
+ */
+function spunLabBot(bot: LabBot): Container {
+  const held = new Container();
+  const g = new Graphics();
+  drawLabBot(g, { ...bot, at: { x: 0, y: 0 }, facing: 0 }, bot.facing);
+  held.addChild(g);
+  held.position.set(bot.at.x, bot.at.y);
+  held.rotation = bot.facing;
+  return held;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +285,17 @@ function modelWorld(building: Building, floor: FloorPlan, params: LabParams): Co
 function cityWorld(): Container {
   const world = new Container();
   const art = buildMapArt(downtownMap);
+  /**
+   * Parallax, as a camera in the middle of the sheet would see it.
+   *
+   * The lab has no camera of its own, so without this the one cue that says a
+   * building is tall is the one cue the review surface cannot show — and a review
+   * surface that quietly omits the thing under review is worse than no shot.
+   */
+  const viewCenter = { x: downtownMap.width / 2, y: downtownMap.height / 2 };
   for (const building of art.buildings) {
+    const offset = roofParallax(building.building, viewCenter);
+    for (const mass of building.roofMasses) mass.position.set(offset.x, offset.y);
     const hasRoof = building.building.floors.some((floor) => floor.label === "ROOF");
     for (const floorArt of building.floors) {
       floorArt.view.visible = floorArt.floor.label === "ROOF";
@@ -324,33 +363,41 @@ function bodiesWorld(): Container {
   const g = new Graphics();
   const cell = 130;
   const originX = 90;
-  const originY = 140;
+  const originY = 360;
 
   // Reference: what a bot looks like still standing, at the same size.
   drawLabBot(g, { at: { x: originX, y: 46 }, facing: -Math.PI / 2, color: RIVAL, shields: [1, 0.5, 1], radius: 24 });
   world.addChild(label("ALIVE, FOR SCALE", originX + 34, 42));
 
-  // The dash gauge, drained and refilling. Drawn on rivals too, so "can that thing
-  // still dash at me" is something you read rather than guess.
-  const charge = [0, 0.25, 0.5, 0.75, 1];
+  /**
+   * The dash gauge, drained and refilling. Drawn on rivals too, so "can that thing
+   * still dash at me" is something you read rather than guess.
+   *
+   * Twice, at two sizes. The play-size row answers the only question that matters
+   * — is the level legible on a 9.6-unit core in a fight — and is far too small to
+   * show *why* it does or does not work. The magnified row is where the surface is
+   * actually judged. Either row on its own would flatter the drawing or hide it.
+   */
+  const charge = [0, 0.15, 0.35, 0.6, 0.85, 1];
   charge.forEach((level, index) => {
-    const x = originX + 360 + index * 74;
+    const x = originX + 330 + index * 68;
     const at = { x, y: 46 };
     // The plates, then the core — but never the reference bot's own filled core
     // underneath, which would put the gauge's dim half on top of solid ink and
     // hide exactly the contrast this row exists to judge.
-    drawGroundShadow(g, at, 24);
-    const span = shieldArcSpan(3);
-    for (let plate = 0; plate < 3; plate += 1) {
-      const start = -Math.PI / 2 + (plate * Math.PI * 2) / 3 - span / 2;
-      arc(g, at, 24 * 0.78, start, start + span, SQUAD, 5, 1);
-    }
-    g.circle(x, 46, 24 - 0.5).stroke({ color: HULL, width: 1, alpha: 0.22 });
-    drawChargedCore(g, at, 24 * 0.4, level, HULL);
-    if (level >= 1) drawCatchLight(g, at, 24 * 0.4);
+    const body = { position: at, radius: 24, facing: -Math.PI / 2, shieldSegments: [1, 1, 1] };
+    drawGroundShadow(g, at, body);
+    drawPlates(g, body, SQUAD, false);
+    drawBodyOutline(g, body);
+    drawChargedCore(g, at, 24 * CORE_REACH, level, HULL);
     world.addChild(label(`${Math.round(level * 100)}%`, x - 10, 78));
   });
-  world.addChild(label("DASH CHARGE  \u00b7  spent, refilling, ready", originX + 360, 98));
+  world.addChild(label("DASH CHARGE  \u00b7  play size", originX + 330, 98));
+
+  charge.forEach((level, index) => {
+    drawChargedCore(g, { x: originX + 340 + index * 104, y: 205 }, 43, level, HULL);
+  });
+  world.addChild(label("DASH CHARGE  \u00b7  magnified, for judging the surface", originX + 330, 282));
 
   HULLS.forEach((hull, row) => {
     CRACKS.forEach((crack, column) => {
@@ -366,6 +413,103 @@ function bodiesWorld(): Container {
   });
 
   world.addChild(g);
+  return world;
+}
+
+/**
+ * Two bots at the distance the solver actually rests them at.
+ *
+ * This case is the bug. A DotBot separates at its plate where a plate is up and
+ * at its core where one is gone, so the closest two bodies can legally sit is
+ * 48.00 fully plated, 33.60 with a plate meeting a bare arc, and 19.20 bare to
+ * bare — and at every one of those distances the drawing used to put ink through
+ * ink. A stripped bot drew a ghost plate ring 22.5 out from a body that reaches
+ * 9.6, so two of them at their legal 19.20 overlapped by 25.8 units of ring with
+ * each ring enclosing the other's centre. Play reads the drawing, so play saw
+ * bots welded together and reported the physics.
+ *
+ * The bottom row is the other half of it: the same bot at eight facings, each
+ * drawn the way the game assembles one — at facing 0 into a Graphics, spun by its
+ * container. If the sun is inside that rotation, the shadow swings round the row.
+ */
+const REST = {
+  plated: 24 * PLATE_REACH * 2,
+  mixed: 24 * PLATE_REACH + 24 * CORE_REACH,
+  bare: 24 * CORE_REACH * 2,
+};
+
+function clumpWorld(): Container {
+  const world = new Container();
+  const g = new Graphics();
+  const radius = 24;
+
+  const pair = (
+    y: number,
+    gap: number,
+    left: { shields: number[]; facing: number; color: number; dashing?: boolean },
+    right: { shields: number[]; facing: number; color: number; dashing?: boolean },
+    caption: string,
+  ): void => {
+    const x = 130;
+    // The measure itself, centre to centre: the number under review, drawn.
+    g.moveTo(x, y).lineTo(x + gap, y).stroke({ color: 0x6d7278, width: 0.5, alpha: 0.5 });
+    for (const [at, bot] of [
+      [{ x, y }, left],
+      [{ x: x + gap, y }, right],
+    ] as const) {
+      world.addChild(spunLabBot({
+        at, facing: bot.facing, color: bot.color, shields: bot.shields, radius, dashing: bot.dashing,
+      }));
+    }
+    world.addChild(label(caption, x + gap + 46, y - 4));
+  };
+
+  world.addChild(g);
+
+  pair(
+    70,
+    REST.plated,
+    { shields: [1, 1, 1], facing: 0, color: SQUAD },
+    { shields: [1, 1, 1], facing: Math.PI, color: RIVAL },
+    `PLATE MEETS PLATE  ·  ${REST.plated.toFixed(2)}`,
+  );
+  pair(
+    185,
+    REST.mixed,
+    { shields: [1, 1, 1], facing: 0, color: SQUAD },
+    { shields: [0, 0, 0], facing: Math.PI, color: RIVAL },
+    `PLATE MEETS BARE  ·  ${REST.mixed.toFixed(2)}`,
+  );
+  pair(
+    285,
+    REST.bare,
+    { shields: [0, 0, 0], facing: 0, color: SQUAD },
+    { shields: [0, 0, 0], facing: Math.PI, color: RIVAL },
+    `BARE MEETS BARE  ·  ${REST.bare.toFixed(2)}`,
+  );
+  // The bite pointed at the other bot: plate 2 is the broken one, so facing it
+  // backwards puts the open arc dead ahead.
+  pair(
+    385,
+    REST.mixed,
+    { shields: [1, 1, 0], facing: (Math.PI * 2) / 3, color: SQUAD, dashing: true },
+    { shields: [1, 1, 1], facing: Math.PI, color: RIVAL },
+    `BITE MEETS PLATE  ·  ${REST.mixed.toFixed(2)}  ·  left bot mid-dash`,
+  );
+
+  for (let index = 0; index < 8; index += 1) {
+    const facing = (index * Math.PI * 2) / 8;
+    world.addChild(spunLabBot({
+      at: { x: 130 + index * 66, y: 495 },
+      facing,
+      color: AMBIENT,
+      shields: [1, 1, 0],
+      radius,
+      dashing: true,
+    }));
+  }
+  world.addChild(label("ONE LIGHT  ·  the same bot at eight facings: the sun may not turn with it", 130, 540));
+
   return world;
 }
 
@@ -433,6 +577,7 @@ type Shot = LabParams & { name: string; w: number; h: number };
  * each other and independent of whatever window the lab happens to open in.
  */
 const SHOT_SET: Shot[] = [
+  { name: "60-rest-distances", view: "clump", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: true, w: 1500, h: 1300 },
   { name: "50-downed-bodies", view: "bodies", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: true, w: 1700, h: 1250 },
   { name: "40-base-ground", view: "base", zoom: "fit", focus: "racks", floorLabel: "GROUND", actors: false, w: 1500, h: 1100 },
   { name: "41-base-upper", view: "base", zoom: "fit", focus: "racks", floorLabel: "F1", actors: false, w: 1500, h: 1100 },
@@ -536,6 +681,17 @@ export function StyleLab() {
           created.stage.addChild(proof.view);
           created.stage.addChild(Object.assign(
             caption("GEOMETRY KERNEL  ·  polygons, thick paths, fillets  ·  cyan track = where a 24-unit bot is actually stopped"),
+            { x: 16, y: 14 },
+          ));
+          return;
+        }
+
+        if (spec.view === "clump") {
+          const world = clumpWorld();
+          world.scale.set(2.2);
+          created.stage.addChild(world);
+          created.stage.addChild(Object.assign(
+            caption("BODIES AT THEIR TRUE REST DISTANCE  \u00b7  no mark may cross another bot's silhouette  \u00b7  centre line = the measured gap"),
             { x: 16, y: 14 },
           ));
           return;

@@ -1,4 +1,4 @@
-import { canTakeFromBody, withinDownedCoverRange } from "@dotbot/game/interactions";
+import { canReviveBody, canTakeFromBody, withinDownedCoverRange } from "@dotbot/game/interactions";
 import { carriedItems } from "@dotbot/game/inventory";
 import { distance } from "@dotbot/game/math";
 import type { CoverageSnapshot, DotBotEntity, DownedVerb, GameConfig, Item } from "@dotbot/game/types";
@@ -14,13 +14,27 @@ import type { CoverageSnapshot, DotBotEntity, DownedVerb, GameConfig, Item } fro
  * simulation's own predicates: `canTakeFromBody` and `withinDownedCoverRange`.
  */
 
-export type PromptConfig = Pick<GameConfig, "coverCenterTolerance" | "holdSlots">;
+export type PromptConfig = Pick<GameConfig, "coverCenterTolerance" | "holdSlots" | "maxSquadSize">;
 
 export type BodyPrompt =
   /** No body within reach, or nothing left for the player to decide. */
   | { kind: "none" }
   /** A rival body underfoot, unsearched. Two verbs, and they are both real. */
-  | { kind: "verbs"; bodyId: string; bodyName: string; carriedCount: number }
+  | {
+      kind: "verbs";
+      bodyId: string;
+      bodyName: string;
+      carriedCount: number;
+      /**
+       * Whether PICK UP is real on this body.
+       *
+       * A rival can only be carried if it pleaded and the squad has room, so offering
+       * the verb unconditionally offers one the simulation refuses — and a channel that
+       * starts and dies one frame later is precisely what play reported about
+       * overlapping bodies. Decided by `canReviveBody`, the simulation's own predicate.
+       */
+      canPickUp: boolean;
+    }
   /** A channel is running. The ring at the body is the display; this is the label. */
   | { kind: "channel"; verb: DownedVerb; bodyId: string; bodyName: string; progress: number }
   /** An open body underfoot. `room` is how many more items the player can carry. */
@@ -81,7 +95,14 @@ export function bodyPrompt({ viewer, bots, coverages, config }: PromptInput): Bo
     // A squadmate's body is not a choice — standing on it picks them up. The
     // progress ring at the body says so without a word of overlay.
     if (body.squadId === viewer.squadId) continue;
-    return { kind: "verbs", bodyId: body.id, bodyName: body.name, carriedCount: body.carriedCount };
+    const squadSize = bots.filter((bot) => bot.squadId === viewer.squadId).length;
+    return {
+      kind: "verbs",
+      bodyId: body.id,
+      bodyName: body.name,
+      carriedCount: body.carriedCount,
+      canPickUp: canReviveBody(viewer, body, squadSize, config.maxSquadSize),
+    };
   }
 
   return { kind: "none" };

@@ -19,6 +19,7 @@ function bot(overrides: Partial<DotBotEntity> = {}): DotBotEntity {
     state: "alive",
     floorId: "outdoor",
     facing: 0,
+    moving: false,
     maxShields: 3,
     shields: 3,
     shieldSegments: [1, 1, 1],
@@ -26,6 +27,7 @@ function bot(overrides: Partial<DotBotEntity> = {}): DotBotEntity {
     hold: [],
     carriedCount: 0,
     searched: false,
+    pleaded: false,
     radarActiveMs: 0,
     radarPings: [],
     dashOverchargeCharges: 0,
@@ -49,10 +51,30 @@ describe("bodyPrompt", () => {
     expect(prompt([bot(), body({ position: { x: 900, y: 900 } })])).toEqual({ kind: "none" });
   });
 
-  it("offers both verbs on an unsearched rival body underfoot", () => {
+  it("offers SEARCH on any rival body, and PICK UP only on one that asked", () => {
+    /**
+     * Searching a rival needs no consent. Carrying one does: squads load in at three
+     * and reach four only by picking up a body that pleaded, so PICK UP is offered on
+     * exactly the bodies `canReviveBody` will accept. Offering it otherwise starts a
+     * channel the simulation refuses one frame later, which is a bug play has already
+     * reported once in another guise.
+     */
     expect(prompt([bot(), body({ carriedCount: 2 })])).toEqual({
-      kind: "verbs", bodyId: "rival", bodyName: "Ochre", carriedCount: 2,
+      kind: "verbs", bodyId: "rival", bodyName: "Ochre", carriedCount: 2, canPickUp: false,
     });
+    expect(prompt([bot(), body({ carriedCount: 2, pleaded: true })])).toEqual({
+      kind: "verbs", bodyId: "rival", bodyName: "Ochre", carriedCount: 2, canPickUp: true,
+    });
+  });
+
+  it("refuses PICK UP once the squad is full, however loudly the body asked", () => {
+    // Four is the cap. A fifth would make a run one long convoy.
+    const full = [
+      bot(),
+      bot({ id: "mate-1" }), bot({ id: "mate-2" }), bot({ id: "mate-3" }),
+      body({ carriedCount: 0, pleaded: true }),
+    ];
+    expect(prompt(full)).toMatchObject({ kind: "verbs", canPickUp: false });
   });
 
   it("says nothing over a squadmate, because standing there is the whole action", () => {

@@ -72,7 +72,10 @@ export function BodyPromptView({ prompt, onVerb, onTake, onTakeAll }: {
         </p>
         <div className="prompt-keys">
           <Key code="F" label="SEARCH" onPress={() => onVerb("loot")} />
-          <Key code="R" label="PICK UP" onPress={() => onVerb("revive")} />
+          {/* Shown disabled rather than hidden: the verb exists, it is just not
+              available on this body — a rival has to have asked, and the squad has to
+              have room. A key that vanishes teaches nothing. */}
+          <Key code="R" label="PICK UP" onPress={() => onVerb("revive")} disabled={!prompt.canPickUp} />
         </div>
       </div>
     );
