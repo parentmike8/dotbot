@@ -49,6 +49,56 @@ function dot(a: Vec2, b: Vec2): number {
 }
 
 /**
+ * How far from the camera an object has to be before its top slides all the way round.
+ *
+ * Roughly a screen's half-diagonal at play zoom, so the effect reaches full strength at
+ * the edge of view and is gentle in the middle where the player is looking.
+ */
+export const PARALLAX_HORIZON = 620;
+
+/**
+ * Which way an object's top slides, given where the camera is.
+ *
+ * The magnitude is deliberately NOT a parameter. It stays the object's own lift, so this
+ * cannot make anything look taller, shorter, or flatter than it does today — only turn
+ * which side of it you see. That is the most conservative form the effect can take, and
+ * it is the reason this could be landed without watching it move: the amount of drawing
+ * is identical, and no object can lose its height cue by standing under the camera.
+ *
+ * Two laws were measured and rejected first. Reusing the building constant
+ * (`storeyShadowLift * PARALLAX_PER_UNIT`) gives an object 500 units off-axis a slide of
+ * 1.55 units against a lift of 11 — 14%, invisible, all cost and no effect, because a
+ * building's lift scales with storey count and `LIFT` stops at 11. And scaling the pull
+ * VECTOR double-scales, because `awayness` shrinks with its length and `topFace`
+ * multiplies by it again, so half a pull moves a quarter as far.
+ *
+ * The interpolation is on the ANGLE, not the vector. Blending `NORTH` toward the away
+ * direction componentwise gives exactly zero when an object is due south at half
+ * strength — a real position, not a corner case — and a zero pull has no direction to
+ * normalise. Rotating along the shortest arc is always unit length and never degenerate.
+ *
+ * `strength` is the one tunable: 0 is today's fixed north exactly, 1 rotates fully to
+ * away-from-camera at the horizon.
+ */
+export function pullToward(centre: Vec2, viewCentre: Vec2, strength: number): Vec2 {
+  const dx = centre.x - viewCentre.x;
+  const dy = centre.y - viewCentre.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance < EPSILON || strength <= 0) return NORTH;
+
+  const northAngle = Math.atan2(NORTH.y, NORTH.x);
+  const awayAngle = Math.atan2(dy, dx);
+  // Shortest arc, so the rotation never takes the long way round the circle.
+  let delta = awayAngle - northAngle;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+
+  const reach = Math.min(1, distance / PARALLAX_HORIZON) * Math.min(1, strength);
+  const angle = northAngle + delta * reach;
+  return { x: Math.cos(angle), y: Math.sin(angle) };
+}
+
+/**
  * How far a vertex is pulled, as a share of the lift.
  *
  * A vertex belongs to two faces and moves with whichever of them points furthest

@@ -20,9 +20,11 @@ import {
   V,
   volume,
   volumeShape,
+  withViewPull,
   type Rect,
   type ShadowPad,
 } from "./tone";
+import { pullToward } from "./prism";
 import { drawStair, drawStairHead } from "./modelStairs";
 import { capsuleRuns, drawBarrier, drawWallRects } from "./modelWalls";
 
@@ -557,6 +559,50 @@ function makePad(alphas: readonly number[]): ShadowPad {
     g.alpha = alpha;
     return g;
   });
+}
+
+/**
+ * A pad that goes nowhere, for redrawing an object's volume without its shadow.
+ *
+ * A shadow lies on the floor, and the floor does not move — so when the camera turns and
+ * an object's top face slides, its cast shadow and its contact darkening stay exactly
+ * where they were. That is not an approximation; it is what a shadow does, and it is why
+ * `modelRoof` leaves `blockShadow` outside the sliding mass.
+ *
+ * But `drawModelObject` draws both at once, into the object's `Graphics` and into the
+ * floor's shared pad. Redrawing naively would pile a fresh copy of every shadow onto the
+ * pad each time. Splitting the shadow out means splitting fifty glyph functions and 109
+ * pad call sites; absorbing it costs one throwaway pad, cleared per object, never added to
+ * the stage. The geometry is built and dropped, which is waste — bounded waste, on the
+ * only floor being looked at, and measurable.
+ *
+ * One instance for the whole module: it is written and discarded within a single
+ * synchronous call, so there is nothing to keep.
+ */
+const SCRATCH_PAD: ShadowPad = SHADOW_ALPHA.map(() => new Graphics());
+
+/**
+ * Redraw one floor's objects for a new camera position.
+ *
+ * Only the objects, and only their volumes: the slab, the walls, the shadows and the
+ * ambient occlusion are all unaffected by where the camera is. Returns the number of
+ * objects rebuilt, so the caller can report the cost rather than guess at it.
+ */
+export function redrawFloorObjects(
+  objectViews: Map<string, { object: MapObject; view: Graphics }>,
+  viewCentre: Vec2,
+  strength: number,
+): number {
+  let drawn = 0;
+  for (const { object, view } of objectViews.values()) {
+    const centre = { x: object.x + object.w / 2, y: object.y + object.h / 2 };
+    const pull = pullToward(centre, viewCentre, strength);
+    for (const layer of SCRATCH_PAD) layer.clear();
+    view.clear();
+    withViewPull(pull, () => drawModelObject(view, SCRATCH_PAD, object));
+    drawn += 1;
+  }
+  return drawn;
 }
 
 /**

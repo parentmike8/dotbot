@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { insetPolygon, pathOutline, polygonBounds, polygonContains } from "@dotbot/game/geometry";
 import type { Vec2 } from "@dotbot/game/types";
-import { awayness, cappedLift, NORTH, southness, topFace, topRect, TOP_FACE_MIN } from "./prism";
+import { awayness, cappedLift, NORTH, PARALLAX_HORIZON, pullToward, southness, topFace, topRect, TOP_FACE_MIN } from "./prism";
 
 /** Clockwise on screen, which is what `edgeNormal` reads as outward. */
 function rect(x: number, y: number, w: number, h: number): Vec2[] {
@@ -239,6 +239,78 @@ describe("an arbitrary pull direction", () => {
       // mirror image. That swap is the whole visible effect.
       expect(topRect(square, LIFT, NORTH).y).toBe(20);
       expect(topRect(square, LIFT, { x: 0, y: 1 }).y).toBeCloseTo(20 + LIFT, 6);
+    });
+  });
+
+  describe("which way the camera points the pull", () => {
+    const centre = { x: 1000, y: 1000 };
+    const unit = (v: Vec2) => Math.hypot(v.x, v.y);
+
+    it("is exactly north at strength zero, so the effect has an off switch", () => {
+      for (const at of [{ x: 400, y: 400 }, { x: 1600, y: 1600 }, centre]) {
+        expect(pullToward(at, centre, 0)).toEqual(NORTH);
+      }
+    });
+
+    it("is north for an object the camera is sitting on", () => {
+      // No direction to offer, and the caller should not have to special-case it.
+      expect(pullToward(centre, centre, 1)).toEqual(NORTH);
+    });
+
+    it("always returns a unit vector, including due south at half strength", () => {
+      /**
+       * The case that rules out blending the vectors instead of the angle: an object due
+       * south of the camera at half strength blends `NORTH` and `SOUTH` to exactly zero,
+       * and a zero pull has no direction to normalise. It is an ordinary position, not a
+       * corner case, so it is swept for here at every strength.
+       */
+      const dueSouth = { x: 1000, y: 1000 + PARALLAX_HORIZON };
+      for (const strength of [0.25, 0.5, 0.75, 1]) {
+        expect(unit(pullToward(dueSouth, centre, strength))).toBeCloseTo(1, 12);
+      }
+      for (const at of [{ x: 400, y: 1600 }, { x: 1900, y: 200 }, { x: 1000, y: 100 }]) {
+        expect(unit(pullToward(at, centre, 1))).toBeCloseTo(1, 12);
+      }
+    });
+
+    it("points away from the camera once it is a horizon out", () => {
+      // The visible claim: stand north of a box and you see its south face; stand south of
+      // it and you see its north face.
+      const south = pullToward({ x: 1000, y: 1000 + PARALLAX_HORIZON }, centre, 1);
+      expect(south.x).toBeCloseTo(0, 6);
+      expect(south.y).toBeCloseTo(1, 6);
+
+      const east = pullToward({ x: 1000 + PARALLAX_HORIZON, y: 1000 }, centre, 1);
+      expect(east.x).toBeCloseTo(1, 6);
+      expect(east.y).toBeCloseTo(0, 6);
+    });
+
+    it("turns further the further off-axis the object is", () => {
+      // Gentle under the player, full at the edge of view — so the floor the player is
+      // standing on does not swim while they walk.
+      const near = pullToward({ x: 1000, y: 1000 + PARALLAX_HORIZON * 0.25 }, centre, 1);
+      const far = pullToward({ x: 1000, y: 1000 + PARALLAX_HORIZON }, centre, 1);
+      expect(near.y).toBeLessThan(far.y);
+      expect(near.y).toBeGreaterThan(NORTH.y);
+    });
+
+    it("never makes an object flatter or taller, only turned", () => {
+      /**
+       * The reason this law is safe to land without watching it move. `topRect` shifts by
+       * `cappedLift` along the pull whichever way the pull points, so the exposed band is
+       * the same depth at every camera position — the drawing does not gain or lose a
+       * front face, it relocates one.
+       */
+      const box = { x: 0, y: 0, w: 60, h: 60 };
+      const area = (r: { w: number; h: number }) => r.w * r.h;
+      const flat = area(topRect(box, LIFT, NORTH));
+      for (const at of [{ x: 400, y: 1600 }, { x: 1900, y: 200 }, { x: 1000, y: 1700 }]) {
+        const turned = topRect(box, LIFT, pullToward(at, centre, 1));
+        // Within a unit of the same lid area: the shift is the same length, just rotated,
+        // and an oblique shift trades width for height rather than adding either.
+        expect(area(turned)).toBeGreaterThan(flat * 0.82);
+        expect(area(turned)).toBeLessThanOrEqual(area(box));
+      }
     });
   });
 

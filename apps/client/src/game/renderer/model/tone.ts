@@ -367,6 +367,38 @@ export function occludeShape(pad: ShadowPad, points: Vec2[], reach = 9): void {
 // The volume primitive
 // ---------------------------------------------------------------------------
 
+/**
+ * Which way the current drawing pass pulls its top faces.
+ *
+ * Render-pass state, and deliberately not a parameter. The alternative is threading a
+ * direction through `drawModelObject` and every one of the fifty glyph functions under
+ * it — 109 call sites — to say one thing that is true of the whole pass rather than of
+ * any object. This is what a pass parameter is.
+ *
+ * It is scoped by WHEN it is set, which is the part to be careful about. Structure —
+ * walls, stairs, glazing — is drawn while it is `NORTH`, because a wall is part of the
+ * building and the building already parallaxes as a whole mass in `modelRoof`; sliding
+ * its top independently would slide it twice. Only the object pass sets it, and it is
+ * always put back.
+ */
+let viewPull: Vec2 = NORTH;
+
+/** Set the pass pull. Always restore it — `withViewPull` does that for you. */
+export function setViewPull(pull: Vec2): void {
+  viewPull = pull;
+}
+
+/** Draw `body` with `pull` in force, restoring whatever was in force before. */
+export function withViewPull(pull: Vec2, body: () => void): void {
+  const previous = viewPull;
+  viewPull = pull;
+  try {
+    body();
+  } finally {
+    viewPull = previous;
+  }
+}
+
 const EDGE_WIDTH = 0.9;
 
 /**
@@ -395,7 +427,7 @@ export function volume(
   mat: Material,
   lift: number,
   radius = 0,
-  pull: Vec2 = NORTH,
+  pull: Vec2 = viewPull,
 ): Rect {
   // Never let the front face eat the top: see `cappedLift`. `topRect` measures the
   // depth along the pull, so an east-west pull is capped against width, not height.
@@ -470,19 +502,30 @@ export function volumeShape(
   points: Vec2[],
   mat: Material,
   lift: number,
+  pull: Vec2 = viewPull,
 ): Vec2[] {
   if (points.length < 3) return points;
   const count = points.length;
   const normals = points.map((_, index) => edgeNormal(points, index));
-  const top = topFace(points, lift);
+  const top = topFace(points, lift, pull);
 
   // Silhouette first, so any face the top does not cover is already in shade.
   fillPolygon(g, points, mat.front);
 
-  // Then each visible face, shaded by its own normal.
+  /**
+   * Then each visible face, shaded by its own normal.
+   *
+   * WHICH faces are visible is a question about the camera — you see the ones turned away
+   * from it — so it follows the pull. HOW they are shaded is a question about the light,
+   * which does not move, so it stays `faceLight(normal)`. Keeping those two apart is the
+   * whole reason one light and a moving camera can coexist: the same face can be visible
+   * from the north and dark, or hidden and lit.
+   *
+   * This was `normal.y <= 0.01`, which is the same test with the pull nailed north.
+   */
   for (let index = 0; index < count; index += 1) {
     const normal = normals[index];
-    if (normal.y <= 0.01) continue;
+    if (-(normal.x * pull.x + normal.y * pull.y) <= 0.01) continue;
     const a = points[index];
     const b = points[(index + 1) % count];
     const ta = top[index];
