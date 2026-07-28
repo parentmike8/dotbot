@@ -69,6 +69,27 @@ function serviceEdge(fp: Rect): Rect {
   return { x: fp.x + fp.w * 0.58, y: fp.y + 22, w: fp.w * 0.36, h: 54 };
 }
 
+/** Above-ground storeys. A basement adds no height and the roof is not a storey. */
+export function aboveGroundStoreys(building: Building): number {
+  const counted = building.floors.filter((floor) => floor.label !== "ROOF" && !floor.label.startsWith("B"));
+  return Math.max(1, counted.length);
+}
+
+/**
+ * Apparent height for the block's cast shadow, in the same units as `LIFT`.
+ *
+ * The ground floor keeps the figure every building used to have, so nothing
+ * single-storey moves; each further storey adds a fraction of it rather than a
+ * multiple, because shadow length is being used to rank buildings against each
+ * other, not to measure them.
+ */
+const STOREY_BASE = LIFT.wall * 2.4;
+const STOREY_STEP = LIFT.wall * 1.1;
+
+export function storeyShadowLift(building: Building): number {
+  return STOREY_BASE + (aboveGroundStoreys(building) - 1) * STOREY_STEP;
+}
+
 export function buildRoofModel(building: Building): RoofModel {
   const fp = building.footprint;
   const view = new Container();
@@ -87,8 +108,19 @@ export function buildRoofModel(building: Building): RoofModel {
     return g;
   });
 
-  // The whole block casts onto the street. This is what gives a building height.
-  contact(pad, fp, LIFT.wall * 2.4);
+  /**
+   * The whole block casts onto the street. This is what gives a building height —
+   * and it was a constant, so a seven-storey tower cast exactly the shadow a
+   * single-storey shop did and the skyline had no scale in it at all.
+   *
+   * Height is read off shadow length in any real top-down view, and the language
+   * already scales every other shadow by apparent height: a tree carries
+   * `LIFT.column + 4` and gets a shadow to match. Buildings were the one thing
+   * opted out. Per-floor growth is deliberately small — the shadow falls across
+   * the street, and a tower whose shadow swallows the block it stands on has
+   * traded one unreadable thing for another.
+   */
+  contact(pad, fp, storeyShadowLift(building));
 
   const wall = 12;
   inlay(deck, fp, ROOF.membrane);

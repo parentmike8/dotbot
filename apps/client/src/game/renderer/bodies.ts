@@ -2,6 +2,7 @@ import type { Graphics } from "pixi.js";
 import type { Vec2 } from "@dotbot/game/types";
 import { INK, WEIGHT } from "./style";
 import { brokenRingArcs, carryTickAngles, waterlineArc } from "./bodyMarks";
+import { drawCatchLight } from "./grounding";
 
 /**
  * The one arc primitive. Pixi's `arc` continues the current path, so an arc drawn
@@ -233,6 +234,26 @@ export function drawDownedBody(g: Graphics, body: DownedBody): void {
       crackPiece(g, at, coreRadius, CRACK_ANGLE, line, side, CRACK_GAP);
       paint();
     }
+  }
+
+  /**
+   * The core keeps its highlight, dimmer than a standing bot's.
+   *
+   * Dropping it entirely was over-reading the rule: the core is not *lit* — no
+   * light source has gone anywhere — it is just no longer standing up. Without a
+   * specular it stopped reading as a sphere at all, which is the one thing the
+   * mark is for.
+   *
+   * A searched core is an outline with floor showing through, so there is no
+   * surface for a specular to sit on. It catches the light on its rim instead,
+   * which is what a broken shell actually does.
+   */
+  if (body.searched) {
+    strokeArc(g, at, coreRadius, Math.PI * 1.05, Math.PI * 1.45, {
+      color: 0xffffff, width: WEIGHT.anchor, alpha: 0.5,
+    });
+  } else {
+    drawCatchLight(g, at, coreRadius, 0.2);
   }
 
   // What is left on it, between the core and the hull: one notch per item.
