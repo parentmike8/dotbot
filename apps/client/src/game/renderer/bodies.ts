@@ -144,6 +144,9 @@ export type DownedBody = {
 /** A body keeps the hull an alive bot has; only what is inside it changes. */
 const CORE_SCALE = 0.4;
 const CRACK_ANGLE = Math.PI * 0.36;
+/** Hairline while the body is closed; prised apart once it has been searched. */
+const CRACK_CLOSED = 1.2;
+const CRACK_OPEN = 4.4;
 
 /**
  * A body lying on the floor.
@@ -182,21 +185,23 @@ export function drawDownedBody(g: Graphics, body: DownedBody): void {
     for (const [from, to] of brokenRingArcs()) strokeArc(g, at, radius - 0.5, from, to, hull);
   }
 
-  // Filled while nobody has been through it; an outline once it has been searched,
-  // so the floor shows through what is left.
-  const coreInk = { color: INK.structure, alpha: body.searched ? 0.62 : 0.74 };
-  const paint = () => {
-    if (body.searched) g.stroke({ ...coreInk, width: WEIGHT.anchor });
-    else g.fill(coreInk);
-  };
+  /**
+   * The core stays solid whether or not the body has been searched. A hollow ring
+   * said "emptied" but gave up the one mark that reads at any distance, and a body
+   * you have already been through is not less of a body.
+   *
+   * The crack carries the state instead: hairline while the body is closed, prised
+   * open once somebody has been through it. Same shape, one number.
+   */
+  const coreInk = { color: INK.structure, alpha: body.searched ? 0.54 : 0.8 };
   if (style.crack === "none") {
-    g.circle(at.x, at.y, coreRadius);
-    paint();
+    g.circle(at.x, at.y, coreRadius).fill(coreInk);
   } else {
     const line = splitLine(style.crack);
+    const gap = body.searched ? CRACK_OPEN : CRACK_CLOSED;
     for (const side of [1, -1] as const) {
-      crackPiece(g, at, coreRadius, CRACK_ANGLE, line, side, 1.6);
-      paint();
+      crackPiece(g, at, coreRadius, CRACK_ANGLE, line, side, gap);
+      g.fill(coreInk);
     }
   }
 
