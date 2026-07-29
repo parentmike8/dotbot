@@ -1,7 +1,8 @@
-export type ClientSurface = "base" | "solo" | "studio" | "lab" | "hud" | "skins";
+export type ClientSurface = "base" | "solo" | "studio" | "lab" | "hud" | "skins" | "worlds";
 
 export function selectClientSurface(search: string): ClientSurface {
   const params = new URLSearchParams(search);
+  if (params.has("worlds")) return "worlds";
   if (params.has("lab")) return "lab";
   if (params.has("skins")) return "skins";
   if (params.has("hud")) return "hud";

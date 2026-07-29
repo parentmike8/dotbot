@@ -14,7 +14,9 @@ window.visualViewport?.addEventListener("resize", syncVisibleViewportHeight, { p
 
 async function mount(): Promise<void> {
   const surface = selectClientSurface(window.location.search);
-  const Component = surface === "lab"
+  const Component = surface === "worlds"
+    ? (await import("./ui/WorldLab")).WorldLab
+    : surface === "lab"
     ? (await import("./ui/StyleLab")).StyleLab
     : surface === "skins"
       ? (await import("./ui/hud/HudSkins")).HudSkins
