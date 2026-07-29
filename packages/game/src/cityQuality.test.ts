@@ -47,6 +47,9 @@ const kinds = (issues: CityIssue[]): Record<string, number> => {
 const only = (issues: CityIssue[], kind: CityIssue["kind"]): CityIssue[] =>
   issues.filter((issue) => issue.kind === kind);
 
+/** Where a squad lands. The public network is anchored on these, not on tarmac. */
+const arrival = (x: number, y: number) => [{ id: "in", name: "IN", position: { x, y } }];
+
 describe("entrances and the street", () => {
   /** A road across the top, its south footway, and a building set behind it. */
   const street = () => ({
@@ -57,6 +60,7 @@ describe("entrances and the street", () => {
   it("passes a door that opens onto a forecourt joined to the footway", () => {
     const { roads, footway } = street();
     const map = bare({
+      insertionPoints: arrival(100, 260),
       outdoor: {
         roads,
         parks: [],
@@ -71,6 +75,7 @@ describe("entrances and the street", () => {
   it("flags a door that opens onto ground with no use at all", () => {
     const { roads, footway } = street();
     const map = bare({
+      insertionPoints: arrival(100, 260),
       outdoor: { roads, parks: [], surfaces: [footway], walls: [], objects: [], dotSpawns: [] },
       buildings: [box("shop", 300, 500, 400, 300, [{ id: "front", x: 480, y: 500, width: 90, dir: "h" }])],
     });
@@ -82,9 +87,10 @@ describe("entrances and the street", () => {
    * Beacon House's east door, exactly: paving that joined the door to the
    * courtyard and to nothing else. Walkable, named, and still not a way out.
    */
-  it("flags a door onto paving that never reaches a carriageway", () => {
+  it("flags a door onto paving that never reaches the arrival network", () => {
     const { roads, footway } = street();
     const map = bare({
+      insertionPoints: arrival(100, 260),
       outdoor: {
         roads,
         parks: [],
@@ -99,7 +105,50 @@ describe("entrances and the street", () => {
       buildings: [box("shop", 300, 584, 400, 300, [{ id: "front", x: 480, y: 584, width: 90, dir: "h" }])],
     });
     expect(only(auditCity(map), "entrance-without-approach")[0].message)
-      .toMatch(/never reaches a carriageway/);
+      .toMatch(/never reaches an arrival point/);
+  });
+
+  /**
+   * The rule that used to be about carriageways, on a map with none.
+   *
+   * A shrine on a stone court in the jungle. Under the old rule — public network
+   * means "route ground touching a road" — every door here failed for want of
+   * traffic, and the fix would have been an exemption. Anchoring on arrival points
+   * instead makes it pass on its merits, and the next case proves it can still fail.
+   */
+  it("passes a door in a roadless region that reaches the drop", () => {
+    const map = bare({
+      insertionPoints: arrival(600, 200),
+      outdoor: {
+        roads: [], parks: [], surfaces: [],
+        regions: [{
+          id: "court", kind: "court",
+          points: [{ x: 380, y: 140 }, { x: 840, y: 180 }, { x: 800, y: 520 }, { x: 340, y: 480 }],
+        }],
+        walls: [], objects: [], dotSpawns: [],
+      },
+      buildings: [box("shrine", 420, 520, 300, 220, [{ id: "front", x: 570, y: 520, width: 90, dir: "h" }])],
+    });
+    expect(kinds(auditCity(map))["entrance-without-approach"]).toBeUndefined();
+    expect(kinds(auditCity(map))["building-adrift"]).toBeUndefined();
+  });
+
+  it("still flags a roadless door whose clearing the drop cannot reach", () => {
+    const map = bare({
+      // The drop is out on undergrowth, which is walkable and is not a route.
+      insertionPoints: arrival(120, 120),
+      outdoor: {
+        roads: [], parks: [], surfaces: [],
+        regions: [
+          { id: "wild", kind: "undergrowth", points: [{ x: 0, y: 0 }, { x: 1200, y: 0 }, { x: 1200, y: 900 }, { x: 0, y: 900 }] },
+          { id: "court", kind: "court", points: [{ x: 380, y: 300 }, { x: 840, y: 300 }, { x: 840, y: 520 }, { x: 380, y: 520 }] },
+        ],
+        walls: [], objects: [], dotSpawns: [],
+      },
+      buildings: [box("shrine", 420, 520, 300, 220, [{ id: "front", x: 570, y: 520, width: 90, dir: "h" }])],
+    });
+    expect(only(auditCity(map), "entrance-without-approach")[0].message)
+      .toMatch(/never reaches an arrival point/);
   });
 });
 

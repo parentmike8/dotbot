@@ -4,6 +4,7 @@ import { beaconHouse } from "./beaconHouse";
 import { civicTower } from "./civicTower";
 import { lot6Depot } from "./lot6Depot";
 import { mercyClinic } from "./mercyClinic";
+import type { RegionParts } from "./regionKit";
 import type {
   BotSpawn,
   DotSpawn,
@@ -474,3 +475,42 @@ const authoredDowntownMap: MapDocument = {
 
 /** Blueprint dots are inserted before every exported map consumer runs. */
 export const downtownMap = addBlueprintSpawns(authoredDowntownMap, 24);
+
+/**
+ * Downtown as a REGION, so it can be one place in a larger world.
+ *
+ * The standalone `downtownMap` above stays exactly as it was — it is the regression map
+ * the whole test suite is written against, and it is authored on a 2400 x 1600 sheet
+ * with its own edge walls all the way round. `world.ts` needs the same content with a
+ * different boundary: the north and west edges are still the edge of the world, but the
+ * east and south ones are now internal, with a gate in each where Main St and Third Ave
+ * carry on into the yard and the fairground.
+ *
+ * So the walls are the one thing not exported. Everything else is shared, which means
+ * there is no second copy of Downtown to keep in step — the failure mode that a "world
+ * version" of a map always has.
+ */
+export const downtownRegion: RegionParts = {
+  id: "downtown",
+  name: "Downtown",
+  roads,
+  surfaces,
+  parks: [{ id: "beacon-courtyard", x: 2148, y: 1020, w: 212, h: 400 }],
+  objects: outdoorPlan().objects,
+  dotSpawns: outdoorPlan().dotSpawns,
+  buildings: authoredDowntownMap.buildings,
+  extractionPoints: authoredDowntownMap.extractionPoints,
+  insertionPoints: authoredDowntownMap.insertionPoints,
+  botSpawns,
+};
+
+/** The two gates out of the city, and where the world's boundary walls stop for them. */
+export const DOWNTOWN_GATES = {
+  /** Main St, east into the rail yard: the carriageway and both footways. */
+  east: [MAIN_N_BACK, MAIN_S_BACK] as [number, number],
+  /** Third Ave, south into the fairground. */
+  south: [AVE_W_BACK, AVE_E_BACK] as [number, number],
+  width: MAP_W,
+  height: MAP_H,
+  edge: EDGE,
+};

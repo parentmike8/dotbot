@@ -299,7 +299,41 @@ export type ObjectKind =
   | "draftingTable"
   | "repairBench"
   | "listeningPost"
-  | "signalMast";
+  | "signalMast"
+  /**
+   * Landmarks: the objects a region is recognised by.
+   *
+   * Everything above is furniture — a thing inside or beside a building. These are
+   * the other half of a world, and the lesson that produced them is worth keeping:
+   * three regions were first drawn as ground cover (rock, scrub, water, canopy) and
+   * read as nothing in particular. A place is recognised by its landmarks. A
+   * turntable says railway in one glance; no amount of ballast does.
+   *
+   * They are ordinary ObjectKinds on purpose. Being in this union is what buys
+   * collision, the Studio, the audits and the parallax pass for free — the mock
+   * versions in `ui/worlds` had none of that, which is exactly why they were mock.
+   */
+  // Wild ground.
+  | "boulder"
+  | "thicket"
+  | "log"
+  // The rail yard.
+  | "track"
+  | "turntable"
+  | "wagon"
+  | "bufferStop"
+  | "waterTank"
+  | "coalingTower"
+  // The fairground.
+  | "carousel"
+  | "ferrisWheel"
+  | "waltzer"
+  | "swingRide"
+  // The temple.
+  | "stele"
+  | "altar"
+  | "serpentHead"
+  | "brazier";
 
 /** Furniture that can be installed in the persistent player base. */
 export type BaseObjectKind =
@@ -424,7 +458,23 @@ export type FloorPlan = {
   dotSpawns: DotSpawn[];
 };
 
-export type BuildingKind = "hospital" | "office" | "retail" | "warehouse" | "residential";
+export type BuildingKind =
+  | "hospital"
+  | "office"
+  | "retail"
+  | "warehouse"
+  | "residential"
+  /**
+   * Masonry that predates every system the other five imply.
+   *
+   * A pyramid and an observatory have no membrane roof, no drainage sumps, no plant
+   * deck and no access hatch, and the roof pass derives all of those from a building's
+   * kind. Without a kind that says "none of that", the temple's summit came out as a
+   * Mayan platform with a modern flat roof laid on it — which is the loudest possible
+   * version of the mistake the renderer exists to avoid, a system drawn where the
+   * building below has none.
+   */
+  | "monument";
 
 export type Building = {
   id: string;
@@ -475,11 +525,58 @@ export type SurfaceKind =
   /** Service hardstanding: loading, parking, bins, back-of-house. */
   | "yard"
   /** Unpaved planted setback. Walkable, but nobody routes through it. */
-  | "verge";
+  | "verge"
+  /**
+   * The uses a world outside a city needs.
+   *
+   * These are uses, not materials, by the same test as the five above: a ritual
+   * court and a shopping plaza are different things people do on different ground,
+   * so they are different uses and the renderer is free to draw them differently.
+   * What would be wrong is a `flagstone` kind — that is a material, and the map
+   * does not get to choose one.
+   */
+  /** Track bed. Ballast, sleepers, the walkable ground a train runs on. */
+  | "ballast"
+  /** Bare trodden earth in wild land: the path, and the open ground it leads to. */
+  | "clearing"
+  /** Wild vegetation. Walkable, but nobody routes through it. */
+  | "undergrowth"
+  /** Dressed stone laid for ceremony rather than for traffic. */
+  | "court"
+  /**
+   * Open water.
+   *
+   * Shallow and wadeable, which is deliberate rather than a shortcut. Water a bot
+   * cannot cross needs something visible doing the stopping — a bank, a kerb, a
+   * cenote rim — because invisible collision is the same lie as a ghost fixture,
+   * just told the other way round. So this kind draws water and blocks nothing, and
+   * every edge that must hold is authored as real solid geometry beside it.
+   */
+  | "water";
 
 export type Surface = Rect & {
   id: string;
   kind: SurfaceKind;
+};
+
+/**
+ * Ground whose shape is not a rectangle.
+ *
+ * A city can be described in rectangles because a city is built in them — a block,
+ * a footway, a forecourt. Nothing outside one can: a shoreline, a clearing, the
+ * apron of ballast round a turntable, the weeds taking a fairground back. Drawing
+ * those as rectangles is how a "natural" region ends up reading as a city with
+ * different colours, which is precisely what the first attempt at these regions did.
+ *
+ * Same `SurfaceKind` as a `Surface`, because the *use* is the same idea either way;
+ * only the shape is freer. `auditCity` counts both, so a region cannot be used to
+ * dodge the rule that every piece of ground has a named use.
+ */
+export type GroundRegion = {
+  id: string;
+  kind: SurfaceKind;
+  /** Closed ring, any winding. Concave is fine; this is ground, not collision. */
+  points: Vec2[];
 };
 
 export type ExtractionPoint = {
@@ -504,6 +601,12 @@ export type OutdoorPlan = {
    * `cityPlan.ts` — so footways cannot drift from the streets that produce them.
    */
   surfaces?: Surface[];
+  /**
+   * The same thing, free of the rectangle: clearings, shorelines, track aprons.
+   * Drawn after `surfaces`, so a region may deliberately lap over one — weeds
+   * across a midway, ballast over a yard.
+   */
+  regions?: GroundRegion[];
   /** Map edges plus anything outdoors that collides (hedges, low walls). */
   walls: WallSegment[];
   /** Non-rectangular outdoor geometry: sea walls, quaysides, cliff faces. */

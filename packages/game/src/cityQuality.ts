@@ -1,6 +1,8 @@
 import { MIN_FOOTWAY, ROUTE_KINDS } from "./cityPlan";
 import { defaultGameConfig } from "./config";
-import { isGroundFloor } from "./mapModel";
+import { polygonContains } from "./geometry";
+import { isGroundFloor, physicsFloorId } from "./mapModel";
+import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Building, Doorway, MapDocument, Rect, Vec2 } from "./types";
 
 /**
@@ -60,6 +62,17 @@ function overlaps(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
+/**
+ * The last match, not the first — because regions are drawn in order and a later
+ * one laps over an earlier one on purpose. Reading the *first* match instead put a
+ * shrine's court under the jungle it was cut out of: the audit saw undergrowth
+ * where a player would be standing on stone.
+ */
+function findLast<T>(items: readonly T[], accept: (item: T) => boolean): T | undefined {
+  for (let i = items.length - 1; i >= 0; i -= 1) if (accept(items[i])) return items[i];
+  return undefined;
+}
+
 /** Every ground-floor doorway that sits on a building's perimeter, and its outward normal. */
 function streetDoors(building: Building): Array<{ door: Doorway; outward: Vec2 }> {
   const ground = building.floors.find(isGroundFloor);
@@ -96,16 +109,25 @@ function classifyGround(map: MapDocument): Ground {
   const rows = Math.ceil(map.height / CELL);
   const kind: GroundKind[] = new Array(cols * rows).fill("unassigned");
   const surfaces = map.outdoor.surfaces ?? [];
+  const regions = map.outdoor.regions ?? [];
 
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
       const at = { x: col * CELL + CELL / 2, y: row * CELL + CELL / 2 };
       const index = row * cols + col;
 
-      // The grid rounds up, so a sheet whose size is not a multiple of CELL grows
-      // a phantom strip past its own edge. Left in, it reads as a long thin hole
-      // in every such map and there is nothing an author could do about it.
-      if (at.x > map.width || at.y > map.height) {
+      /**
+       * The grid rounds up, so a sheet whose size is not a multiple of CELL grows a
+       * phantom strip past its own edge. Left in, it reads as a long thin hole in every
+       * such map and there is nothing an author could do about it.
+       *
+       * `>=`, not `>`. A cell centred exactly ON `map.width` is outside the sheet — the
+       * rightmost point of the world IS `map.width` — and with `>` it counted as ground
+       * nobody had named. Downtown was 2400 x 1600 and happened to dodge it; the world's
+       * 4200 divides by 16 to a half, so its last column landed on the line and reported
+       * two long thin holes down the east and south edges that no author could fill.
+       */
+      if (at.x >= map.width || at.y >= map.height) {
         kind[index] = "offsheet";
         continue;
       }
@@ -121,6 +143,16 @@ function classifyGround(map: MapDocument): Ground {
       }
       if (map.outdoor.roads.some((road) => rectHasPoint(road, at))) {
         kind[index] = "road";
+        continue;
+      }
+      /**
+       * A region is checked before the rect surfaces it may lap over, because that
+       * lapping is the point: weeds across a midway, ballast over a yard. The last
+       * thing laid down is what a player is standing on.
+       */
+      const region = findLast(regions, (candidate) => polygonContains(candidate.points, at));
+      if (region) {
+        kind[index] = ROUTE_KINDS.has(region.kind) ? "route" : "quiet";
         continue;
       }
       const surface = surfaces.find((candidate) => rectHasPoint(candidate, at));
@@ -169,37 +201,75 @@ function components(ground: Ground, accept: (kind: GroundKind) => boolean): numb
   return found;
 }
 
+/** Cell index for a world point, or −1 if it is off the grid. */
+function cellAt(ground: Ground, at: Vec2): number {
+  const col = Math.floor(at.x / CELL);
+  const row = Math.floor(at.y / CELL);
+  if (col < 0 || row < 0 || col >= ground.cols || row >= ground.rows) return -1;
+  return row * ground.cols + col;
+}
+
 /**
- * Can a bot leave this door and get to a street?
+ * The ground a player can actually get to and away from.
+ *
+ * This used to be anchored on a carriageway: the network was every run of route
+ * ground touching a road, and a door not on it failed. That was right for a city
+ * and wrong for a world. A temple in the jungle has no roads, so every one of its
+ * doors failed a rule about traffic — and an exemption would have been the wrong
+ * fix, because the rule underneath is not about roads at all. It is: *a door has
+ * to connect to where players arrive and where they leave.*
+ *
+ * So the anchors are the insertion and extraction points, which is what a
+ * carriageway was standing in for. In Downtown that is the same network it always
+ * was, because that is where a squad lands and extracts. In the temple it is the
+ * clearing the drop puts you in. No region needs excusing, and the rule got
+ * stricter rather than looser: a road nobody can arrive on no longer counts.
+ */
+function publicNetwork(map: MapDocument, ground: Ground): Set<number> {
+  const anchors: Vec2[] = [
+    ...map.insertionPoints
+      .filter((point) => physicsFloorId(map, point.floorId ?? OUTDOOR_FLOOR_ID) === OUTDOOR_FLOOR_ID)
+      .map((point) => point.position),
+    ...map.extractionPoints.map((point) => ({
+      x: point.rect.x + point.rect.w / 2,
+      y: point.rect.y + point.rect.h / 2,
+    })),
+  ];
+  const anchorCells = new Set(anchors.map((at) => cellAt(ground, at)).filter((cell) => cell >= 0));
+
+  const network = new Set<number>();
+  for (const group of components(ground, (kind) => kind === "route" || kind === "road")) {
+    if (group.some((cell) => anchorCells.has(cell))) for (const cell of group) network.add(cell);
+  }
+  return network;
+}
+
+/**
+ * Can a bot leave this door and get anywhere?
  *
  * Two conditions, and both matter. Stepping out has to land on named ground —
- * pavement, forecourt, yard — rather than on leftover nothing. And that ground
- * has to connect to a carriageway, or it is a courtyard the door opens into
- * rather than a way out.
+ * pavement, forecourt, yard, ballast, clearing — rather than on leftover nothing.
+ * And that ground has to join the network a squad arrives and extracts on, or it is
+ * a courtyard the door opens into rather than a way out.
  */
 function approachIssues(map: MapDocument, ground: Ground, radius: number): CityIssue[] {
   const issues: CityIssue[] = [];
-  const publicNetwork = new Set<number>();
-  for (const group of components(ground, (kind) => kind === "route" || kind === "road")) {
-    if (group.some((cell) => ground.kind[cell] === "road")) for (const cell of group) publicNetwork.add(cell);
-  }
+  const network = publicNetwork(map, ground);
 
   for (const building of map.buildings) {
     for (const { door, outward } of streetDoors(building)) {
       const at = { x: door.x + outward.x * (radius + CELL), y: door.y + outward.y * (radius + CELL) };
-      const col = Math.floor(at.x / CELL);
-      const row = Math.floor(at.y / CELL);
-      const index = row * ground.cols + col;
-      if (col < 0 || row < 0 || col >= ground.cols || row >= ground.rows) continue;
-      if (publicNetwork.has(index)) continue;
+      const index = cellAt(ground, at);
+      if (index < 0) continue;
+      if (network.has(index)) continue;
 
       const standing = ground.kind[index];
       issues.push({
         kind: "entrance-without-approach",
         subject: `${building.id}:${door.id}`,
         message: standing === "route"
-          ? `${building.id} door at ${door.x},${door.y} opens onto ground that never reaches a carriageway`
-          : `${building.id} door at ${door.x},${door.y} opens onto ${standing} ground — it needs an approach to the footway`,
+          ? `${building.id} door at ${door.x},${door.y} opens onto ground that never reaches an arrival point`
+          : `${building.id} door at ${door.x},${door.y} opens onto ${standing} ground — it needs an approach to the network`,
       });
     }
   }
@@ -256,21 +326,47 @@ function footwayIssues(map: MapDocument): CityIssue[] {
   return issues;
 }
 
-/** A building has to address a street, not sit in the middle of the block. */
-function setbackIssues(map: MapDocument): CityIssue[] {
+/**
+ * A building has to address the public ground, not stand in a field.
+ *
+ * This measured distance to the nearest *road* until the world grew past the city.
+ * Under that rule a pyramid on a ceremonial court and a roundhouse on a rail yard
+ * were both "adrift" while a shed dropped on a verge beside a street passed — the
+ * rule had latched onto the city's usual answer instead of the question.
+ *
+ * The question is whether the building fronts ground somebody would walk on. In
+ * Downtown that is a footway off a carriageway and nothing changes. Elsewhere it is
+ * a yard, a court, a clearing. What still fails, and is the whole point, is a
+ * building with unnamed ground all round it: a field is not a frontage.
+ */
+function setbackIssues(map: MapDocument, ground: Ground): CityIssue[] {
   const issues: CityIssue[] = [];
+  const network = publicNetwork(map, ground);
+
   for (const building of map.buildings) {
-    const centre = {
-      x: building.footprint.x + building.footprint.w / 2,
-      y: building.footprint.y + building.footprint.h / 2,
-    };
-    const nearest = Math.min(...map.outdoor.roads.map((road) => distanceToRect(centre, road)
-      - Math.max(building.footprint.w, building.footprint.h) / 2));
-    if (nearest > MAX_SETBACK) {
+    const fp = building.footprint;
+    // Probe a ring at MAX_SETBACK round the footprint rather than measuring to the
+    // nearest surface rect: route ground is a polygon soup now, and "is there any
+    // of it within reach of my frontage" is the thing being asked either way.
+    let nearest = Infinity;
+    const step = CELL;
+    for (let reach = step; reach <= MAX_SETBACK && nearest === Infinity; reach += step) {
+      const band: Vec2[] = [];
+      for (let x = fp.x - reach; x <= fp.x + fp.w + reach; x += step) {
+        band.push({ x, y: fp.y - reach }, { x, y: fp.y + fp.h + reach });
+      }
+      for (let y = fp.y - reach; y <= fp.y + fp.h + reach; y += step) {
+        band.push({ x: fp.x - reach, y }, { x: fp.x + fp.w + reach, y });
+      }
+      if (band.some((at) => network.has(cellAt(ground, at)))) nearest = reach;
+    }
+
+    if (nearest === Infinity) {
       issues.push({
         kind: "building-adrift",
         subject: building.id,
-        message: `${building.id} stands ${Math.round(nearest)} units off its nearest road — past ${MAX_SETBACK} a building stops addressing the street`,
+        message: `${building.id} has no public ground within ${MAX_SETBACK} units of its frontage `
+          + `— past that a building has stopped addressing anything`,
       });
     }
   }
@@ -337,7 +433,7 @@ export function auditCity(map: MapDocument, radius = defaultGameConfig.botRadius
   return [
     ...approachIssues(map, ground, radius),
     ...footwayIssues(map),
-    ...setbackIssues(map),
+    ...setbackIssues(map, ground),
     ...frontageIssues(map),
     ...unassignedGroundIssues(ground),
   ];

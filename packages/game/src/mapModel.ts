@@ -169,6 +169,31 @@ const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
    * to overlap.
    */
   "chair",
+  /**
+   * Landmarks, and the default is the same as everywhere else: what looks solid is
+   * solid. Each of these is drawn as a mass with a cast shadow, so each collides.
+   *
+   * The two exceptions are in `FLAT_KINDS` and both are ground you walk on — track
+   * and a turntable deck. Note what is *not* excepted: the swing ride's seats hang
+   * at rest inside its own footprint, and the ferris wheel seen from directly
+   * overhead is a narrow band, not a disc. Neither gets a generous collider because
+   * a ride you can walk through the middle of is the same lie as a ghost tree.
+   */
+  "boulder",
+  "thicket",
+  "log",
+  "wagon",
+  "bufferStop",
+  "waterTank",
+  "coalingTower",
+  "carousel",
+  "ferrisWheel",
+  "waltzer",
+  "swingRide",
+  "stele",
+  "altar",
+  "serpentHead",
+  "brazier",
 ]);
 
 /**
@@ -184,6 +209,15 @@ export const MIN_DOT_SEPARATION = 64;
 /** Floor coverings: drawn flat, never collide, never drawn over furniture. */
 export const FLAT_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "parkingStall", "pallet", "rug", "skylight", "vent",
+  /**
+   * Rail. Both are ground: you walk along track and you walk across a turntable
+   * deck, and a rail standing 8mm out of the ballast is not cover for anybody.
+   *
+   * Track is also the one kind here that is genuinely *long* — a siding runs the
+   * width of a region — which is the other reason it has to be flat. As a collider
+   * it would fence the yard into strips.
+   */
+  "track", "turntable",
 ]);
 
 /**
@@ -200,6 +234,9 @@ export const FLAT_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
  */
 export const SURFACE_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "parkingStall", "rug",
+  // Drawn as the ground itself, so washing them out would fade the ballast rather
+  // than warn anyone about anything.
+  "track", "turntable",
 ]);
 
 export function isSolidObject(object: MapObject): boolean {

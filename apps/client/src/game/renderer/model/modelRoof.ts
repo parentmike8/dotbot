@@ -1,5 +1,6 @@
 import { Container, Graphics } from "pixi.js";
 import { isGroundFloor } from "@dotbot/game/mapModel";
+import { insetPolygon } from "@dotbot/game/geometry";
 import type { Building, Rect, Vec2 } from "@dotbot/game/types";
 import { inwardBand, isAcross, outwardBand, perimeterEntrances, type PerimeterEntrance } from "./entrances";
 import { drawModelObject } from "./modelGlyphs";
@@ -8,6 +9,7 @@ import {
   AO_ALPHA,
   contact,
   contactBlock,
+  contactBlockShape,
   inlay,
   jitter,
   LIFT,
@@ -19,6 +21,7 @@ import {
   SHADOW_TOTAL,
   V,
   volume,
+  volumeShape,
   type ShadowPad,
 } from "./tone";
 
@@ -154,6 +157,19 @@ export function roofParallax(building: Building, viewCenter: Vec2): Vec2 {
 export function buildRoofModel(building: Building): RoofModel {
   const fp = building.footprint;
   const roof: Rect = fp;
+  /**
+   * The building's real plan, when it has one.
+   *
+   * Everything below was written against `fp`, the axis-aligned bounding box, and for
+   * a box that is the same thing. It is not the same thing for an L-plan, a chamfered
+   * corner or an annular sector — and `modelFloor` has clipped its slab to the outline
+   * since the format grew one, so the two halves of the same building disagreed:
+   * inside you were in an L, and from the street you were looking at a rectangle. The
+   * roundhouse is what forced it, because a fan drawn as its bounding box is a shed
+   * lying across half the yard, but Quayside's L had been doing the quieter version of
+   * the same thing all along.
+   */
+  const plan: Vec2[] = building.outline && building.outline.length >= 3 ? building.outline : [];
   const view = new Container();
   const mass = new Container();
   const plate = new Graphics();
@@ -195,36 +211,128 @@ export function buildRoofModel(building: Building): RoofModel {
    * concentric rounded rectangles.
    */
   const blockShadow = new Graphics();
-  contactBlock(blockShadow, fp, storeyShadowLift(building));
+  if (plan.length >= 3) contactBlockShape(blockShadow, plan, storeyShadowLift(building));
+  else contactBlock(blockShadow, fp, storeyShadowLift(building));
 
   const wall = 12;
-  inlay(deck, roof, ROOF.membrane);
+  /**
+   * Masonry has none of the systems a modern roof is made of.
+   *
+   * Every mark below this line belongs to a specific building system — a lapped
+   * membrane, falls to an outlet, soiling where water sits — which is the rule the
+   * contract states as "every roof element belongs to a named system such as access,
+   * cooling, exhaust, daylight, drainage". A stone platform has none of those systems,
+   * so it gets none of those marks, and drawing them anyway would be decoration in the
+   * one place the contract names outright.
+   */
+  const masonry = building.kind === "monument";
 
-  // Membrane laid in sheets, lapped north to south.
-  const sheet = 92;
-  for (let y = roof.y + sheet; y < roof.y + roof.h; y += sheet) {
-    inlay(deck, { x: roof.x, y: y - 1, w: roof.w, h: 2 }, ROOF.lap);
-    inlay(deck, { x: roof.x, y: y - 1, w: roof.w, h: 0.8 }, ROOF.membraneLit);
-  }
+  if (masonry) {
+    /**
+     * TERRACES, and this is the whole reason `monument` exists as a kind.
+     *
+     * A stepped pyramid from directly overhead IS a set of concentric rings, and drawn as
+     * anything else it is a grey box: the first version laid stone flags across the whole
+     * base and the temple read as a warehouse somebody had paved. Each ring is a real
+     * prism, so each one gets `volumeShape` — which means every riser is lit by its own
+     * normal rather than by a rule about which side of a pyramid is dark, and the same code
+     * gives a square base four terraces and a round tower three setbacks.
+     */
+    const short = Math.min(roof.w, roof.h);
+    const steps = Math.max(3, Math.min(6, Math.round(short / 120)));
+    const tread = (short * 0.3) / steps;
+    const base: Vec2[] = plan.length ? plan : [
+      { x: roof.x, y: roof.y },
+      { x: roof.x + roof.w, y: roof.y },
+      { x: roof.x + roof.w, y: roof.y + roof.h },
+      { x: roof.x, y: roof.y + roof.h },
+    ];
+    for (let step = 0; step < steps; step += 1) {
+      const ring = insetPolygon(base, step * tread);
+      if (ring.length < 3) break;
+      // Higher courses are cleaner: rain and feet wear the bottom ones.
+      volumeShape(deck, ring, step > steps - 2 ? MAT.stone : MAT.stoneWorn, LIFT.mass * 0.55);
+    }
+    // The summit platform's own flags, so the top is a surface rather than a small hole.
+    const summit = insetPolygon(base, steps * tread);
+    if (summit.length >= 3) {
+      for (let i = 0; i < 8; i += 1) {
+        const bounds = { x: roof.x, y: roof.y, w: roof.w, h: roof.h };
+        const size = 30 + jitter(building.id, i) * 40;
+        inlay(deck, {
+          x: bounds.x + short * 0.34 + jitter(building.id, i + 20) * Math.max(1, roof.w - short * 0.7 - size),
+          y: bounds.y + short * 0.34 + jitter(building.id, i + 40) * Math.max(1, roof.h - short * 0.7 - size),
+          w: size,
+          h: size * 0.72,
+        }, shade(MAT.stone.top, i % 3 === 0 ? 1.05 : 0.96));
+      }
+    }
 
-  // Falls: the deck drains toward outlets, so it darkens away from the ridge.
-  for (let i = 0; i < 4; i += 1) {
-    const t = i / 4;
-    inlay(
-      deck,
-      { x: roof.x + wall, y: roof.y + roof.h - wall - (roof.h * 0.34) * (1 - t), w: roof.w - wall * 2, h: 2 + t * 8 },
-      shade(ROOF.membrane, 0.985),
-    );
-  }
+    /**
+     * The grand stairway, cut through the terraces at the door that earns one.
+     *
+     * Derived, not decorated: it runs at a ground-floor entrance, in the direction that
+     * entrance faces, as deep as the terraces are. Which means the pyramid's south arch —
+     * the one at the foot of the real GROUND → ROOF flight inside — grows the flight of
+     * steps a player can see from the plaza, while its 96-wide north arch into the tomb
+     * does not, and the observatory's 84-wide door does not either. A wide ceremonial arch
+     * is the map already saying "this is the way up".
+     */
+    for (const entrance of perimeterEntrances(building)) {
+      if (entrance.door.width < 120) continue;
+      const half = entrance.door.width / 2 + 4;
+      const run = inwardBand(entrance, fp, short * 0.3 + tread, half);
+      const across = isAcross(entrance.side);
+      // A course lighter than the terraces it cuts through, so the flight reads from the
+      // plaza. In `MAT.stone.top` against `MAT.stoneWorn.top` it was thirteen steps of
+      // difference and vanished at region zoom.
+      inlay(deck, run, shade(MAT.stone.top, 1.07));
+      // Treads across the flight, and a balustrade down each flank.
+      const span = across ? run.h : run.w;
+      const pitch = Math.max(11, span / 12);
+      for (let at = pitch; at < span - 1; at += pitch) {
+        inlay(deck, across
+          ? { x: run.x + 7, y: run.y + at - 1.5, w: run.w - 14, h: 3 }
+          : { x: run.x + at - 1.5, y: run.y + 7, w: 3, h: run.h - 14 },
+          shade(MAT.stone.front, 0.72));
+      }
+      for (const rail of across
+        ? [{ x: run.x, y: run.y, w: 7, h: run.h }, { x: run.x + run.w - 7, y: run.y, w: 7, h: run.h }]
+        : [{ x: run.x, y: run.y, w: run.w, h: 7 }, { x: run.x, y: run.y + run.h - 7, w: run.w, h: 7 }]
+      ) {
+        inlay(deck, rail, MAT.stoneWorn.front);
+        inlay(deck, { ...rail, h: across ? rail.h : 2, w: across ? 2 : rail.w }, MAT.stone.lit);
+      }
+    }
+  } else {
+    inlay(deck, roof, ROOF.membrane);
 
-  // Soiling in the corners, where nothing sweeps and water sits.
-  for (const [cx, cy] of [
-    [roof.x + wall, roof.y + wall],
-    [roof.x + roof.w - wall - 60, roof.y + wall],
-    [roof.x + wall, roof.y + roof.h - wall - 60],
-    [roof.x + roof.w - wall - 60, roof.y + roof.h - wall - 60],
-  ]) {
-    inlay(deck, { x: cx, y: cy, w: 60, h: 60 }, ROOF.soil);
+    // Membrane laid in sheets, lapped north to south.
+    const sheet = 92;
+    for (let y = roof.y + sheet; y < roof.y + roof.h; y += sheet) {
+      inlay(deck, { x: roof.x, y: y - 1, w: roof.w, h: 2 }, ROOF.lap);
+      inlay(deck, { x: roof.x, y: y - 1, w: roof.w, h: 0.8 }, ROOF.membraneLit);
+    }
+
+    // Falls: the deck drains toward outlets, so it darkens away from the ridge.
+    for (let i = 0; i < 4; i += 1) {
+      const t = i / 4;
+      inlay(
+        deck,
+        { x: roof.x + wall, y: roof.y + roof.h - wall - (roof.h * 0.34) * (1 - t), w: roof.w - wall * 2, h: 2 + t * 8 },
+        shade(ROOF.membrane, 0.985),
+      );
+    }
+
+    // Soiling in the corners, where nothing sweeps and water sits.
+    for (const [cx, cy] of [
+      [roof.x + wall, roof.y + wall],
+      [roof.x + roof.w - wall - 60, roof.y + wall],
+      [roof.x + wall, roof.y + roof.h - wall - 60],
+      [roof.x + roof.w - wall - 60, roof.y + roof.h - wall - 60],
+    ]) {
+      inlay(deck, { x: cx, y: cy, w: 60, h: 60 }, ROOF.soil);
+    }
   }
 
   /**
@@ -250,24 +358,38 @@ export function buildRoofModel(building: Building): RoofModel {
   const inner: Rect = { x: roof.x + wall, y: roof.y + wall, w: roof.w - wall * 2, h: roof.h - wall * 2 };
   const reveal = 2.5; // the wall face below the coping: dark, and the building's edge
   const stone = 4.5;
-  for (const run of [
-    { x: roof.x, y: roof.y, w: roof.w, h: wall },
-    { x: roof.x, y: roof.y + roof.h - wall, w: roof.w, h: wall },
-    { x: roof.x, y: roof.y + wall, w: wall, h: roof.h - wall * 2 },
-    { x: roof.x + roof.w - wall, y: roof.y + wall, w: wall, h: roof.h - wall * 2 },
-  ]) {
-    inlay(parapet, run, V.wallCap);
-  }
-  // The coping is a horizontal top surface, so it takes one value all the way
-  // round: under a single light, only faces that turn differ.
-  const cap: Rect = { x: roof.x + reveal, y: roof.y + reveal, w: roof.w - reveal * 2, h: roof.h - reveal * 2 };
-  for (const band of [
-    { x: cap.x, y: cap.y, w: cap.w, h: stone },
-    { x: cap.x, y: cap.y + cap.h - stone, w: cap.w, h: stone },
-    { x: cap.x, y: cap.y, w: stone, h: cap.h },
-    { x: cap.x + cap.w - stone, y: cap.y, w: stone, h: cap.h },
-  ]) {
-    inlay(parapet, band, ROOF.coping);
+  if (plan.length) {
+    /**
+     * A parapet on a plan of any shape, drawn as two strokes rather than four runs.
+     *
+     * A ring stroked along `insetPolygon(plan, wall / 2)` at width `wall` lands exactly
+     * inside the outline however many corners it has, so the upstand follows a curve
+     * without anyone having to decide which of four sides a diagonal edge belongs to.
+     * Same two values as the rect version, in the same order — dark to the very edge,
+     * coping set back inboard of it.
+     */
+    ringStroke(parapet, insetPolygon(plan, wall / 2), wall, V.wallCap);
+    ringStroke(parapet, insetPolygon(plan, reveal + stone / 2), stone, ROOF.coping);
+  } else {
+    for (const run of [
+      { x: roof.x, y: roof.y, w: roof.w, h: wall },
+      { x: roof.x, y: roof.y + roof.h - wall, w: roof.w, h: wall },
+      { x: roof.x, y: roof.y + wall, w: wall, h: roof.h - wall * 2 },
+      { x: roof.x + roof.w - wall, y: roof.y + wall, w: wall, h: roof.h - wall * 2 },
+    ]) {
+      inlay(parapet, run, V.wallCap);
+    }
+    // The coping is a horizontal top surface, so it takes one value all the way
+    // round: under a single light, only faces that turn differ.
+    const cap: Rect = { x: roof.x + reveal, y: roof.y + reveal, w: roof.w - reveal * 2, h: roof.h - reveal * 2 };
+    for (const band of [
+      { x: cap.x, y: cap.y, w: cap.w, h: stone },
+      { x: cap.x, y: cap.y + cap.h - stone, w: cap.w, h: stone },
+      { x: cap.x, y: cap.y, w: stone, h: cap.h },
+      { x: cap.x + cap.w - stone, y: cap.y, w: stone, h: cap.h },
+    ]) {
+      inlay(parapet, band, ROOF.coping);
+    }
   }
   // Inner shadow cast by the north and west parapet onto the deck.
   for (let i = 0; i < 5; i += 1) {
@@ -278,28 +400,32 @@ export function buildRoofModel(building: Building): RoofModel {
   }
 
   // Roof access over the service zone, plus drainage outlets at the low corners.
+  // Both are building systems, so masonry gets neither: the way onto a platform is
+  // the stair up its own face, and it drains off the edge.
   const service = serviceEdge(roof);
   const hatch: Rect = { x: service.x, y: service.y, w: 54, h: 44 };
-  occlude(aoPad, hatch, 7);
-  contact(pad, hatch, LIFT.cabinet);
-  const lid = volume(equipmentGraphics(equipment), hatch, MAT.steelDark, LIFT.cabinet, 2);
-  seam(
-    equipmentGraphics(equipment),
-    lid.x + lid.w * 0.5, lid.y + 2, lid.x + lid.w * 0.5, lid.y + lid.h - 2,
-    MAT.steelDeep.top, 1.1,
-  );
+  if (!masonry) {
+    occlude(aoPad, hatch, 7);
+    contact(pad, hatch, LIFT.cabinet);
+    const lid = volume(equipmentGraphics(equipment), hatch, MAT.steelDark, LIFT.cabinet, 2);
+    seam(
+      equipmentGraphics(equipment),
+      lid.x + lid.w * 0.5, lid.y + 2, lid.x + lid.w * 0.5, lid.y + lid.h - 2,
+      MAT.steelDeep.top, 1.1,
+    );
 
-  for (const [ox, oy] of [
-    [roof.x + wall + 26, roof.y + roof.h - wall - 26],
-    [roof.x + roof.w - wall - 26, roof.y + roof.h - wall - 26],
-  ]) {
-    const g = equipmentGraphics(equipment);
-    // A dished sump with a straight-barred leaf grate. Bars, not radial spokes:
-    // spokes read as a swirl, and nothing that moves gets a static mark.
-    g.circle(ox, oy, 10).fill({ color: shade(ROOF.membrane, 0.9) });
-    g.circle(ox, oy, 6.5).fill({ color: MAT.steelDeep.front });
-    for (const off of [-3.2, 0, 3.2]) {
-      g.rect(ox - 5.6, oy + off - 0.6, 11.2, 1.2).fill({ color: MAT.steelDark.top });
+    for (const [ox, oy] of [
+      [roof.x + wall + 26, roof.y + roof.h - wall - 26],
+      [roof.x + roof.w - wall - 26, roof.y + roof.h - wall - 26],
+    ]) {
+      const g = equipmentGraphics(equipment);
+      // A dished sump with a straight-barred leaf grate. Bars, not radial spokes:
+      // spokes read as a swirl, and nothing that moves gets a static mark.
+      g.circle(ox, oy, 10).fill({ color: shade(ROOF.membrane, 0.9) });
+      g.circle(ox, oy, 6.5).fill({ color: MAT.steelDeep.front });
+      for (const off of [-3.2, 0, 3.2]) {
+        g.rect(ox - 5.6, oy + off - 0.6, 11.2, 1.2).fill({ color: MAT.steelDark.top });
+      }
     }
   }
 
@@ -337,7 +463,27 @@ export function buildRoofModel(building: Building): RoofModel {
       equipment.addChild(g);
       objectViews.set(object.id, { object, view: g });
     }
-  } else {
+  } else if (!masonry && building.kind === "retail") {
+    /**
+     * A hall gets a LANTERN, not a plant deck.
+     *
+     * The derived roof below fits an office block, a warehouse or a hospital, because all
+     * three really do carry air handling on the roof. A pleasure pavilion does not: what
+     * is on top of a single-span hall is the rooflight that lights the floor under it, and
+     * an air handler up there is a system the building below has none of — the one thing
+     * the roof rules forbid outright.
+     */
+    const light: Rect = {
+      x: roof.x + roof.w * 0.5 - roof.w * 0.17,
+      y: roof.y + roof.h * 0.5 - roof.h * 0.17,
+      w: roof.w * 0.34,
+      h: roof.h * 0.34,
+    };
+    const g = new Graphics();
+    occlude(aoPad, light, 8);
+    drawModelObject(g, pad, { id: `${building.id}-lantern`, kind: "skylight", ...light });
+    equipment.addChild(g);
+  } else if (!masonry && fp.w * fp.h >= 150_000) {
     /**
      * A derived roof still has to belong to the building underneath it.
      *
@@ -422,7 +568,22 @@ export function buildRoofModel(building: Building): RoofModel {
    * so the contract's promise that the drawn shape is the collider survives a
    * moving camera.
    */
-  inlay(plate, fp, V.wall);
+  /**
+   * At the PLAN, not the bounding box.
+   *
+   * At the box, four of the world's nine buildings rendered as solid black rectangles with
+   * a lighter shape inside: the plate filled the whole bbox in `V.wall`, the mass on top of
+   * it was correctly clipped to the outline, and everything the mass did not cover stayed
+   * wall. A roundhouse fan, an octagonal pavilion and a round tower each lost half their
+   * bbox to it.
+   *
+   * The plate is the last thing in the roof pass that was reading a rectangle as a plan.
+   * `modelFloor`, `connectivityIssues`, `contactBlockShape` and the parapet all had the same
+   * defect and all had it for the same reason — the format grew arbitrary outlines and every
+   * consumer that predated them kept using `footprint` because for a box the two agree.
+   */
+  if (plan.length) fillPolygon(plate, plan, V.wall);
+  else inlay(plate, fp, V.wall);
 
   /**
    * The block's shadow rides with the mass rather than staying on the ground.
@@ -470,8 +631,12 @@ export function buildRoofModel(building: Building): RoofModel {
    * finally separated: a real cast shadow outside, and an explicit deck wash at
    * the exact composite the shadow used to deliver, so no roof changes value.
    */
-  inlay(clip, fp, 0xffffff);
-  wash.rect(fp.x, fp.y, fp.w, fp.h).fill({ color: 0x000000, alpha: SHADOW_TOTAL });
+  if (plan.length) clip.poly(plan.map((point) => ({ x: point.x, y: point.y }))).fill({ color: 0xffffff });
+  else inlay(clip, fp, 0xffffff);
+  // The deck wash follows the same plan: inside the mask it makes no difference, and it
+  // means every surface in this pass is measured off one shape.
+  if (plan.length) wash.poly(plan.map((point) => ({ x: point.x, y: point.y }))).fill({ color: 0x000000, alpha: SHADOW_TOTAL });
+  else wash.rect(fp.x, fp.y, fp.w, fp.h).fill({ color: 0x000000, alpha: SHADOW_TOTAL });
 
   const architecture = new Container();
   architecture.addChild(deck, wash, ...aoPad, ...pad, parapet, bulkheads);
@@ -600,6 +765,19 @@ function drawEntranceRecesses(g: Graphics, building: Building): void {
         : { x: curtain.x, y: curtain.y + at, w: curtain.w, h: 1.2 }, ROOF.reveal);
     }
   }
+}
+
+/** Fill a polygon. Pixi wants plain objects, and the ring may be any shape. */
+function fillPolygon(g: Graphics, points: Vec2[], color: number): void {
+  if (points.length < 3) return;
+  g.poly(points.map((point) => ({ x: point.x, y: point.y }))).fill({ color });
+}
+
+/** A band of constant width laid along a closed ring. */
+function ringStroke(g: Graphics, points: Vec2[], width: number, color: number): void {
+  if (points.length < 3) return;
+  g.poly(points.map((point) => ({ x: point.x, y: point.y })), true)
+    .stroke({ color, width, alignment: 0.5 });
 }
 
 /** One shared Graphics for small roof furniture, appended lazily. */

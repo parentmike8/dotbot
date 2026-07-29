@@ -142,6 +142,32 @@ export const MAT = {
   plateStock: material(0xb5bac0),
   board: material(0xc7cbcf),
   foliage: material(0xb7bcb9),
+  /**
+   * The materials a world outside a city is built from.
+   *
+   * They join `MAT` rather than living beside it, and the reason is the reason `MAT`
+   * is closed at all: the moment a region can mint its own material, the world stops
+   * being one place. These arrived as a private `mat()` in a mock file, which was
+   * fine for a mock and is the exact seam a second palette grows out of.
+   *
+   * Note where each sits on the existing ramp. Dressed stone is between `wood` and
+   * `steel`, a shade brighter than paving because it is cut and dry. Rusted iron is
+   * near `steelDeep`, dark on purpose: outside the city the GROUND owns the bright
+   * end, and a rail region drawn in mid-grey iron on pale ballast came out as one
+   * flat field.
+   */
+  stone: material(0xc6c7c2),
+  stoneWorn: material(0xb9bab4),
+  /** Adobe, mud brick, lime render. Warm, and brighter than cut stone. */
+  adobe: material(0xd2ccbf),
+  /** Weathered boulder and outcrop. */
+  rock: material(0xb4b6b2),
+  /** Wet or shaded rock, and the inside of a cave mouth. */
+  rockDark: material(0x8e918d),
+  /** Rusted iron: a rail, a tank, corrugated sheet. */
+  iron: material(0x7d7b76),
+  /** Canvas and painted timber gone chalky in the sun — a fairground's own material. */
+  canvas: material(0xd7d3cb),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -166,6 +192,21 @@ export const LIFT = {
   machine: 9,
   wall: 10,
   column: 11,
+  /**
+   * Landmark scale, and the reason the ramp needed two more rungs.
+   *
+   * Everything above is furniture, and the tallest of it — a column, floor to deck —
+   * is one storey. A landmark is not furniture: a water tower, a coaling stage, a
+   * ferris wheel and a pyramid terrace are all building-sized, and drawn on
+   * `LIFT.column` every one of them read as a crate somebody had left out. The ramp
+   * stops here rather than continuing, because past `tower` the parallax is doing the
+   * work of a building and the thing should be a building.
+   *
+   * Both still go through `cappedLift`, so a small object cannot claim them: a
+   * 40-unit boulder asking for `tower` gets 18, and the drawing stays a plan.
+   */
+  mass: 17,
+  tower: 34,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -323,6 +364,26 @@ export function contactBlock(g: Graphics, r: Rect, lift: number, radius = 0): vo
       r.h + ring.grow * 2,
       radius + ring.grow * 0.9,
     ).fill({ color: 0x000000, alpha: ring.alpha });
+  }
+}
+
+/**
+ * The same block shadow, for a building that is not a rectangle.
+ *
+ * An L-plan, a chamfered corner and an annular sector all cast the shadow of their
+ * own shape, and until this existed they cast the shadow of their bounding box — so
+ * the roundhouse threw a rectangle across half a rail yard, and Quayside's L had been
+ * shading the courtyard it wraps for as long as it had existed.
+ */
+export function contactBlockShape(g: Graphics, points: Vec2[], lift: number): void {
+  if (points.length < 3) return;
+  for (const ring of blockShadowRings(lift)) {
+    fillPolygon(
+      g,
+      insetPolygon(points, -ring.grow).map((point) => ({ x: point.x + ring.dx, y: point.y + ring.dy })),
+      0x000000,
+      ring.alpha,
+    );
   }
 }
 

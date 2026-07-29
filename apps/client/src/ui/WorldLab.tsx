@@ -1,125 +1,46 @@
 import { useEffect, useRef } from "react";
-import { Application, Container, Graphics, Text } from "pixi.js";
-import { AO_ALPHA, SHADOW_ALPHA, V, type ShadowPad } from "../game/renderer/model/tone";
-import { swayOffset } from "./worlds/motion";
-import { VIGNETTES, type WorldLayers, type Vignette } from "./worlds/vignettes";
+import { Application, Container, Graphics } from "pixi.js";
+import type { Rect } from "@dotbot/game/types";
+import { buildMapArt } from "../game/renderer/mapArt";
+import { selectMapDocument } from "../mapSelection";
 
 /**
- * World lab: three candidate regions, side by side, drawn in the production language.
+ * World lab: the production map, region by region, through the production renderer.
  *
- * `?worlds` selects it. Like `?lab` it is deliberately not a game surface — no
- * simulation, no input, no netcode — so a region can be redrawn and screenshotted
- * without a match running. Unlike `?lab` it does run a ticker, because a region whose
- * water is frozen cannot be judged.
+ * It used to draw three candidate regions as mock vignettes — hand-placed `Graphics` with
+ * no colliders, no map data and their own private copies of the palette. That was the right
+ * tool for choosing a direction and the wrong one to keep: the regions are real map
+ * documents now, so a second set of drawing code for the same places is a second source of
+ * truth that can only drift. It is deleted, and this renders the real thing.
  *
- *   ?worlds                 all three, stacked
- *   ?worlds&pick=temple     one, full width
- *   ?worlds&still=1         no ticker, for a clean still
- *   ?worlds&shots=1         write a PNG per region to tmp/lab/
+ * Which is the whole point of a lab surface. `?solo` runs a match, and a match cannot be
+ * screenshotted from a headless browser because the game loop needs a real frame clock.
+ * This composes the same art with no simulation, no input and no netcode, so a region can
+ * be redrawn and captured in one deterministic frame.
+ *
+ *   ?worlds                  the whole sheet, fitted
+ *   ?worlds&pick=yard        one region, filling the view
+ *   ?worlds&shots=1          write a PNG per region to tmp/lab/
+ *   ?worlds&map=downtown     any map `mapSelection` knows
  */
-
-type Params = {
-  pick: string | null;
-  still: boolean;
-  shots: boolean;
-};
-
-function readParams(search: string): Params {
-  const p = new URLSearchParams(search);
-  return {
-    pick: p.get("pick"),
-    still: p.get("still") === "1",
-    shots: p.get("shots") === "1",
-  };
-}
-
-function makePad(alphas: readonly number[]): ShadowPad {
-  return alphas.map((alpha) => {
-    const g = new Graphics();
-    g.alpha = alpha;
-    return g;
-  });
-}
-
-type Built = {
-  vignette: Vignette;
-  view: Container;
-  layers: WorldLayers;
-  /** Crowns and other overhead masses, held so they can sway without a redraw. */
-  swayers: { node: Container; id: string }[];
-};
 
 /**
- * Build one region into a container, in the layer order the game itself uses.
+ * What to frame, and the frames ARE the regions.
  *
- * Ground, then cast shadow, then ambient occlusion, then the moving layer, then solids,
- * then actors, then overhead. That order is the whole reason a canopy can be drawn over
- * a DotBot and a shadow cannot.
+ * Deliberately a plain list of rectangles rather than anything derived: this is a review
+ * tool, and "show me the fairground" wants a fixed, repeatable crop so two screenshots of
+ * the same region can be compared. Nothing in the game reads it.
  */
-function build(vignette: Vignette): Built {
-  const view = new Container();
-  const ground = new Graphics();
-  const shadow = makePad(SHADOW_ALPHA);
-  const ao = makePad(AO_ALPHA);
-  const motion = new Graphics();
-  const solids = new Graphics();
-  const actors = new Graphics();
-  const overhead = new Container();
-
-  const layers: WorldLayers = { ground, shadow, solids, motion, actors, overhead };
-  vignette.draw(layers);
-
-  view.addChild(ground);
-  for (const layer of shadow) view.addChild(layer);
-  for (const layer of ao) view.addChild(layer);
-  view.addChild(motion);
-  view.addChild(solids);
-  view.addChild(actors);
-  view.addChild(overhead);
-
-  // Everything overhead sways, generically, from its own label. No vignette has to
-  // remember to register anything, which is why the label lives on the node.
-  const swayers = overhead.children.map((node) => ({
-    node: node as Container,
-    id: (node as Container).label ?? "sway",
-  }));
-
-  return { vignette, view, layers, swayers };
-}
-
-/** A caption under each region: what it is, what it asks for, how you get around. */
-function caption(vignette: Vignette, width: number): Container {
-  const box = new Container();
-  const title = new Text({
-    text: vignette.title.toUpperCase(),
-    style: { fontFamily: "system-ui, sans-serif", fontSize: 26, fontWeight: "700", fill: 0x14171a, letterSpacing: 3 },
-  });
-  title.position.set(0, 0);
-  box.addChild(title);
-
-  const strap = new Text({
-    text: vignette.strapline,
-    style: { fontFamily: "system-ui, sans-serif", fontSize: 17, fill: 0x3d4247, wordWrap: true, wordWrapWidth: width - 40 },
-  });
-  strap.position.set(0, 34);
-  box.addChild(strap);
-
-  const asks = new Text({
-    text: `LANDMARKS\n${vignette.landmarks.map((mark) => `·  ${mark}`).join("\n")}`,
-    style: { fontFamily: "system-ui, sans-serif", fontSize: 14, fill: 0x5a6066, lineHeight: 21, wordWrap: true, wordWrapWidth: (width - 60) / 2 },
-  });
-  asks.position.set(0, 74);
-  box.addChild(asks);
-
-  const move = new Text({
-    text: `WHAT IT ASKS THE ENGINE FOR\n${vignette.asks.map((ask) => `·  ${ask}`).join("\n")}`,
-    style: { fontFamily: "system-ui, sans-serif", fontSize: 14, fill: 0x5a6066, lineHeight: 21, wordWrap: true, wordWrapWidth: (width - 60) / 2 },
-  });
-  move.position.set(width / 2 + 10, 74);
-  box.addChild(move);
-
-  return box;
-}
+const FRAMES: Array<{ id: string; title: string; rect: Rect }> = [
+  { id: "world", title: "The Reach", rect: { x: 0, y: 0, w: 4200, h: 3400 } },
+  { id: "downtown", title: "Downtown", rect: { x: 0, y: 0, w: 2400, h: 1600 } },
+  { id: "yard", title: "Fenchurch Yard", rect: { x: 2374, y: 0, w: 1826, h: 1800 } },
+  { id: "fair", title: "The Pleasure Ground", rect: { x: 0, y: 1574, w: 2400, h: 1826 } },
+  { id: "temple", title: "The Great Temple", rect: { x: 2374, y: 1774, w: 1826, h: 1626 } },
+  // The two seams, close in. A transition is the one thing a region-sized crop cannot show.
+  { id: "seam-yard", title: "Main St crosses into the yard", rect: { x: 1900, y: 380, w: 1400, h: 1100 } },
+  { id: "seam-fair", title: "Third Ave runs out of the city", rect: { x: 700, y: 1200, w: 1300, h: 1100 } },
+];
 
 export function WorldLab() {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -127,17 +48,19 @@ export function WorldLab() {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const params = readParams(window.location.search);
+    const params = new URLSearchParams(window.location.search);
+    const pick = params.get("pick");
+    const shots = params.get("shots") === "1";
     let app: Application | null = null;
     let disposed = false;
 
     void (async () => {
       const created = new Application();
       await created.init({
-        background: 0xeef0f2,
+        background: 0x6e7378,
         antialias: true,
-        resolution: Math.min(2, window.devicePixelRatio || 1),
-        autoDensity: true,
+        resolution: 1,
+        autoDensity: false,
         width: host.clientWidth || 1600,
         height: host.clientHeight || 1000,
         preference: "webgl",
@@ -151,127 +74,81 @@ export function WorldLab() {
       created.canvas.style.height = "100%";
       created.canvas.style.display = "block";
       host.appendChild(created.canvas);
-      // The ticker is driven by hand below, so pixi's own render loop stays off and a
-      // still capture is a single deterministic frame rather than whatever was on screen.
       created.ticker.autoStart = false;
       created.ticker.stop();
 
-      const chosen = params.pick
-        ? VIGNETTES.filter((v) => v.id === params.pick)
-        : VIGNETTES;
-      const built = chosen.map(build);
+      const map = selectMapDocument(window.location.search);
+      const art = buildMapArt(map);
 
-      const CAPTION_H = 190;
-      const PAD = 34;
+      /**
+       * Every roof at rest.
+       *
+       * `buildRoofModel` hands back a `mass` container the game slides each frame to fake
+       * parallax off the camera's own position. There is no camera here, so leaving it at
+       * zero is the honest still: the silhouette drawn is exactly the footprint that blocks
+       * you, which is the promise the parallax pass had to earn.
+       */
+      for (const building of art.buildings) {
+        for (const mass of building.roofMasses) mass.position.set(0, 0);
+      }
 
       const stage = new Container();
+      stage.addChild(art.root);
       created.stage.addChild(stage);
 
-      const layout = (viewW: number): { scale: number; height: number } => {
-        const width = Math.max(1, viewW - PAD * 2);
-        const first = built[0].vignette;
-        const scale = width / first.width;
-        const height = built.reduce((sum, b) => sum + b.vignette.height * scale + CAPTION_H + PAD, PAD);
-        return { scale, height };
+      /** Fit a world rect to the canvas, with a little air round it. */
+      const frame = (rect: Rect, width: number, height: number): void => {
+        const pad = 0.985;
+        const scale = Math.min(width / rect.w, height / rect.h) * pad;
+        stage.scale.set(scale);
+        stage.position.set(
+          (width - rect.w * scale) / 2 - rect.x * scale,
+          (height - rect.h * scale) / 2 - rect.y * scale,
+        );
       };
 
-      const compose = (viewW: number): number => {
-        stage.removeChildren();
-        const { scale } = layout(viewW);
-        let y = PAD;
-        for (const b of built) {
-          const frame = new Container();
-          frame.position.set(PAD, y);
-          frame.scale.set(scale);
-
-          // A literal border, because the sheet's own edge is a value in the world and a
-          // frame drawn as a shadow would read as terrain.
-          const edge = new Graphics();
-          edge.rect(-2, -2, b.vignette.width + 4, b.vignette.height + 4)
-            .stroke({ color: 0x9aa0a6, width: 2 / scale });
-          frame.addChild(edge);
-          frame.addChild(b.view);
-          stage.addChild(frame);
-
-          const cap = caption(b.vignette, b.vignette.width * scale);
-          cap.position.set(PAD, y + b.vignette.height * scale + 16);
-          stage.addChild(cap);
-
-          y += b.vignette.height * scale + CAPTION_H + PAD;
-        }
-        return layout(viewW).height;
-      };
-
-      let scrollY = 0;
-      let contentH = compose(created.renderer.width);
-
-      const frame = (tMs: number): void => {
-        for (const b of built) {
-          b.layers.motion.clear();
-          b.vignette.animate?.(b.layers, tMs);
-          for (const swayer of b.swayers) {
-            const offset = swayOffset(swayer.id, tMs);
-            swayer.node.position.set(offset.x, offset.y);
-          }
-        }
-        stage.position.y = -scrollY;
-        created.render();
-      };
-
-      if (params.shots) {
-        // One PNG per region, each at its own native size so nothing is judged through a
-        // downscale. Written to tmp/lab/ by the dev-only plugin `?lab` already uses.
+      if (shots) {
+        /**
+         * One PNG per frame, each at a size that keeps the region legible.
+         *
+         * Capped at 2200 on the long edge: the whole sheet at 1:1 is a 14-megapixel canvas,
+         * which some GPUs refuse and none of it needs — what a critique pass looks at is
+         * composition and value, and both survive a downscale.
+         */
         const results: string[] = [];
-        for (const b of built) {
-          const solo = new Container();
-          solo.addChild(b.view);
-          created.stage.removeChildren();
-          created.stage.addChild(solo);
-          created.renderer.resize(b.vignette.width, b.vignette.height);
-          b.layers.motion.clear();
-          b.vignette.animate?.(b.layers, 2_400);
+        for (const shot of FRAMES) {
+          const long = Math.max(shot.rect.w, shot.rect.h);
+          const scale = Math.min(1, 2200 / long);
+          const width = Math.round(shot.rect.w * scale);
+          const height = Math.round(shot.rect.h * scale);
+          created.renderer.resize(width, height);
+          frame(shot.rect, width, height);
           created.render();
           const png = created.canvas.toDataURL("image/png");
           const response = await fetch("/__lab/shot", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: `world-${b.vignette.id}`, png }),
+            body: JSON.stringify({ name: `map-${shot.id}`, png }),
           });
           const body = await response.json() as { ok?: boolean; error?: string };
-          results.push(`${b.vignette.id}: ${body.ok ? "ok" : `FAILED ${body.error ?? ""}`}`);
+          results.push(`${shot.id}: ${body.ok ? "ok" : `FAILED ${body.error ?? ""}`}`);
         }
         (window as unknown as { worldShots?: string[] }).worldShots = results;
         return;
       }
 
-      frame(params.still ? 2_400 : 0);
-
-      if (!params.still) {
-        const start = performance.now();
-        const loop = (): void => {
-          if (disposed) return;
-          frame(performance.now() - start);
-          requestAnimationFrame(loop);
-        };
-        requestAnimationFrame(loop);
-      }
-
-      const observer = new ResizeObserver(() => {
+      const chosen = FRAMES.find((candidate) => candidate.id === pick) ?? FRAMES[0];
+      const draw = (): void => {
         created.renderer.resize(host.clientWidth, host.clientHeight);
-        contentH = compose(created.renderer.width);
-        frame(params.still ? 2_400 : performance.now());
-      });
+        frame(chosen.rect, created.renderer.width, created.renderer.height);
+        created.render();
+      };
+      draw();
+
+      const observer = new ResizeObserver(draw);
       observer.observe(host);
       (created as unknown as { __observer?: ResizeObserver }).__observer = observer;
-
-      host.addEventListener("wheel", (event) => {
-        event.preventDefault();
-        const max = Math.max(0, contentH - created.renderer.height);
-        scrollY = Math.max(0, Math.min(max, scrollY + event.deltaY));
-        if (params.still) frame(2_400);
-      }, { passive: false });
-
-      void V;
+      void Graphics;
     })();
 
     return () => {
@@ -282,5 +159,5 @@ export function WorldLab() {
     };
   }, []);
 
-  return <div ref={hostRef} style={{ position: "fixed", inset: 0, overflow: "hidden", background: "#eef0f2" }} />;
+  return <div ref={hostRef} style={{ position: "fixed", inset: 0, overflow: "hidden", background: "#6e7378" }} />;
 }

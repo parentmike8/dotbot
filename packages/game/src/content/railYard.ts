@@ -1,0 +1,254 @@
+import { compileCityPlan, type CityPlan } from "../cityPlan";
+import { roundhouse, TABLE, TABLE_RADIUS } from "./roundhouse";
+import { signalBox } from "./signalBox";
+import { blobPoly, boxPoly, dots, fenceRun, objects, rhythm, type RegionParts } from "./regionKit";
+import type { MapObject } from "../types";
+
+/**
+ * FENCHURCH YARD — the city's locomotive depot, and the world's first step out of it.
+ *
+ * It is east of Downtown because that is where the rails go, and Main St runs straight
+ * into it as the works road: one street, two regions, and a level crossing where the
+ * yard's own lead cuts across it. That crossing is the whole transition — you do not
+ * arrive in the yard, you notice the tarmac has ballast in it.
+ *
+ * The region brief:
+ *
+ *  - PURPOSE: turn, coal, water and stable the engines that work out of the city.
+ *  - ZONES: the main line along the north; the throat where the yard's road leaves it;
+ *    the works road across the middle; the turntable and its roundhouse to the south;
+ *    the wagon sidings east.
+ *  - SEQUENCE: off the main line at the throat, take water and coal, down the lead,
+ *    onto the table, into a bay. Every piece of it is on that one line of travel, which
+ *    is what stops a yard reading as parallel stripes.
+ *  - ADJACENCY: the coal stage stands over the coal road; the tank stands beside the
+ *    lead; the box stands where the points are; the shed opens onto the table.
+ *  - NEGATIVE SPACE: the turntable itself. It is the arena of the region — three bay
+ *    doors watch it, the extraction pad sits on it, and there is exactly one way off.
+ *
+ * The yard is WORKING but shabby: weeds in the corners, not through the middle. That
+ * places it on the world's gradient — a live city, then a working depot, then a
+ * derelict fairground, then a ruin — so the further you get from Downtown the older
+ * everything is. A region reads as much from where it sits in that sequence as from
+ * what is in it.
+ */
+
+const obj = objects("yard");
+const dot = dots("yard");
+
+// The region's bounds, inside the sheet edge and the boundary fences.
+const W0 = 2400;
+const W1 = 4174;
+/** The yard runs deeper than Downtown: a turntable and its fan need the room. */
+const S1 = 1774;
+
+/** Main St, continued east as the works road. Same centreline, so it really is one street. */
+const WORKS_Y = 800;
+const CARRIAGEWAY = 120;
+const FOOTWAY = 96;
+const WORKS_N_KERB = WORKS_Y - CARRIAGEWAY / 2; //  740
+const WORKS_N_BACK = WORKS_N_KERB - FOOTWAY; //     644
+const WORKS_S_KERB = WORKS_Y + CARRIAGEWAY / 2; //  860
+const WORKS_S_BACK = WORKS_S_KERB + FOOTWAY; //     956
+
+/** The main line's formation: three through roads on one bed. */
+const LINE_TOP = 26;
+const LINE_BOTTOM = 294;
+const ROADS = [90, 166, 242];
+const GAUGE = 52;
+
+/** The lead: the single line off the throat that feeds the turntable, and the crossing. */
+const LEAD_X = 2934;
+
+const cityPlan: CityPlan = {
+  streets: [{
+    id: "works-rd",
+    from: { x: W0, y: WORKS_Y },
+    to: { x: W1, y: WORKS_Y },
+    width: CARRIAGEWAY,
+    footway: FOOTWAY,
+  }],
+  patches: [
+    // Hardstanding north of the road: the throat, the coal road, the box.
+    { id: "yard-throat", kind: "yard", x: W0, y: LINE_BOTTOM, w: W1 - W0, h: WORKS_N_BACK - LINE_BOTTOM },
+    // Hardstanding south of it: the whole depot.
+    { id: "yard-depot", kind: "yard", x: W0, y: WORKS_S_BACK, w: W1 - W0, h: S1 - WORKS_S_BACK },
+  ],
+  regions: [
+    /**
+     * The main line's ballast bed, laid as a region rather than a patch.
+     *
+     * A track bed is the one piece of ground in the yard that genuinely is a long
+     * straight band, so the polygon is a box — but it is a *region*, because the
+     * renderer gives ballast shoulders that fall away at the edge, and that fall is
+     * what makes a bed read as proud of the ground instead of painted on it.
+     */
+    { id: "yard-mainline-bed", kind: "ballast", points: boxPoly(W0, LINE_TOP, W1 - W0, LINE_BOTTOM - LINE_TOP) },
+    // The lead's own bed, straight down through the crossing to the table.
+    { id: "yard-lead-bed", kind: "ballast", points: boxPoly(LEAD_X - 46, LINE_BOTTOM, GAUGE + 92, 1065 - LINE_BOTTOM) },
+    // The coal road, running west off the lead under the stage.
+    { id: "yard-coal-bed", kind: "ballast", points: boxPoly(W0, 474, LEAD_X - W0, 116) },
+    // The table's apron: the one round piece of ground in the yard, and everything
+    // radial about the region hangs off it.
+    { id: "yard-table-bed", kind: "ballast", points: blobPoly(TABLE.x, TABLE.y, TABLE_RADIUS + 108, TABLE_RADIUS + 100, "table", 0.1, 22) },
+    // The wagon sidings' bed, east.
+    { id: "yard-siding-bed", kind: "ballast", points: boxPoly(3420, 966, W1 - 3420, 320) },
+
+    /**
+     * Weeds, and where they are is the point.
+     *
+     * In the corners — behind the sidings, along the back fence, in the angle the
+     * roundhouse leaves — and never on a route. A working yard is kept clear where it
+     * is worked and abandoned where it is not, so the weeds are how the region says
+     * which parts still get used.
+     */
+    { id: "yard-weeds-ne", kind: "undergrowth", points: blobPoly(4030, 400, 150, 96, "wne", 0.5, 13) },
+    { id: "yard-weeds-se", kind: "undergrowth", points: blobPoly(4020, 1600, 160, 120, "wse", 0.5, 13) },
+    { id: "yard-weeds-sw", kind: "undergrowth", points: blobPoly(2520, 1660, 190, 100, "wsw", 0.5, 15) },
+    { id: "yard-weeds-w", kind: "undergrowth", points: blobPoly(2470, 1180, 96, 210, "ww", 0.45, 13) },
+  ],
+  approaches: [
+    // Out of the box's yard door to the works road's north footway.
+    { id: "yard-box-approach", from: { x: 3140, y: 606 }, to: { x: 3140, y: WORKS_N_BACK + 14 }, width: 84 },
+  ],
+};
+
+const { roads, surfaces, regions } = compileCityPlan(cityPlan);
+
+/** A length of running line: sleepers, ballast and two rails, drawn as ground. */
+function trackRun(id: string, x: number, y: number, w: number, h: number): MapObject {
+  return { id, kind: "track", x, y, w, h };
+}
+
+const yardObjects: MapObject[] = [
+  // -- The main line ------------------------------------------------------
+  ...ROADS.map((y, i) => trackRun(`yard-main-${i}`, W0, y, W1 - W0, GAUGE)),
+
+  // -- The throat --------------------------------------------------------
+  /**
+   * The lead, crossing the works road on the level.
+   *
+   * Drawn as one continuous run straight through the carriageway, because that is
+   * what a works crossing is — the road gives way to the rail, not the other way
+   * round — and it is the single detail that welds the two regions into one place.
+   */
+  trackRun("yard-lead", LEAD_X, LINE_BOTTOM, GAUGE, 1065 - LINE_BOTTOM),
+  trackRun("yard-coal-road", W0, 506, LEAD_X - W0, GAUGE),
+
+  /**
+   * The coaling stage, standing over the coal road with its chute facing it.
+   *
+   * The tallest thing in the yard, and concrete rather than iron on purpose: a yard
+   * of uniformly dark ironwork has no scale in it, and the one pale mass is what
+   * gives the rest something to be measured against.
+   */
+  obj("coalingTower", 2470, 330, 190, 168),
+  // The stage is fed from a bank of wagons on the coal road behind it.
+  obj("wagon", 2700, 494, 200, 76, { facing: "E" }),
+  obj("wagon", 2440, 596, 190, 74, { facing: "E" }),
+
+  /** The water tank, beside the lead: an engine takes water on its way to the table. */
+  obj("waterTank", 2760, 336, 132, 132),
+
+  // Points rodding and the ground frame at the throat, tucked clear of the crossing.
+  obj("utilityBox", 2896, 320, 30, 22, { facing: "S" }),
+  obj("drum", 2870, 620, 28, 28),
+  obj("drum", 2900, 620, 28, 28),
+  obj("crateStack", 3320, 320, 44, 44),
+  obj("pallet", 3320, 380, 52, 38),
+  obj("pallet", 3380, 380, 52, 38),
+
+  // Sleepers stacked along the throat's east end, on a rhythm.
+  ...rhythm(3400, 3900, 96).map((x) => obj("crateStack", x, 560, 46, 46)),
+
+  // Lamps down the works road, matching Downtown's spacing so one street reads as one.
+  ...rhythm(W0 + 100, W1 - 100, 200, [[LEAD_X - 90, LEAD_X + 140]])
+    .map((x) => obj("lampPost", x - 9, WORKS_N_KERB - 22, 18, 18)),
+  ...rhythm(W0 + 200, W1 - 100, 200, [[LEAD_X - 90, LEAD_X + 140]])
+    .map((x) => obj("lampPost", x - 9, WORKS_S_KERB + 4, 18, 18)),
+  // One sign on the works road, outside the box. What it says is derived from the
+  // building it stands against — see `signs.ts` — never typed here.
+  obj("sign", 3118, 660, 44, 12),
+
+  // -- The turntable and its apron ---------------------------------------
+  /**
+   * The table. Flat, because a turntable deck is something you walk across, and the
+   * strongest single image the region has: everything round it is radial, which is
+   * the one kind of structure a strict overhead view does not flatten.
+   */
+  obj("turntable", TABLE.x - TABLE_RADIUS, TABLE.y - TABLE_RADIUS, TABLE_RADIUS * 2, TABLE_RADIUS * 2),
+
+  // Ash and clinker where engines stand waiting for the road, north of the pit.
+  obj("drum", 2790, 1010, 30, 30),
+  obj("drum", 2822, 1012, 28, 28),
+  obj("dumpster", 3140, 1000, 70, 40, { solid: true }),
+
+  // -- The wagon sidings, east -------------------------------------------
+  ...[1000, 1090, 1180].map((y, i) => trackRun(`yard-siding-${i}`, 3420, y, W1 - 3420 - 40, GAUGE)),
+  ...[1000, 1090, 1180].map((y) => obj("bufferStop", W1 - 62, y - 6, 46, GAUGE + 12, { facing: "E" })),
+
+  /**
+   * Two rakes of wagons, and the third road left empty.
+   *
+   * A yard with every siding full is a diagram of a yard. The empty road is where the
+   * next train goes, and it is also the only cover-free lane through the sidings —
+   * which makes crossing it a decision.
+   */
+  ...rhythm(3470, 3900, 216).map((x) => obj("wagon", x, 994, 200, 64, { facing: "E" })),
+  ...rhythm(3560, 3990, 216).map((x) => obj("wagon", x, 1084, 200, 64, { facing: "E" })),
+
+  // -- The back fence ----------------------------------------------------
+  // Weeds have taken the strip behind the shed; the thickets are the region saying
+  // there is nothing back there.
+  ...rhythm(3480, 4090, 152).map((x) => obj("thicket", x, 1600, 116, 104)),
+  // South of the shed's outer arc. At y 1690 its east end was 7 units inside the
+  // roundhouse's wall, which a bounding-box check reports as fine.
+  obj("log", 2620, 1724, 210, 46, { facing: "E" }),
+];
+
+export const railYard: RegionParts = {
+  id: "yard",
+  name: "Fenchurch Yard",
+  roads,
+  surfaces,
+  regions,
+  walls: [
+    /**
+     * The yard's own back fence, with the spur gate in it.
+     *
+     * A railway is always fenced, and here the fence is doing level design: it makes
+     * the yard a place you are inside rather than a patch of a continuous carpet, and
+     * the single gap is the abandoned spur running south into the jungle — the one way
+     * on to the temple, and legible as a way out from anywhere in the yard.
+     */
+    ...fenceRun("yard-fence-s", "h", S1, W0 - 26, 4200, 26, [[3260, 3400]]),
+  ],
+  objects: yardObjects,
+  dotSpawns: [
+    dot("dashOvercharge", 3000, 690),
+    dot("health", 3300, 1090),
+    dot("radar", 2560, 1010),
+    dot("incognito", 4040, 900),
+    dot("health", 3660, 640),
+  ],
+  buildings: [roundhouse, signalBox],
+  extractionPoints: [
+    /**
+     * On the turntable, which is the best extraction pad in the world so far: a round
+     * open deck with one way off it, watched by three bay doors and a signal box.
+     */
+    { id: "extract-table", name: "TURNTABLE", rect: { x: TABLE.x - 55, y: TABLE.y - 55, w: 110, h: 110 } },
+  ],
+  insertionPoints: [
+    // On hardstanding rather than on the carriageway — a squad needs 120 units of
+    // clear depth and the road is exactly 120 with a lamp every 200 along both kerbs.
+    { id: "yard-west", name: "COAL ROAD", position: { x: 2500, y: 1080 } },
+    { id: "yard-east", name: "SIDINGS", position: { x: 4020, y: 620 } },
+  ],
+  botSpawns: [
+    { id: "yard-1", name: "Rust", squadId: "rival-11", isAmbient: true, color: "#b06b3a", position: { x: 3600, y: 1300 } },
+    { id: "yard-2", name: "Cinder", squadId: "rival-12", isAmbient: true, color: "#8d6e63", position: { x: 2900, y: 460 } },
+    { id: "yard-3", name: "Ash", squadId: "rival-13", isAmbient: true, color: "#6d6a63", position: { x: 2860, y: 1560 }, floorId: "roundhouse:GROUND" },
+    { id: "yard-4", name: "Signal", squadId: "rival-14", isAmbient: true, color: "#4a7c8c", position: { x: 3120, y: 490 }, floorId: "box:F1" },
+  ],
+};

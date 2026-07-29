@@ -1,5 +1,5 @@
 import { defaultGameConfig } from "./config";
-import { pointToSolidDistanceSquared, rectSolid, solidBounds } from "./geometry";
+import { pointToSolidDistanceSquared, polygonContains, rectSolid, solidBounds } from "./geometry";
 import { isGroundFloor, MIN_DOT_SEPARATION, objectCollisionRects, physicsFloorId, stairGuardRects, stairHalves } from "./mapModel";
 import { collectSolids } from "./collision";
 import { OUTDOOR_FLOOR_ID } from "./types";
@@ -165,6 +165,20 @@ function connectivityIssues(
     y: footprint.y + Math.floor(index / cols) * CONNECTIVITY_CELL + CONNECTIVITY_CELL / 2,
   });
   const open = new Set<number>();
+  /**
+   * The building's real plan, when it has one.
+   *
+   * Everything here floods the axis-aligned FOOTPRINT, which for a box is the building
+   * and for anything else is a box the building sits inside. So the corners of the bounding
+   * box counted as floor, and every non-rectangular building reported them as an area a bot
+   * could see and not reach: the roundhouse's fan produced a fixed 18k-unit "pocket" that
+   * survived four rounds of moving furniture, because no furniture was ever the cause.
+   *
+   * Two other places had the same blind spot and had it fixed for the same reason —
+   * `modelFloor` clips its slab to the outline, `offFloorIssues` below checks objects
+   * against it — so this was the last consumer still treating a bounding box as a plan.
+   */
+  const plan = building.outline && building.outline.length >= 3 ? building.outline : null;
 
   for (let index = 0; index < cols * rows; index += 1) {
     const point = center(index);
@@ -173,6 +187,7 @@ function connectivityIssues(
       point.x <= footprint.x + footprint.w - radius &&
       point.y >= footprint.y + radius &&
       point.y <= footprint.y + footprint.h - radius &&
+      (!plan || polygonContains(plan, point)) &&
       circleClearsSolids(point, radius - 1, solids)
     ) {
       open.add(index);

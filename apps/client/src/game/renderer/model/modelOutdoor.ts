@@ -3,6 +3,7 @@ import type { MapDocument, Rect, Surface } from "@dotbot/game/types";
 import { pathOutline } from "@dotbot/game/geometry";
 import { FLAT_KINDS, isSolidObject, SURFACE_KINDS } from "@dotbot/game/mapModel";
 import { capsuleRuns } from "./modelWalls";
+import { drawRegions } from "./modelGround";
 import { isAcross, outwardBand, perimeterEntrances } from "./entrances";
 import { drawModelObject } from "./modelGlyphs";
 import {
@@ -241,6 +242,10 @@ function drawBlocks(g: Graphics, map: MapDocument): void {
   g.rect(edge, edge, map.width - edge * 2, map.height - edge * 2).fill({ color: OUT.unmade });
 
   for (const surface of map.outdoor.surfaces ?? []) drawSurface(g, surface);
+  // Regions last, so a region may deliberately lap over a rect surface — weeds
+  // through a midway, ballast across a yard. `auditCity` reads them in the same
+  // order for the same reason.
+  drawRegions(g, map.outdoor.regions ?? []);
 }
 
 function drawCarriageway(g: Graphics, pad: ShadowPad, map: MapDocument): void {
@@ -529,6 +534,19 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
    * extrusion as an interior wall, so a curved quay reads as the same material as
    * everything else standing on the sheet.
    */
+/**
+   * MASONRY, not interior wall.
+   *
+   * Every one of these was drawn in `V.wallCap` over `V.wall` — 0x33383d over 0x14171a,
+   * which is nearly black. That is the right value for a partition seen from inside a lit
+   * room and the wrong one for anything standing outdoors: the temple's ball-court benches
+   * came out as two black bars and its cenote rim as a black horseshoe, both of which read
+   * as holes in the world rather than as walls beside it.
+   *
+   * A quay wall, a site wall, a ball-court bench and a cenote rim are all the same thing —
+   * a masonry retaining structure in daylight — so they all take the same stone.
+   */
+  const SITE_MASONRY = MAT.stoneWorn;
   for (const barrier of map.outdoor.barriers ?? []) {
     // Shared with the interior path on purpose. This grouping was duplicated here,
     // and the copy carried the same unclosed-loop bug that left a step at one
@@ -538,12 +556,12 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
       const outline = pathOutline(run.points, run.thickness);
       if (outline.length < 3) continue;
       contactShape(pad, outline, 12);
-      volumeShape(siteWalls, outline, { top: V.wallCap, front: V.wall, edge: 0x0b0e11, lit: 0x4d5359 }, 11);
+      volumeShape(siteWalls, outline, SITE_MASONRY, 11);
     }
     for (const item of barrier.solids) {
       if (item.kind !== "poly") continue;
       contactShape(pad, item.points, 12);
-      volumeShape(siteWalls, item.points, { top: V.wallCap, front: V.wall, edge: 0x0b0e11, lit: 0x4d5359 }, 11);
+      volumeShape(siteWalls, item.points, SITE_MASONRY, 11);
     }
   }
 

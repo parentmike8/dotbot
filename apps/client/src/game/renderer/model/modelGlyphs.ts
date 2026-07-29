@@ -1,5 +1,6 @@
 import type { Graphics } from "pixi.js";
 import type { Facing, MapObject, Vec2 } from "@dotbot/game/types";
+import { landmarkGlyphs } from "./modelLandmarks";
 import {
   contact,
   contactRound,
@@ -1945,5 +1946,9 @@ export const modelGlyphs: Partial<Record<MapObject["kind"], GlyphFn>> = {
 };
 
 export function drawModelObject(g: Graphics, pad: ShadowPad, o: MapObject): void {
-  (modelGlyphs[o.kind] ?? genericBox)(g, pad, o);
+  // Landmarks live in their own module because they are a different subject — the
+  // things a *region* is recognised by rather than the things a room is furnished
+  // with — but they dispatch through the one entry point, so collision, the Studio,
+  // parallax and the audits all see them as the ordinary objects they are.
+  (modelGlyphs[o.kind] ?? landmarkGlyphs[o.kind] ?? genericBox)(g, pad, o);
 }

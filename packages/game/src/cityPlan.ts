@@ -1,4 +1,4 @@
-import type { Rect, Road, Surface, SurfaceKind, Vec2 } from "./types";
+import type { GroundRegion, Rect, Road, Surface, SurfaceKind, Vec2 } from "./types";
 
 /**
  * The city between the buildings, authored street-first.
@@ -68,9 +68,29 @@ export type ApproachSpec = {
   width?: number;
 };
 
+/**
+ * Ground with a use and no rectangle to fit it into.
+ *
+ * The rest of this file is shaped by the city — a street is a centreline, a patch
+ * is a rect, and both are true because a city is *built* that way. Nothing outside
+ * one is: a clearing, a track apron, the weeds coming up through a midway. Those
+ * had to be first-class or every region beyond the city would end up described in
+ * rectangles and read as a recoloured city, which is exactly what happened to the
+ * first draft of all three.
+ *
+ * Footways stay excluded for the same reason as `PatchSpec`: only a street makes one.
+ */
+export type RegionSpec = {
+  id: string;
+  kind: Exclude<SurfaceKind, "footway">;
+  points: Vec2[];
+};
+
 export type CityPlan = {
-  streets: StreetSpec[];
+  /** A region with no streets at all is legal: not everywhere has roads. */
+  streets?: StreetSpec[];
   patches?: PatchSpec[];
+  regions?: RegionSpec[];
   approaches?: ApproachSpec[];
 };
 
@@ -185,11 +205,16 @@ function compileApproach(approach: ApproachSpec): Surface {
   return { id: approach.id, kind: "forecourt", ...rect };
 }
 
-export function compileCityPlan(plan: CityPlan): { roads: Road[]; surfaces: Surface[] } {
+export function compileCityPlan(plan: CityPlan): {
+  roads: Road[];
+  surfaces: Surface[];
+  regions: GroundRegion[];
+} {
   const roads: Road[] = [];
   const surfaces: Surface[] = [];
+  const regions: GroundRegion[] = [];
 
-  for (const street of plan.streets) {
+  for (const street of plan.streets ?? []) {
     const { road, footways } = compileStreet(street);
     roads.push(road);
     surfaces.push(...footways);
@@ -202,21 +227,42 @@ export function compileCityPlan(plan: CityPlan): { roads: Road[]; surfaces: Surf
     surfaces.push({ id: patch.id, kind: patch.kind, x: patch.x, y: patch.y, w: patch.w, h: patch.h });
   }
 
+  for (const region of plan.regions ?? []) {
+    if (region.points.length < 3) {
+      throw new CityPlanError(`region ${region.id} has ${region.points.length} points; ground needs at least 3`);
+    }
+    regions.push({ id: region.id, kind: region.kind, points: region.points });
+  }
+
   for (const approach of plan.approaches ?? []) surfaces.push(compileApproach(approach));
 
   const seen = new Set<string>();
-  for (const id of [...roads.map((road) => road.id), ...surfaces.map((surface) => surface.id)]) {
+  for (const id of [
+    ...roads.map((road) => road.id),
+    ...surfaces.map((surface) => surface.id),
+    ...regions.map((region) => region.id),
+  ]) {
     if (seen.has(id)) throw new CityPlanError(`duplicate id ${id} in the city plan`);
     seen.add(id);
   }
 
-  return { roads, surfaces };
+  return { roads, surfaces, regions };
 }
 
-/** Ground a bot can route over on the way somewhere. Verges are not routes. */
+/**
+ * Ground a bot can route over on the way somewhere.
+ *
+ * The test is not "can you stand on it" — you can stand on a verge — but "would
+ * anyone walk this way on purpose". Planting, undergrowth and water are all
+ * crossable and none of them is a route, which is what makes them useful: they are
+ * how a region says *go round*.
+ */
 export const ROUTE_KINDS: ReadonlySet<SurfaceKind> = new Set<SurfaceKind>([
   "footway",
   "forecourt",
   "plaza",
   "yard",
+  "ballast",
+  "clearing",
+  "court",
 ]);
