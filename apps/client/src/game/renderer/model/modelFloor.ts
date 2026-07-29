@@ -409,15 +409,40 @@ function drawFloorPaint(layer: Container, g: Graphics, floor: FloorPlan, fp: Rec
  * right place and reads correctly, and a truly rotated glazing pass is a later
  * refinement rather than a correctness problem.
  */
+/**
+ * An opening's band, from its true centreline.
+ *
+ * ONE BUG FIXED, ONE I TALKED MYSELF INTO AND WAS WRONG ABOUT, ONE STILL OPEN. Worth all
+ * three, because the wrong one is the sort of confident explanation that outlives a fix.
+ *
+ * FIXED — LENGTH. The old version took the span's bounding box and used its dominant side,
+ * which is the span PROJECTED onto an axis. A 92-unit window on a 45-degree arc drew 65 units
+ * long, and every opening on a curve was foreshortened by its own angle. It uses
+ * `hypot` now, so an opening is its authored width whatever the wall is doing.
+ *
+ * NOT A BUG — POSITION. I wrote, and briefly believed, that the band was centred on the
+ * bounding box rather than the wall and that this was what put a window floating inside the
+ * shed. That is arithmetically false: the bounding box of a segment is centred ON that
+ * segment's midpoint, so `minX + w / 2` already equalled `(ax + bx) / 2`. The old code placed
+ * the centre correctly. Comparing the render before and after is what caught it — the bands
+ * did not move, because there was nothing to move.
+ *
+ * STILL OPEN — ANGLE, and it is the whole of what remains. The band is axis-aligned, so on a
+ * curved wall it is a straight bar laid across an arc: it can only touch the wall at one point
+ * along its length, which is exactly what reads as "not properly aligned at the walls". Every
+ * mark in `drawWindow` and `drawVehicleDoorHead` is a `Rect` — frame, glass, mullions, sill,
+ * curtain slats, jamb rails — so turning one means quads, or a rotated container per angled
+ * opening the way a turned object gets one. Task #78.
+ */
 function spanRect(span: NonNullable<WindowBand["span"]>, thickness: number): Rect {
-  const minX = Math.min(span.ax, span.bx);
-  const minY = Math.min(span.ay, span.by);
-  const w = Math.abs(span.bx - span.ax);
-  const h = Math.abs(span.by - span.ay);
-  const across = w >= h;
+  const midX = (span.ax + span.bx) / 2;
+  const midY = (span.ay + span.by) / 2;
+  const length = Math.max(Math.hypot(span.bx - span.ax, span.by - span.ay), 2);
+  // Laid along whichever axis the wall is nearer to, since the band cannot turn yet.
+  const across = Math.abs(span.bx - span.ax) >= Math.abs(span.by - span.ay);
   return across
-    ? { x: minX, y: minY + h / 2 - thickness / 2, w: Math.max(w, 2), h: thickness }
-    : { x: minX + w / 2 - thickness / 2, y: minY, w: thickness, h: Math.max(h, 2) };
+    ? { x: midX - length / 2, y: midY - thickness / 2, w: length, h: thickness }
+    : { x: midX - thickness / 2, y: midY - length / 2, w: thickness, h: length };
 }
 
 function windowRect(band: WindowBand, walls: WallSegment[]): Rect | null {
