@@ -77,29 +77,35 @@ describe("marking a place", () => {
     expect(mark.position.y).toBe(downtownMap.height);
   });
 
-  it("rate limits one bot, which is the only spam control there is", async () => {
+  it("rate limits one bot rather than letting a held input stream", async () => {
     /**
-     * Load-bearing precisely BECAUSE there is no stored state to cap. With no cooldown a
-     * held button emits a mark every tick — sixty a second — and the squad's view fills with
-     * chevrons. The cooldown is the whole defence, so it is asserted rather than assumed.
+     * Expressed as a RATE, in terms of the configured cooldown, because the first version of
+     * this test asserted "thirty ticks of input is exactly one mark" — which silently encoded
+     * `pingCooldownMs: 900`. When that 900 turned out to be a bug that ate half the player's
+     * clicks, the test failed for being right about the old number rather than about the rule.
+     * A test that pins a constant it does not name will do that every time the constant moves.
+     *
+     * The rule is: a stream of identical input cannot produce a mark per tick. So the bound is
+     * derived from the cooldown, with slack for where the ticks fall relative to it.
      */
     const simulation = await sim();
     const [me] = twoPlayers(simulation);
+    const ticks = 120;
+    const tickMs = 1000 / defaultGameConfig.tickHz;
     let sent = 0;
-    for (let tick = 0; tick < 30; tick += 1) {
+    for (let tick = 0; tick < ticks; tick += 1) {
       simulation.applyInput(me.id, { move: { x: 0, y: 0 }, dash: false, ping: { kind: "here", position: { x: 700, y: 400 } } });
       simulation.step();
       sent += pings(simulation.drainEvents()).length;
     }
-    // Half a second of holding it down is one mark, not thirty.
-    expect(sent).toBe(1);
 
-    // And it comes back once the cooldown has run.
-    for (let tick = 0; tick < 80; tick += 1) simulation.step();
-    simulation.drainEvents();
-    simulation.applyInput(me.id, { move: { x: 0, y: 0 }, dash: false, ping: { kind: "here", position: { x: 700, y: 400 } } });
-    simulation.step();
-    expect(pings(simulation.drainEvents())).toHaveLength(1);
+    const window = ticks * tickMs;
+    const allowed = Math.ceil(window / defaultGameConfig.pingCooldownMs) + 1;
+    expect(sent, `${ticks} ticks of held input`).toBeLessThanOrEqual(allowed);
+    // And far fewer than one per tick, which is what the cooldown exists to prevent.
+    expect(sent).toBeLessThan(ticks / 4);
+    // But not zero: a rate limit that never lets anything through is a mute button.
+    expect(sent).toBeGreaterThan(0);
   });
 
   it("steers an AI squadmate that was doing something else", async () => {
