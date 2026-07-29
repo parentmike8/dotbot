@@ -12,7 +12,7 @@ import {
 } from "@dotbot/game/mapModel";
 import { buildingMouths } from "@dotbot/game/entrances";
 import {
-  DOORWAY_SIGHT, doorwayReach, hasLineOfSight, seesThroughDoorway, visibilityPolygon, visionContext,
+  hasLineOfSight, outdoorVision, seesOutdoors, visibilityPolygon, visionContext,
 } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
@@ -47,6 +47,15 @@ import { visibilityFogStyle } from "./visibilityStyle";
 import { redrawFloorObjects } from "./model/modelFloor";
 
 const AMBIENT_GREY = 0x868e96;
+
+/**
+ * How close to a doorway before a building starts showing you its inside.
+ *
+ * Shorter than `OUTDOOR_SIGHT` on purpose: sight through a door reaches further than the
+ * roof lifts, so at a distance you get a bright wedge of floor through the opening and the
+ * building still reads as a solid mass. Walking in is what dissolves the lid.
+ */
+const PEEK_RANGE = 200;
 
 /**
  * How far the camera must travel before the active floor's objects are rebuilt.
@@ -657,7 +666,20 @@ export class GameRenderer {
       return;
     }
 
-    const vision = visionContext(this.map, playerContext);
+    /**
+     * On the outdoor plane the vision context is the APERTURE one — every building near
+     * enough has its footprint swapped for its real walls — so one ordinary polygon flows
+     * through a doorway and is stopped by the first partition inside. Upper floors keep
+     * their own context: a slab is not a wall with a hole in it.
+     *
+     * This replaces a disc that was added to the mask at each mouth. The disc ignored
+     * walls, so a doorway lit a full circle and revealed the rooms either side of an
+     * entrance hall through their own partitions. A polygon cannot do that; it is the
+     * path light actually takes, which is what was asked for.
+     */
+    const vision = physicsFloorId(this.map, player.floorId) === OUTDOOR_FLOOR_ID
+      ? outdoorVision(this.map, this.viewerDisplayPosition(player))
+      : visionContext(this.map, playerContext);
     /**
      * Cast from where the bot is *drawn*, not from where it is.
      *
@@ -686,60 +708,47 @@ export class GameRenderer {
     const flat = polygon.flatMap((point) => [point.x, point.y]);
     this.visionMaskGfx.poly(flat).fill({ color: 0xffffff });
 
+    /**
+     * The fog covers the SHEET, not the vision context's bounds.
+     *
+     * Those used to be the same rect. They are not any more: the outdoor context is bounded
+     * by a box `OUTDOOR_SIGHT` around the viewer so the reveal has a maximum reach, and
+     * fogging only that box would leave the rest of the map bright — the opposite of a
+     * sight limit.
+     */
     const fogStyle = visibilityFogStyle(playerContext !== "outdoor:street");
     for (const layer of [this.fogGfx, this.foregroundFogGfx]) {
-      layer.rect(vision.boundsRect.x, vision.boundsRect.y, vision.boundsRect.w, vision.boundsRect.h).fill(fogStyle);
+      layer.rect(0, 0, this.map.width, this.map.height).fill(fogStyle);
       layer.poly(flat).cut();
     }
 
-    /**
-     * Sight through a doorway, as a disc at the mouth.
-     *
-     * A disc rather than a cone, and unclipped by the wall, because the polygon cannot do
-     * this job at all: it is cast inside ONE vision context, and the far side of an
-     * elevation is a different context whose occluders it has never seen. From the street
-     * the building is a solid footprint; from inside, the footprint is the arena boundary
-     * and rays terminate on it. Either way the ray never reaches the other side.
-     *
-     * So the reveal is added rather than derived, and it is added to the mask AND cut from
-     * both fog layers — the mask decides whether a bot drawn there survives, the fog
-     * decides whether the player can see the ground they are standing on.
-     */
-    for (const { mouth, radius } of this.doorwayEyes(player)) {
-      this.visionMaskGfx.circle(mouth.x, mouth.y, radius).fill({ color: 0xffffff });
-      for (const layer of [this.fogGfx, this.foregroundFogGfx]) {
-        layer.circle(mouth.x, mouth.y, radius).cut();
-      }
-    }
   }
 
   /**
-   * The doorway mouths this viewer is close enough to see through.
+   * How far each building's roof is lifted for this viewer, 0..1.
    *
-   * Spatially filtered rather than enumerated: a mouth sits on a footprint's edge, so a
-   * player further than the reach from the whole footprint cannot be near any of its
-   * mouths, and the rect test rejects almost every building before any mouth is measured.
-   * That is what keeps this honest at a hundred buildings instead of four.
+   * Only from OUTSIDE, and only on the outdoor plane: standing on a floor you already see
+   * that floor, and a building whose roof you are standing on must keep it. Ramped over the
+   * last `PEEK_RANGE` units to a mouth so walking up to a door lifts the lid smoothly
+   * instead of snapping it off — the same lesson as the fog disc, which stepped and
+   * flickered because a threshold was a threshold rather than a ramp.
    */
-  private doorwayEyes(player: DotBotEntity): Array<{ mouth: Vec2; radius: number }> {
-    if (physicsFloorId(this.map, player.floorId) !== OUTDOOR_FLOOR_ID) return [];
-    const { x, y } = this.viewerDisplayPosition(player);
-    const limit = DOORWAY_SIGHT * DOORWAY_SIGHT;
-    const eyes: Array<{ mouth: Vec2; radius: number }> = [];
+  private peekProgress(player: DotBotEntity | null): Map<string, number> {
+    const open = new Map<string, number>();
+    if (!player || physicsFloorId(this.map, player.floorId) !== OUTDOOR_FLOOR_ID) return open;
+    const here = this.viewerDisplayPosition(player);
+    const inside = buildingContaining(this.map, here);
     for (const building of this.map.buildings) {
-      const fp = building.footprint;
-      const dx = Math.max(fp.x - x, 0, x - (fp.x + fp.w));
-      const dy = Math.max(fp.y - y, 0, y - (fp.y + fp.h));
-      if (dx * dx + dy * dy > limit) continue;
+      // Standing inside it, the ground floor is already the active floor.
+      if (inside?.id === building.id) continue;
+      let nearest = Infinity;
       for (const mouth of buildingMouths(this.map, building.id)) {
-        // `doorwayReach` is the sim's own function, so the disc is exactly the region the
-        // rule grants. It also shrinks to nothing at the limit, which is what stops the
-        // fog flickering as you slide along a wall past a door.
-        const radius = doorwayReach(Math.hypot(mouth.x - x, mouth.y - y));
-        if (radius > 0.5) eyes.push({ mouth, radius });
+        nearest = Math.min(nearest, Math.hypot(mouth.x - here.x, mouth.y - here.y));
       }
+      if (nearest >= PEEK_RANGE) continue;
+      open.set(building.id, clamp01(1 - nearest / PEEK_RANGE));
     }
-    return eyes;
+    return open;
   }
 
   /**
@@ -913,14 +922,32 @@ export class GameRenderer {
           ? this.art.buildings.find((view) => view.floors.some((floor) => floor.floor.id === player.floorId))?.building ?? null
           : buildingContaining(this.map, player.position);
 
+    /**
+     * How far open each building is to the viewer, 0..1.
+     *
+     * "when outside peering in, the roof should fade away where the fog reveals inside" —
+     * so a building you are walking up to lifts its lid as you close on a doorway, and the
+     * fog is what limits how much of what is underneath you can actually read. Ramped by
+     * distance to the nearest mouth rather than switched, so nothing pops.
+     *
+     * It fades the WHOLE roof rather than only the wedge, and that is a deliberate stop
+     * short of the real thing: cutting the wedge out of the roof means masking a container
+     * that moves every frame under `roofParallax`, with its own AO and shadow layers inside
+     * it. This is the version that can be looked at today — see task #62.
+     */
+    const peek = this.peekProgress(player);
+
     for (const view of this.art.buildings) {
       const isActive = activeBuilding?.id === view.building.id;
+      const opened = peek.get(view.building.id) ?? 0;
       const activeFloorId =
         isActive && player
           ? player.floorId !== OUTDOOR_FLOOR_ID
             ? player.floorId
             : view.building.floors.find(isGroundFloor)?.id
-          : undefined;
+          : opened > 0
+            ? view.building.floors.find(isGroundFloor)?.id
+            : undefined;
 
       for (const floorView of view.floors) {
         const isRoofPlan = floorView.floor.label === "ROOF";
@@ -939,13 +966,16 @@ export class GameRenderer {
           floorView.stairWell.visible = standingOnTheDeck;
           floorView.stairHousing.visible = !standingOnTheDeck;
         }
-        floorView.view.alpha = floorView.floor.id === activeFloorId ? 1 : indoors ? 0.35 : 1;
+        // A roof being peeked under drops toward transparent; the ground floor revealed
+        // beneath it comes up from nothing at the same rate, so the two cross over.
+        const lid = isRoofPlan && !isActive ? 1 - opened : 1;
+        floorView.view.alpha = (floorView.floor.id === activeFloorId ? (isActive ? 1 : opened) : indoors ? 0.35 : 1) * lid;
         floorView.foreground.alpha = floorView.view.alpha;
       }
 
       const hasRoofPlan = view.building.floors.some((floor) => floor.label === "ROOF");
       view.roof.visible = !isActive && !hasRoofPlan;
-      view.roof.alpha = indoors ? 0.35 : 1;
+      view.roof.alpha = (indoors ? 0.35 : 1) * (1 - opened);
       view.entranceMarks.visible = !isActive;
       view.entranceMarks.alpha = indoors ? 0.35 : 1;
       view.label.alpha = isActive ? 0 : 1;
@@ -1059,7 +1089,7 @@ export class GameRenderer {
             this.doorOccluders(snapshot, player.floorId),
           )));
         this.updateBotView(bot, snapshot, viewerSquadId, seen ? 1 : 0.35, this.dynamicBotsLayer);
-      } else if (sameArena || (player && seesThroughDoorway(
+      } else if (sameArena || (player && seesOutdoors(
         this.map, player.floorId, player.position, bot.floorId, bot.position,
       ))) {
         /**

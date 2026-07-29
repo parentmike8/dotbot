@@ -1,5 +1,4 @@
-import { contextKey, floorPlanById, isGroundFloor, physicsFloorId } from "./mapModel";
-import { buildingMouths } from "./entrances";
+import { buildingContaining, floorPlanById, isGroundFloor, physicsFloorId } from "./mapModel";
 import { pointToSegmentDistanceSquared, pointToSolidDistanceSquared, rectSolid, solidSegments } from "./geometry";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Barrier, MapDocument, Rect, Solid, Vec2 } from "./types";
@@ -182,98 +181,194 @@ export function hasLineOfSight(
 }
 
 /**
- * The total sight budget through a doorway, SHARED between the two parties.
+ * How far away a building's doorways still matter to a viewer.
  *
- * Not "96 units each side", which is what this was and it jittered badly. A fixed radius
- * per party makes the granted region a step function: at 97 units away you get nothing, at
- * 95 you get the whole disc, so sliding along a wall past a door flickered the fog on and
- * off. Reported from play as exactly that — "shifting left and right in the doorway causes
- * the fog to be quite jittery".
- *
- * A shared budget removes the step. You see `DOORWAY_SIGHT - yourDistance` through the
- * gap, so the reveal grows continuously from nothing as you approach and shrinks the same
- * way as you leave. It stays symmetric, which was the point of the original rule: A sees B
- * when `db <= BUDGET - da`, B sees A when `da <= BUDGET - db`, and those are the same
- * inequality — `da + db <= BUDGET`.
- *
- * It is also the more honest model of a door. A gap in a wall is a keyhole: the closer you
- * put your eye to it the more of the far side you get, and from far enough away it tells
- * you nothing at all.
+ * A spatial filter, not a list: only buildings this close get opened up, so the occluder
+ * set stays small at a hundred buildings. Generous because the cost of opening one is a
+ * few extra segments, and the benefit is that a door you can see across the street reads
+ * as a door rather than as a painted line.
  */
-export const DOORWAY_SIGHT = 180;
+export const APERTURE_RANGE = 420;
 
 /**
- * How far past a mouth this viewer can see, as a RADIUS to draw.
+ * How far an outdoor viewer sees at all, in or out.
  *
- * Shared with the renderer on purpose — it draws a disc of exactly this size, and if the
- * two ever disagreed a bot would be either invisible while targetable, or drawn through the
- * wall beside the door.
+ * The aperture does not need to reach the far wall of a lobby or the end of the street —
+ * "it can have a max distance in that the fog uncovers and same way out". So the polygon is
+ * bounded by a box this far around the viewer rather than by the whole sheet, which caps
+ * both directions with one number and keeps the ray count down as a bonus.
  *
- * Not the predicate, though, and the clamp is why. A radius must never go negative, but
- * `Math.max(0, …)` also destroys the symmetry it looks like it preserves: a viewer standing
- * IN the gap (distance 0) against a bot at 181 gives `181 <= 180` = false one way and
- * `0 <= max(0, -1) = 0` = true the other. A test caught it at exactly that boundary. So the
- * rule is the sum, stated once in `seesThroughDoorway`, and this is only for drawing.
+ * Generous enough to cover a room and a street width, so it reads as a limit of sight
+ * rather than as a spotlight following you around.
  */
-export function doorwayReach(distanceToMouth: number): number {
-  return Math.max(0, DOORWAY_SIGHT - distanceToMouth);
+export const OUTDOOR_SIGHT = 560;
+
+/** Buildings whose walls should stand in for their footprint, for a viewer here. */
+export function openBuildings(map: MapDocument, position: Vec2): string[] {
+  const open: string[] = [];
+  for (const building of map.buildings) {
+    const fp = building.footprint;
+    const dx = Math.max(fp.x - position.x, 0, position.x - (fp.x + fp.w));
+    const dy = Math.max(fp.y - position.y, 0, position.y - (fp.y + fp.h));
+    if (dx * dx + dy * dy <= APERTURE_RANGE * APERTURE_RANGE) open.push(building.id);
+  }
+  return open;
 }
 
 /**
- * Whether two positions can see each other through a building's front door.
+ * The outdoor plane with some buildings OPENED UP — their footprints replaced by their
+ * actual ground-floor walls.
  *
- * WHY THIS EXISTS AS A SEPARATE RULE, rather than as a change to the occluders.
+ * This is the whole doorway mechanic, and it replaces a disc that should never have been
+ * one. The disc was wrong by construction: it ignored walls, so standing in a doorway lit
+ * a full circle and revealed the rooms either side of the entrance hall straight through
+ * their partitions. Reported exactly that way — "those are behind a wall so i shouldn't be
+ * able to see to them" — along with the honest conclusion: it should be the path line of
+ * sight would actually take.
  *
- * Interior doorways already work and need nothing: `compileWall` cuts an opening as a
- * GENUINE GAP in the wall solids, so the polygon and `hasLineOfSight` both pass straight
- * through one. The blindness is at an ARENA boundary. `contextKey` splits the outdoor
- * plane into the street and one context per building ground floor — physically connected,
- * deliberately separate — and everything that asks "can these two interact" first asks
- * whether the context keys match. A bot on the pavement and a bot two feet inside the
- * lobby are in different arenas, so they cannot see, target or be targeted by each other
- * at all. On top of that the street's occluder list contains every building FOOTPRINT, so
- * even within one context vision stops dead at an elevation with no gap at the door.
+ * So there is no aperture rule any more. The reason vision stopped dead at an elevation
+ * was never physics, it was that `outdoor:street` lists every building's FOOTPRINT as one
+ * opaque rect. A footprint is a convenience — cheap, and right while nobody could see in.
+ * Swap it for the ground floor's own walls, which `compileWall` already cuts genuine gaps
+ * into at every opening, and an ordinary visibility polygon does the rest: it flows through
+ * the gap, spreads inside the entrance, and is stopped by the first interior partition.
+ * Nothing special-cased, nothing to tune, and it is continuous because a polygon is.
  *
- * The result is that camping an exit is not merely favourable, it is airtight: the camper
- * knows where the door is and the player coming out gets no warning whatsoever. That is
- * the asymmetry this closes, and it closes it BOTH WAYS on purpose — the bot inside sees
- * the patch of street outside its door, and the bot outside sees into the mouth.
- *
- * Proximity to a shared mouth is the whole test, with no line-of-sight check after it.
- * That is deliberate: within 96 units either side of a door there is nothing to hide
- * behind that ought to save you, and a ray test here would reintroduce the same problem
- * one step further in, because the two sides do not share an occluder list. Loud and
- * simple beats subtle and half-working for a rule whose entire job is to deny a hiding
- * place.
+ * It also works identically in both directions, which the disc only faked. Standing inside,
+ * the bounds are the whole map instead of your own footprint, so the same polygon reaches
+ * out through the door and down the street.
  */
-export function seesThroughDoorway(
+export function apertureContext(
+  map: MapDocument,
+  open: readonly string[],
+  around?: Vec2,
+): VisionContext {
+  /**
+   * Quantised into `OUTDOOR_SIGHT / 4` cells so a walking viewer reuses one cached context
+   * for a while instead of building a fresh segment list every frame. The cost of a coarse
+   * cell is a slightly larger bounding box than strictly needed, which only ever means the
+   * polygon reaches a little further than the cap — never less.
+   */
+  const cell = OUTDOOR_SIGHT / 4;
+  const anchor = around
+    ? `@${Math.round(around.x / cell)},${Math.round(around.y / cell)}`
+    : "";
+  const key = `aperture:${[...open].sort().join(",")}${anchor}`;
+  let byContext = contextCache.get(map);
+  if (!byContext) {
+    byContext = new Map();
+    contextCache.set(map, byContext);
+  }
+  const cached = byContext.get(key);
+  if (cached) return cached;
+
+  const opened = new Set(open);
+  const wallRects: Rect[] = [...map.outdoor.walls];
+  const barriers: Barrier[] = [...(map.outdoor.barriers ?? [])];
+  for (const building of map.buildings) {
+    if (!opened.has(building.id)) {
+      wallRects.push(building.footprint);
+      continue;
+    }
+    const ground = building.floors.find(isGroundFloor);
+    wallRects.push(...(ground?.walls ?? []));
+    barriers.push(...(ground?.barriers ?? []));
+  }
+
+  const wallSolids: Solid[] = [
+    ...wallRects.map(rectSolid),
+    ...barriers.flatMap((barrier) => barrier.solids),
+  ];
+  const sheet: Rect = { x: 0, y: 0, w: map.width, h: map.height };
+  let boundsRect = sheet;
+  if (around) {
+    const cx = Math.round(around.x / cell) * cell;
+    const cy = Math.round(around.y / cell) * cell;
+    const x = Math.max(sheet.x, cx - OUTDOOR_SIGHT);
+    const y = Math.max(sheet.y, cy - OUTDOOR_SIGHT);
+    boundsRect = {
+      x,
+      y,
+      w: Math.min(sheet.x + sheet.w, cx + OUTDOOR_SIGHT) - x,
+      h: Math.min(sheet.y + sheet.h, cy + OUTDOOR_SIGHT) - y,
+    };
+  }
+  const result: VisionContext = {
+    walls: wallSolids.flatMap(solidSegments),
+    wallSolids,
+    bounds: rectSegments(boundsRect),
+    boundsRect,
+  };
+  byContext.set(key, result);
+  return result;
+}
+
+/**
+ * The vision context for a viewer standing on the outdoor plane, doors included.
+ *
+ * `contextKey` still splits street from each building ground floor, and still should —
+ * it decides which arena you are in for everything else. It is just no longer what decides
+ * what you can SEE, because a door joins the two and the split does not know that.
+ */
+export function outdoorVision(map: MapDocument, position: Vec2, alsoOpen: readonly string[] = []): VisionContext {
+  return apertureContext(map, [...new Set([...openBuildings(map, position), ...alsoOpen])], position);
+}
+
+/**
+ * Whether two positions on the outdoor plane can see each other, doors included.
+ *
+ * There is no doorway RULE any more, which is the point. This is `hasLineOfSight` against
+ * a context where the buildings involved have their footprints replaced by their real
+ * walls, so a door is just a gap and the ray either gets through it or does not.
+ *
+ * What that replaced, and why: the first version granted sight by proximity to a mouth,
+ * with no wall test, on the argument that the two sides share no occluder list so a ray
+ * could not be cast. That argument was wrong — the lists can be MERGED, which is all
+ * `apertureContext` does — and the consequence of skipping the walls was exactly what play
+ * reported. A disc lit a full circle through the doorway, revealing the rooms either side
+ * of the entrance hall through their own partitions, and the fog stepped on and off at the
+ * radius. Neither is a tuning problem; both come from granting sight without asking the
+ * geometry.
+ *
+ * Still bounded, but by architecture rather than by a constant: you see down the line the
+ * door actually points, as far as the first wall in the way. Symmetric for free, because
+ * a segment crossing no wall crosses no wall in either direction.
+ *
+ * Both buildings are opened, not just the viewer's. A target inside a building the viewer
+ * is far from would otherwise be hidden behind its own footprint, which is the failure the
+ * merge exists to remove.
+ */
+export function seesOutdoors(
   map: MapDocument,
   aFloorId: string,
   a: Vec2,
   bFloorId: string,
   b: Vec2,
+  dynamicOccluders: readonly Rect[] = [],
 ): boolean {
-  // Only the outdoor plane has two contexts touching. Upper floors are separated by a
-  // storey, not by a wall with a hole in it.
+  // Only the outdoor plane has contexts joined by a hole in a wall. Two floors are
+  // separated by a slab, and a stairwell is not a window.
   if (physicsFloorId(map, aFloorId) !== OUTDOOR_FLOOR_ID) return false;
   if (physicsFloorId(map, bFloorId) !== OUTDOOR_FLOOR_ID) return false;
 
-  const aContext = contextKey(map, aFloorId, a);
-  const bContext = contextKey(map, bFloorId, b);
-  // Same arena already sees normally; this rule is only for the boundary.
-  if (aContext === bContext) return false;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const span = Math.hypot(dx, dy);
+  if (span < 1e-6) return true;
+  // The same cap the renderer's polygon is bounded by, so what is drawn and what is
+  // targetable are the same set. Without it a bot could be shot from beyond the fog.
+  if (span > OUTDOOR_SIGHT) return false;
 
-  for (const context of [aContext, bContext]) {
-    if (!context.startsWith("outdoor:") || context === "outdoor:street") continue;
-    for (const mouth of buildingMouths(map, context.slice("outdoor:".length))) {
-      const da = Math.hypot(a.x - mouth.x, a.y - mouth.y);
-      if (da >= DOORWAY_SIGHT) continue;
-      // The sum, not `db <= doorwayReach(da)` — see `doorwayReach` for why the clamp in it
-      // makes that subtly asymmetric at the boundary.
-      if (da + Math.hypot(b.x - mouth.x, b.y - mouth.y) <= DOORWAY_SIGHT) return true;
-    }
+  const open = new Set(openBuildings(map, a));
+  const inB = buildingContaining(map, b);
+  if (inB) open.add(inB.id);
+  const context = apertureContext(map, [...open], a);
+
+  for (const wall of [...context.walls, ...dynamicOccluders.flatMap(rectSegments)]) {
+    const t = raySegment(a.x, a.y, dx, dy, wall);
+    if (t !== null && t > 1e-6 && t < 1 - 1e-6) return false;
   }
-  return false;
+  return true;
 }
 
 /**

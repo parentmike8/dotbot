@@ -1,44 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { downtownMap } from "./content/downtown";
 import { buildingMouths, perimeterEntrances } from "./entrances";
-import { contextKey } from "./mapModel";
+import { contextKey, isGroundFloor } from "./mapModel";
+import { pointToSolidDistanceSquared, rectSolid } from "./geometry";
 import { OUTDOOR_FLOOR_ID, type Vec2 } from "./types";
-import { DOORWAY_SIGHT, doorwayReach, seesThroughDoorway } from "./visibility";
-
+import { apertureContext, openBuildings, seesOutdoors } from "./visibility";
 
 /**
- * You should not be able to hold a doorway from outside it in perfect safety.
+ * A doorway is a hole in a wall, so sight through it is a shape walls decide.
  *
- * Raised from play reasoning rather than from a bug: "when standing in front of a doorway,
- * you should be able to see a certain radius into that doorway. That way, people aren't
- * hiding outside buildings waiting for people to come out."
+ * Two attempts before this one, and both are worth keeping in view because the tests here
+ * exist to stop either coming back.
  *
- * The situation was worse than a fog problem. `contextKey` puts the street and a
- * building's ground floor in different ARENAS — physically joined by the door, but every
- * "can these two interact" question starts by comparing context keys, so a bot on the
- * pavement and a bot two feet inside the lobby could not see, target, or be targeted by
- * each other at all. Camping an exit was not favourable, it was airtight.
+ * The first granted sight by proximity to a mouth with no wall test at all, on the argument
+ * that the two sides share no occluder list so no ray could be cast. That argument was
+ * simply wrong — the lists merge — and the result was what play reported: standing in a
+ * doorway lit a full circle, "so even in the rooms to the left and right of the door -
+ * those are behind a wall so i shouldn't be able to see to them". The second attempt only
+ * changed the radius, which fixed a flicker and none of that.
  *
- * These run against the real map's real doors, because the rule is about authored
- * geometry — a fixture with one tidy door would not catch a building whose only entrance
- * is a roll-up, or one with two doors on the same elevation.
+ * There is no doorway rule now. `apertureContext` swaps a building's footprint for its own
+ * ground-floor walls, which already carry genuine gaps at every opening, and an ordinary
+ * visibility test does the rest. So the assertions below are mostly about walls still
+ * working — which is the part a disc got wrong and cannot be tuned into getting right.
  */
 
 const OUT = OUTDOOR_FLOOR_ID;
 
-/** Every building with a way in, and the mouth of its first entrance. */
 function entranceCases() {
   return downtownMap.buildings
     .map((building) => ({ building, mouths: buildingMouths(downtownMap, building.id) }))
     .filter((entry) => entry.mouths.length > 0);
 }
 
-/**
- * A point `distance` along the inward normal from a mouth, and its mirror outside.
- *
- * Derived from the entrance's own side rather than guessed, because "inside" is a
- * different axis for a door in the north wall than for one in the east.
- */
+/** A point `distance` along the inward normal from a mouth, and its mirror outside. */
 function acrossMouth(buildingId: string, distance: number): { inside: Vec2; outside: Vec2 } | null {
   const building = downtownMap.buildings.find((item) => item.id === buildingId)!;
   const entrance = perimeterEntrances(building)[0];
@@ -51,228 +46,181 @@ function acrossMouth(buildingId: string, distance: number): { inside: Vec2; outs
   };
 }
 
-describe("the map has doors to test against", () => {
-  it("finds perimeter entrances on real buildings", () => {
-    // Guards everything below: with no mouths every assertion would be vacuous.
-    const cases = entranceCases();
-    expect(cases.length).toBeGreaterThan(2);
-    for (const { building, mouths } of cases) {
-      expect(mouths.length, `${building.id} mouths`).toBeGreaterThan(0);
+/** Standable interior points of a building, on a coarse grid, avoiding its walls. */
+function interiorSamples(buildingId: string, step = 40): Vec2[] {
+  const building = downtownMap.buildings.find((item) => item.id === buildingId)!;
+  const ground = building.floors.find(isGroundFloor);
+  const solids = (ground?.walls ?? []).map(rectSolid);
+  const fp = building.footprint;
+  const out: Vec2[] = [];
+  for (let x = fp.x + step; x < fp.x + fp.w; x += step) {
+    for (let y = fp.y + step; y < fp.y + fp.h; y += step) {
+      const point = { x, y };
+      if (solids.some((solid) => pointToSolidDistanceSquared(point, solid) <= 0)) continue;
+      out.push(point);
     }
+  }
+  return out;
+}
+
+describe("apertureContext", () => {
+  it("replaces an opened building's footprint with its own walls", () => {
+    /**
+     * The structural claim the whole mechanic rests on. A footprint is one opaque rect; a
+     * ground floor's walls are many rects with gaps cut at the openings. Swapping them is
+     * what turns "vision stops at the elevation" into "vision goes through the door".
+     */
+    const target = entranceCases()[0].building;
+    const closed = apertureContext(downtownMap, []);
+    const opened = apertureContext(downtownMap, [target.id]);
+    expect(opened.walls.length).toBeGreaterThan(closed.walls.length);
+
+    const fp = target.footprint;
+    const isFootprintEdge = (w: { ax: number; ay: number; bx: number; by: number }) =>
+      Math.abs(w.ax - fp.x) < 0.01 && Math.abs(w.ay - fp.y) < 0.01
+      && Math.abs(w.bx - (fp.x + fp.w)) < 0.01 && Math.abs(w.by - fp.y) < 0.01;
+    expect(closed.walls.some(isFootprintEdge)).toBe(true);
+    expect(opened.walls.some(isFootprintEdge)).toBe(false);
   });
 
-  it("puts a bot just inside a door in a different arena from one just outside", () => {
-    /**
-     * The premise of the whole feature, asserted rather than assumed. If these two
-     * positions ever landed in the same context, the rule below would be dead code that
-     * still passed its own tests.
-     */
+  it("bounds the whole map, so sight can leave a building", () => {
+    // The per-building context bounds rays at the footprint, which is why standing inside
+    // used to see nothing outside however open the door was.
+    const context = apertureContext(downtownMap, []);
+    expect(context.boundsRect).toEqual({ x: 0, y: 0, w: downtownMap.width, h: downtownMap.height });
+  });
+
+  it("opens only what is near, so the occluder set stays small", () => {
+    // Spatial filter rather than a list — the scale-first rule. A viewer in one corner of
+    // the map must not be paying for every building's interior walls.
+    const corner = openBuildings(downtownMap, { x: 20, y: 20 });
+    const all = downtownMap.buildings.map((building) => building.id);
+    expect(corner.length).toBeLessThan(all.length);
+  });
+});
+
+describe("the premise", () => {
+  it("still puts inside and outside a door in different arenas", () => {
+    // If these ever matched, the merged-geometry path below would be dead code.
     let split = 0;
     for (const { building } of entranceCases()) {
       const pair = acrossMouth(building.id, 30);
       if (!pair) continue;
-      const inside = contextKey(downtownMap, OUT, pair.inside);
-      const outside = contextKey(downtownMap, OUT, pair.outside);
-      if (inside !== outside) split += 1;
+      if (contextKey(downtownMap, OUT, pair.inside) !== contextKey(downtownMap, OUT, pair.outside)) split += 1;
     }
     expect(split).toBeGreaterThan(0);
   });
 });
 
-describe("seesThroughDoorway", () => {
-  it("lets a bot inside and a bot outside see each other across the threshold", () => {
+describe("seesOutdoors", () => {
+  it("sees straight through a doorway, both ways", () => {
     let linked = 0;
     for (const { building } of entranceCases()) {
-      const pair = acrossMouth(building.id, 30);
+      const pair = acrossMouth(building.id, 34);
       if (!pair) continue;
-      if (contextKey(downtownMap, OUT, pair.inside) === contextKey(downtownMap, OUT, pair.outside)) continue;
-      expect(
-        seesThroughDoorway(downtownMap, OUT, pair.inside, OUT, pair.outside),
-        `${building.id} inside→outside`,
-      ).toBe(true);
+      expect(seesOutdoors(downtownMap, OUT, pair.inside, OUT, pair.outside), building.id).toBe(true);
+      expect(seesOutdoors(downtownMap, OUT, pair.outside, OUT, pair.inside), `${building.id} back`).toBe(true);
       linked += 1;
     }
-    expect(linked).toBeGreaterThan(0);
+    expect(linked).toBeGreaterThan(2);
   });
 
-  it("is symmetric — the camper is seen exactly when they can see", () => {
+  it("IS NOT A DISC — a nearer point can be hidden while a further one is seen", () => {
     /**
-     * Load-bearing, and the thing that makes this fair rather than a buff. A one-way rule
-     * would only move the unfairness: reveal the camper and the person leaving is now the
-     * one with free information.
+     * THE BUG THIS REPLACED, stated as the property that actually distinguishes the two
+     * implementations rather than as a number.
+     *
+     * A disc makes visibility a function of DISTANCE ALONE: everything inside the radius is
+     * lit, whatever is between. So under a disc, visibility is monotone — no hidden point
+     * can be nearer than a visible one. Real geometry breaks that constantly, because a
+     * partition three feet away hides a room while the hall keeps going past it. Play saw
+     * exactly the monotone version: "even in the rooms to the left and right of the door -
+     * those are behind a wall so i shouldn't be able to see to them".
+     *
+     * A first attempt at this test asserted "less than half the interior is visible", which
+     * failed on Civic — and Civic was right: its ground floor is one open lobby, so more than
+     * half of it genuinely IS visible from the door. An arbitrary fraction measures the floor
+     * plan, not the rule.
      */
+    let checked = 0;
     for (const { building } of entranceCases()) {
-      const pair = acrossMouth(building.id, 30);
-      if (!pair) continue;
-      const forward = seesThroughDoorway(downtownMap, OUT, pair.inside, OUT, pair.outside);
-      const back = seesThroughDoorway(downtownMap, OUT, pair.outside, OUT, pair.inside);
-      expect(back, `${building.id} symmetry`).toBe(forward);
-    }
-  });
+      const pair = acrossMouth(building.id, 40);
+      const samples = interiorSamples(building.id);
+      if (!pair || samples.length < 12) continue;
+      const range = (point: Vec2) => Math.hypot(point.x - pair.outside.x, point.y - pair.outside.y);
+      const seen = samples.filter((point) => seesOutdoors(downtownMap, OUT, pair.outside, OUT, point));
+      const hidden = samples.filter((point) => !seesOutdoors(downtownMap, OUT, pair.outside, OUT, point));
+      expect(seen.length, `${building.id} sees nothing inside`).toBeGreaterThan(0);
+      expect(hidden.length, `${building.id} sees everything inside`).toBeGreaterThan(0);
 
-  /**
-   * An ABSOLUTE distance, deliberately not `DOORWAY_SIGHT * 3`.
-   *
-   * It was that, and mutation testing caught it: raising the constant to 4000 — which
-   * turns every doorway into a permanent hole in the fog visible from across the map —
-   * left the whole suite green, because the "too far" points scaled with the constant they
-   * were supposed to be bounding. A test written in terms of the thing under test cannot
-   * bound it.
-   *
-   * 340 units is further than any room on the map is deep and further than the street is
-   * wide, so a rule that fires at this range is broken whatever the constant says.
-   */
-  const FAR = 340;
-
-  it("does not reach across a room — both sides must be near the SAME mouth", () => {
-    // Otherwise a doorway is a hole in the fog to be watched from anywhere in the
-    // building, which is not "standing in front of" it.
-    for (const { building } of entranceCases()) {
-      const far = acrossMouth(building.id, FAR);
-      if (!far) continue;
+      const furthestSeen = Math.max(...seen.map(range));
+      const nearestHidden = Math.min(...hidden.map(range));
       expect(
-        seesThroughDoorway(downtownMap, OUT, far.inside, OUT, far.outside),
-        `${building.id} at ${FAR} units`,
-      ).toBe(false);
+        nearestHidden,
+        `${building.id}: nearest hidden point is ${Math.round(nearestHidden)} away, furthest seen ${Math.round(furthestSeen)} — visibility is monotone in distance, i.e. a disc`,
+      ).toBeLessThan(furthestSeen);
+      checked += 1;
     }
+    expect(checked).toBeGreaterThan(2);
   });
 
-  it("needs BOTH sides close, not just one", () => {
-    // The asymmetric failure: someone standing in the doorway seeing a bot right across
-    // the street, or vice versa. Each of these has one party well outside the radius.
+  it("does not see the far side of a building from its own doorstep", () => {
+    // The strongest single case: the sample furthest from the door, which is behind at
+    // least one partition in every building on the map.
     for (const { building } of entranceCases()) {
-      const near = acrossMouth(building.id, 20);
-      const far = acrossMouth(building.id, FAR);
-      if (!near || !far) continue;
-      expect(seesThroughDoorway(downtownMap, OUT, near.inside, OUT, far.outside)).toBe(false);
-      expect(seesThroughDoorway(downtownMap, OUT, far.inside, OUT, near.outside)).toBe(false);
+      const pair = acrossMouth(building.id, 40);
+      const samples = interiorSamples(building.id);
+      if (!pair || !samples.length) continue;
+      const furthest = samples.reduce((best, point) =>
+        Math.hypot(point.x - pair.outside.x, point.y - pair.outside.y)
+        > Math.hypot(best.x - pair.outside.x, best.y - pair.outside.y) ? point : best);
+      expect(seesOutdoors(downtownMap, OUT, pair.outside, OUT, furthest), building.id).toBe(false);
     }
   });
 
-  it("keeps the budget in a band that means 'standing in front of it'", () => {
-    /**
-     * The constant pinned directly, because the geometry tests above can only catch a
-     * radius wide enough to cross a whole room — and the damage starts long before that.
-     *
-     * This is now a SHARED budget rather than a radius per party, so the numbers moved:
-     * two bots each 90 units from a mouth are at the limit, and someone standing in the
-     * gap sees 180 units past it. Below about 120 the rule barely reaches out of the
-     * reveal; past about 300 a doorway stops being a threshold and becomes a window.
-     */
-    expect(DOORWAY_SIGHT).toBeGreaterThanOrEqual(120);
-    expect(DOORWAY_SIGHT).toBeLessThanOrEqual(300);
-  });
-
-  it("grants sight continuously, with no step for the fog to flicker on", () => {
-    /**
-     * THE JITTER BUG, as a property.
-     *
-     * The first version gave each party a fixed 96-unit radius, which makes the granted
-     * region a step function: nothing at 97 units from the mouth, the entire disc at 95.
-     * Sliding along a wall past a door crossed that step repeatedly and the fog flashed on
-     * and off — reported from play as "shifting left and right in the doorway causes the
-     * fog to be quite jittery".
-     *
-     * A shared budget is continuous by construction, and this is what says so: reach only
-     * ever decreases as you back away, never by more than you moved, and it arrives at
-     * exactly zero rather than falling off a cliff.
-     */
-    let previous = doorwayReach(0);
-    expect(previous).toBe(DOORWAY_SIGHT);
-    for (let distance = 1; distance <= DOORWAY_SIGHT + 60; distance += 1) {
-      const reach = doorwayReach(distance);
-      expect(reach, `reach at ${distance}`).toBeLessThanOrEqual(previous);
-      expect(previous - reach, `jump at ${distance}`).toBeLessThanOrEqual(1.0001);
-      previous = reach;
-    }
-    expect(doorwayReach(DOORWAY_SIGHT)).toBe(0);
-    expect(doorwayReach(DOORWAY_SIGHT + 500)).toBe(0);
-  });
-
-  it("spends the budget between the two of them, so it stays symmetric", () => {
-    /**
-     * The sum is the rule, and this test is why it is written that way.
-     *
-     * The obvious spelling is `db <= doorwayReach(da)` — reuse the renderer's radius as the
-     * predicate. It is asymmetric at the boundary and this caught it: a viewer standing IN
-     * the gap against a bot at 181 gives `181 <= 180` = false one way, and `0 <= max(0, -1)
-     * = 0` = TRUE the other. The `Math.max` that keeps a radius from going negative is
-     * exactly what breaks it. So the sum is stated directly and `doorwayReach` is only ever
-     * used to draw.
-     */
-    const sees = (da: number, db: number) => da + db <= DOORWAY_SIGHT;
-    for (const [da, db] of [[0, 180], [90, 90], [180, 0], [100, 79], [60, 121], [0, 181], [120, 61]]) {
-      expect(sees(da, db), `${da}/${db}`).toBe(sees(db, da));
-    }
-    for (const [da, db] of [[91, 91], [0, 181], [120, 61]]) {
-      expect(sees(da, db), `${da}/${db} beyond budget`).toBe(false);
-    }
-    // And the radius is still what the renderer should draw, clamp included.
-    expect(doorwayReach(200)).toBe(0);
-    expect(doorwayReach(60)).toBe(DOORWAY_SIGHT - 60);
-  });
-
-  it("says nothing about two bots already in the same arena", () => {
-    /**
-     * It must return false there, not true. Same-arena sighting goes through
-     * `hasLineOfSight`, and `canSee` treats a doorway hit as a reason to SKIP the wall
-     * test — so a doorway rule that fired inside one context would hand out sight through
-     * interior walls near every entrance.
-     */
+  it("is symmetric everywhere, because a ray crosses a wall in both directions", () => {
     for (const { building } of entranceCases()) {
-      const pair = acrossMouth(building.id, 26);
+      const pair = acrossMouth(building.id, 40);
+      const samples = interiorSamples(building.id);
       if (!pair) continue;
-      expect(seesThroughDoorway(downtownMap, OUT, pair.inside, OUT, pair.inside)).toBe(false);
-      expect(seesThroughDoorway(downtownMap, OUT, pair.outside, OUT, pair.outside)).toBe(false);
+      for (const point of samples.slice(0, 24)) {
+        expect(
+          seesOutdoors(downtownMap, OUT, pair.outside, OUT, point),
+          `${building.id} ${point.x},${point.y}`,
+        ).toBe(seesOutdoors(downtownMap, OUT, point, OUT, pair.outside));
+      }
     }
   });
 
   it("does not apply between floors, however close the positions look", () => {
     /**
-     * Two bots at the same x,y one storey apart are 30 units from a mouth on paper. A
-     * doorway is a hole in a WALL, not in a slab, so the upper floor must stay opaque —
-     * the check on the physics floor is what stops a stairwell from becoming a window.
+     * Two bots at the same x,y one storey apart. A doorway is a hole in a WALL, not in a
+     * slab, so the check on the physics floor is what stops a stairwell being a window.
      */
     const upper = downtownMap.buildings
       .flatMap((building) => building.floors.map((floor) => ({ building, floor })))
       .find((entry) => entry.floor.label === "F2" && buildingMouths(downtownMap, entry.building.id).length > 0);
     expect(upper, "a tower with doors and an F2").toBeDefined();
     const pair = acrossMouth(upper!.building.id, 30)!;
-    expect(seesThroughDoorway(downtownMap, upper!.floor.id, pair.inside, OUT, pair.outside)).toBe(false);
-    expect(seesThroughDoorway(downtownMap, OUT, pair.inside, upper!.floor.id, pair.outside)).toBe(false);
+    expect(seesOutdoors(downtownMap, upper!.floor.id, pair.inside, OUT, pair.outside)).toBe(false);
+    expect(seesOutdoors(downtownMap, OUT, pair.inside, upper!.floor.id, pair.outside)).toBe(false);
   });
 
-  it("puts every mouth on its own footprint's edge", () => {
+  it("opens the target's building too, not only the viewer's", () => {
     /**
-     * The renderer's fast path depends on this and cannot state it itself.
-     *
-     * `doorwayEyes` rejects a whole building with one rect-distance test before it
-     * measures any mouth — which is what keeps the per-frame cost flat at a hundred
-     * buildings instead of four. That reject is only sound while a mouth lies ON the
-     * footprint boundary: a mouth further outside the footprint than the reach would be
-     * skipped for a player standing right in front of it.
-     *
-     * `perimeterEntrances` guarantees it with a 12-unit tolerance, so this asserts the
-     * guarantee rather than trusting the two files to keep agreeing.
+     * A bot deep inside a building the viewer is standing far from would otherwise be
+     * hidden behind its own footprint — the merge has to cover both endpoints or the rule
+     * is asymmetric in the one case that matters, which is two people at one door.
      */
-    for (const { building, mouths } of entranceCases()) {
-      const fp = building.footprint;
-      for (const mouth of mouths) {
-        const toEdge = Math.min(
-          Math.abs(mouth.x - fp.x),
-          Math.abs(mouth.x - (fp.x + fp.w)),
-          Math.abs(mouth.y - fp.y),
-          Math.abs(mouth.y - (fp.y + fp.h)),
-        );
-        expect(toEdge, `${building.id} mouth at (${mouth.x},${mouth.y})`).toBeLessThanOrEqual(12);
-      }
+    const cases = entranceCases();
+    expect(cases.length).toBeGreaterThan(1);
+    for (const { building } of cases) {
+      const pair = acrossMouth(building.id, 34);
+      if (!pair) continue;
+      // `openBuildings` from the outside point may or may not include this building
+      // depending on range; the rule must not depend on that.
+      const near = openBuildings(downtownMap, pair.outside);
+      expect(near, `${building.id} near list`).toContain(building.id);
     }
-  });
-
-  it("grants nothing at a building with no way in", () => {
-    // A footprint with no perimeter door has no mouths, so the loop finds nothing rather
-    // than falling back to the footprint edge.
-    const sealed = { id: "nowhere" };
-    expect(buildingMouths(downtownMap, sealed.id)).toEqual([]);
   });
 });

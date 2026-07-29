@@ -45,7 +45,7 @@ import {
   restoreShieldPlate,
 } from "./shields";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import { hasLineOfSight, seesThroughDoorway } from "./visibility";
+import { hasLineOfSight, seesOutdoors } from "./visibility";
 import type {
   BayIndex,
   BotSpawn,
@@ -1043,7 +1043,7 @@ export class DotBotSimulation {
   private canPerceive(bot: InternalBot, floorId: string, position: Vec2): boolean {
     return (
       this.sameArena(bot, floorId, position) ||
-      seesThroughDoorway(this.map, bot.floorId, bot.position, floorId, position)
+      seesOutdoors(this.map, bot.floorId, bot.position, floorId, position)
     );
   }
 
@@ -1062,17 +1062,18 @@ export class DotBotSimulation {
    * granting sight within a bot-length or so of the gap itself.
    */
   private canSee(bot: InternalBot, floorId: string, position: Vec2): boolean {
-    if (seesThroughDoorway(this.map, bot.floorId, bot.position, floorId, position)) return true;
-    return (
-      this.sameArena(bot, floorId, position) &&
-      hasLineOfSight(
+    const occluders = this.doorOccludersForFloor(bot.floorId);
+    if (this.sameArena(bot, floorId, position)) {
+      return hasLineOfSight(
         this.map,
         contextKey(this.map, bot.floorId, bot.position),
         bot.position,
         position,
-        this.doorOccludersForFloor(bot.floorId),
-      )
-    );
+        occluders,
+      );
+    }
+    // Different arenas: the only join is a hole in a wall, so ask the merged geometry.
+    return seesOutdoors(this.map, bot.floorId, bot.position, floorId, position, occluders);
   }
 
   /**
