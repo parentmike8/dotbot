@@ -182,13 +182,42 @@ export function hasLineOfSight(
 }
 
 /**
- * How far vision reaches through a doorway, from either side of it.
+ * The total sight budget through a doorway, SHARED between the two parties.
  *
- * Four bot radii. Far enough that stepping out of a building is not walking blind into a
- * held position, close enough that a doorway is not a permanent hole in the fog you can
- * watch from across a room — the rule is "standing in front of it", not "aimed at it".
+ * Not "96 units each side", which is what this was and it jittered badly. A fixed radius
+ * per party makes the granted region a step function: at 97 units away you get nothing, at
+ * 95 you get the whole disc, so sliding along a wall past a door flickered the fog on and
+ * off. Reported from play as exactly that — "shifting left and right in the doorway causes
+ * the fog to be quite jittery".
+ *
+ * A shared budget removes the step. You see `DOORWAY_SIGHT - yourDistance` through the
+ * gap, so the reveal grows continuously from nothing as you approach and shrinks the same
+ * way as you leave. It stays symmetric, which was the point of the original rule: A sees B
+ * when `db <= BUDGET - da`, B sees A when `da <= BUDGET - db`, and those are the same
+ * inequality — `da + db <= BUDGET`.
+ *
+ * It is also the more honest model of a door. A gap in a wall is a keyhole: the closer you
+ * put your eye to it the more of the far side you get, and from far enough away it tells
+ * you nothing at all.
  */
-export const DOORWAY_SIGHT = 96;
+export const DOORWAY_SIGHT = 180;
+
+/**
+ * How far past a mouth this viewer can see, as a RADIUS to draw.
+ *
+ * Shared with the renderer on purpose — it draws a disc of exactly this size, and if the
+ * two ever disagreed a bot would be either invisible while targetable, or drawn through the
+ * wall beside the door.
+ *
+ * Not the predicate, though, and the clamp is why. A radius must never go negative, but
+ * `Math.max(0, …)` also destroys the symmetry it looks like it preserves: a viewer standing
+ * IN the gap (distance 0) against a bot at 181 gives `181 <= 180` = false one way and
+ * `0 <= max(0, -1) = 0` = true the other. A test caught it at exactly that boundary. So the
+ * rule is the sum, stated once in `seesThroughDoorway`, and this is only for drawing.
+ */
+export function doorwayReach(distanceToMouth: number): number {
+  return Math.max(0, DOORWAY_SIGHT - distanceToMouth);
+}
 
 /**
  * Whether two positions can see each other through a building's front door.
@@ -234,14 +263,14 @@ export function seesThroughDoorway(
   // Same arena already sees normally; this rule is only for the boundary.
   if (aContext === bContext) return false;
 
-  const reach = DOORWAY_SIGHT * DOORWAY_SIGHT;
   for (const context of [aContext, bContext]) {
     if (!context.startsWith("outdoor:") || context === "outdoor:street") continue;
     for (const mouth of buildingMouths(map, context.slice("outdoor:".length))) {
-      const da = (a.x - mouth.x) ** 2 + (a.y - mouth.y) ** 2;
-      if (da > reach) continue;
-      const db = (b.x - mouth.x) ** 2 + (b.y - mouth.y) ** 2;
-      if (db <= reach) return true;
+      const da = Math.hypot(a.x - mouth.x, a.y - mouth.y);
+      if (da >= DOORWAY_SIGHT) continue;
+      // The sum, not `db <= doorwayReach(da)` — see `doorwayReach` for why the clamp in it
+      // makes that subtly asymmetric at the boundary.
+      if (da + Math.hypot(b.x - mouth.x, b.y - mouth.y) <= DOORWAY_SIGHT) return true;
     }
   }
   return false;

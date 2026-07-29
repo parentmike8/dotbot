@@ -391,16 +391,26 @@ function buildRoofArt(building: Building, floor: FloorPlan): FloorArt {
     return g;
   });
   for (const stair of floor.stairs) {
-    const view = new Container();
     const headGfx = new Graphics();
     drawStairHead(headGfx, housingPad, stair);
     housing.addChild(headGfx);
+
+    /**
+     * One container per stair INSIDE the well, rather than handing the well's own
+     * graphics to `stairViews`.
+     *
+     * It used to add `wellGfx` to `well` and then to a bare `view`, and pixi's addChild
+     * REPARENTS: the second call silently removed it from the first. So `well` held only
+     * its shadow layers, and standing on a roof deck — the one place the well is the
+     * visible half — showed a stair's cast shadow with no stair in it. The addressable
+     * fixture is still the well, because it is the one a player can stand on and the one
+     * fabrication would ever draw onto; it just gets its own node instead of being moved.
+     */
+    const view = new Container();
     const wellGfx = new Graphics();
     drawStair(wellGfx, wellPad, stair);
-    well.addChild(wellGfx);
-    // The addressable fixture is the well: it is the one a player can be standing on,
-    // so it is the one fabrication would ever draw onto.
     view.addChild(wellGfx);
+    well.addChild(view);
     stairViews.set(stair.id, { stair, view });
     const tag = makeLabel(stair.direction === "up" ? "UP" : "DN", CAPTION.stairTag);
     placeStairTag(tag, stair);

@@ -3,7 +3,7 @@ import { downtownMap } from "./content/downtown";
 import { buildingMouths, perimeterEntrances } from "./entrances";
 import { contextKey } from "./mapModel";
 import { OUTDOOR_FLOOR_ID, type Vec2 } from "./types";
-import { DOORWAY_SIGHT, seesThroughDoorway } from "./visibility";
+import { DOORWAY_SIGHT, doorwayReach, seesThroughDoorway } from "./visibility";
 
 
 /**
@@ -149,15 +149,67 @@ describe("seesThroughDoorway", () => {
     }
   });
 
-  it("keeps the reach in a band that means 'standing in front of it'", () => {
+  it("keeps the budget in a band that means 'standing in front of it'", () => {
     /**
      * The constant pinned directly, because the geometry tests above can only catch a
      * radius wide enough to cross a whole room — and the damage starts long before that.
-     * Below a bot diameter the rule does nothing; much past a couple of bot lengths a
-     * doorway stops being a threshold and becomes a window.
+     *
+     * This is now a SHARED budget rather than a radius per party, so the numbers moved:
+     * two bots each 90 units from a mouth are at the limit, and someone standing in the
+     * gap sees 180 units past it. Below about 120 the rule barely reaches out of the
+     * reveal; past about 300 a doorway stops being a threshold and becomes a window.
      */
-    expect(DOORWAY_SIGHT).toBeGreaterThanOrEqual(48);
-    expect(DOORWAY_SIGHT).toBeLessThanOrEqual(160);
+    expect(DOORWAY_SIGHT).toBeGreaterThanOrEqual(120);
+    expect(DOORWAY_SIGHT).toBeLessThanOrEqual(300);
+  });
+
+  it("grants sight continuously, with no step for the fog to flicker on", () => {
+    /**
+     * THE JITTER BUG, as a property.
+     *
+     * The first version gave each party a fixed 96-unit radius, which makes the granted
+     * region a step function: nothing at 97 units from the mouth, the entire disc at 95.
+     * Sliding along a wall past a door crossed that step repeatedly and the fog flashed on
+     * and off — reported from play as "shifting left and right in the doorway causes the
+     * fog to be quite jittery".
+     *
+     * A shared budget is continuous by construction, and this is what says so: reach only
+     * ever decreases as you back away, never by more than you moved, and it arrives at
+     * exactly zero rather than falling off a cliff.
+     */
+    let previous = doorwayReach(0);
+    expect(previous).toBe(DOORWAY_SIGHT);
+    for (let distance = 1; distance <= DOORWAY_SIGHT + 60; distance += 1) {
+      const reach = doorwayReach(distance);
+      expect(reach, `reach at ${distance}`).toBeLessThanOrEqual(previous);
+      expect(previous - reach, `jump at ${distance}`).toBeLessThanOrEqual(1.0001);
+      previous = reach;
+    }
+    expect(doorwayReach(DOORWAY_SIGHT)).toBe(0);
+    expect(doorwayReach(DOORWAY_SIGHT + 500)).toBe(0);
+  });
+
+  it("spends the budget between the two of them, so it stays symmetric", () => {
+    /**
+     * The sum is the rule, and this test is why it is written that way.
+     *
+     * The obvious spelling is `db <= doorwayReach(da)` — reuse the renderer's radius as the
+     * predicate. It is asymmetric at the boundary and this caught it: a viewer standing IN
+     * the gap against a bot at 181 gives `181 <= 180` = false one way, and `0 <= max(0, -1)
+     * = 0` = TRUE the other. The `Math.max` that keeps a radius from going negative is
+     * exactly what breaks it. So the sum is stated directly and `doorwayReach` is only ever
+     * used to draw.
+     */
+    const sees = (da: number, db: number) => da + db <= DOORWAY_SIGHT;
+    for (const [da, db] of [[0, 180], [90, 90], [180, 0], [100, 79], [60, 121], [0, 181], [120, 61]]) {
+      expect(sees(da, db), `${da}/${db}`).toBe(sees(db, da));
+    }
+    for (const [da, db] of [[91, 91], [0, 181], [120, 61]]) {
+      expect(sees(da, db), `${da}/${db} beyond budget`).toBe(false);
+    }
+    // And the radius is still what the renderer should draw, clamp included.
+    expect(doorwayReach(200)).toBe(0);
+    expect(doorwayReach(60)).toBe(DOORWAY_SIGHT - 60);
   });
 
   it("says nothing about two bots already in the same arena", () => {

@@ -12,7 +12,7 @@ import {
 } from "@dotbot/game/mapModel";
 import { buildingMouths } from "@dotbot/game/entrances";
 import {
-  DOORWAY_SIGHT, hasLineOfSight, seesThroughDoorway, visibilityPolygon, visionContext,
+  DOORWAY_SIGHT, doorwayReach, hasLineOfSight, seesThroughDoorway, visibilityPolygon, visionContext,
 } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
@@ -705,10 +705,10 @@ export class GameRenderer {
      * both fog layers — the mask decides whether a bot drawn there survives, the fog
      * decides whether the player can see the ground they are standing on.
      */
-    for (const mouth of this.doorwayEyes(player)) {
-      this.visionMaskGfx.circle(mouth.x, mouth.y, DOORWAY_SIGHT).fill({ color: 0xffffff });
+    for (const { mouth, radius } of this.doorwayEyes(player)) {
+      this.visionMaskGfx.circle(mouth.x, mouth.y, radius).fill({ color: 0xffffff });
       for (const layer of [this.fogGfx, this.foregroundFogGfx]) {
-        layer.circle(mouth.x, mouth.y, DOORWAY_SIGHT).cut();
+        layer.circle(mouth.x, mouth.y, radius).cut();
       }
     }
   }
@@ -721,18 +721,22 @@ export class GameRenderer {
    * mouths, and the rect test rejects almost every building before any mouth is measured.
    * That is what keeps this honest at a hundred buildings instead of four.
    */
-  private doorwayEyes(player: DotBotEntity): Vec2[] {
+  private doorwayEyes(player: DotBotEntity): Array<{ mouth: Vec2; radius: number }> {
     if (physicsFloorId(this.map, player.floorId) !== OUTDOOR_FLOOR_ID) return [];
     const { x, y } = this.viewerDisplayPosition(player);
-    const reach = DOORWAY_SIGHT * DOORWAY_SIGHT;
-    const eyes: Vec2[] = [];
+    const limit = DOORWAY_SIGHT * DOORWAY_SIGHT;
+    const eyes: Array<{ mouth: Vec2; radius: number }> = [];
     for (const building of this.map.buildings) {
       const fp = building.footprint;
       const dx = Math.max(fp.x - x, 0, x - (fp.x + fp.w));
       const dy = Math.max(fp.y - y, 0, y - (fp.y + fp.h));
-      if (dx * dx + dy * dy > reach) continue;
+      if (dx * dx + dy * dy > limit) continue;
       for (const mouth of buildingMouths(this.map, building.id)) {
-        if ((mouth.x - x) ** 2 + (mouth.y - y) ** 2 <= reach) eyes.push(mouth);
+        // `doorwayReach` is the sim's own function, so the disc is exactly the region the
+        // rule grants. It also shrinks to nothing at the limit, which is what stops the
+        // fog flickering as you slide along a wall past a door.
+        const radius = doorwayReach(Math.hypot(mouth.x - x, mouth.y - y));
+        if (radius > 0.5) eyes.push({ mouth, radius });
       }
     }
     return eyes;
