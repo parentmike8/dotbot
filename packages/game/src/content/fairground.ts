@@ -307,10 +307,14 @@ export const fairground: RegionParts = {
     // the midway is the only ground in the region that reliably has it.
     { id: "fair-avenue", name: "THE AVENUE", position: { x: 1250, y: 2340 } },
   ],
+  /** See the note on `railYard`'s spawns: a spawn inside a solid never moves. */
   botSpawns: [
     { id: "fair-1", name: "Tinsel", squadId: "rival-15", isAmbient: true, color: "#c96b9b", position: { x: 1620, y: 2420 } },
-    { id: "fair-2", name: "Cotton", squadId: "rival-16", isAmbient: true, color: "#d9a05b", position: { x: 620, y: 2300 } },
-    { id: "fair-3", name: "Bulb", squadId: "rival-17", isAmbient: true, color: "#8c7ab8", position: { x: HALL.x - 170, y: HALL.y + 30 }, floorId: "pavilion:GROUND" },
-    { id: "fair-4", name: "Reel", squadId: "rival-18", isAmbient: true, color: "#5f8c7a", position: { x: HALL.x + 230, y: HALL.y }, floorId: "pavilion:F1" },
+    // South of the swing ride's platform, which ends at y 2305. Was inside it.
+    { id: "fair-2", name: "Cotton", squadId: "rival-16", isAmbient: true, color: "#d9a05b", position: { x: 620, y: 2350 } },
+    // Standing AT the bar, not in it: the counter's east face is HALL.x - 176.
+    { id: "fair-3", name: "Bulb", squadId: "rival-17", isAmbient: true, color: "#8c7ab8", position: { x: HALL.x - 130, y: HALL.y + 30 }, floorId: "pavilion:GROUND" },
+    // Out in the gallery ring. HALL.x + 230 was inside the east box's couch.
+    { id: "fair-4", name: "Reel", squadId: "rival-18", isAmbient: true, color: "#5f8c7a", position: { x: HALL.x + 120, y: HALL.y + 40 }, floorId: "pavilion:F1" },
   ],
 };

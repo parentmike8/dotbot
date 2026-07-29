@@ -275,10 +275,22 @@ export const railYard: RegionParts = {
     { id: "yard-west", name: "COAL ROAD", position: { x: 2500, y: 1080 } },
     { id: "yard-east", name: "SIDINGS", position: { x: 4020, y: 620 } },
   ],
+  /**
+   * A spawn needs `botRadius` of clearance from every solid, or the navigator
+   * will not plan FROM it and the bot stands there for the whole match — while
+   * re-running a failed exhaustive search every tick. Three of these four were
+   * authored against a landmark's centre, because a landmark is the obvious
+   * thing to describe a position by and its centre is the middle of a solid.
+   * Describe them by the space beside the landmark instead.
+   */
   botSpawns: [
-    { id: "yard-1", name: "Rust", squadId: "rival-11", isAmbient: true, color: "#b06b3a", position: { x: 3600, y: 1300 } },
-    { id: "yard-2", name: "Cinder", squadId: "rival-12", isAmbient: true, color: "#8d6e63", position: { x: 2900, y: 460 } },
+    // In the 136-unit aisle between the two wagon rakes (y 1084-1148 and 1284-1348),
+    // not inside the southern one.
+    { id: "yard-1", name: "Rust", squadId: "rival-11", isAmbient: true, color: "#b06b3a", position: { x: 3600, y: 1216 } },
+    // South-east of the water tank's base, which ends at x 2892 / y 468.
+    { id: "yard-2", name: "Cinder", squadId: "rival-12", isAmbient: true, color: "#8d6e63", position: { x: 2930, y: 520 } },
     { id: "yard-3", name: "Ash", squadId: "rival-13", isAmbient: true, color: "#6d6a63", position: { x: 2860, y: 1560 }, floorId: "roundhouse:GROUND" },
-    { id: "yard-4", name: "Signal", squadId: "rival-14", isAmbient: true, color: "#4a7c8c", position: { x: 3120, y: 490 }, floorId: "box:F1" },
+    // At the operating floor's east windows. Was on top of the desk chair.
+    { id: "yard-4", name: "Signal", squadId: "rival-14", isAmbient: true, color: "#4a7c8c", position: { x: 3230, y: 470 }, floorId: "box:F1" },
   ],
 };

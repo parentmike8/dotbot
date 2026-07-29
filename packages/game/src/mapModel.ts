@@ -319,32 +319,16 @@ export function isGroundFloor(floor: FloorPlan): boolean {
 }
 
 /**
- * Physics layers. The outdoor plane (streets + every building's GROUND floor)
- * is layer 0. Each non-GROUND floor gets its own layer.
- */
-export function collisionLayers(map: MapDocument): Map<string, number> {
-  const layers = new Map<string, number>([[OUTDOOR_FLOOR_ID, 0]]);
-  let next = 1;
-
-  for (const building of map.buildings) {
-    for (const floor of building.floors) {
-      if (!isGroundFloor(floor)) {
-        if (next >= 16) {
-          throw new Error("DotBot maps support at most 16 physics collision layers, including the shared outdoor layer.");
-        }
-
-        layers.set(floor.id, next);
-        next += 1;
-      }
-    }
-  }
-
-  return layers;
-}
-
-/**
  * The physics floor a bot occupies. GROUND floors resolve to the outdoor layer
  * because they share the street plane (you walk in through the door gap).
+ *
+ * There is no cap on how many of these a map may have. There used to be: a
+ * `collisionLayers` numbering that threw above 16, inherited from Rapier's
+ * collision-filter bit budget. Rapier is gone — every solid now lives in a
+ * `Map<string, SolidIndex>` keyed by the id this function returns, and nothing
+ * anywhere assigns a floor a number. The guard outlived its constraint and
+ * survived only because no map had ever been big enough to trip it. The Reach
+ * tripped it at nine buildings, which is a tenth of the intended world.
  */
 export function physicsFloorId(map: MapDocument, floorId: string): string {
   if (floorId === OUTDOOR_FLOOR_ID) {

@@ -4,12 +4,29 @@ import { downtownMap } from "./content/downtown";
 import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, deriveBaseInteractionDots, starterBaseLayout, validateBaseLayout } from "./content/base";
 import { interactionDotReach } from "./interactions";
 import type { BaseLayout } from "./types";
-import { collisionLayers, isGroundFloor, objectCollisionRects, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
+import { isGroundFloor, objectCollisionRects, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
 import { auditDotPlacement, auditBuildingFloorQuality, type FloorQualityIssue } from "./mapQuality";
 import { FLAT_KINDS, isSolidObject } from "./mapModel";
 import { findNavigationPath } from "./navigation";
+import { DotBotSimulation } from "./simulation";
+import { quaysideMap } from "./content/quaysideDepot";
+import { worldMap } from "./content/world";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Doorway, MapDocument, MapObject, Rect, StairLink, Vec2 } from "./types";
+
+/**
+ * Every map a player can actually load. The base shells are here too: they are
+ * maps, they get simulations built on them, and they were as exposed as the
+ * world to a map-wide cap nobody was testing against.
+ */
+const SHIPPED_MAPS: Array<[string, MapDocument]> = [
+  ["the world", worldMap],
+  ["downtown", downtownMap],
+  ["quayside depot", quaysideMap],
+  ...BASE_SHELL_IDS.map(
+    (shellId) => [`base shell ${shellId}`, createBaseMap(starterBaseLayout, shellId)] as [string, MapDocument],
+  ),
+];
 
 /**
  * Map validation (spec: "Dot spawn zones do not overlap walls", "Objects do
@@ -182,32 +199,6 @@ describe("downtown map validation", () => {
     const civic = downtownMap.buildings.find((building) => building.id === "civic");
     expect(civic?.floors.filter((floor) => floor.label !== "ROOF")).toHaveLength(8);
     expect(civic?.floors.at(-1)?.label).toBe("ROOF");
-    expect(new Set(collisionLayers(downtownMap).values()).size).toBeLessThanOrEqual(16);
-  });
-
-  it("fails explicitly before a map exceeds Rapier's 16 collision layers", () => {
-    const overflowMap: MapDocument = {
-      ...downtownMap,
-      buildings: [
-        {
-          id: "overflow",
-          kind: "office",
-          name: "OVERFLOW",
-          footprint: { x: 40, y: 40, w: 200, h: 200 },
-          floors: Array.from({ length: 16 }, (_, index) => ({
-            id: `overflow:F${index + 1}`,
-            label: "F1" as const,
-            walls: [],
-            doorways: [],
-            objects: [],
-            stairs: [],
-            dotSpawns: [],
-          })),
-        },
-      ],
-    };
-
-    expect(() => collisionLayers(overflowMap)).toThrow(/at most 16 physics collision layers/);
   });
 
   /**
@@ -573,6 +564,89 @@ describe("downtown map validation", () => {
         }
       }
     }
+  });
+});
+
+/**
+ * The checks above are written against downtown, and downtown alone. That was
+ * fine while downtown *was* the game. It stopped being fine the moment a second
+ * map shipped, and the cost came due twice on the same day:
+ *
+ *  - The Reach threw on construction, from a 16-floor cap left behind by a
+ *    physics engine we no longer use. Every read-only audit passed. Nothing
+ *    had ever *built* a simulation on it.
+ *  - Two of its bot spawns were authored inside solid furniture, so the
+ *    navigator would not plan from where they stood. There is a test for
+ *    exactly that failure, written after it cost a play session — and it only
+ *    ever ran on downtown.
+ *
+ * So these two run on every map a player can load, and a new map is covered by
+ * appearing in SHIPPED_MAPS rather than by someone remembering this file.
+ */
+describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s", (_name, map) => {
+  /**
+   * The cheapest possible version of pressing W: construct the thing, then tick
+   * it. A map nobody can instantiate is not a map.
+   *
+   * The timeout is explicit because the default 5s is not enough and this test
+   * sat right on the boundary — it passed alone and failed under the parallel
+   * suite. That marginality is itself the finding: The Reach costs ~1.7s to
+   * prewarm and ~15ms a tick against a 16.7ms budget, nearly all of it A*. See
+   * the note in `steerBotAlongPath` about what makes a replan expensive.
+   */
+  it("builds a live simulation and ticks it", { timeout: 30_000 }, async () => {
+    const sim = await DotBotSimulation.create({ map, config: defaultGameConfig });
+    expect(sim.getSnapshot().bots.length).toBeGreaterThan(0);
+
+    for (let tick = 0; tick < 30; tick += 1) sim.step();
+    const after = sim.getSnapshot();
+    expect(after.timeMs).toBeGreaterThan(0);
+    // Nothing may be flung off the sheet by its own first half-second alive.
+    for (const bot of after.bots) {
+      expect(Number.isFinite(bot.position.x) && Number.isFinite(bot.position.y)).toBe(true);
+      expect(bot.position.x).toBeGreaterThanOrEqual(0);
+      expect(bot.position.y).toBeGreaterThanOrEqual(0);
+      expect(bot.position.x).toBeLessThanOrEqual(map.width);
+      expect(bot.position.y).toBeLessThanOrEqual(map.height);
+    }
+    sim.dispose();
+  });
+
+  /**
+   * The same probe as "keeps every bot spawn somewhere the navigator can plan
+   * FROM", asked of every map. See that test for why it asks the shipped
+   * pathfinder rather than this file's own coarse flood, and why it probes at
+   * 60 units rather than further out.
+   *
+   * A wedged spawn is not only a bot that never moves. `steerBotAlongPath`
+   * zeroes its repath timer whenever a plan comes back empty, so a wedged bot
+   * re-runs the most expensive search there is — an exhaustive one that
+   * explores its whole component before failing — every single tick, forever.
+   * Two of them on The Reach cost 12ms of a 16.7ms budget: the map was
+   * unplayable for a reason no read-only audit could see.
+   */
+  it("keeps every bot spawn somewhere the navigator can plan FROM", () => {
+    // Every wedged spawn, not just the first. Stopping at one turns a single
+    // authoring pass into as many round trips as there are mistakes.
+    const wedged: string[] = [];
+    for (const spawn of map.botSpawns) {
+      const floorId = spawn.floorId ?? OUTDOOR_FLOOR_ID;
+      let planned = 0;
+      for (let step = 0; step < 8; step += 1) {
+        const angle = (step / 8) * Math.PI * 2;
+        const goal = {
+          x: spawn.position.x + Math.cos(angle) * 60,
+          y: spawn.position.y + Math.sin(angle) * 60,
+        };
+        if (findNavigationPath(map, floorId, spawn.position, goal, BOT_RADIUS).length > 0) planned += 1;
+      }
+      if (planned === 0) wedged.push(`${spawn.id} at (${spawn.position.x}, ${spawn.position.y}) on ${floorId}`);
+    }
+    expect(
+      wedged,
+      `these bots are wedged: the navigator cannot plan a path from where they stand, in any`
+        + ` direction, so they will never move — and each re-runs a failed exhaustive search every tick`,
+    ).toEqual([]);
   });
 });
 

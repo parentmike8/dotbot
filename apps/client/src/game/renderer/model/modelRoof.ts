@@ -15,6 +15,7 @@ import {
   LIFT,
   MAT,
   occlude,
+  occludeShape,
   seam,
   shade,
   SHADOW_ALPHA,
@@ -34,6 +35,27 @@ import {
  * needs it — so it gets the same volume, light and shadow as everything else, and
  * the parapet's cast shadow on its own deck is what sells the building's height.
  */
+
+/** A closed ring, filled flat. Nothing here lifts, so there is no face to light. */
+function fillShape(g: Graphics, points: Vec2[], color: number): void {
+  if (points.length < 3) return;
+  g.poly(points.map((at) => [at.x, at.y]).flat()).fill({ color });
+}
+
+/** The axis-aligned extent of a ring, for sizing work that is then clipped to it. */
+function shapeBounds(points: Vec2[]): Rect {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const at of points) {
+    if (at.x < minX) minX = at.x;
+    if (at.y < minY) minY = at.y;
+    if (at.x > maxX) maxX = at.x;
+    if (at.y > maxY) maxY = at.y;
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
 
 /**
  * Mirrors the floor model's layer contract, because a roof is reached two ways:
@@ -480,8 +502,53 @@ export function buildRoofModel(building: Building): RoofModel {
       h: roof.h * 0.34,
     };
     const g = new Graphics();
-    occlude(aoPad, light, 8);
-    drawModelObject(g, pad, { id: `${building.id}-lantern`, kind: "skylight", ...light });
+    /**
+     * The lantern is the SHAPE OF THE HALL, not a square on top of one.
+     *
+     * A rooflight lights the span beneath it, so it is concentric with that span
+     * and follows its edges — an octagonal pavilion carries an octagonal lantern,
+     * the way every real one does. Drawn as a rect it read, in Mike's words, as a
+     * full square around a building that is a circle: the single loudest mark on
+     * the region contradicting the one form the region is built around.
+     *
+     * The glazing bars stay PARALLEL rather than radiating from the centre. Radial
+     * line work on a round object reads as a dial — the failure recorded three
+     * times over in `modelLandmarks` — and a real lantern is glazed in straight
+     * runs anyway. They are clipped to the glass, so they stop on the facets.
+     */
+    if (plan.length >= 3) {
+      const short = Math.min(roof.w, roof.h);
+      const ring = insetPolygon(plan, short * 0.33);
+      const glass = ring.length >= 3 ? insetPolygon(ring, 3) : [];
+      if (glass.length >= 3) {
+        occludeShape(aoPad, ring, 8);
+        fillShape(g, ring, MAT.steelDark.top);
+        fillShape(g, glass, V.glass);
+
+        const bars = new Graphics();
+        const bounds = shapeBounds(glass);
+        const across = bounds.w >= bounds.h;
+        const lights = Math.max(2, Math.round((across ? bounds.w : bounds.h) / 22));
+        for (let i = 1; i < lights; i += 1) {
+          const at = ((across ? bounds.w : bounds.h) / lights) * i;
+          inlay(
+            bars,
+            across
+              ? { x: bounds.x + at, y: bounds.y, w: 1.4, h: bounds.h }
+              : { x: bounds.x, y: bounds.y + at, w: bounds.w, h: 1.4 },
+            V.glassFrame,
+          );
+        }
+        const barMask = new Graphics();
+        fillShape(barMask, glass, 0xffffff);
+        bars.mask = barMask;
+        g.addChild(barMask);
+        g.addChild(bars);
+      }
+    } else {
+      occlude(aoPad, light, 8);
+      drawModelObject(g, pad, { id: `${building.id}-lantern`, kind: "skylight", ...light });
+    }
     equipment.addChild(g);
   } else if (!masonry && fp.w * fp.h >= 150_000) {
     /**

@@ -6,6 +6,12 @@
       "runtimeExecutable": "/Users/michaelparent/.nvm/versions/node/v20.20.0/bin/pnpm",
       "runtimeArgs": ["--filter", "@dotbot/client", "dev"],
       "port": 5173
+    },
+    {
+      "name": "dotbot-api",
+      "runtimeExecutable": "/Users/michaelparent/.nvm/versions/node/v20.20.0/bin/pnpm",
+      "runtimeArgs": ["--filter", "@dotbot/server", "dev"],
+      "port": 3001
     }
   ]
 }
