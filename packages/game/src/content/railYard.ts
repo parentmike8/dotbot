@@ -201,6 +201,36 @@ const yardObjects: MapObject[] = [
   // Weeds have taken the strip behind the shed; the thickets are the region saying
   // there is nothing back there.
   ...rhythm(3480, 4090, 152).map((x) => obj("thicket", x, 1600, 116, 104)),
+  ...rhythm(2500, 2960, 168).map((x) => obj("thicket", x, 1734, 124, 108)),
+
+  /**
+   * The scrap road, and the reason it exists is that the yard had two dead quarters.
+   *
+   * A depot is not empty hardstanding — the space between the sidings and the shed is where
+   * everything worn out ends up, and drawn as bare tarmac it read as an unfinished part of
+   * the map. So: a fourth road nobody clears, the wheelsets and sleepers stacked along it,
+   * and a rake of condemned wagons at the end.
+   *
+   * All of it EAST of x 3440, because the roundhouse's fan reaches x 3421 at its northern
+   * end and a bounding box does not say so. Placed by eye, six of these stood inside the
+   * shed. In an annulus the only safe test is `271 <= r <= 469` from the turntable.
+   */
+  trackRun("yard-scrap-road", 3460, 1290, W1 - 3500, GAUGE),
+  obj("bufferStop", W1 - 62, 1284, 46, GAUGE + 12, { facing: "E" }),
+  ...rhythm(3500, 3800, 216).map((x) => obj("wagon", x, 1284, 200, 64, { facing: "E" })),
+  ...rhythm(3480, 3980, 128).map((x) => obj("crateStack", x, 1400, 46, 46)),
+  ...rhythm(3520, 3980, 128).map((x) => obj("pallet", x, 1470, 54, 40)),
+  obj("dumpster", 3480, 1560, 74, 42, { solid: true }),
+  obj("dumpster", 3480, 1610, 74, 42, { solid: true }),
+  obj("drum", 3570, 1564, 30, 30),
+  obj("drum", 3604, 1564, 30, 30),
+  obj("drum", 3570, 1600, 30, 30),
+  // Clear of the COAL ROAD arrival point, 200 units west: a squad spreads 72 units east
+  // and south of where it lands, so an insertion needs a genuinely empty 120 square.
+  obj("crateStack", 2700, 980, 46, 46),
+  obj("crateStack", 2752, 984, 42, 42),
+  obj("drum", 2700, 1044, 30, 30),
+  obj("drum", 2734, 1044, 30, 30),
   // South of the shed's outer arc. At y 1690 its east end was 7 units inside the
   // roundhouse's wall, which a bounding-box check reports as fine.
   obj("log", 2620, 1724, 210, 46, { facing: "E" }),
@@ -227,7 +257,7 @@ export const railYard: RegionParts = {
   dotSpawns: [
     dot("dashOvercharge", 3000, 690),
     dot("health", 3300, 1090),
-    dot("radar", 2560, 1010),
+    dot("radar", 2500, 1160),
     dot("incognito", 4040, 900),
     dot("health", 3660, 640),
   ],

@@ -264,6 +264,19 @@ const fairObjects: MapObject[] = [
   ...rhythm(200, 820, 210).map((x) => obj("tree", x, 2620, 104, 104)),
   ...rhythm(300, 760, 230).map((x) => obj("tree", x, 2870, 92, 92)),
   obj("tree", 360, 2180, 76, 76),
+
+  /**
+   * The wood closing in from the west, on its own rhythm.
+   *
+   * The reclaimed half had a front along its south edge and a line down its west, and
+   * nothing in between — a field with a wall of vegetation round it. Growth advances in
+   * fingers, so the middle gets thickets on a coarser interval than the front, with trees
+   * between them: the front says the site ends, and these say it is being taken.
+   */
+  ...rhythm(240, 900, 208).map((x, i) => obj("thicket", x, 2760 + (i % 2) * 96, 142, 128)),
+  ...rhythm(300, 860, 224).map((x) => obj("tree", x, 2960, 98, 98)),
+  obj("log", 420, 2680, 190, 44, { facing: "E" }),
+  obj("thicket", 1000, 2900, 150, 132),
 ];
 
 export const fairground: RegionParts = {

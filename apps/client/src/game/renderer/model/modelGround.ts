@@ -22,12 +22,19 @@ import { jitter, shade } from "./tone";
 export const GRD = {
   /** Dry dust and sand. The brightest ground in the game — dry land reads hot. */
   dust: 0xd9d5cb,
-  /** Beaten earth: a trail, a clearing, a court worn back to soil. */
-  earth: 0xc9c4b9,
+  /**
+   * Beaten earth: a trail, a clearing, a court worn back to soil.
+   *
+   * A step below a public footway (0xd5d8db), because a trodden path in wild land is not
+   * cleaner than a swept pavement. At 0xc9c4b9 the temple's clearings and aprons merged
+   * with its plaza into one near-white field brighter than anything in the city, which is
+   * the wrong reading twice: a ruin should be the DARKEST region on the sheet.
+   */
+  earth: 0xbeb9ae,
   /** River gravel and shingle, cool where dust is warm. */
   gravel: 0xcfd0cd,
-  /** Cut stone, worn. Between footway and yard, because that is what it is. */
-  flag: 0xcbccc8,
+  /** Cut stone, worn. Between a service yard and a verge, because that is what it is. */
+  flag: 0xc0c1bc,
   /**
    * Wild vegetation under its own shade: leaf litter, bramble, forest floor.
    *

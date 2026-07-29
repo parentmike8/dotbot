@@ -82,10 +82,18 @@ const cityPlan: CityPlan = {
 
     // The pyramid's own apron, joining its two arches to the plaza and wrapping the
     // blind north face so the tomb entrance has an approach at all.
+    /**
+     * A TIGHT wrap, not a broad apron.
+     *
+     * At 110 units all round, this plus the observatory's ground plus the cenote's edge
+     * merged with the plaza into one continuous pale field covering half the region — and
+     * a ruin whose stone reads as a field is a building site. The stone has to be ISLANDS
+     * in the growth. 60 units is enough to give both arches an approach and nothing more.
+     */
     {
       id: "tmp-pyramid-apron",
       kind: "court",
-      points: boxPoly(PYRAMID.x - 110, PYRAMID.y - 130, PYRAMID.w + 220, PYRAMID.h + 160),
+      points: boxPoly(PYRAMID.x - 60, PYRAMID.y - 90, PYRAMID.w + 120, PYRAMID.h + 110),
     },
 
     // The ball court's floor: the alley and its two end zones, in one I-shaped ring.
@@ -119,7 +127,7 @@ const cityPlan: CityPlan = {
     },
 
     // The observatory's own ground, reaching its north door and the plaza.
-    { id: "tmp-obs-ground", kind: "court", points: blobPoly(OBSERVATORY.x, OBSERVATORY.y, OBSERVATORY.r + 130, OBSERVATORY.r + 120, "obs", 0.14, 19) },
+    { id: "tmp-obs-ground", kind: "court", points: blobPoly(OBSERVATORY.x, OBSERVATORY.y, OBSERVATORY.r + 74, OBSERVATORY.r + 68, "obs", 0.16, 19) },
     {
       id: "tmp-obs-walk",
       kind: "clearing",
@@ -170,7 +178,7 @@ const cityPlan: CityPlan = {
      * what showed was a stone rim with dry ground in it. Regions draw in order and the
      * audit reads them in the same order, so the thing that should be on top goes last.
      */
-    { id: "tmp-cenote-ground", kind: "clearing", points: blobPoly(CENOTE.x, CENOTE.y, CENOTE.rx + 110, CENOTE.ry + 100, "cengrd", 0.24, 19) },
+    { id: "tmp-cenote-ground", kind: "clearing", points: blobPoly(CENOTE.x, CENOTE.y, CENOTE.rx + 68, CENOTE.ry + 62, "cengrd", 0.26, 19) },
     { id: "tmp-cenote", kind: "water", points: blobPoly(CENOTE.x, CENOTE.y, CENOTE.rx, CENOTE.ry, "cenote", 0.2, 21) },
 
     /**
@@ -307,11 +315,14 @@ const templeObjects: MapObject[] = [
    * tree growing out of a ceremonial court is four hundred years of nobody sweeping it,
    * and it is also the only cover on the plaza.
    */
-  obj("tree", 3140, 2900, 78, 78),
-  obj("tree", 3640, 2960, 84, 84),
-  obj("tree", 2820, 2700, 70, 70),
-  obj("tree", 3980, 2500, 76, 76),
-  obj("tree", 2560, 2260, 72, 72),
+  obj("tree", 3140, 2900, 104, 104),
+  obj("tree", 3640, 2960, 112, 112),
+  obj("tree", 2820, 2700, 96, 96),
+  obj("tree", 3980, 2500, 100, 100),
+  obj("tree", 2560, 2260, 96, 96),
+  obj("tree", 3020, 2540, 88, 88),
+  obj("tree", 3460, 3020, 92, 92),
+  obj("tree", 2900, 3040, 86, 86),
 
   // Fallen masonry: boulders that came off the terraces, on the pyramid's flanks.
   obj("boulder", PYRAMID.x - 96, PYRAMID.y + 300, 92, 84),
