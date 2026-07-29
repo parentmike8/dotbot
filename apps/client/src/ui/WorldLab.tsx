@@ -62,6 +62,14 @@ const FRAMES: Array<{ id: string; title: string; rect: Rect; floorId?: string }>
   { id: "temple-crypt", title: "The crypt (B1)", rect: { x: 2900, y: 1740, w: 800, h: 820 }, floorId: "temple:B1" },
   { id: "temple-undercroft", title: "The undercroft (B2)", rect: { x: 2560, y: 2040, w: 1380, h: 1070 }, floorId: "temple:B2" },
   { id: "temple-summit", title: "The summit (ROOF)", rect: { x: 2900, y: 1740, w: 800, h: 820 }, floorId: "temple:ROOF" },
+  /**
+   * The cenote, close in — the world's one body of water.
+   *
+   * A still frame cannot show the surface DRIFTING, and that is worth saying rather than
+   * pretending: this is here to check the water's banks and highlights are intact, and the
+   * motion has to be watched in a run. `modelWater.test.ts` covers the drift itself.
+   */
+  { id: "cenote", title: "The cenote", rect: { x: 3560, y: 1800, w: 700, h: 640 } },
 ];
 
 export function WorldLab() {

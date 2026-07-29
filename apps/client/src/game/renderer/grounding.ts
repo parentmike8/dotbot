@@ -177,6 +177,58 @@ export function drawGroundShadow(
 }
 
 /**
+ * How a body meets WATER, which is not how it meets ground.
+ *
+ * Drawn instead of `drawGroundShadow`, never as well as it, and that substitution is the
+ * whole point: a cast shadow is a promise that there is a floor under the thing casting it,
+ * and a bot standing in a pool is not standing on the pool. Leaving the shadow in and
+ * adding ripples on top was the first attempt and it read as a bot hovering over water.
+ *
+ * What replaces it is what a body in water actually does — it pushes some aside. A darker
+ * ring hugging the silhouette is the displaced water, and a single bright arc on the
+ * north-west is the light catching the meniscus, on the same vector as every other
+ * highlight in the world.
+ *
+ * The BODY'S OWN COLOUR is not touched. Squad cyan and rival red are the whole chromatic
+ * budget of the game and the only way to tell a friend from an enemy at a glance; dimming a
+ * wading bot would buy a little depth with the one thing that must never get harder to
+ * read. The cue is entirely in what surrounds it.
+ *
+ * `phase` drifts the ripple so a bot standing still in water is not a bot standing still on
+ * a decal — it comes off the client clock like every other ambient motion.
+ */
+export function drawWaterline(
+  g: Graphics,
+  at: Vec2,
+  body: SilhouetteBody,
+  phase: number,
+): void {
+  // Displaced water: two soft steps out from the silhouette, no offset. Water pushed aside
+  // sits around a body rather than to one side of it, so this must NOT follow the sun.
+  const breathe = 1 + Math.sin(phase) * 0.06;
+  for (const [grow, alpha] of [[3.5, 0.2], [8.5 * breathe, 0.13], [14 * breathe, 0.07]] as const) {
+    traceSilhouette(g, at, silhouetteCells(body, (reach) => reach + grow));
+    g.fill({ color: 0x000000, alpha });
+  }
+
+  /**
+   * The meniscus: ONE bright arc, on the lit side. An arc rather than a ring, because a
+   * closed bright line at a body's edge is the plate ghost again — what says surface tension
+   * is that the highlight is BROKEN, the same rule the water's own streaks follow.
+   *
+   * There were two. The second trailed on the dark side, and the dark side is exactly where
+   * the sun throws a shadow — so the one mark meant to distinguish water from ground was
+   * sitting where the ground cue goes, and read as a shadow fragment. Caught by the test
+   * asserting nothing here goes south-east, which is the whole claim of the function.
+   */
+  // The widest the body reaches in any direction, so the meniscus never cuts into it.
+  const lip = Math.max(...silhouetteCells(body).map((cell) => cell.radius)) + 5;
+  const lit = Math.atan2(-SUN.y, -SUN.x);
+  g.arc(at.x, at.y, lip * breathe, lit - 0.95, lit + 0.95)
+    .stroke({ color: 0xffffff, alpha: 0.36, width: 1.7, cap: "round" });
+}
+
+/**
  * Where the catch light sits, as a share of the radius.
  *
  * Up and to the left: the same north-west light the shadow is cast by, within

@@ -156,31 +156,41 @@ export function drawWater(g: Graphics, points: Vec2[], id: string, rim = 7): voi
   fillPoly(g, shift(insetPolygon(points, rim * 0.5), toward, rim * 1.15), shade(GRD.shallow, 1.14));
   fillPoly(g, shift(insetPolygon(points, rim * 1.6), toward, rim * 0.9), GRD.shallow);
   fillPoly(g, insetPolygon(points, rim * 3.8), GRD.deep);
+}
 
-  /**
-   * The resting surface: a few short, curved, sparse streaks.
-   *
-   * Short and broken because long straight highlights down the middle of a dark
-   * channel are lane markings — which is precisely what the first render of a creek
-   * looked like. What separates water from asphalt is that the highlight is broken,
-   * not that it is bright.
-   */
-  const held = insetPolygon(points, rim * 5);
-  if (held.length >= 3) {
-    const bounds = polygonBounds(held);
-    for (let i = 0; i < 9; i += 1) {
-      const at = {
-        x: bounds.x + jitter(id, i + 3) * bounds.w,
-        y: bounds.y + jitter(id, i + 61) * bounds.h,
-      };
-      if (!polygonContains(held, at)) continue;
-      const w = 14 + jitter(id, i + 24) * 30;
-      const lean = (jitter(id, i + 44) - 0.5) * 9;
-      g.moveTo(at.x - w / 2, at.y + lean * 0.4)
-        .quadraticCurveTo(at.x, at.y - lean, at.x + w / 2, at.y + lean * 0.4)
-        .stroke({ color: shade(GRD.deep, 1.62), width: 1.5, alpha: 0.28, cap: "round" });
-    }
+/**
+ * The surface highlights, as their OWN drawing so they can move.
+ *
+ * Short, curved, sparse streaks. Short and broken because long straight highlights down
+ * the middle of a dark channel are lane markings — which is precisely what the first
+ * render of a creek looked like. What separates water from asphalt is that the highlight
+ * is broken, not that it is bright.
+ *
+ * `salt` gives a second, differently-placed set from the same body, so two layers can
+ * drift against each other. `held` is the polygon they are allowed to sit in; the caller
+ * masks to it as well, because a moving layer needs a hard edge and an inset guess is not
+ * one.
+ */
+export function drawWaterStreaks(g: Graphics, held: Vec2[], id: string, salt: number, count = 9): void {
+  if (held.length < 3) return;
+  const bounds = polygonBounds(held);
+  for (let i = 0; i < count; i += 1) {
+    const at = {
+      x: bounds.x + jitter(id, i + 3 + salt) * bounds.w,
+      y: bounds.y + jitter(id, i + 61 + salt) * bounds.h,
+    };
+    if (!polygonContains(held, at)) continue;
+    const w = 14 + jitter(id, i + 24 + salt) * 30;
+    const lean = (jitter(id, i + 44 + salt) - 0.5) * 9;
+    g.moveTo(at.x - w / 2, at.y + lean * 0.4)
+      .quadraticCurveTo(at.x, at.y - lean, at.x + w / 2, at.y + lean * 0.4)
+      .stroke({ color: shade(GRD.deep, 1.62), width: 1.5, alpha: 0.28, cap: "round" });
   }
+}
+
+/** The ring the streaks live inside, and the shape a moving layer is masked to. */
+export function waterHeld(points: Vec2[], rim = 7): Vec2[] {
+  return insetPolygon(points, rim * 5);
 }
 
 function shift(points: Vec2[], dir: Vec2, by: number): Vec2[] {

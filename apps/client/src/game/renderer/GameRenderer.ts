@@ -1,4 +1,4 @@
-import { Application, Container, Graphics, Text } from "pixi.js";
+import { Application, Container, FillGradient, Graphics, Text } from "pixi.js";
 import { clamp, clamp01, colorToNumber, normalize } from "@dotbot/game/math";
 import {
   buildingContaining,
@@ -32,7 +32,7 @@ import {
 } from "./impactPrediction";
 import { drawDotDisc, drawDotGloss, drawDotMark } from "./dotArt";
 import { edgeArrow, squadArrowTargets, type Camera } from "./edgeArrow";
-import { drawGroundShadow } from "./grounding";
+import { drawGroundShadow, drawWaterline } from "./grounding";
 import { markAge, type LiveMark } from "../pings";
 import {
   drawBareEdges,
@@ -46,6 +46,9 @@ import {
 import { DOT_COLOR, INK, RIVAL_RED, SQUAD_CYAN, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
 import { redrawFloorObjects } from "./model/modelFloor";
+import { driftWater } from "./model/modelWater";
+import { GRD } from "./model/modelGround";
+import { isInWater } from "@dotbot/game/water";
 
 const AMBIENT_GREY = 0x868e96;
 
@@ -204,6 +207,24 @@ export class GameRenderer {
   private readonly signDetail: Text;
   /** Viewport-space markers that must remain legible beyond the camera. */
   private readonly screenGfx = new Graphics();
+  /**
+   * The wash over the whole view while the viewer is standing in water.
+   *
+   * Its own layer under `screenGfx`, so it can never come between the player and an edge
+   * arrow — those point at a squadmate off screen and are the one screen-space mark that
+   * must survive anything drawn over the world.
+   *
+   * Both children are built ONCE per viewport size and only their container's alpha moves,
+   * because the vignette is a gradient and building a gradient allocates a texture. A
+   * per-frame `new FillGradient` would have been a texture upload every frame for an effect
+   * whose only variable is how strong it is.
+   */
+  private readonly wadeLayer = new Container();
+  private readonly wadeTint = new Graphics();
+  private readonly wadeVignette = new Graphics();
+  private wadeLevel = 0;
+  private wadeBuiltFor = "";
+  private lastWadeAt = performance.now();
 
   private map: MapDocument;
   private viewport = { width: 1, height: 1 };
@@ -243,7 +264,9 @@ export class GameRenderer {
     this.signDetail = makeWorldLabel(CAPTION.signDetail);
     this.signLayer.addChild(this.signTitle, this.signDetail);
     this.signLayer.visible = false;
-    this.app.stage.addChild(this.worldLayer, this.screenGfx);
+    this.wadeLayer.addChild(this.wadeTint, this.wadeVignette);
+    this.wadeLayer.alpha = 0;
+    this.app.stage.addChild(this.worldLayer, this.wadeLayer, this.screenGfx);
     this.maskedBotsLayer.sortableChildren = true;
     this.dynamicBotsLayer.sortableChildren = true;
     this.maskedLayer.addChild(this.maskedGfx, this.maskedBotsLayer, this.visionMaskGfx);
@@ -451,6 +474,10 @@ export class GameRenderer {
     this.lastCamera = camera;
     this.updateRoofParallax(camera.center, player?.floorId);
     this.updateObjectParallax(camera.center, player?.floorId);
+    // Ambient, cosmetic, off the client clock: see `modelWater`. One transform per layer
+    // per body, nothing redrawn — the same shape as the parallax passes above it.
+    driftWater(this.art.water, nowMs, this.reducedMotion);
+    this.updateWading(player ?? null, nowMs);
 
     const playerContext = player ? this.contextKey(player.floorId, player.position) : "outdoor:street";
     this.updateVisibility(player ?? null, playerContext);
@@ -753,6 +780,80 @@ export class GameRenderer {
       layer.poly(flat).cut();
     }
 
+  }
+
+  /**
+   * WADING: how much the view is under water, 0..1, and the ramp that gets it there.
+   *
+   * Two things are wanted and they are separate. The BOT has to read as being in the water
+   * — that is `drawWaterline`, drawn instead of a cast shadow. The VIEW has to change a
+   * little — that is this: a wash of the water's own tone plus a vignette, so the edges of
+   * the screen close in slightly and it reads as being *in* something rather than as a
+   * colour filter laid over everything.
+   *
+   * RAMPED, NOT SWITCHED, and it is the third time that lesson has been paid for here. The
+   * fog disc stepped and flickered because a threshold was a threshold; the peek lifts a
+   * roof over its last 200 units for the same reason. A bot walking the rim of a cenote
+   * crosses the water's edge repeatedly in a second, and a boolean would strobe the whole
+   * screen. Faster in than out, because arriving should register and leaving should settle.
+   *
+   * `reducedMotion` does NOT turn this off. It is not motion — nothing here moves, it is a
+   * tint whose strength changes — and it carries a fact about the world the player needs.
+   */
+  private updateWading(player: DotBotEntity | null, nowMs: number): void {
+    const elapsed = Math.max(0, Math.min(120, nowMs - this.lastWadeAt));
+    this.lastWadeAt = nowMs;
+
+    const wading = player !== null
+      && physicsFloorId(this.map, player.floorId) === OUTDOOR_FLOOR_ID
+      && isInWater(this.map, this.viewerDisplayPosition(player));
+    const target = wading ? 1 : 0;
+    const alpha = 1 - Math.exp(-elapsed / (wading ? 150 : 240));
+    this.wadeLevel += (target - this.wadeLevel) * alpha;
+    if (this.wadeLevel < 0.004) this.wadeLevel = 0;
+
+    this.wadeLayer.alpha = this.wadeLevel;
+    this.wadeLayer.visible = this.wadeLevel > 0;
+    if (this.wadeLevel > 0) this.buildWadeWash();
+  }
+
+  /** Rebuilt only when the viewport changes size. See the note on `wadeLayer`. */
+  private buildWadeWash(): void {
+    const { width, height } = this.viewport;
+    const key = `${Math.round(width)}x${Math.round(height)}`;
+    if (this.wadeBuiltFor === key) return;
+    this.wadeBuiltFor = key;
+
+    this.wadeTint.clear();
+    this.wadeTint.rect(0, 0, width, height).fill({ color: GRD.deep, alpha: 0.2 });
+
+    /**
+     * The vignette: transparent in the middle, the water's tone at the edges.
+     *
+     * One radial gradient rather than a stack of nested frames. The alternative was four
+     * rings drawn as sixteen rects, which is both more code and a visibly stepped falloff —
+     * the same defect the shadow ramp needed nine layers to avoid.
+     */
+    this.wadeVignette.clear();
+    this.wadeVignette.rect(0, 0, width, height).fill(new FillGradient({
+      type: "radial",
+      center: { x: 0.5, y: 0.5 },
+      innerRadius: 0.1,
+      outerCenter: { x: 0.5, y: 0.5 },
+      outerRadius: 0.72,
+      textureSpace: "local",
+      colorStops: [
+        { offset: 0, color: "rgba(52, 60, 66, 0)" },
+        { offset: 0.55, color: "rgba(52, 60, 66, 0.12)" },
+        { offset: 1, color: "rgba(52, 60, 66, 0.46)" },
+      ],
+    }));
+  }
+
+  /** True when this bot is standing in open water on the street plane. */
+  private inWater(bot: DotBotEntity): boolean {
+    return physicsFloorId(this.map, bot.floorId) === OUTDOOR_FLOOR_ID
+      && isInWater(this.map, bot.position);
   }
 
   /**
@@ -1449,7 +1550,15 @@ export class GameRenderer {
     }
 
     const coreRadius = bot.radius * CORE_REACH;
-    drawGroundShadow(g, bot.position, bot, { spin });
+    /**
+     * A waterline INSTEAD of a cast shadow, never as well as it. A shadow promises a floor
+     * under the thing casting it, and a bot in a pool is not standing on the pool.
+     */
+    if (this.inWater(bot)) {
+      drawWaterline(g, bot.position, bot, this.lastTimeMs / 520 + bot.position.x * 0.01);
+    } else {
+      drawGroundShadow(g, bot.position, bot, { spin });
+    }
     drawPlates(g, bot, color, serrated);
     drawBodyOutline(g, bot);
     // The catch light comes with it: one function owns what a core looks like, so

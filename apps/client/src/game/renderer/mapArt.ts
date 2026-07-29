@@ -11,6 +11,7 @@ import type {
 import { buildFloorModel, drawStair, drawStairHead } from "./model/modelFloor";
 import { buildOutdoorModel } from "./model/modelOutdoor";
 import { buildRoofModel } from "./model/modelRoof";
+import { buildWaterSurfaces, type WaterSurface } from "./model/modelWater";
 import { SHADOW_ALPHA, V, type ShadowPad } from "./model/tone";
 import { drawDotDisc } from "./dotArt";
 import { DOT_COLOR, INK, OVERLAY_WHITE, WEIGHT } from "./style";
@@ -107,6 +108,8 @@ export type MapArt = {
   buildingsLayer: Container;
   buildings: BuildingArt[];
   labels: Container;
+  /** Every body of water's drifting surface. The renderer moves these each frame. */
+  water: WaterSurface[];
 };
 
 const LABEL_FONT = "system-ui, -apple-system, Segoe UI, sans-serif";
@@ -127,7 +130,13 @@ export function buildMapArt(map: MapDocument): MapArt {
   const ground = new Container();
   const outdoorDetail = new Container();
   const outdoorObjects = new Container();
-  ground.addChild(outdoors.ground);
+  /**
+   * The water's moving highlights sit on the GROUND, immediately over the still body it
+   * belongs to and under everything that stands in it — so a bot wading is drawn on top of
+   * the surface rather than under a streak sliding across its face.
+   */
+  const water = buildWaterSurfaces(map);
+  ground.addChild(outdoors.ground, water.view);
   outdoorDetail.addChild(outdoors.detail);
   outdoorObjects.addChild(outdoors.objects);
 
@@ -139,7 +148,7 @@ export function buildMapArt(map: MapDocument): MapArt {
 
   return {
     root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground,
-    buildingsLayer, buildings, labels,
+    buildingsLayer, buildings, labels, water: water.surfaces,
   };
 }
 

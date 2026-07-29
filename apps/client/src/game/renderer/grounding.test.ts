@@ -7,6 +7,7 @@ import {
   SHADOW_PENUMBRA,
   drawCatchLight,
   drawGroundShadow,
+  drawWaterline,
   silhouetteCells,
   type SilhouetteBody,
 } from "./grounding";
@@ -236,5 +237,74 @@ describe("the shadow's declared allowance", () => {
     const furthest = Math.max(...g.points.map((point) => Math.hypot(point.x, point.y)));
     // 19.68 of body (24 × 0.82) plus the whole allowance.
     expect(furthest).toBeCloseTo(RADIUS * 0.82 + SHADOW_ALLOWANCE, 1);
+  });
+});
+
+/**
+ * A body in water, which is not a body on the ground with ripples added.
+ *
+ * The substantive claim being pinned here is the OFFSET, because it is the one thing that
+ * would look plausible while being wrong. A cast shadow is thrown along the sun vector — it
+ * lands to one side, which is what makes it a shadow. Displaced water sits AROUND a body,
+ * so the waterline must be concentric; drawn on the sun vector it reads as a shadow that
+ * happens to be a funny colour, which was the first attempt.
+ */
+describe("a body standing in water", () => {
+  it("puts nothing where the sun would throw a shadow", () => {
+    const g = recorder();
+    drawWaterline(g, { x: 0, y: 0 }, bot([1, 1, 1, 1]), 0);
+
+    expect(g.groups.length).toBeGreaterThan(0);
+    for (const group of g.groups) {
+      const at = place(group);
+      /**
+       * The sun in this language is north-west and high, so it throws SOUTH-EAST — every
+       * step of `drawGroundShadow` marches down and to the right of the body. Nothing the
+       * waterline draws may go that way: the displacement rings are concentric, and the two
+       * meniscus arcs sit on the LIT side, which is the opposite corner. Asserted as a
+       * direction rather than as a distance because the arcs are deliberately partial, so
+       * their own bounding boxes are legitimately off-centre.
+       */
+      expect(at.x, `mark at ${at.x.toFixed(2)},${at.y.toFixed(2)} is east of the body`).toBeLessThan(1.5);
+      expect(at.y, `mark at ${at.x.toFixed(2)},${at.y.toFixed(2)} is south of the body`).toBeLessThan(1.5);
+    }
+  });
+
+  it("is what a ground shadow is not: the shadow does go south-east", () => {
+    const g = recorder();
+    drawGroundShadow(g, { x: 0, y: 0 }, bot([1, 1, 1, 1]));
+    const last = place(g.groups[g.groups.length - 1]);
+    expect(last.x).toBeGreaterThan(1.5);
+    expect(last.y).toBeGreaterThan(1.5);
+  });
+
+  it("reaches past the body it surrounds, so the meniscus never cuts into it", () => {
+    const body = bot([1, 1, 1, 1]);
+    const widest = Math.max(...silhouetteCells(body).map((cell) => cell.radius));
+    const g = recorder();
+    drawWaterline(g, { x: 0, y: 0 }, body, 0);
+    const furthest = Math.max(...g.points.map((point) => Math.hypot(point.x, point.y)));
+    expect(furthest).toBeGreaterThan(widest);
+  });
+
+  /** Ambient, so it comes off the clock: standing still in water is not standing on a decal. */
+  it("moves with its phase", () => {
+    const still = recorder();
+    const later = recorder();
+    drawWaterline(still, { x: 0, y: 0 }, bot([1, 1, 1, 1]), 0);
+    drawWaterline(later, { x: 0, y: 0 }, bot([1, 1, 1, 1]), Math.PI / 2);
+    const reach = (g: { points: Vec2[] }) => Math.max(...g.points.map((point) => Math.hypot(point.x, point.y)));
+    expect(reach(later)).not.toBeCloseTo(reach(still), 3);
+  });
+
+  /** A stripped bot is a third the size of a plated one; the water has to follow the body. */
+  it("follows the silhouette rather than a circle", () => {
+    const plated = recorder();
+    const bare = recorder();
+    drawWaterline(plated, { x: 0, y: 0 }, bot([1, 1, 1, 1]), 0);
+    drawWaterline(bare, { x: 0, y: 0 }, bot([0, 0, 0, 0]), 0);
+    const reach = (g: { points: Vec2[] }) => Math.max(...g.points.map((point) => Math.hypot(point.x, point.y)));
+    expect(reach(bare)).toBeLessThan(reach(plated));
+    expect(RADIUS * CORE_REACH).toBeLessThan(RADIUS * PLATE_REACH);
   });
 });
