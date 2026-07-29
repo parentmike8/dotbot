@@ -112,7 +112,17 @@ const authoredWorld: MapDocument = {
   outdoor: outdoor(),
   buildings: collect((region) => region.buildings),
   extractionPoints: collect((region) => region.extractionPoints),
-  insertionPoints: collect((region) => region.insertionPoints),
+  /**
+   * Arrival points, each stamped with the name of the region it belongs to.
+   *
+   * The one place in this file that adds something rather than concatenating. A drop needs
+   * to say WHERE it is so the spawn picker can group twelve of them into four places, and
+   * the ids cannot say it — the fair's and the temple's are prefixed and Downtown's are
+   * `nw-corner`, `west-gate`, `se-court`. Stamping it here means a fifth region is grouped
+   * correctly the moment it is added, with no edit to the UI and none to its own file.
+   */
+  insertionPoints: REGIONS.flatMap((region) =>
+    (region.insertionPoints ?? []).map((point) => ({ ...point, area: region.name }))),
   botSpawns: collect((region) => region.botSpawns),
 };
 

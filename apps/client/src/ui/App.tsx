@@ -1,15 +1,15 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { MapDocument } from "@dotbot/game/types";
 import { defaultGameConfig } from "@dotbot/game";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../game/useDotBotGame";
 import { ManifestScreen } from "./ManifestScreen";
 import { FeedbackControls } from "./FeedbackControls";
-import { selectMapDocument } from "../mapSelection";
+import { arrivalGroups, selectBaseMap, spawnAt } from "../mapSelection";
 import { BodyPromptView, DownedSelfView } from "./downed/DownedPrompts";
 import { useDownedPrompts } from "./downed/useDownedPrompts";
 import {
-  BayBank, DebugPanel, FloorRail, HoldPicker, PingPicker, RunReadout, SettingsPanel, TouchControls,
+  BayBank, DebugPanel, FloorRail, HoldPicker, PingPicker, RunReadout, SettingsPanel, SpawnPicker, TouchControls,
 } from "./hud/Overlay";
 import { hudSkinClass } from "./hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "./hud/hud";
@@ -21,11 +21,55 @@ export function App() {
   // Remounting the session tears down and rebuilds the simulation and
   // renderer — a full fresh run without reloading the page.
   const [session, setSession] = useState(0);
-  const map = useMemo(() => selectMapDocument(window.location.search), []);
-  return <GameSession key={session} map={map} onRestart={() => setSession((run) => run + 1)} />;
+  /**
+   * Which arrival point the next run starts at, or null for the map's own spawn.
+   *
+   * Seeded from `?at=` so a URL and the picker are the same setting rather than two, and
+   * held HERE rather than in `GameSession` on purpose: it has to outlive the remount that
+   * restarting performs, and `GameSession` is the thing being remounted.
+   */
+  const [spawnPointId, setSpawnPointId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get("at"),
+  );
+  const [picking, setPicking] = useState(false);
+  const base = useMemo(() => selectBaseMap(window.location.search), []);
+  const map = useMemo(() => spawnAt(base, spawnPointId), [base, spawnPointId]);
+  const groups = useMemo(() => arrivalGroups(base), [base]);
+
+  const start = (pointId: string | null): void => {
+    setSpawnPointId(pointId);
+    setPicking(false);
+    setSession((run) => run + 1);
+  };
+
+  /**
+   * Handed DOWN into the session rather than rendered beside it, so it lands inside
+   * `app-shell` and inherits the HUD skin class. Rendered as a sibling it was the one
+   * panel in the game that ignored the skin.
+   */
+  const picker = picking ? (
+    <SpawnPicker
+      groups={groups}
+      current={spawnPointId}
+      onChoose={start}
+      onDefault={() => start(null)}
+      onClose={() => setPicking(false)}
+      canCancel
+    />
+  ) : null;
+
+  return <GameSession key={session} map={map} onRestart={() => setPicking(true)} spawnPicker={picker} />;
 }
 
-function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRestart: () => void }) {
+function GameSession({
+  map: requestedMap,
+  onRestart,
+  spawnPicker,
+}: {
+  map: MapDocument;
+  onRestart: () => void;
+  spawnPicker: ReactNode;
+}) {
   const {
     hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, settingsVisible, toggleSettings,
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, leaveRun, selectDownedVerb, plea,
@@ -177,6 +221,10 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
           onNewRun={onRestart}
         />
       ) : null}
+
+      {/* Last, so it sits over the manifest: "new run" from the end-of-run screen is the
+          same action as Restart and goes through the same choice. */}
+      {spawnPicker}
     </main>
   );
 }

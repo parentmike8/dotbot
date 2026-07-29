@@ -635,6 +635,19 @@ export type InsertionPoint = {
   position: Vec2;
   /** Defaults to the shared outdoor physics floor. */
   floorId?: string;
+  /**
+   * Which region of the world this drop is in, by its display name.
+   *
+   * DERIVED at composition, never authored — `world.ts` stamps each region's own name as
+   * it collects, so a region added later carries it with no edit anywhere. It exists
+   * because the spawn picker needs to group twelve drops into four places, and the ids
+   * cannot do it: the fair's and the temple's happen to be prefixed (`fair-`, `tmp-`) and
+   * Downtown's are `nw-corner`, `west-gate`, `se-court` — six points with six prefixes.
+   * Grouping on a naming accident would have worked for three regions out of four.
+   *
+   * Absent on a single-region map, where there is nothing to group.
+   */
+  area?: string;
 };
 
 export type OutdoorPlan = {

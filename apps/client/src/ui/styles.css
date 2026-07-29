@@ -1587,6 +1587,121 @@ button {
 }
 
 /* ---------------------------------------------------------------------------
+   The spawn picker — where the next run starts.
+   Above the manifest (z 20), because "new run" from the end-of-run screen opens it.
+   --------------------------------------------------------------------------- */
+
+.spawn-scrim {
+  position: absolute;
+  z-index: 22;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.8);
+  pointer-events: auto;
+  backdrop-filter: blur(3px);
+}
+
+.spawn-picker {
+  width: min(460px, 100%);
+  max-height: 100%;
+  display: grid;
+  /* The list scrolls, the header and the default row do not: twelve drops fit a laptop
+     and will not fit a phone, and a picker whose confirm row scrolls off is a dead end. */
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.spawn-picker > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--hairline);
+  font: 800 9px/1 var(--font-mono);
+  letter-spacing: .18em;
+  text-transform: uppercase;
+}
+
+.spawn-picker > header strong { font-size: 13px; letter-spacing: .12em; }
+
+.spawn-picker > header button {
+  border: 0;
+  background: transparent;
+  color: var(--muted-strong);
+  font: 800 14px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.spawn-picker > header button:hover { color: var(--ink); }
+
+.spawn-groups {
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.spawn-groups section { padding: 8px 16px 12px; }
+
+/* The region's name, as a quiet rule rather than a heading with weight: the place names
+   under it are the thing being chosen, and two levels of loud type flattens both. */
+.spawn-groups h3 {
+  margin: 0 0 7px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--muted-strong);
+  font: 800 8px/1 var(--font-mono);
+  letter-spacing: .2em;
+  text-transform: uppercase;
+}
+
+.spawn-groups section > div {
+  display: grid;
+  /* Fills the row and wraps by itself, so four drops in one region and one in another
+     both look deliberate. A fixed column count only ever suits one region. */
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 6px;
+}
+
+.spawn-groups button {
+  padding: 10px 11px;
+  border: 1px solid var(--hairline);
+  background: var(--paper);
+  color: var(--ink);
+  font: 800 10px/1.2 var(--font-mono);
+  letter-spacing: .1em;
+  text-align: left;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.spawn-groups button:hover { border-color: var(--ink); }
+
+/* Where the last run started, so restarting in the same place is one glance not a memory. */
+.spawn-groups button.is-current {
+  border-color: var(--ink);
+  box-shadow: inset 0 -3px var(--ink);
+}
+
+.spawn-default {
+  width: 100%;
+  padding: 14px 16px;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  background: var(--paper);
+  color: var(--muted-strong);
+  font: 900 10px/1 var(--font-mono);
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.spawn-default:hover { background: var(--ink); color: var(--paper); }
+
+/* ---------------------------------------------------------------------------
    `?hud` — the overlay against fixed states, with no game running.
    Dev surface: the stage stands in for the canvas the prompts normally sit on.
    --------------------------------------------------------------------------- */

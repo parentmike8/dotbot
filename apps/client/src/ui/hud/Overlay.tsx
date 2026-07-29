@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from "react";
 import type { DotBotEntity, GameConfig, GameSnapshot, Item, PingKind } from "@dotbot/game/types";
 import { PING_KINDS } from "@dotbot/game/types";
 import { arrivalSparkline, type NetworkDebugStats } from "../../game/session/netgraph";
+import type { ArrivalGroup } from "../../mapSelection";
 import { itemFamily, itemGlyph, itemLabel } from "../items";
 import { bayStrip, formatRunClock, type FloorColumn } from "./hud";
 import { PING_LABEL } from "../../game/pings";
@@ -268,6 +269,89 @@ export function SettingsPanel({ onClose, children }: { onClose: () => void; chil
       {children}
       <small>Press L to close</small>
     </aside>
+  );
+}
+
+/**
+ * Where to start the next run: every arrival point on the map, grouped by region.
+ *
+ * It sits in front of Restart rather than beside it, and that is the design. A 4200 x 3400
+ * world has twelve authored drops in four regions, and until now a run always began at the
+ * one authored spawn in the city — so testing anything else meant either a two-minute walk
+ * or an `?at=` reload. `?at=` still works and this is the same mechanism with a face on it.
+ *
+ * Two decisions worth keeping written down:
+ *
+ *  - IT IS A GATE, so Restart no longer destroys a run on one misclick. `onClose` keeps the
+ *    run you are in. That is a behaviour change and it is strictly the safer one.
+ *  - ONE ENTRY PER PLACE, in AUTHORED order rather than alphabetical. The regions are
+ *    authored in the order the world reads — city, depot, fair, ruin — and a list of place
+ *    names is the cheapest possible way to carry that gradient. Sorting throws it away.
+ *
+ * The names are the map's own (`CAR PARK`, `END OF LINE`, `COAL ROAD`), which is the same
+ * rule the rest of the HUD follows: the world already named this ground, so the UI does not
+ * get to rename it.
+ */
+export function SpawnPicker({
+  groups,
+  current,
+  onChoose,
+  onDefault,
+  onClose,
+  canCancel,
+}: {
+  groups: ArrivalGroup[];
+  current: string | null;
+  onChoose: (pointId: string) => void;
+  onDefault: () => void;
+  onClose: () => void;
+  canCancel: boolean;
+}) {
+  // Escape keeps the current run, which is the whole point of the picker being a gate.
+  useEffect(() => {
+    if (!canCancel) return undefined;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canCancel, onClose]);
+
+  return (
+    <div className="spawn-scrim" role="presentation">
+      <aside className="spawn-picker" aria-label="Choose where to start">
+        <header>
+          <strong>Start where?</strong>
+          {canCancel ? (
+            <button type="button" onClick={onClose} aria-label="Keep playing this run">×</button>
+          ) : null}
+        </header>
+        <div className="spawn-groups">
+          {groups.map((group, index) => (
+            <section key={group.area ?? `area-${index}`}>
+              {group.area ? <h3>{group.area}</h3> : null}
+              <div>
+                {group.points.map((point) => (
+                  <button
+                    type="button"
+                    key={point.id}
+                    className={point.id === current ? "is-current" : ""}
+                    onClick={() => onChoose(point.id)}
+                  >
+                    {point.name}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+        {/* The authored spawn, kept as its own row: it is not an arrival point, so without
+            this the one place the map itself chose to start you becomes unreachable. */}
+        <button type="button" className="spawn-default" onClick={onDefault}>
+          {current === null ? "↻ Start again where the map starts you" : "Start where the map starts you"}
+        </button>
+      </aside>
+    </div>
   );
 }
 
