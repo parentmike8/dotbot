@@ -1,4 +1,4 @@
-import type { HitResult } from "@dotbot/game/types";
+import type { HitResult, PingKind } from "@dotbot/game/types";
 
 export type FeedbackPreferences = {
   sound: boolean;
@@ -27,7 +27,8 @@ type ImpactFeedbackOptions = {
 
 type PendingAudioCue =
   | { kind: "impact"; result: HitResult; pan: number; intensity: number; requestedAt: number }
-  | { kind: "dash"; requestedAt: number };
+  | { kind: "dash"; requestedAt: number }
+  | { kind: "ping"; ping: PingKind; pan: number; requestedAt: number };
 
 const storageKey = "dotbot.feedback.v1";
 const pendingCueLifetimeMs = 220;
@@ -200,6 +201,22 @@ export class ImpactFeedback {
     this.requestAudio({ kind: "dash", requestedAt: this.now() });
   }
 
+  /**
+   * A squadmate marked a place, and which kind is audible.
+   *
+   * The point of the sound is that it works when you are not looking at the map: "a audible
+   * sound for my teammates to hear to know i've placed it and a different one for each of the
+   * 3 so its distinguishable". So the three are separated by PITCH SHAPE rather than by
+   * timbre — a rising pair, a falling pair, a single note — because pitch direction survives
+   * a phone speaker and a noisy room, while two similar timbres do not.
+   *
+   * Panned toward where the mark is, so it also carries a rough direction before you look.
+   */
+  playPing(ping: PingKind, pan = 0): void {
+    if (this.disposed) return;
+    this.requestAudio({ kind: "ping", ping, pan: Math.max(-1, Math.min(1, pan)), requestedAt: this.now() });
+  }
+
   playPredicted(result: HitResult, pan = 0): void {
     if (this.disposed) return;
     try {
@@ -318,7 +335,56 @@ export class ImpactFeedback {
       return;
     }
 
+    if (cue.kind === "ping") {
+      this.renderPingAudio(context, cue.ping, cue.pan);
+      return;
+    }
+
     this.renderImpactAudio(context, cue.result, cue.pan, cue.intensity);
+  }
+
+  /**
+   * Three marks, three shapes: up for a place, down for a threat, one note for loot.
+   *
+   * Quiet and short — this fires while somebody is being shot at, and a cue that competes with
+   * the impact audio would make the fight harder to read rather than easier. Soft sine tones
+   * on purpose, so it sits under the percussive impact sounds instead of alongside them.
+   */
+  private renderPingAudio(context: AudioContext, ping: PingKind, pan: number): void {
+    const now = context.currentTime;
+    // "here" rises, "enemy" falls, "loot" holds. Direction of pitch is the distinguishing
+    // feature, so it survives a phone speaker.
+    const steps: Record<PingKind, number[]> = {
+      here: [660, 880],
+      enemy: [760, 500],
+      loot: [990],
+    };
+    const output = context.createGain();
+    output.gain.setValueAtTime(0.0001, now);
+    output.connect(context.destination);
+    const panner = typeof context.createStereoPanner === "function" ? context.createStereoPanner() : null;
+    if (panner) {
+      panner.pan.setValueAtTime(pan, now);
+      output.disconnect();
+      output.connect(panner).connect(context.destination);
+    }
+
+    const notes = steps[ping];
+    const each = 0.075;
+    notes.forEach((frequency, index) => {
+      const at = now + index * each;
+      const osc = context.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(frequency, at);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(0.11, at + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + each + 0.05);
+      osc.connect(gain).connect(output);
+      osc.start(at);
+      osc.stop(at + each + 0.08);
+    });
+    output.gain.setValueAtTime(1, now);
   }
 
   private renderImpactAudio(context: AudioContext, result: HitResult, pan: number, intensity: number): void {

@@ -53,6 +53,35 @@ export function arrowTarget(
   return best;
 }
 
+/**
+ * Every squadmate worth an arrow, nearest first, tagged by whether they are down.
+ *
+ * `arrowTarget` answers a narrower question — the single nearest DOWNED mate — and stays for
+ * the callers that want exactly that. This one exists because "Teammate arrows should show
+ * when teammates are out of view. They should also be different for downed teammates that
+ * need reviving": two facts, so two glyphs, so the drawing needs the whole set and the flag
+ * rather than one bot.
+ *
+ * Off-view filtering is not done here on purpose. `edgeArrow` already returns null for
+ * anything on screen, so asking twice would be two places that must agree about what "off
+ * screen" means.
+ */
+export function squadArrowTargets(
+  bots: readonly DotBotEntity[],
+  viewer: Pick<DotBotEntity, "id" | "squadId" | "floorId" | "position">,
+): Array<{ bot: DotBotEntity; downed: boolean }> {
+  return bots
+    .filter((bot) => bot.id !== viewer.id && bot.squadId === viewer.squadId && bot.floorId === viewer.floorId)
+    .map((bot) => ({ bot, downed: bot.state === "downed" }))
+    .sort((a, b) => {
+      const away = (entry: { bot: DotBotEntity }) => Math.hypot(
+        entry.bot.position.x - viewer.position.x,
+        entry.bot.position.y - viewer.position.y,
+      );
+      return away(a) - away(b) || (a.bot.id < b.bot.id ? -1 : 1);
+    });
+}
+
 export type Arrow = { tip: Vec2; left: Vec2; right: Vec2 };
 
 /**

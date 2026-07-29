@@ -99,3 +99,21 @@ export function markAge(mark: LiveMark, nowMs: number): number {
  * function. Deleting `chooseKind` was the whole change.
  */
 export const CLICK_PING_KIND: PingKind = "here";
+
+/**
+ * The fourth entry in the picker, which is not a kind.
+ *
+ * "a 4th option for the ping menu should be 'Cancel all' and should be red. Will remove all
+ * pings from the map."
+ *
+ * Client-only, and that is the interesting part. Clearing does NOT go through the simulation:
+ * marks are held per client, so the button empties your own list. It is the one thing in the
+ * feature that is deliberately not shared — a squadmate's marks are theirs to clear, and a
+ * button that wiped everyone's would be a grief button rather than a tidy-up.
+ *
+ * Red because it is the only destructive entry in a menu of three harmless ones, and the
+ * whole point of putting it there is that it must not be mistaken for a fourth kind.
+ */
+export const CANCEL_ALL = "cancel" as const;
+
+export type PingChoice = PingKind | typeof CANCEL_ALL;

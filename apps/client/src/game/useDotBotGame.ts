@@ -226,6 +226,25 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const uiEvents = frameEvents.filter((event) => event.type !== "hit");
         if (uiEvents.length > 0) setEvents((current) => [...current, ...uiEvents]);
 
+        /**
+         * A mark arriving is announced, and only somebody else's.
+         *
+         * Your own click already had its feedback — you clicked. The cue exists so a
+         * squadmate knows one landed without looking at the map, so firing it for the placer
+         * would just make marking noisy for the one person who does not need telling.
+         *
+         * Panned by which side of the screen it is on, so the sound carries a rough direction
+         * before you look for the pin.
+         */
+        for (const event of frameEvents) {
+          if (event.type !== "pinged") continue;
+          const mine = event.botId === (providedSession?.playerId ?? "player");
+          if (mine) continue;
+          const viewer = nextSnapshot?.bots.find((bot) => bot.id === (providedSession?.playerId ?? "player"));
+          const pan = viewer ? clamp((event.position.x - viewer.position.x) / 600, -1, 1) : 0;
+          feedbackRef.current?.playPing(event.kind, pan);
+        }
+
         const nextMarks = collectPings(marksRef.current, frameEvents, now);
         if (nextMarks !== marksRef.current) marksRef.current = nextMarks;
         rendererRef.current?.setSquadMarks(nextMarks);
@@ -672,6 +691,20 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     },
   }), [markHere, worldFromPointer]);
 
+  /**
+   * Clear every mark this client is holding.
+   *
+   * Local, not a simulation input, because marks are held per client — so this empties your
+   * own view and leaves a squadmate's alone. A button that wiped everybody's would be a grief
+   * button rather than a tidy-up, and there is no way for the player pressing it to know what
+   * a squadmate is still using.
+   */
+  const clearPings = useCallback(() => {
+    marksRef.current = [];
+    rendererRef.current?.setSquadMarks([]);
+    setPingPicker(null);
+  }, []);
+
   /** Right-click chose a type: fire that one here, and change nothing about left-click. */
   const choosePingKind = useCallback((kind: PingKind) => {
     const picker = pingPicker;
@@ -684,6 +717,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     pingHandlers,
     pingPicker,
     choosePingKind,
+    clearPings,
     closePingPicker: useCallback(() => setPingPicker(null), []),
     snapshot,
     events,

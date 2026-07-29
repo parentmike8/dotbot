@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import type { DotBotEntity, GameConfig, GameSnapshot, Item, PingKind } from "@dotbot/game/types";
 import { PING_KINDS } from "@dotbot/game/types";
 import { arrivalSparkline, type NetworkDebugStats } from "../../game/session/netgraph";
@@ -136,12 +136,32 @@ export function BayBank({
 export function PingPicker({
   at,
   onChoose,
+  onClear,
   onClose,
 }: {
   at: { x: number; y: number };
   onChoose: (kind: PingKind) => void;
+  onClear: () => void;
   onClose: () => void;
 }) {
+  /**
+   * Escape closes it, and the listener lives here rather than in the game's key handling.
+   *
+   * The game's keydown handler is for movement and actions and runs whether or not a menu is
+   * open; putting a menu's dismissal in it would mean the menu's existence had to be checked
+   * from a module that does not own it. Mounted with the menu, removed with it, so the binding
+   * cannot outlive what it closes.
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <aside
       className="ping-picker"
@@ -152,6 +172,7 @@ export function PingPicker({
       {PING_KINDS.map((kind) => (
         <button key={kind} type="button" onClick={() => onChoose(kind)}>{PING_LABEL[kind]}</button>
       ))}
+      <button type="button" className="ping-clear" onClick={onClear}>Cancel all</button>
     </aside>
   );
 }

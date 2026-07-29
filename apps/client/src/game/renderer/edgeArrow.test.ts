@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "@dotbot/game/config";
 import type { DotBotEntity } from "@dotbot/game/types";
-import { ARROW_MARGIN, arrowTarget, edgeArrow, type Camera } from "./edgeArrow";
+import { ARROW_MARGIN, arrowTarget, edgeArrow, squadArrowTargets, type Camera } from "./edgeArrow";
 
 /**
  * The edge arrow, pinned against the three faults play found in it.
@@ -182,5 +182,45 @@ describe("where the arrow goes", () => {
     // At scale 1 the body is 600px away and off screen; at 0.55 it is 330px and on it.
     expect(full).not.toBeNull();
     expect(zoomedOut).toBeNull();
+  });
+});
+
+describe("squadArrowTargets", () => {
+  /**
+   * Every squadmate, not just the downed one.
+   *
+   * `arrowTarget` answers a narrower question and keeps its own tests above. This exists
+   * because one arrow for the nearest downed mate told you nothing about a squad spread
+   * across a building until somebody went down — and "where is everyone" is the more common
+   * question. Two facts, so both are returned and the caller draws them differently.
+   */
+  const viewer = { id: "me", squadId: "a", floorId: "outdoor", position: { x: 0, y: 0 } };
+  const mate = (id: string, x: number, over: Partial<DotBotEntity> = {}) => ({
+    id, squadId: "a", floorId: "outdoor", state: "alive", position: { x, y: 0 },
+    ...over,
+  } as DotBotEntity);
+
+  it("returns alive squadmates as well as downed ones", () => {
+    const found = squadArrowTargets([
+      mate("alive", 100),
+      mate("down", 200, { state: "downed" }),
+    ], viewer);
+    expect(found.map((entry) => entry.bot.id)).toEqual(["alive", "down"]);
+    expect(found.map((entry) => entry.downed)).toEqual([false, true]);
+  });
+
+  it("never points at yourself, a rival, or another floor", () => {
+    const found = squadArrowTargets([
+      mate("me", 10),
+      mate("rival", 20, { squadId: "b" }),
+      mate("upstairs", 30, { floorId: "civic:F2" }),
+      mate("keeper", 40),
+    ], viewer);
+    expect(found.map((entry) => entry.bot.id)).toEqual(["keeper"]);
+  });
+
+  it("orders nearest first, and breaks ties by id so it cannot flicker", () => {
+    const found = squadArrowTargets([mate("far", 300), mate("b", 50), mate("a", 50)], viewer);
+    expect(found.map((entry) => entry.bot.id)).toEqual(["a", "b", "far"]);
   });
 });

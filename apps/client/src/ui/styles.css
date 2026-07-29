@@ -1816,6 +1816,27 @@ button {
   color: #0d0f11;
 }
 
+/**
+ * The one destructive entry, and the only red in the overlay.
+ *
+ * Separated by a rule as well as by colour: it sits in a menu of three harmless choices, and
+ * the failure to design against is a player reaching for "loot" and clearing the map. Colour
+ * alone would not do it — the three above are all one colour, so red reads as "another kind"
+ * before it reads as "danger" unless something says it is not in the list.
+ */
+.ping-clear {
+  margin-top: 3px;
+  padding-top: 7px !important;
+  border-top: 1px solid var(--hairline) !important;
+  border-radius: 0 0 4px 4px !important;
+  color: #ff6b6b !important;
+}
+
+.ping-clear:hover {
+  background: #ff6b6b !important;
+  color: #14171a !important;
+}
+
 /* ---------------------------------------------------------------------------
    Four takes on glass.
 

@@ -31,7 +31,7 @@ import {
   type QueuedPredictedImpact,
 } from "./impactPrediction";
 import { drawDotDisc, drawDotGloss, drawDotMark } from "./dotArt";
-import { arrowTarget, edgeArrow, type Camera } from "./edgeArrow";
+import { edgeArrow, squadArrowTargets, type Camera } from "./edgeArrow";
 import { drawGroundShadow } from "./grounding";
 import { markAge, type LiveMark } from "../pings";
 import {
@@ -474,8 +474,8 @@ export class GameRenderer {
       this.drawNoises(snapshot, player);
       this.drawPleaSignals(player);
       this.drawMineSignals(player);
-      this.drawSquadMarks(playerContext, nowMs, camera);
-      this.drawDownedSquadmateArrow(snapshot, player, camera);
+      this.drawSquadMarks(player, nowMs, camera);
+      this.drawSquadmateArrows(snapshot, player, camera);
     }
     this.drawImpactFlashes(snapshot, nowMs);
 
@@ -544,19 +544,43 @@ export class GameRenderer {
    * centre of the frame — `getCamera` returns the transform precisely so a caller
    * does not invent a second answer, and this was the caller that used to.
    */
-  private drawDownedSquadmateArrow(
+  /**
+   * An arrow at the edge for every squadmate off screen, and a different one when they are
+   * down.
+   *
+   * It used to draw one arrow, for the nearest DOWNED mate only — so a squad spread across a
+   * building told you nothing about where anybody was until somebody went down. Both facts
+   * are worth showing and they are acted on differently, so they get different glyphs rather
+   * than a colour change: a solid arrowhead is "they are that way", and a hollow one with a
+   * cross through it is "that way, and they need picking up".
+   *
+   * The cross is the same mark a revive uses everywhere else in this game, which is why it
+   * needs no legend.
+   */
+  private drawSquadmateArrows(
     snapshot: GameSnapshot,
     player: DotBotEntity,
     camera: Camera,
   ): void {
-    const squadmate = arrowTarget(snapshot.bots, player);
-    if (!squadmate) return;
-    const arrow = edgeArrow(squadmate.position, camera, this.viewport);
-    if (!arrow) return;
-    this.screenGfx
-      .poly([arrow.tip.x, arrow.tip.y, arrow.left.x, arrow.left.y, arrow.right.x, arrow.right.y])
-      .fill({ color: SQUAD_CYAN, alpha: 0.95 })
-      .stroke({ color: INK.structure, width: 2 });
+    for (const { bot, downed } of squadArrowTargets(snapshot.bots, player)) {
+      const arrow = edgeArrow(bot.position, camera, this.viewport);
+      if (!arrow) continue;
+      const shape = [arrow.tip.x, arrow.tip.y, arrow.left.x, arrow.left.y, arrow.right.x, arrow.right.y];
+      if (!downed) {
+        this.screenGfx.poly(shape).fill({ color: SQUAD_CYAN, alpha: 0.9 });
+        continue;
+      }
+      // Hollow, so it reads as "not whole", plus the revive cross at its centre.
+      const cx = (arrow.tip.x + arrow.left.x + arrow.right.x) / 3;
+      const cy = (arrow.tip.y + arrow.left.y + arrow.right.y) / 3;
+      this.screenGfx.poly(shape)
+        .fill({ color: INK.structure, alpha: 0.55 })
+        .stroke({ color: SQUAD_CYAN, width: 2.4, alpha: 0.95 });
+      this.screenGfx
+        .moveTo(cx - 3, cy).lineTo(cx + 3, cy)
+        .moveTo(cx, cy - 3).lineTo(cx, cy + 3)
+        .stroke({ color: SQUAD_CYAN, width: 2, alpha: 0.95 });
+    }
   }
 
   private updateDraftAnimations(now: number): void {
@@ -783,67 +807,91 @@ export class GameRenderer {
    * about somewhere you cannot see. Masking one to line of sight would leave it visible only
    * where you did not need it.
    *
-   * Same context only. A mark two floors up drawn at its world position would sit on top of
-   * the floor you are actually on, claiming something is there — worse than not drawing it.
-   * Carrying it onto the floor rail instead is the right answer and is not built.
+   * Keyed on the PHYSICS floor rather than the arena context, which is the fix for marks
+   * vanishing exactly where they were most useful. `contextKey` splits the street from each
+   * building ground floor, so a mark placed on the pavement disappeared the moment you
+   * stepped inside — reported with a screenshot of two marks right outside a doorway and
+   * nothing drawn. The street and a ground floor are one plane joined by a door, so a mark on
+   * either is a mark you can walk to without changing floor. A mark two storeys up still does
+   * not draw, because that one really is somewhere else.
    */
-  private drawSquadMarks(playerContext: string, nowMs: number, camera: Camera): void {
+  private drawSquadMarks(player: DotBotEntity, nowMs: number, camera: Camera): void {
+    const here = physicsFloorId(this.map, player.floorId);
     for (const mark of this.squadMarks) {
-      if (this.contextKey(mark.floorId, mark.position) !== playerContext) continue;
+      if (physicsFloorId(this.map, mark.floorId) !== here) continue;
+      const fade = 1 - markAge(mark, nowMs);
+      if (fade <= 0) continue;
+
       /**
-       * Off screen, the mark becomes an arrow at the edge.
+       * Off screen, a chevron at the edge — deliberately NOT the squadmate triangle.
        *
-       * The same treatment a downed squadmate gets, and for the same reason: a mark you
-       * cannot see is a mark that failed. Most of the value of "enemy, over there" is when
-       * over there is not on your screen yet.
+       * Two different facts sharing one glyph is the failure: "your squadmate is that way"
+       * and "somebody marked that way" are acted on differently, and an open chevron cannot
+       * be mistaken for a solid arrowhead at a glance.
        */
       const arrow = edgeArrow(mark.position, camera, this.viewport);
       if (arrow) {
-        const edgeFade = 1 - markAge(mark, nowMs);
+        const alpha = 0.4 + fade * 0.55;
         this.screenGfx
-          .poly([arrow.tip.x, arrow.tip.y, arrow.left.x, arrow.left.y, arrow.right.x, arrow.right.y])
-          .fill({ color: SQUAD_CYAN, alpha: 0.4 + edgeFade * 0.55 })
-          .stroke({ color: INK.structure, width: 2 });
+          .moveTo(arrow.left.x, arrow.left.y)
+          .lineTo(arrow.tip.x, arrow.tip.y)
+          .lineTo(arrow.right.x, arrow.right.y)
+          .stroke({ color: SQUAD_CYAN, width: 3, alpha });
         continue;
       }
-      const fade = 1 - markAge(mark, nowMs);
-      if (fade <= 0) continue;
-      const { x, y } = mark.position;
-      // Rises and settles as it lands, so a mark arriving is noticed without a flash.
-      const drop = Math.max(0, 1 - (nowMs - mark.placedAtMs) / 260);
-      const lift = drop * drop * 16;
-      const alpha = 0.4 + fade * 0.6;
-      // Reported as "a bit thin (hard to see)". Heavier stroke, bigger glyph, and a dark
-      // backing ring so the cyan has something to sit against on a pale slab — the same
-      // problem the world captions had, and the same answer.
-      const width = 4;
+      this.drawWaymarker(mark, nowMs, fade);
+    }
+  }
 
-      this.dynamicGfx.circle(x, y - lift, 19)
-        .stroke({ color: INK.structure, width: 5.5, alpha: alpha * 0.5 });
-      this.dynamicGfx.circle(x, y - lift, 19)
-        .stroke({ color: SQUAD_CYAN, width: 2.4, alpha: alpha * 0.9 });
-      // A dot on the spot itself, so the mark still says WHERE at a glance when the glyph
-      // is riding above it.
-      this.dynamicGfx.circle(x, y, 2.6).fill({ color: SQUAD_CYAN, alpha });
-      if (mark.kind === "enemy") {
-        // Crossed strokes: the one mark that has to read as a warning at a glance.
-        for (const [dx, dy] of [[-1, -1], [1, -1]]) {
-          this.dynamicGfx
-            .moveTo(x - dx * 9, y - lift - dy * 9)
-            .lineTo(x + dx * 9, y - lift + dy * 9)
-            .stroke({ color: SQUAD_CYAN, width, alpha });
-        }
-      } else if (mark.kind === "loot") {
+  /**
+   * A mark as a waymarker pin: an upside-down teardrop in the overlay's own glass.
+   *
+   * Replaces a ring-and-glyph that was reported as too big, with black outlines that did not
+   * belong — "I think maybe we can use the glass UI to do a waymarker type shape... that has
+   * our ping icon as the same blue as in our controls on it."
+   *
+   * Which is the better idea for a reason worth stating: a mark is not IN the world. It is
+   * not lit by the world's light, it casts nothing, and the drawing contract's dark closed
+   * outline means solid and impassable — so putting one on a mark said "this is a thing you
+   * can walk into". Built out of the overlay's glass instead, it reads as a note on the glass
+   * in front of the world, which is exactly what it is.
+   *
+   * The tip sits ON the marked point and the body rides above it, so the pin says WHERE
+   * without covering it.
+   */
+  private drawWaymarker(mark: LiveMark, nowMs: number, fade: number): void {
+    const { x, y } = mark.position;
+    const r = 8.5;
+    // Drops in and settles, so an arriving mark is noticed without a flash.
+    const settle = Math.max(0, 1 - (nowMs - mark.placedAtMs) / 260);
+    const rise = settle * settle * 14;
+    const tipY = y - rise;
+    const cy = tipY - r - 8;
+    const alpha = (0.55 + fade * 0.45) * 0.92;
+
+    // The pane: head and tail as one silhouette, in the Deep skin's glass tone.
+    this.dynamicGfx.circle(x, cy, r).fill({ color: 0x0e1013, alpha: alpha * 0.82 });
+    this.dynamicGfx
+      .poly([x - r * 0.58, cy + r * 0.72, x + r * 0.58, cy + r * 0.72, x, tipY])
+      .fill({ color: 0x0e1013, alpha: alpha * 0.82 });
+    // A light rim rather than a dark outline: glass catches light, it does not draw an edge.
+    this.dynamicGfx.circle(x, cy, r).stroke({ color: 0xffffff, width: 1, alpha: alpha * 0.3 });
+
+    // The icon, in the controls' own cyan.
+    const ink = { color: SQUAD_CYAN, width: 2, alpha };
+    if (mark.kind === "enemy") {
+      for (const [dx, dy] of [[-1, -1], [1, -1]]) {
         this.dynamicGfx
-          .moveTo(x, y - lift - 11).lineTo(x + 9, y - lift).lineTo(x, y - lift + 11).lineTo(x - 9, y - lift)
-          .closePath()
-          .stroke({ color: SQUAD_CYAN, width, alpha });
-      } else {
-        // "Here" is a chevron pointing at the spot, which is what a finger does.
-        this.dynamicGfx
-          .moveTo(x - 10, y - lift - 7).lineTo(x, y - lift + 6).lineTo(x + 10, y - lift - 7)
-          .stroke({ color: SQUAD_CYAN, width, alpha });
+          .moveTo(x - dx * 3.6, cy - dy * 3.6).lineTo(x + dx * 3.6, cy + dy * 3.6).stroke(ink);
       }
+    } else if (mark.kind === "loot") {
+      this.dynamicGfx
+        .moveTo(x, cy - 4.4).lineTo(x + 4.4, cy).lineTo(x, cy + 4.4).lineTo(x - 4.4, cy)
+        .closePath()
+        .stroke(ink);
+    } else {
+      // "Here" points down at the tip it sits above.
+      this.dynamicGfx.moveTo(x - 4, cy - 2).lineTo(x, cy + 3.4).lineTo(x + 4, cy - 2).stroke(ink);
     }
   }
 

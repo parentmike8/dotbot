@@ -35,7 +35,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
     selectDownedVerb, plea, useBay, swapBayItem, takeFromBody, setBodyAction,
-    pingHandlers, pingPicker, choosePingKind, closePingPicker,
+    pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ session, spectate: true });
   const [swapBay, setSwapBay] = useState<number | null>(null);
@@ -177,7 +177,12 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       ) : null}
 
       {pingPicker ? (
-        <PingPicker at={pingPicker.screen} onChoose={choosePingKind} onClose={closePingPicker} />
+        <PingPicker
+          at={pingPicker.screen}
+          onChoose={choosePingKind}
+          onClear={clearPings}
+          onClose={closePingPicker}
+        />
       ) : null}
 
       {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}

@@ -30,7 +30,7 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
     hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, settingsVisible, toggleSettings,
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, leaveRun, selectDownedVerb, plea,
     takeFromBody, setBodyAction,
-    pingHandlers, pingPicker, choosePingKind, closePingPicker, spectating,
+    pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker, spectating,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ map: requestedMap, spectate: true });
   const [swapBay, setSwapBay] = useState<number | null>(null);
@@ -117,7 +117,12 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
       {column ? <FloorRail column={column} /> : null}
 
       {pingPicker ? (
-        <PingPicker at={pingPicker.screen} onChoose={choosePingKind} onClose={closePingPicker} />
+        <PingPicker
+          at={pingPicker.screen}
+          onChoose={choosePingKind}
+          onClear={clearPings}
+          onClose={closePingPicker}
+        />
       ) : null}
 
       {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}
