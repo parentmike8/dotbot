@@ -88,9 +88,28 @@ export const SIGNAL_BOX_SOURCE: SourceBuilding = {
       objects: [
         { id: "box-frame", kind: "planningTable", x: 3050, y: 336, w: 120, h: 40, facing: "N", scannable: true },
         { id: "box-diagram", kind: "shelf", x: 3040, y: 392, w: 26, h: 60 },
-        { id: "box-desk", kind: "desk", x: 3090, y: 520, w: 80, h: 44, facing: "N" },
-        // At the desk's west end, not parked against the middle of its face.
-        { id: "box-chair", kind: "chair", x: 3090, y: 490, w: 30, h: 28, facing: "S" },
+        /**
+         * The register desk, and the chair on the SOUTH side of it.
+         *
+         * The chair used to sit north of the desk, which put the signaller between the desk
+         * and the window with their back to the lever frame, the glass, and the throat — the
+         * entire reason the room exists. The desk already declared `facing: "N"`, so the
+         * furniture and the person disagreed about which way the room faced. Nothing measures
+         * that: both objects cleared every solid, both were reachable, and the floor passed
+         * every audit. It is only visible in the image.
+         *
+         * Moved north to 470 so the chair has somewhere to go, and the chair is FLUSH against
+         * the desk rather than parked 8 units off it. The first attempt left that 8-unit gap
+         * and `wedged-fixture` rejected it: the contract allows an attached seam of 16 or an
+         * aisle of 64, and 8 units face-to-face is neither. It is also just wrong about the
+         * furniture — a chair at a desk is tucked under it, and a chair floating a third of a
+         * bot-width off its own desk is the same "placed by arithmetic" tell as the rest.
+         *
+         * Desk 470..514, chair 514..542, and 56 units left to the south wall so a bot can
+         * still walk behind the person sitting there.
+         */
+        { id: "box-desk", kind: "desk", x: 3090, y: 470, w: 80, h: 44, facing: "N" },
+        { id: "box-chair", kind: "chair", x: 3106, y: 514, w: 30, h: 28, facing: "N" },
         { id: "box-stove", kind: "stove", x: 3040, y: 558, w: 40, h: 40, facing: "E" },
       ],
       dots: [{ id: "box-dot-b", item: { kind: "powerup", type: "radar" }, x: 3140, y: 440 }],

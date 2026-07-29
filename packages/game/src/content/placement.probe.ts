@@ -45,14 +45,27 @@ import type { Building, FloorPlan, Rect, Solid, Vec2 } from "../types";
 const RADIUS = defaultGameConfig.botRadius;
 
 /**
- * Margin below which a route is reported.
+ * Margin below which the tightest point on a route CANNOT be a doorway.
  *
- * 6 units, a quarter of a bot's radius. Not a comfort standard — a corridor is allowed to be
- * tight, and a dungeon should be. It is the band where the route survives on arithmetic
- * rather than intent, so any later edit to either side of it severs the route and the author
- * gets a connectivity failure with no clue that the margin was one unit to begin with.
+ * 4 units, and it is derived rather than chosen. The narrowest opening authored anywhere in
+ * the world is 56 units (`DOOR`, a single leaf), which admits a bot of radius 28 — four more
+ * than a real one. So a route with 4 or more units of margin may be limited by architecture,
+ * and a route with less than 4 is limited by something that is not a door. That something is
+ * furniture, and it is the only case worth reporting.
+ *
+ * THIS IS THE THIRD VERSION OF THIS THRESHOLD and the first that is not an artifact. Version
+ * one flagged raw margin under 6 and returned 53 routes, most of them describing a 56-wide
+ * door working as intended. Version two compared each route against its own ENTRY door and
+ * ranked by the shortfall — which put lot6:GROUND top at "33 lost" and was wrong, because
+ * that route enters by a 120-wide rollup and then passes through the stair core's 56-wide
+ * door. Comparing against the entrance cannot see a narrower door further along. Comparing
+ * against the narrowest door that exists anywhere needs no route analysis at all.
+ *
+ * Kept as a caution: each version looked plausible and produced a confident ranked table, and
+ * the only thing that caught versions one and two was reading the map source behind the top
+ * finding. Ranked output is not evidence.
  */
-const TIGHT = 6;
+const TIGHT = 4;
 
 /** How much fatter than a bot the search will try before it stops caring. */
 const GENEROUS = RADIUS * 2;
@@ -100,7 +113,15 @@ function widestBot(map: typeof worldMap, floorId: string, start: Vec2, goal: Vec
   if (!findNavigationPath(map, floorId, start, goal, RADIUS).length) return 0;
   let low = RADIUS;
   let high = GENEROUS;
-  while (high - low > 1) {
+  /**
+   * A quarter unit, not one unit.
+   *
+   * `low` converges from below, so a tolerance of 1 reports a true margin of 4 as anything in
+   * 3..4 — which straddles the threshold and put a plain 56-wide door back in the findings.
+   * The threshold is derived from a real door width, so the measurement has to be finer than
+   * the thing it is compared against.
+   */
+  while (high - low > 0.25) {
     const mid = (low + high) / 2;
     if (findNavigationPath(map, floorId, start, goal, mid).length) low = mid;
     else high = mid;
@@ -189,7 +210,7 @@ for (const building of worldMap.buildings as Building[]) {
          * own — the same object that was moved by hand last session for clearing an
          * instrument by exactly one bot's width.
          */
-        if (route.margin < Math.min(TIGHT, route.limit)) routes.push(route);
+        if (route.margin < TIGHT) routes.push(route);
       }
     }
   }
@@ -241,18 +262,8 @@ if (badProbe.length) {
   }
 }
 
-/**
- * Ranked by LOST — how much narrower the route is than the opening it starts at.
- *
- * This is the number to act on, and it is not the margin. A route with 2 units of margin
- * behind a core door that only allows 4 is the architecture doing its job; a route with 3
- * behind a 120-wide rollup that allows 36 has 33 units of furniture in the way. Sorting by
- * margin puts those in the wrong order and buries the second one.
- */
-console.log(`\nROUTES TIGHTER THAN THEIR OWN DOOR (${routes.length}), worst first:`);
-const lost = (r: Route): number => (r.limit ?? 0) - r.margin;
-for (const r of routes.sort((a, b) => lost(b) - lost(a))) {
-  console.log(
-    `   ${String(lost(r)).padStart(2)} lost   ${r.floor.padEnd(20)} ${String(r.margin).padStart(2)} spare of ${String(r.limit).padStart(2)}   ${r.from} -> ${r.to}`,
-  );
+console.log(`\nROUTES PINCHED BY SOMETHING THAT IS NOT A DOOR (${routes.length}), tightest first:`);
+console.log(`(margin under ${TIGHT} — the narrowest door in the world allows ${TIGHT})\n`);
+for (const r of routes.sort((a, b) => a.margin - b.margin)) {
+  console.log(`   ${String(r.margin).padStart(2)} spare   ${r.floor.padEnd(20)} ${r.from} -> ${r.to}`);
 }

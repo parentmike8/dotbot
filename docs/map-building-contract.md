@@ -132,7 +132,18 @@ The attached-seam allowance is only for modules that visibly extend one bank. Ne
 
 ### 4.1 Required LLM visual critique
 
-After the first implementation, inspect the production-rendered floor with collision and navigation overlays **off**. Judge the image as a floor plan before looking at test output or coordinates. Write down, at minimum:
+**Look at every room you touch. Every time you touch it. This is not optional and it is not replaceable by tests.**
+
+Why it is written this emphatically: this section already existed, said the same thing, and lapsed anyway. Two mechanical reasons, both now removed, and worth knowing so the lapse is not repeated in a new form:
+
+1. It said "inspect the production-rendered floor" at a time when **23 of the world's 27 floors could not be rendered at all** — the frame list held four. A rule that cannot be executed is not followed, it is skipped. Floor frames are derived from the map now, so every floor has an image.
+2. It was scoped "after the first implementation", which made it a gate at creation rather than a standing obligation. A floor authored once and edited ten times got one critique. It now applies to every edit.
+
+Run `?worlds&shots=1` and read `tmp/lab/map-floor-<building>-<label>.png`. One PNG per floor, derived, so a new floor appears without an edit to the lab.
+
+**Then loop: look, judge, adjust, re-render, look again.** A single pass is a first draft. Stop when the image reads as a place someone decided on, not when the checks go green.
+
+Judge the image as a floor plan with collision and navigation overlays **off**, before looking at test output or coordinates. Write down, at minimum:
 
 - what the primary visual and gameplay anchor is;
 - what each visible cluster appears to be used for;
@@ -141,6 +152,13 @@ After the first implementation, inspect the production-rendered floor with colli
 - whether the empty space reads as an intentional route or work area rather than an unfinished room.
 
 If the rendered image does not communicate the original floor brief, revise the layout. Do not rationalize it from object IDs or code comments that a player cannot see. Only after this composition pass should collision, clearance, reachability, stairs, Dots, and AI be reviewed with overlays and automated checks.
+
+**Why a test cannot stand in for this, stated once so it is not relitigated.** Automated checks answer *can a bot fit*, which is a yes-or-no question, and passing it by nothing is still passing. They cannot answer *why would anyone put it there* — and two attempts to make them answer it both failed on real data, which is the evidence for this paragraph rather than a preference:
+
+- A **dead-gap** rule (floor between furniture and wall too narrow to enter) flagged 291 cases. Its own histogram killed it: that band holds 23% of every gap in the world and its entries are things like a bed 12 units off a wall. A bot is 48 units across, so that is the space behind a headboard. Real rooms are full of them, and acting on the rule would have made the world less natural.
+- A **route-margin** rule only became meaningful once narrowed to *tighter than its own doorway* — where the pinch is furniture rather than architecture. Useful, and still only a ranking of suspects, not a judgement.
+
+The surviving check is in `placement.probe.ts` and it earns its place by ranking, not by verdict. Treat automated output as a floor, never as approval: **tests can reject a map; they cannot design one or approve its feel.** The eyes are the gate. Object rotation, a room whose purpose is unreadable, a ride whose bays contradict the shell it sits in — none of these violate any measurable rule, and all of them shipped.
 
 ## 5. Movement and stairs
 
@@ -197,6 +215,7 @@ Hand off map work with:
 
 - the playable local URL or exact run command;
 - a plain-language description of each authored floor or area;
+- **the §4.1 visual critique, run on every floor the change touched, with what it changed as a result.** A floor that was edited and not looked at is not done. If the critique changed nothing, say so explicitly — that is a claim about the image, and it is checkable;
 - screenshots from the production renderer, not mockups;
 - automated validation results;
 - live movement and stair-traversal results;
