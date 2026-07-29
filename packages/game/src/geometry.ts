@@ -44,6 +44,17 @@ export function rectSolid(rect: Rect): Solid {
   return { kind: "rect", x: rect.x, y: rect.y, w: rect.w, h: rect.h };
 }
 
+/**
+ * Do two rectangles share any area? Touching edges do not count.
+ *
+ * Exported rather than re-written per caller: `cityQuality` had a private copy and the
+ * renderer wanted a third, which is how three subtly different answers to "do these
+ * overlap" end up in one codebase.
+ */
+export function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
 // ---------------------------------------------------------------------------
 // Segment and point primitives
 // ---------------------------------------------------------------------------

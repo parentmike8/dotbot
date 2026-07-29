@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Graphics } from "pixi.js";
 import type { Rect, StairLink } from "@dotbot/game/types";
+import { stairHalves } from "@dotbot/game/mapModel";
 import { drawStair, drawStairHead } from "./modelStairs";
 import { SHADOW_ALPHA, type ShadowPad } from "./tone";
 
@@ -165,6 +166,55 @@ describe("a roof stair, from the two places it is looked at", () => {
         flight.painted.length,
         `flight on ${link.id} should draw more than the head does`,
       ).toBeGreaterThan(head.painted.length + 4);
+    }
+  });
+
+  /**
+   * The end you walk in at is the light end, whichever way the flight goes.
+   *
+   * This is the cue a player steers by, and it was inverted for every ascending flight in
+   * the game. Value used to follow `bottom` — the flight's physical foot — while entry
+   * follows `direction`, so with `bottom: "S"` a descent was entered at its light end and an
+   * ascent at its dark one. Two stairs on one floor read opposite ways. Reported from play:
+   * "it's still not obvious which end I go into. A couple times, I went in the wrong
+   * direction because it wasn't clear."
+   *
+   * Asserted over BOTH directions and BOTH axes, because that is the matrix the bug lived
+   * in: it was invisible on half the cases and wrong on the other half, and a test covering
+   * one direction would have passed throughout.
+   */
+  it("paints the entry end light and the far end dark, up and down alike", () => {
+    for (const link of STAIRS) {
+      for (const direction of ["up", "down"] as const) {
+        for (const bottom of ["N", "S", "E", "W"] as const) {
+          const g = recorder();
+          const turned = { ...link, direction, bottom } as StairLink;
+          drawStair(g, pad(), turned);
+
+          const { entry, exit, vertical } = stairHalves(turned);
+          const centre = (half: Rect) => (vertical ? half.y + half.h / 2 : half.x + half.w / 2);
+          const axis = (box: Rect) => (vertical ? box.y + box.h / 2 : box.x + box.w / 2);
+
+          /**
+           * Mean brightness of the treads nearest each half's centre.
+           *
+           * Treads only: the shaft fill, the stringers and the guard rails are all dark by
+           * design and sit across the whole flight, so including them would swamp the ramp
+           * this is measuring.
+           */
+          const luma = (of: Painted) => ((of.color >> 16 & 0xff) + (of.color >> 8 & 0xff) + (of.color & 0xff)) / 3;
+          const near = (at: number) => {
+            const marks = g.painted.filter((mark) => mark.color !== SHAFT
+              && mark.points.every((box) => Math.abs(axis(box) - at) < 14));
+            return marks.reduce((sum, mark) => sum + luma(mark), 0) / Math.max(1, marks.length);
+          };
+
+          const inAt = near(centre(entry));
+          const outAt = near(centre(exit));
+          expect(inAt, `${link.id} ${direction}/${bottom}: entry half should be lighter than exit half`)
+            .toBeGreaterThan(outAt);
+        }
+      }
     }
   });
 

@@ -1,7 +1,7 @@
 import type { Graphics } from "pixi.js";
 import type { Rect, StairLink } from "@dotbot/game/types";
-import { stairHalves } from "@dotbot/game/mapModel";
-import { LIFT, MAT, contact, inlay, shade, volume, type ShadowPad } from "./tone";
+import { stairGuardRects, stairHalves } from "@dotbot/game/mapModel";
+import { LIFT, MAT, V, contact, inlay, shade, volume, type ShadowPad } from "./tone";
 
 /**
  * Stairs, in the lit-model language.
@@ -21,7 +21,7 @@ import { LIFT, MAT, contact, inlay, shade, volume, type ShadowPad } from "./tone
  */
 type TreadRun = { half: Rect; from: number; to: number };
 
-/** The shallowest and deepest a tread is drawn. Depth darkens it; see `drawTreadRun`. */
+/** The lightest and darkest a tread is drawn. Depth darkens it; see `drawTreadRun`. */
 const TOP_DEPTH = 0.02;
 const FOOT_DEPTH = 0.98;
 
@@ -43,20 +43,51 @@ const FOOT_DEPTH = 0.98;
  * line in the stair, it doesn't gradually transition from light to dark... something is
  * off relative to the stairs in other places."
  *
- * `bottom` says which end of the run is the foot, so the foot is the dark end and one
- * ramp spans the whole flight whichever way it is turned.
+ * THE RAMP RUNS ENTRY → EXIT, NOT TOP → FOOT, and that is the second fix here.
+ *
+ * It used to follow `bottom`, the flight's physical foot: light at the head of the run,
+ * dark at its foot. Physically tidy, and it inverted the one cue a player actually steers
+ * by. `stairEntryEnd` is what `placeStairTag` uses, so the "UP"/"DN" label already marks
+ * the way in — and with `bottom: "S"`, which is every stair in the city, the arithmetic
+ * lands like this:
+ *
+ *     direction "up"    entry at high y    light at low y    -> ENTERED AT THE DARK END
+ *     direction "down"  entry at low y     light at low y    -> entered at the light end
+ *
+ * So every ascending flight in the world was entered at its dark end, every descending one
+ * at its light end, and two stairs on one floor read opposite ways. Reported from play:
+ * "it's still not obvious which end I go into. A couple times, I went in the wrong direction
+ * because it wasn't clear."
+ *
+ * The rule now is the one a player had already inferred: THE END YOU WALK IN AT IS THE
+ * COLOUR OF THE FLOOR YOU ARE STANDING ON, and it darkens away from you toward the half you
+ * cannot enter. `stairHalves` derives entry per floor, so the same physical flight draws
+ * light-at-the-bottom on one floor and light-at-the-top on the other, with no authoring.
+ *
+ * Note what this does NOT do. Mike offered "or it transitions towards the colour of the
+ * floor that I'm going to", which would be better if floors differed in tone — they do not.
+ * Every slab in the game is `V.slab`, so a ramp toward the destination's colour would be a
+ * ramp to the same value and would say nothing. Darkening away from the floor you are on is
+ * the honest version of the same idea, and it also keeps up and down consistent, which is
+ * the actual complaint.
  */
 function treadRuns(stair: StairLink): { runs: TreadRun[]; beyond: TreadRun; vertical: boolean } {
   const { entry, exit, vertical } = stairHalves(stair);
   const { x, y, w, h } = stair.rect;
   const span = vertical ? h : w;
   const low = vertical ? y : x;
-  // The foot at the low coordinate means depth grows as the coordinate SHRINKS.
-  const footAtLow = stair.bottom === "N" || stair.bottom === "W";
+  /**
+   * The entry half at the low coordinate means depth grows as the coordinate GROWS.
+   *
+   * Read off the halves rather than off `bottom`, so this cannot drift from `stairHalves` —
+   * which is the same function `resolveStairs` uses to decide whether a bot actually changed
+   * floor. Art and traversal now answer "which end is the way in" from one place.
+   */
+  const entryAtLow = (vertical ? entry.y : entry.x) < (vertical ? exit.y : exit.x);
 
   const depth = (along: number): number => {
     const t = (along - low) / span;
-    return TOP_DEPTH + (footAtLow ? 1 - t : t) * (FOOT_DEPTH - TOP_DEPTH);
+    return TOP_DEPTH + (entryAtLow ? t : 1 - t) * (FOOT_DEPTH - TOP_DEPTH);
   };
   /** `drawTreadRun` always lays treads in increasing coordinate order. */
   const ramp = (half: Rect): TreadRun => ({
@@ -82,20 +113,32 @@ export function drawTreadRun(g: Graphics, run: TreadRun, vertical: boolean): voi
     const tread: Rect = vertical
       ? { x: run.half.x, y: run.half.y + (span / treads) * i, w: run.half.w, h: span / treads }
       : { x: run.half.x + (span / treads) * i, y: run.half.y, w: span / treads, h: run.half.h };
-    // Tread nose lit, riser in shadow, both darkening with depth.
-    const k = 1 - depth * 0.72;
-    inlay(g, tread, shade(MAT.steel.top, k));
+    /**
+     * The tread's own value, ramped off THE FLOOR'S TONE rather than off steel.
+     *
+     * `V.slab` at the entry end, so the first tread is the value of the slab a bot is
+     * standing on and the flight reads as the floor continuing. It used to start from
+     * `MAT.steel.top`, which is built from 0xbabfc4 against a 0xdcdee1 slab — visibly
+     * darker than the floor at its lightest point, so even the light end never looked like
+     * somewhere you were already standing.
+     *
+     * Nose and riser stay as separate strokes so a tread is still a tread, but both are
+     * derived from the same ramp: the nose brightens toward white so it survives at the
+     * light end, the riser is a fraction of the tread so it deepens with it.
+     */
+    const k = 1 - depth * 0.74;
+    inlay(g, tread, shade(V.slab, k));
     inlay(
       g,
       vertical
         ? { x: tread.x, y: tread.y + tread.h - 1.6, w: tread.w, h: 1.6 }
         : { x: tread.x + tread.w - 1.6, y: tread.y, w: 1.6, h: tread.h },
-      shade(MAT.steel.edge, k),
+      shade(V.slab, k * 0.66),
     );
     inlay(
       g,
       vertical ? { x: tread.x, y: tread.y, w: tread.w, h: 0.8 } : { x: tread.x, y: tread.y, w: 0.8, h: tread.h },
-      shade(MAT.steel.lit, k),
+      shade(0xffffff, k),
     );
   }
 }
@@ -117,6 +160,41 @@ export function drawStair(g: Graphics, pad: ShadowPad, stair: StairLink): void {
       : { x: r.x, y: r.y + (end ? r.h - 3 : 0), w: r.w, h: 3 };
     volume(g, side, MAT.steelDeep, 5);
   }
+
+  /**
+   * The mouth, and the rails. Two cues for the same fact, both derived rather than styled.
+   *
+   * Reported from play: "the edge that is not passable is not clear enough at all." Value
+   * alone was carrying the whole message, and value alone is a comparison — it needs the
+   * other end of the flight in frame to be read at all, which at play zoom it often is not.
+   *
+   * THE MOUTH is a bright threshold across the entry half's outer end: the lip a bot steps
+   * over. Truthful for every stair, because `stairHalves` says which half is the entry on
+   * this floor, and it marks the one end that is always open.
+   *
+   * THE RAILS come from `stairGuardRects`, which is the collider the server, the predictor
+   * and navigation all use. So drawing them adds no new claim — it draws a barrier that was
+   * already there and previously invisible. They exist only on `access: "openEnd"` flights;
+   * elsewhere authored walls already enclose the shaft and are already drawn.
+   */
+  const { entry, exit, vertical: runsVertical } = stairHalves(stair);
+  const mouthDepth = 2.6;
+  const mouth: Rect = runsVertical
+    ? {
+      x: entry.x,
+      w: entry.w,
+      y: entry.y < exit.y ? entry.y : entry.y + entry.h - mouthDepth,
+      h: mouthDepth,
+    }
+    : {
+      y: entry.y,
+      h: entry.h,
+      x: entry.x < exit.x ? entry.x : entry.x + entry.w - mouthDepth,
+      w: mouthDepth,
+    };
+  inlay(g, mouth, 0xffffff);
+
+  for (const guard of stairGuardRects(stair)) volume(g, guard, MAT.steelDeep, LIFT.wall);
 }
 
 

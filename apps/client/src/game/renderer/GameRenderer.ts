@@ -10,6 +10,7 @@ import {
   physicsFloorId,
   resolvePlan,
 } from "@dotbot/game/mapModel";
+import { rectsOverlap } from "@dotbot/game/geometry";
 import { buildingMouths } from "@dotbot/game/entrances";
 import {
   hasLineOfSight, outdoorVision, seesOutdoors, visibilityPolygon, visionContext,
@@ -1210,9 +1211,47 @@ export class GameRenderer {
      */
     const peek = this.peekProgress(player);
 
+    /**
+     * A building standing over the floor you are on is not dimmed, it is GONE.
+     *
+     * Reported from play, standing in the temple's undercroft: "the observatory is blocking
+     * the view of the basement floor of the temple. Not only is it just obscuring the view,
+     * but if I go into that section, there seem to be elements of it that are restricting the
+     * movement of the bot in that area too... I honestly think that buildings should maybe
+     * disappear in that case."
+     *
+     * Nothing was restricting movement — `collectSolids` only ever returns the target floor's
+     * own geometry, so the observatory's walls were never in the undercroft's physics. But the
+     * drum was drawn on top at alpha 0.35, and what it hid was the undercroft's OWN boulders.
+     * A translucent building over a floor you are standing on does not read as "elsewhere", it
+     * reads as obstacles you cannot quite see — which is a worse failure than occlusion,
+     * because the player learns to distrust what is drawn.
+     *
+     * Scoped to buildings that actually OVERLAP the floor's own extent, rather than hiding
+     * every building whenever you are indoors. A ground floor shares the outdoor plane, so the
+     * broad rule would empty the city out of a lobby window, which nobody asked for. The
+     * undercroft is the case that matters and it is the case this catches: `bounds` is the
+     * floor's own extent, so a cellar that runs out from under its own mass — which is exactly
+     * how the temple's B2 reaches under the plaza — is compared against where it really goes.
+     */
+    const activeFloor = player && player.floorId !== OUTDOOR_FLOOR_ID
+      ? floorPlanById(this.map, player.floorId)
+      : null;
+    const activeExtent = activeFloor?.bounds ?? null;
+
     for (const view of this.art.buildings) {
       const isActive = activeBuilding?.id === view.building.id;
       const opened = peek.get(view.building.id) ?? 0;
+      /**
+       * Hidden piece by piece rather than by one container, because there is no per-building
+       * container to hide. A building's roof, entrance marks, label and floors are each added
+       * to a SHARED layer so that z-order works across buildings rather than within one, and
+       * that is worth keeping — so this turns off the pieces instead, and every assignment
+       * below is written to respect it rather than relying on an early exit that could leave
+       * one piece stale.
+       */
+      const standsOverMe = activeExtent !== null && !isActive
+        && rectsOverlap(view.building.footprint, activeExtent);
       const activeFloorId =
         isActive && player
           ? player.floorId !== OUTDOOR_FLOOR_ID
@@ -1225,7 +1264,8 @@ export class GameRenderer {
       for (const floorView of view.floors) {
         const isRoofPlan = floorView.floor.label === "ROOF";
         // A real ROOF plan doubles as the building's roof seen from outside.
-        floorView.view.visible = floorView.floor.id === activeFloorId || (isRoofPlan && !isActive);
+        floorView.view.visible = !standsOverMe
+          && (floorView.floor.id === activeFloorId || (isRoofPlan && !isActive));
         floorView.foreground.visible = floorView.view.visible;
         /**
          * A roof stair is two different things from two different places, and this is
@@ -1247,10 +1287,14 @@ export class GameRenderer {
       }
 
       const hasRoofPlan = view.building.floors.some((floor) => floor.label === "ROOF");
-      view.roof.visible = !isActive && !hasRoofPlan;
+      view.roof.visible = !standsOverMe && !isActive && !hasRoofPlan;
       view.roof.alpha = (indoors ? 0.35 : 1) * (1 - opened);
-      view.entranceMarks.visible = !isActive;
+      view.entranceMarks.visible = !standsOverMe && !isActive;
       view.entranceMarks.alpha = indoors ? 0.35 : 1;
+      // The name goes with the building. Leaving "OBSERVATORY" floating over the undercroft
+      // was half the confusion in the report — a label with nothing under it reads as a room
+      // you are standing in.
+      view.label.visible = !standsOverMe;
       view.label.alpha = isActive ? 0 : 1;
     }
   }

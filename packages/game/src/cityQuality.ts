@@ -1,6 +1,6 @@
 import { MIN_FOOTWAY, ROUTE_KINDS } from "./cityPlan";
 import { defaultGameConfig } from "./config";
-import { polygonContains } from "./geometry";
+import { polygonContains, rectsOverlap } from "./geometry";
 import { isGroundFloor, physicsFloorId } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Building, Doorway, MapDocument, Rect, Vec2 } from "./types";
@@ -56,10 +56,6 @@ function distanceToRect(point: Vec2, rect: Rect): number {
   const dx = Math.max(rect.x - point.x, 0, point.x - (rect.x + rect.w));
   const dy = Math.max(rect.y - point.y, 0, point.y - (rect.y + rect.h));
   return Math.hypot(dx, dy);
-}
-
-function overlaps(a: Rect, b: Rect): boolean {
-  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
 /**
@@ -314,7 +310,7 @@ function footwayIssues(map: MapDocument): CityIssue[] {
         }, road) - Math.max(fp.w, fp.h) / 2 < MAX_SETBACK;
       });
       if (!fronting.length) continue;
-      if (footways.some((footway) => overlaps(footway, probe))) continue;
+      if (footways.some((footway) => rectsOverlap(footway, probe))) continue;
       issues.push({
         kind: "street-without-footway",
         subject: road.id,
