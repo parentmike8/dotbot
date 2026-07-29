@@ -15,7 +15,7 @@ import {
   hasLineOfSight, outdoorVision, seesOutdoors, visibilityPolygon, visionContext,
 } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
-import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, Rect, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { MatchIntel } from "@dotbot/protocol";
 import { CORE_REACH } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
@@ -793,6 +793,26 @@ export class GameRenderer {
   worldAt(canvasX: number, canvasY: number): Vec2 {
     const { x, y, scale } = this.lastCamera;
     return { x: (canvasX - x) / scale, y: (canvasY - y) / scale };
+  }
+
+  /**
+   * The world rectangle currently on screen.
+   *
+   * Read off the same drawn camera as `worldAt`, for the same reason: the answer has
+   * to describe what the player is looking at, not what they would be looking at if
+   * a camera were computed now. Earshot is the caller — "you hear what you can see"
+   * is only true if this is measured rather than assumed, because the visible width
+   * of the world depends on the window and on the zoom the window chose.
+   */
+  visibleWorldBounds(): Rect {
+    const topLeft = this.worldAt(0, 0);
+    const bottomRight = this.worldAt(this.viewport.width, this.viewport.height);
+    return {
+      x: topLeft.x,
+      y: topLeft.y,
+      w: bottomRight.x - topLeft.x,
+      h: bottomRight.y - topLeft.y,
+    };
   }
 
   /** Hand the renderer this frame's live squad marks. */

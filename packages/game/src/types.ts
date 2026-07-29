@@ -324,11 +324,30 @@ export type ObjectKind =
   | "bufferStop"
   | "waterTank"
   | "coalingTower"
-  // The fairground.
+  /**
+   * The fairground.
+   *
+   * Four attractions, and the rule that chose them is worth keeping because two
+   * earlier ones failed it four times each: an attraction belongs here only if its
+   * PLAN is its identity. A carousel is a disc of pie segments seen from above, a
+   * waltzer is a dished platform with cars round the inside, a helter-skelter is a
+   * spiral, a big top is a two-peaked canvas with a scalloped hem. Each of those is
+   * what the thing looks like from directly overhead, so each is recognisable
+   * without being told.
+   *
+   * Two kinds were cut for failing it. `swingRide` was a chairoplane, whose whole
+   * identity is that the seats FLY OUT — at rest it is a ring of dots, and the
+   * language forbids drawing motion statically, so there was nothing left to draw.
+   * Reported from play after four attempts: "it's definitely just a circle with
+   * squares in it lol. I would not have guessed without you saying it."
+   * `ferrisWheel` was worse: a vertical wheel seen from directly above is a LINE,
+   * and every attempt to make the line read as a wheel was really an attempt to
+   * borrow a side view this camera does not have.
+   */
   | "carousel"
-  | "ferrisWheel"
   | "waltzer"
-  | "swingRide"
+  | "helterSkelter"
+  | "bigTop"
   // The temple.
   | "stele"
   | "altar"

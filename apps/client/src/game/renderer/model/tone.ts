@@ -28,11 +28,24 @@
  *     by a warm/cool bias so slight it never reads as colour. The entire
  *     chromatic budget belongs to gameplay: bots, Dots, plates, extraction.
  *
- *  4. NOTHING IN MOTION IS DRAWN STATICALLY. No smoke, no steam, no spray, no
- *     fan blades, no flapping. A frozen moving thing reads as an artefact and
- *     promises animation the renderer never delivers. Draw the part that does
- *     not move — the stack, the guard grille, the grate — and let the motion be
- *     absent rather than faked.
+ *  4. A MOVING THING IS EITHER ANIMATED OR NOT DRAWN. **This is not a rule
+ *     against motion. Motion is wanted.**
+ *
+ *     It was written after a review of static smoke — a puff of frozen circles
+ *     over a chimney, which reads as a solid blob of debris rather than as
+ *     smoke. That is the entire defect: a moving thing frozen into a still mark
+ *     is an artefact. The fix is to ANIMATE IT, and only where that is not on
+ *     the table yet, to draw the part that is genuinely still (the stack, the
+ *     guard grille, the grate) and leave the motion out.
+ *
+ *     Do NOT read this rule as a reason to choose a still subject over a moving
+ *     one, or to cut something because it would need to move. It has been
+ *     misread that way repeatedly and it cost real content: a chairoplane was
+ *     deleted rather than given swinging seats, and a whole derelict fairground
+ *     was justified on the grounds that stillness was the point. Mike has
+ *     corrected this more than once. Rides turning, canopies swaying, leaves
+ *     falling, trails in the dirt and eventually vehicles and fast travel are
+ *     all wanted — see `docs/world-motion.md`, which owns the how.
  */
 
 import type { Graphics } from "pixi.js";

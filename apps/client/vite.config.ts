@@ -5,6 +5,11 @@ import { mapSourcePlugin } from "./mapSourcePlugin";
 
 export default defineConfig({
   plugins: [react(), labShotPlugin(), mapSourcePlugin()],
+  test: {
+    // See the file: pixi reads `navigator.userAgent` at module scope, and the renderer's
+    // drawing code now imports a pixi value (`FillGradient`) rather than only types.
+    setupFiles: ["./src/test/browserGlobals.ts"],
+  },
   server: {
     port: 5173,
     proxy: {

@@ -25,9 +25,19 @@ If these disagree, do not silently choose. Preserve the higher-authority directi
 ### 2.0 The drawing language
 
 `lit-model` is the language: a monochrome physical model, one light from the
-north-west, achromatic, silhouette equal to collider, nothing in motion drawn
-statically. It is implemented in `apps/client/src/game/renderer/model/`, with
-`model/tone.ts` as its single source of value and light.
+north-west, achromatic, silhouette equal to collider, and a moving thing either
+animated or not drawn. It is implemented in `apps/client/src/game/renderer/model/`,
+with `model/tone.ts` as its single source of value and light.
+
+**That fourth clause is not a ban on motion. Motion is wanted.** It was written
+after a review of static smoke — frozen circles over a chimney, which read as a
+blob of debris — and it means only that freezing a moving thing into a still mark
+produces an artefact. It has repeatedly been misread as licence to prefer a still
+subject, and that misreading has cost content (a chairoplane deleted rather than
+given swinging seats; a fairground justified on the grounds that stillness was the
+point). Never cite it as a reason to cut or avoid a subject because it would need to
+move. Rides turning, canopies swaying, leaves falling, trails in the dirt, and
+vehicles and fast travel later are all wanted. `docs/world-motion.md` owns the how.
 
 There is one language. The pen-plotter `plan` renderer and the pixel-city sprite
 pipeline are both deleted, along with the `visualTheme` field that selected between

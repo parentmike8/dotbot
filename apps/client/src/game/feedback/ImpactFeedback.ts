@@ -228,27 +228,34 @@ export class ImpactFeedback {
     }
   }
 
+  /**
+   * `earshot` scales the sound by how far away the contact was — see `earshot.ts`.
+   * It multiplies the SOUND only: haptics still fire, because a hit that reaches your
+   * own body is never out of earshot of it, and gating them would drop the cue for a
+   * hit landed on you from off-screen.
+   */
   playConfirmed(
     result: HitResult,
     perspective: ImpactPerspective,
     alreadyPredicted: boolean,
     pan = 0,
+    earshot = 1,
   ): void {
     if (this.disposed) return;
     try {
       // Prediction already played the contact transient. Confirmation only
       // adds the heavier down accent; replaying the full sound feels like lag.
       if (!alreadyPredicted || perspective !== "attacker") {
-        this.requestAudio({
-          kind: "impact",
-          result,
-          pan,
-          intensity: perspective === "observer" ? 0.55 : 0.9,
-          requestedAt: this.now(),
-        });
+        const intensity = (perspective === "observer" ? 0.55 : 0.9) * earshot;
+        if (intensity > 0) {
+          this.requestAudio({ kind: "impact", result, pan, intensity, requestedAt: this.now() });
+        }
         this.playHaptic(result, perspective);
       } else if (result === "downed") {
-        this.requestAudio({ kind: "impact", result, pan, intensity: 0.38, requestedAt: this.now() });
+        const intensity = 0.38 * earshot;
+        if (intensity > 0) {
+          this.requestAudio({ kind: "impact", result, pan, intensity, requestedAt: this.now() });
+        }
       }
     } catch {
       // A media or native bridge failure cannot be allowed to stop gameplay.

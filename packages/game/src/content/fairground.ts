@@ -24,14 +24,24 @@ import type { MapObject } from "../types";
  *
  * The composition rests on one decision: the midway is the LINE BETWEEN two states.
  * North of it the fair still reads as a fair; south of it the undergrowth has won, and
- * the ferris wheel stands in it. That gives the region a story you can see in one
- * frame, and it makes the handover to the temple region legible — the jungle arrives
- * here first, and the trail east leaves through it.
+ * the big top stands in it. That gives the region a story you can see in one frame, and
+ * it makes the handover to the temple region legible — the jungle arrives here first, and
+ * the trail east leaves through it, bending round the tent on its way.
  *
- * A note on motion, since a fairground is the obvious place to want it: everything
- * here is DERELICT, so everything here is genuinely still. The language's fourth rule
- * — nothing in motion drawn statically — is satisfied without a single animated frame,
- * because a wheel that does not turn is the truth about the place.
+ * A NOTE ON MOTION, since a fairground is the obvious place to want it — and since the
+ * earlier version of this note got it wrong in a way that changed the content.
+ *
+ * It said everything here is derelict so everything here is genuinely still, and called
+ * that a virtue. It is not. Rule 4 is a ban on freezing a moving thing into a still mark,
+ * not a preference for still subjects, and reading it the other way is why a chairoplane
+ * was deleted instead of given swinging seats. **Motion is wanted here** — the carousel
+ * and the waltzer should turn, slowly and unevenly, because WIND moving a ride nobody
+ * maintains is a better derelict story than a ride welded solid. See `docs/world-motion.md`.
+ *
+ * What the four attractions on the site DO have in common is that their plan names them —
+ * a striped disc, a dished platform, a spiral, a two-peaked tent — and that is a rule
+ * about a strictly overhead camera, which is a different thing entirely. A ferris wheel
+ * fails it because a vertical wheel from above is a line however fast it spins.
  */
 
 const obj = objects("fair");
@@ -122,7 +132,17 @@ const cityPlan: CityPlan = {
     // Worn ground under each ride, so a ride stands on its own apron rather than in
     // the weeds. Where the apron is gone the ride has been abandoned longer.
     { id: "fair-carousel-ground", kind: "clearing", points: blobPoly(1180, 2130, 215, 210, "car", 0.22, 15) },
-    { id: "fair-swing-ground", kind: "clearing", points: blobPoly(560, 2150, 205, 200, "swg", 0.24, 15) },
+    { id: "fair-skelter-ground", kind: "clearing", points: blobPoly(560, 2150, 205, 200, "swg", 0.24, 15) },
+    /**
+     * The big top's apron, and it is the one that is nearly GONE.
+     *
+     * Deliberately smaller than the tent it belongs to — 300 x 220 under a 460 x 320
+     * mass — so the growth is standing right up against the canvas on three sides. Every
+     * other ride here gets an apron that clears it. This one is at the end of the midway,
+     * which is the end the jungle reached first, and a worn ring that fitted would say
+     * somebody still walks round it.
+     */
+    { id: "fair-bigtop-ground", kind: "clearing", points: blobPoly(2130, 2740, 150, 110, "btop", 0.3, 15) },
 
     /**
      * Weeds coming up THROUGH the midway.
@@ -143,16 +163,25 @@ const cityPlan: CityPlan = {
      * The link to the temple region, and it is a TRAIL rather than a road on purpose:
      * the world's gradient runs city → depot → fair → ruin, and the ground you walk on
      * has to get less made at every step or the gradient is only in the objects.
+     *
+     * It ran dead straight from the midway to the region's east edge, which put it
+     * through the middle of where the big top now stands. Bent round the tent's west and
+     * south flanks instead, and it is the better trail for it: a path that turns because
+     * something is in the way is a path somebody wore, and a straight one across open
+     * ground is a line on a drawing. The bend also keeps the tent's west lane open — the
+     * kiosk at 1838 and the canvas at 1900 leave 62 units between them, and the trail
+     * points a squad at that gap rather than at the canvas.
      */
     {
       id: "fair-trail-e",
       kind: "clearing",
       points: ribbonPoly([
         { x: 1900, y: 2470 },
-        { x: 2020, y: 2650 },
-        { x: 2140, y: 2830 },
-        { x: 2280, y: 2960 },
-        { x: W1 + 30, y: 3020 },
+        { x: 1810, y: 2640 },
+        { x: 1800, y: 2830 },
+        { x: 1930, y: 2980 },
+        { x: 2180, y: 3030 },
+        { x: W1 + 30, y: 3040 },
       ], (t) => 170 - t * 50),
     },
   ],
@@ -176,7 +205,7 @@ const { roads, surfaces, regions } = compileCityPlan(cityPlan);
 const KIOSK_GAPS: Array<[number, number]> = [
   [1040, 1330], // the carousel
   [1490, 2050], // the pavilion
-  [420, 720], // the swing ride
+  [420, 720], // the helter-skelter
 ];
 
 const fairObjects: MapObject[] = [
@@ -187,8 +216,17 @@ const fairObjects: MapObject[] = [
    */
   obj("carousel", 1015, 1965, 330, 330),
 
-  /** A chairoplane, seats hanging still. Radial, and it survives this camera. */
-  obj("swingRide", 405, 1995, 310, 310),
+  /**
+   * The helter-skelter, where the chairoplane used to stand.
+   *
+   * The same site and the same footprint, because the site was never the problem: a
+   * chairoplane's identity is that its seats fly OUT, and a derelict fair has nothing
+   * in motion, so four attempts at it produced "a circle with squares in it". A spiral
+   * is a plan you cannot mistake, and a tower at the promenade's west end gives that
+   * end something to be — it was the one stretch of midway with no vertical accent on
+   * it at all.
+   */
+  obj("helterSkelter", 405, 1995, 310, 310),
 
   /**
    * The waltzer, south of the midway where the growth has already reached it. Its dish
@@ -198,15 +236,31 @@ const fairObjects: MapObject[] = [
   obj("waltzer", 930, 2560, 300, 300),
 
   /**
-   * The wheel, standing in the undergrowth south of the midway.
+   * THE BIG TOP, at the head of the midway, and it took over the ferris wheel's job.
    *
-   * Seen from directly above it is a line — a narrow band with gondolas along it — and
-   * drawing it as anything else would be the exact perspective cheat this language
-   * exists to refuse. Placed off the promenade and pointing south, so the line reads
-   * against the midway rather than along it, and so the jungle is what it is standing
-   * in. It is the thing you see first from the gate and the last thing still upright.
+   * The wheel's job was to be the thing you see first from the gate and the last thing
+   * still standing, and it could not do it: seen from directly above a vertical wheel is
+   * a line, and no amount of drawing made a line read as a wheel. A tent does the job
+   * properly, because a two-pole tent's plan IS a big top — a stadium of canvas with a
+   * peak at each end — and it is the largest single mass in the region.
+   *
+   * It keeps the wheel's site and the wheel's role: standing in the growth at the far end
+   * of the midway, half taken by the jungle, the biggest mass on the site and the last
+   * thing still upright. The trail east now bends round it, which is a better trail than
+   * the straight one was — the bend has a reason, and the tent is on the way out.
+   *
+   * The queueing ground north of the pavilion was the first choice and the numbers killed
+   * it, which is worth recording because that apron looks empty on a plan. The pavilion's
+   * octagon reaches x 2037 at its east corners and the city fence stands at 2374, so a
+   * 300-wide tent between them leaves 17 units of lane on one side and 20 on the other,
+   * and SEALS the whole east flank of the building. A landmark that closes a route is the
+   * same defect as an invisible wall, arrived at from the other side.
+   *
+   * Its north hem is at y 2590, which is 72 units clear of the bench line ending at 2518.
+   * That is the number that was checked first, and it is why the tent is not 30 units
+   * further north: at y 2560 the gap was 42, and a bot is 48 across.
    */
-  obj("ferrisWheel", 2130, 2540, 132, 620),
+  obj("bigTop", 1900, 2590, 460, 320, { facing: "N" }),
 
   // -- The midway's furniture, on a rhythm with the rides punched out -----
   ...rhythm(240, 2280, 152, KIOSK_GAPS).map((x) => obj("kiosk", x, 2166, 78, 54)),
@@ -247,7 +301,10 @@ const fairObjects: MapObject[] = [
    */
   ...rhythm(120, 2280, 176).map((x, i) => obj("thicket", x, 3080 + (i % 3) * 74, 148, 132)),
   ...rhythm(2660, 3200, 168).map((y) => obj("thicket", 90, y, 140, 128)),
-  ...rhythm(1500, 2300, 210).map((x) => obj("thicket", x, 2740, 132, 118)),
+  // The gap is the big top. The rhythm ran 1500 → 2340 and put three thickets inside the
+  // tent, which is the same defect as the four that were growing through the temple's
+  // terrace wall: a rule-placed line has to stop for a building.
+  ...rhythm(1500, 2300, 210, [[1840, 2374]]).map((x) => obj("thicket", x, 2740, 132, 118)),
 
   // The skeletons of stalls the growth took first: a line of them off the midway's
   // south side, still on the rhythm they were pitched to.
@@ -306,7 +363,10 @@ export const fairground: RegionParts = {
     dot("health", 1500, 2330),
     dot("dashOvercharge", 820, 2330),
     dot("radar", 1180, 2400),
-    dot("incognito", 2100, 2860),
+    // On the trail east where it comes back out from behind the big top. It was at
+    // 2100,2860 — which is now inside the tent, since the trail it used to sit on ran
+    // straight through where the tent stands.
+    dot("incognito", 2020, 3010),
     dot("health", 420, 2450),
     dot("dashOvercharge", 300, 1740),
   ],
@@ -326,7 +386,7 @@ export const fairground: RegionParts = {
   /** See the note on `railYard`'s spawns: a spawn inside a solid never moves. */
   botSpawns: [
     { id: "fair-1", name: "Tinsel", squadId: "rival-15", isAmbient: true, color: "#c96b9b", position: { x: 1620, y: 2420 } },
-    // South of the swing ride's platform, which ends at y 2305. Was inside it.
+    // South of the helter-skelter's base, which ends at y 2305. Was inside it.
     { id: "fair-2", name: "Cotton", squadId: "rival-16", isAmbient: true, color: "#d9a05b", position: { x: 620, y: 2350 } },
     // Standing AT the bar, not in it: the counter's east face is HALL.x - 176.
     { id: "fair-3", name: "Bulb", squadId: "rival-17", isAmbient: true, color: "#8c7ab8", position: { x: HALL.x - 130, y: HALL.y + 30 }, floorId: "pavilion:GROUND" },

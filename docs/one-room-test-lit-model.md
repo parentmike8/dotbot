@@ -158,10 +158,15 @@ The room was approved, so the language is being taken through the whole game.
   so the approved look cannot drift between them.
 - Lot 6's authoring bugs are fixed and the floor-quality audit now gates downtown.
 
-**Rule added after review:** nothing that is actually in motion may be drawn as a
-static mark — no smoke, steam, spray, fan blades or flapping. Draw the part that
-does not move (the stack, the guard grille, the grate) and let the motion be
-absent rather than faked. Recorded as rule 4 in `tone.ts`.
+**Rule added after review:** a moving thing may not be frozen into a static mark.
+The review that produced it was of **static smoke** — a puff of circles over a
+chimney, which read as a blob of debris rather than as smoke. Where animation is not
+available, draw the part that genuinely does not move (the stack, the guard grille,
+the grate). Recorded as rule 4 in `tone.ts`.
+
+This is **not** a ban on motion, and the rule as written here was later misread that
+way often enough to cost content. See `tone.ts` rule 4 and
+`docs/world-motion.md` for the corrected statement: animation is wanted.
 
 ## Still to do
 

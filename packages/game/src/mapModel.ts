@@ -174,10 +174,10 @@ const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
    * solid. Each of these is drawn as a mass with a cast shadow, so each collides.
    *
    * The two exceptions are in `FLAT_KINDS` and both are ground you walk on — track
-   * and a turntable deck. Note what is *not* excepted: the swing ride's seats hang
-   * at rest inside its own footprint, and the ferris wheel seen from directly
-   * overhead is a narrow band, not a disc. Neither gets a generous collider because
-   * a ride you can walk through the middle of is the same lie as a ghost tree.
+   * and a turntable deck. Nothing else is excepted, and in particular no attraction
+   * is: a ride you can walk through the middle of is the same lie as a ghost tree.
+   * Where a glyph does not fill its box the fix is a collider that matches the
+   * glyph — see `ROUND_KINDS` and `STADIUM_KINDS` — never a pass through the mass.
    */
   "boulder",
   "thicket",
@@ -187,9 +187,9 @@ const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "waterTank",
   "coalingTower",
   "carousel",
-  "ferrisWheel",
   "waltzer",
-  "swingRide",
+  "helterSkelter",
+  "bigTop",
   "stele",
   "altar",
   "serpentHead",
@@ -255,6 +255,49 @@ export function planningTableSurfaceRect(object: Pick<MapObject, "x" | "y" | "w"
 }
 
 /**
+ * Kinds drawn as a stadium inscribed in their own bounds — a shape with round ends
+ * and straight sides — so their collider is that stadium and not the box.
+ *
+ * Two families, drawn from opposite ends of the kit and identical in plan:
+ *
+ *  - organic masses (boulder, thicket) at rx = w/2, ry = h/2. Reported from play at
+ *    the temple, squeezing a bare core through a gap: "I cannot pass through this
+ *    gap." The gap was between a boulder and a thicket, open on the screen and shut
+ *    in the physics by two corners of undergrowth that nothing was drawn in.
+ *  - a two-pole tent (bigTop), whose canvas is a semicircle round each mast with
+ *    straight runs between them. That is not an approximation of a big top's plan;
+ *    it is a big top's plan.
+ */
+export const STADIUM_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
+  "boulder",
+  "thicket",
+  "bigTop",
+]);
+
+/**
+ * The stadium inscribed in an object's bounds: a segment and a radius.
+ *
+ * Exported because the collider and the GLYPH both need it and must not each work
+ * it out. `objectSolids` builds a capsule from this; the renderer draws the tent's
+ * canvas along the same segment. One function, one answer — which is the only way
+ * "the barrier matches its own edges" survives someone editing one of the two.
+ */
+export function stadiumAxis(object: Rect): { ax: number; ay: number; bx: number; by: number; r: number } {
+  const cx = object.x + object.w / 2;
+  const cy = object.y + object.h / 2;
+  const r = Math.min(object.w, object.h) / 2;
+  const reach = Math.max(object.w, object.h) / 2 - r;
+  const across = object.w >= object.h;
+  return {
+    ax: across ? cx - reach : cx,
+    ay: across ? cy : cy - reach,
+    bx: across ? cx + reach : cx,
+    by: across ? cy : cy + reach,
+    r,
+  };
+}
+
+/**
  * Kinds drawn as a disc inscribed in their own bounds, so their collider must be
  * a disc too.
  *
@@ -267,21 +310,10 @@ export function planningTableSurfaceRect(object: Pick<MapObject, "x" | "y" | "w"
  * A kind, not an instance. Every one of these computes its radius as
  * `Math.min(w, h) / 2` in its glyph, which is the definition being honoured here.
  */
-/**
- * Kinds drawn as an organic mass inscribed in their bounds — a blob at rx = w/2,
- * ry = h/2 — so their collider is the stadium inside the box, not the box.
- *
- * Reported from play at the temple, squeezing a bare core through a gap: "I cannot
- * pass through this gap." The gap was between a boulder and a thicket, and it was
- * open on the screen and shut in the physics by two corners of undergrowth that
- * nothing was drawn in.
- */
-export const BLOB_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>(["boulder", "thicket"]);
-
 export const ROUND_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "carousel",
   "waltzer",
-  "swingRide",
+  "helterSkelter",
   "turntable",
   "waterTank",
   "brazier",

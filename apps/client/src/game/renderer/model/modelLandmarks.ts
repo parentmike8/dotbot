@@ -1,5 +1,6 @@
-import type { Graphics } from "pixi.js";
+import { FillGradient, type Graphics } from "pixi.js";
 import type { MapObject, Vec2 } from "@dotbot/game/types";
+import { stadiumAxis } from "@dotbot/game/mapModel";
 import { GRD, fillPoly } from "./modelGround";
 import {
   contact,
@@ -7,6 +8,7 @@ import {
   contactRound,
   contactShape,
   cylinder,
+  faceLight,
   inlay,
   jitter,
   LIFT,
@@ -34,10 +36,19 @@ import {
  *    structure into stripes and leaves round things fully legible — a turntable, a
  *    carousel, a ball court, a water tank. Lean on that.
  *
- *  - A VERTICAL WHEEL IS A LINE. Seen from directly above, a ferris wheel is a
- *    narrow band with gondolas along it. Drawing the circle would be exactly the
- *    perspective cheat this language exists to refuse, so it is drawn as the line it
- *    is and the A-frames carry the scale.
+ *  - A SUBJECT WHOSE PLAN IS NOT ITS IDENTITY CANNOT BE DRAWN HERE. A ferris wheel
+ *    seen from directly above is a LINE, and every one of four attempts to make that
+ *    line read as a wheel was an attempt to borrow the side view this camera does not
+ *    have. A carousel works because a carousel genuinely IS a disc of pie segments
+ *    from above. That is the test to apply BEFORE drawing: if the honest plan does not
+ *    name the thing, pick a different thing.
+ *
+ *    This is a rule about the CAMERA and nothing else. It is not rule 4, and the two
+ *    got tangled once: a chairoplane was cut alongside the wheel on the grounds that
+ *    its identity is motion and a ride at rest has none. That was wrong — the answer
+ *    to a chairoplane is swinging seats, and a chairoplane in plan is a legible ring
+ *    of seats round a mast. Motion is wanted; see `docs/world-motion.md`. Only fail a
+ *    subject here if it fails from OVERHEAD however it is moving.
  *
  *  - OUTLINE CARRIES MATERIAL AT LEAST AS HARD AS VALUE DOES. Foliage kept reading
  *    as rock through three value passes; what fixed it was fraying the silhouette. A
@@ -66,6 +77,27 @@ function inset(r: Rect, by: number): Rect {
 /** True when the object is longer east-west than north-south. */
 function acrossAxis(o: MapObject): boolean {
   return o.w >= o.h;
+}
+
+/**
+ * The outline of a stadium: a semicircle round each end of a segment, joined.
+ *
+ * The drawn twin of the capsule `objectSolids` builds for a `STADIUM_KIND`, off the
+ * same `stadiumAxis`, which is the only way the two stay equal through an edit.
+ * `steps` is per end cap.
+ */
+function stadiumPoly(ax: number, ay: number, bx: number, by: number, r: number, steps: number): Vec2[] {
+  const axis = Math.atan2(by - ay, bx - ax);
+  const points: Vec2[] = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const a = axis - Math.PI / 2 + (i / steps) * Math.PI;
+    points.push({ x: bx + Math.cos(a) * r, y: by + Math.sin(a) * r });
+  }
+  for (let i = 0; i <= steps; i += 1) {
+    const a = axis + Math.PI / 2 + (i / steps) * Math.PI;
+    points.push({ x: ax + Math.cos(a) * r, y: ay + Math.sin(a) * r });
+  }
+  return points;
 }
 
 /** An irregular closed ring: a boulder, a thicket, a pool. */
@@ -465,91 +497,175 @@ const carouselGlyph: LandmarkFn = (g, pad, o) => {
 };
 
 /**
- * A ferris wheel, seen from directly overhead: a line.
+ * A helter-skelter: a timber tower with its slide spiralling down round it.
  *
- * This is the single most honest thing in the kit. From up here the rim is edge-on —
- * a narrow band the width of the wheel's own structure — and drawing the circle
- * instead would be exactly the perspective cheat the whole language exists to
- * refuse. What carries the scale is the pair of A-frames, and each one is split into
- * two members rather than drawn as a solid triangle, because a big closed dark shape
- * in this language is a wall.
+ * The one fairground form whose PLAN is unmistakably itself. A spiral is the single
+ * piece of line work that survives a round object in this language, and it survives
+ * for a reason worth stating: the failure mode here is always the dial, and a dial is
+ * made of marks that all share a centre. A spiral crosses every radius exactly once,
+ * so there is no ring of coincident ends for the eye to read as a clock face.
+ *
+ * It replaced a chairoplane on this site, which had failed four times because a ride
+ * at rest has no motion to draw. Nothing about a helter-skelter needs to be moving:
+ * the slide is the structure.
  */
-const ferrisWheelGlyph: LandmarkFn = (g, pad, o) => {
-  const r = rect(o);
-  const across = acrossAxis(o);
-  const span = across ? r.w : r.h;
-  const band = across ? r.h : r.w;
-  contact(pad, r, LIFT.tower);
-
-  const mid = across ? r.x + span * 0.5 : r.y + span * 0.5;
-  const axis = across ? r.y + band / 2 : r.x + band / 2;
-
-  // The rim, edge-on: the wheel itself, drawn first so everything else reads as fixed
-  // to it. Narrow, because that is all a rim IS from here.
-  const rim = across
-    ? { x: r.x, y: axis - band * 0.11, w: span, h: band * 0.22 }
-    : { x: axis - band * 0.11, y: r.y, w: band * 0.22, h: span };
-  inlay(g, rim, MAT.iron.front);
-  inlay(g, across
-    ? { x: rim.x, y: rim.y, w: rim.w, h: 2 }
-    : { x: rim.x, y: rim.y, w: 2, h: rim.h },
-    shade(MAT.iron.top, 1.18));
+const helterSkelterGlyph: LandmarkFn = (g, pad, o) => {
+  const { x: cx, y: cy } = centre(o);
+  const radius = Math.min(o.w, o.h) / 2 - 0.5;
+  contactRound(pad, cx, cy, radius, LIFT.tower);
 
   /**
-   * The gondolas: evenly spaced along the rim, hanging still.
+   * The tower's mass first, so the glyph has a lit south face and a cast shadow that is
+   * exactly its collider. What shows between the turns of the slide is this.
    *
-   * Still is not a compromise here — the ride is derelict, so nothing about it is in
-   * motion, and the language's fourth rule is satisfied without any animation at all. A
-   * rusted wheel that does not turn is the point of the place.
+   * DARK, and that is the whole legibility of the spiral. In `woodDark` the drum sat two
+   * steps off the slide's canvas and the ride came out as a set of concentric rings — a
+   * washer, which is the same failure the waltzer's cars had for the same reason. A pale
+   * ribbon needs a dark ground to be a ribbon. Weathered iron also happens to be what is
+   * left of a fifty-year-old tower nobody has painted.
    */
-  const cars = Math.max(6, Math.round(span / 52));
-  for (let i = 0; i < cars; i += 1) {
-    const t = (i + 0.5) / cars;
-    const at = across ? { x: r.x + span * t, y: axis } : { x: axis, y: r.y + span * t };
-    const size = band * 0.19;
-    // One value, not two alternating: alternating light and dark cars turned the rim
-    // into a dashed line, which is a road marking rather than a ride.
-    g.roundRect(at.x - size / 2, at.y - size / 2, size, size, size * 0.3)
-      .fill({ color: shade(MAT.canvas.top, 0.92) });
-    g.roundRect(at.x - size / 2, at.y - size / 2, size, size, size * 0.3)
-      .stroke({ color: MAT.iron.edge, width: 0.8 });
+  cylinder(g, cx, cy, radius, MAT.iron, LIFT.tower);
+  // The drum's own boarding, as a ring of tone falling away to the hem: a plain flat
+  // cylinder top is a disc, and the slide is wrapped round something round.
+  g.circle(cx, cy, radius - 1).fill(new FillGradient({
+    type: "radial",
+    center: { x: 0.42, y: 0.4 },
+    innerRadius: 0,
+    outerCenter: { x: 0.5, y: 0.5 },
+    outerRadius: 0.5,
+    textureSpace: "local",
+    colorStops: [
+      { offset: 0, color: shade(MAT.iron.top, 1.16) },
+      { offset: 0.7, color: MAT.iron.top },
+      { offset: 1, color: shade(MAT.iron.top, 0.82) },
+    ],
+  }));
+
+  const towerR = radius * 0.3;
+  /**
+   * 1.85 turns, and the number is the whole legibility of the glyph.
+   *
+   * The radial pitch has to be wider than the slide, or the turns touch and the spiral
+   * closes into a plain annulus — which is a washer, not a ride. At 1.85 turns the
+   * pitch is about 50 units against a 28-unit slide, so the timber shows through in two
+   * clean gaps and the eye follows the band round. It ends nearly half a turn off where
+   * it started, which is what says spiral rather than circle.
+   */
+  const turns = 1.85;
+  const sweep = turns * Math.PI * 2;
+  const outerR = radius * 0.94;
+  const pitch = (outerR - towerR) / turns;
+  const band = pitch * 0.56;
+
+  // Wound clockwise from the SOUTH, so the slide's foot faces the promenade: the way
+  // out of a helter-skelter is the side people queue on.
+  const at = (t: number): { a: number; r: number } => ({
+    a: Math.PI / 2 + t * sweep,
+    r: outerR - band / 2 - t * (outerR - band - towerR),
+  });
+
+  /**
+   * The slide, as a run of quads rather than one long ribbon.
+   *
+   * Segmented so each piece can take its own value off its own facing, which is what
+   * makes the band read as a helix descending rather than as a flat spiral drawn on the
+   * top of a drum. One fill for the whole ribbon came out as a decal.
+   */
+  const segments = 30;
+  for (let i = 0; i < segments; i += 1) {
+    const s0 = at(i / segments);
+    const s1 = at((i + 1) / segments);
+    const quad: Vec2[] = [
+      { x: cx + Math.cos(s0.a) * (s0.r + band / 2), y: cy + Math.sin(s0.a) * (s0.r + band / 2) },
+      { x: cx + Math.cos(s1.a) * (s1.r + band / 2), y: cy + Math.sin(s1.a) * (s1.r + band / 2) },
+      { x: cx + Math.cos(s1.a) * (s1.r - band / 2), y: cy + Math.sin(s1.a) * (s1.r - band / 2) },
+      { x: cx + Math.cos(s0.a) * (s0.r - band / 2), y: cy + Math.sin(s0.a) * (s0.r - band / 2) },
+    ];
+    // The light is still north-west, so a run facing that way is the bright one.
+    const mid = (s0.a + s1.a) / 2;
+    const facing = (Math.cos(mid) * -0.33 + Math.sin(mid) * -0.94 + 1) / 2;
+    // Higher turns are paler: the top of a tower catches more light than its foot, and
+    // it is the only cue in a plan that tells the two apart.
+    const height = 0.9 + (i / segments) * 0.14;
+    fillPoly(g, quad, shade(MAT.canvas.top, (0.82 + facing * 0.3) * height));
+  }
+
+  // The rails: bright on the outside edge, dark where the slide meets the tower. Two
+  // strokes, and between them they are what makes the band a chute rather than a stripe.
+  for (const side of [1, -1]) {
+    const edge: Vec2[] = [];
+    for (let i = 0; i <= segments * 2; i += 1) {
+      const s = at(i / (segments * 2));
+      const r = s.r + (band / 2) * side;
+      edge.push({ x: cx + Math.cos(s.a) * r, y: cy + Math.sin(s.a) * r });
+    }
+    g.moveTo(edge[0].x, edge[0].y);
+    for (const point of edge.slice(1)) g.lineTo(point.x, point.y);
+    g.stroke({ color: side > 0 ? shade(MAT.canvas.top, 1.2) : shade(MAT.woodDark.edge, 0.94), width: 1.5 });
   }
 
   /**
-   * The A-FRAMES AND THE HUB, at the axle, and this is the third attempt.
+   * The RUN-OUT at the slide's foot: the chute flaring wider as it levels off.
    *
-   * The first drew them in mid iron and the ride came out as a dotted line. The second
-   * made them dark and wide and it came out as a LADDER — because they were at 0.18 and
-   * 0.82 of the run, one near each end. That is where a coaster's trestles go. A ferris
-   * wheel is cantilevered off a single axle, so both frames straddle the MIDDLE, and what
-   * says wheel from directly above is a long thin rim with one heavy bearing in the
-   * centre of it. Two marks in the right place beat six in the wrong one.
+   * A floating rounded rectangle was the first attempt at this and read as a detached
+   * tile lying beside the tower. A helter-skelter's foot is not an object next to the
+   * ride, it is the last few feet of the slide going flat and getting wider — so it is
+   * drawn as part of the same ribbon, and it says which end of the spiral is the bottom
+   * without adding anything the eye has to account for separately.
    */
-  for (const lean of [-1, 1]) {
-    const foot = (band / 2 - 2) * lean;
-    const legs: Vec2[] = across
-      ? [
-        { x: mid - 9, y: axis }, { x: mid + 9, y: axis },
-        { x: mid + band * 0.26 * lean + 11, y: axis + foot },
-        { x: mid + band * 0.26 * lean - 11, y: axis + foot },
-      ]
-      : [
-        { x: axis, y: mid - 9 }, { x: axis, y: mid + 9 },
-        { x: axis + foot, y: mid + band * 0.26 * lean + 11 },
-        { x: axis + foot, y: mid + band * 0.26 * lean - 11 },
-      ];
-    fillPoly(g, legs, MAT.iron.edge);
-    // A catch light down the north-west member, so the frame is a member rather than a
-    // stain: the darkest thing on the sheet still has to have a lit face.
-    fillPoly(g, legs.map((p, i) => (i === 0 || i === 3
-      ? { x: p.x, y: p.y }
-      : { x: p.x - (across ? 5 : 0), y: p.y - (across ? 0 : 5) })), shade(MAT.iron.front, 0.86));
+  const foot = at(0);
+  const flare = band * 0.9;
+  const lip: Vec2[] = [];
+  for (let i = 0; i <= 8; i += 1) {
+    const a = foot.a - (i / 8) * 0.5;
+    const w = band / 2 + (i / 8) * (flare - band) / 2;
+    lip.push({ x: cx + Math.cos(a) * (foot.r + w), y: cy + Math.sin(a) * (foot.r + w) });
   }
-  const hub = across ? { x: mid, y: axis } : { x: axis, y: mid };
-  g.circle(hub.x, hub.y, band * 0.4).fill({ color: MAT.iron.front });
-  g.circle(hub.x, hub.y, band * 0.4).stroke({ color: MAT.iron.edge, width: 1.4 });
-  g.circle(hub.x, hub.y, band * 0.24).fill({ color: shade(MAT.iron.top, 1.14) });
-  g.circle(hub.x, hub.y, band * 0.1).fill({ color: MAT.iron.edge });
+  for (let i = 8; i >= 0; i -= 1) {
+    const a = foot.a - (i / 8) * 0.5;
+    const w = band / 2 + (i / 8) * (flare - band) / 2;
+    lip.push({ x: cx + Math.cos(a) * (foot.r - w), y: cy + Math.sin(a) * (foot.r - w) });
+  }
+  fillPoly(g, lip, shade(MAT.canvas.top, 0.92));
+  fillPoly(g, lip.slice(0, 9).concat(lip.slice(9).map((p) => ({
+    x: p.x + (cx - p.x) * 0.12,
+    y: p.y + (cy - p.y) * 0.12,
+  }))), shade(MAT.canvas.top, 1.06));
+
+  /**
+   * The tower head and its conical cap.
+   *
+   * A radial gradient rather than eight alternating wedges, which is the second attempt:
+   * pie slices this small came out as a pinwheel, and a pinwheel is a dial with fewer
+   * hands. A cone from directly above is a point of light with the tone falling away all
+   * round it, and that is one gradient. The seams then read as seams because they are
+   * laid on a curved surface rather than being the only thing describing it.
+   */
+  cylinder(g, cx, cy, towerR, MAT.wood, LIFT.tower);
+  g.circle(cx, cy, towerR * 0.94).fill(new FillGradient({
+    type: "radial",
+    center: { x: 0.4, y: 0.38 },
+    innerRadius: 0,
+    outerCenter: { x: 0.5, y: 0.5 },
+    outerRadius: 0.5,
+    textureSpace: "local",
+    colorStops: [
+      { offset: 0, color: MAT.canvas.lit },
+      { offset: 0.5, color: MAT.canvas.top },
+      { offset: 1, color: shade(MAT.canvas.top, faceLight({ x: 0.3, y: 1 })) },
+    ],
+  }));
+  for (let i = 0; i < 8; i += 1) {
+    const a = (i / 8) * Math.PI * 2 + 0.2;
+    g.moveTo(cx + Math.cos(a) * towerR * 0.24, cy + Math.sin(a) * towerR * 0.24)
+      .lineTo(cx + Math.cos(a) * towerR * 0.92, cy + Math.sin(a) * towerR * 0.92)
+      .stroke({ color: shade(MAT.canvas.edge, 1.12), width: 0.7, alpha: 0.7 });
+  }
+  g.circle(cx, cy, towerR * 0.94).stroke({ color: MAT.canvas.edge, width: 1 });
+  // The finial, off-centre toward the light like every pole head in the kit.
+  g.circle(cx + towerR * 0.06, cy + towerR * 0.08, towerR * 0.16).fill({ color: MAT.iron.edge });
+  g.circle(cx + towerR * 0.03, cy + towerR * 0.04, towerR * 0.08)
+    .fill({ color: shade(MAT.iron.top, 1.12) });
 };
 
 /**
@@ -591,69 +707,288 @@ const waltzerGlyph: LandmarkFn = (g, pad, o) => {
 };
 
 /**
- * A chairoplane at rest: a mast, and its seats hanging in a ring.
+ * A big top: a two-pole tent, and its plan is a stadium.
  *
- * Radial, and it works where the tank's staves failed for one reason — the seats are
- * discrete masses at a radius, not lines through it. Discs read as seats; strokes
- * read as spokes.
+ * That is not a simplification made to fit a capsule collider — it is what a two-pole
+ * tent IS. The canvas is a cone round each mast with straight runs of sheeting between
+ * them, so the hem is a semicircle at each end joined by two parallel sides, and both
+ * the drawn shape and the collider come off the same `stadiumAxis`.
+ *
+ * Distinguished from the carousel deliberately, because the two stand in the same
+ * region and a scalloped round canopy is the carousel's own signature: this one is a
+ * STADIUM rather than a disc, it has TWO crowns rather than one, and its panels change
+ * direction — fanned at the ends, running across the middle — which is how a tent of
+ * this size is actually cut. Sharing the scalloped hem is on purpose. They came from
+ * the same works, and the hem is the fairground's material rather than one ride's mark.
+ *
+ * TWO THINGS THIS GOT WRONG FIRST, and both were about VALUE rather than shape.
+ *
+ * The panels were shaded by their own stripe colour with only a whisper of facing on
+ * top, so the tent came out as a striped oval lying flat on the ground — the drawing had
+ * no idea which way the canvas sloped. Every panel is a FACE, and a face in this
+ * language is shaded by `faceLight(normal)` like every other face in the world. The
+ * stripe is now a small multiplier on top of that, not the other way round, so the pitch
+ * dominates and the tent reads as a roof.
+ *
+ * And the crowns read as EYES: two large light discs with dark centres, joined by a bar,
+ * on a symmetrical face-shaped mass. Reported on sight. They are small, off-centre and
+ * gradient-lit now, and the bar between them has become a proper ridge.
  */
-const swingRideGlyph: LandmarkFn = (g, pad, o) => {
-  const { x: cx, y: cy } = centre(o);
-  const radius = Math.min(o.w, o.h) / 2 - 0.5;
-  contactRound(pad, cx, cy, radius, LIFT.column);
+const bigTopGlyph: LandmarkFn = (g, pad, o) => {
+  const { ax, ay, bx, by, r } = stadiumAxis(o);
+  const across = acrossAxis(o);
+  const hem = stadiumPoly(ax, ay, bx, by, r, 22);
+  contactShape(pad, hem, LIFT.tower);
 
   /**
-   * THE PLATFORM, and it is drawn because it is the collider.
-   *
-   * The seats hang at 0.7 of the radius, so a fifth of this ride's radius was solid
-   * ground with nothing drawn on it — reported from play as being stopped short of
-   * the ride by nothing at all. The old note here said the seats hung "well inside
-   * the footprint so the silhouette is the collider", which has it exactly backwards:
-   * drawing INSIDE the footprint makes the collider bigger than the mark, which is
-   * the one direction a collider must never be wrong in.
-   *
-   * A chairoplane stands on a boarding platform, so the honest fix is to draw the
-   * thing that is actually there rather than to shrink what collides.
+   * The south face, as a crescent: the hem polygon shifted along the pull and drawn in
+   * the front tone before anything else. This is `cylinder`'s own trick, and without it
+   * the tent had no apparent height at all — the whole point of a big top is that it is
+   * the tallest thing on the site.
    */
-  cylinder(g, cx, cy, radius, MAT.painted, LIFT.column);
-  g.circle(cx, cy, radius * 0.9).stroke({ color: shade(MAT.painted.edge, 0.9), width: 1.2 });
+  const lift = LIFT.tower * 0.5;
+  fillPoly(g, hem.map((p) => ({ x: p.x, y: p.y + lift })), MAT.canvas.front);
+  // Then the canvas as one field, so a seam between panels shows canvas, not ground.
+  fillPoly(g, hem, shade(MAT.canvas.top, 0.86));
 
-  // The canopy over the mast: a small striped cone, echoing the carousel because
-  // they came from the same works.
-  const hubR = radius * 0.32;
-  for (let i = 0; i < 8; i += 1) {
-    const a0 = (i / 8) * Math.PI * 2;
-    const a1 = ((i + 1) / 8) * Math.PI * 2;
-    const wedge: Vec2[] = [{ x: cx, y: cy }];
-    for (let s = 0; s <= 3; s += 1) {
-      const a = a0 + (a1 - a0) * (s / 3);
-      wedge.push({ x: cx + Math.cos(a) * hubR, y: cy + Math.sin(a) * hubR });
+  const peaks: Vec2[] = [{ x: ax, y: ay }, { x: bx, y: by }];
+  const PANELS = 9;
+  /** How much a stripe darkens its panel. Small, because the PITCH is the value story. */
+  const stripeOf = (dark: boolean): number => (dark ? 0.93 : 1);
+
+  /**
+   * The end cones: wedges fanned from each mast out to its own half of the hem.
+   *
+   * Wide alternating wedges rather than seams, which is the kit's standing answer to
+   * the dial — a thin radial line on a round thing is a clock hand, and a wide one is
+   * a stripe. Half a turn each, so the fans meet the cross-bands square.
+   *
+   * Each wedge is a sloping face whose outward normal is its own bearing from the mast,
+   * so `faceLight` shades it: the north side of each cone is bright, the south side is in
+   * shade, and a cone reads as a cone with no gradient needed.
+   */
+  peaks.forEach((peak, end) => {
+    const base = across ? (end === 0 ? Math.PI / 2 : -Math.PI / 2) : (end === 0 ? Math.PI : 0);
+    for (let i = 0; i < PANELS; i += 1) {
+      const a0 = base + (i / PANELS) * Math.PI;
+      const a1 = base + ((i + 1) / PANELS) * Math.PI;
+      const wedge: Vec2[] = [peak];
+      for (let s = 0; s <= 3; s += 1) {
+        const a = a0 + (a1 - a0) * (s / 3);
+        wedge.push({ x: peak.x + Math.cos(a) * r, y: peak.y + Math.sin(a) * r });
+      }
+      const mid = (a0 + a1) / 2;
+      const slope = faceLight({ x: Math.cos(mid), y: Math.sin(mid) });
+      fillPoly(g, wedge, shade(MAT.canvas.top, slope * stripeOf((i + end) % 2 === 1)));
     }
-    fillPoly(g, wedge, i % 2 === 0 ? shade(MAT.canvas.top, 0.94) : shade(MAT.canvas.top, 0.7));
-  }
-  g.circle(cx, cy, hubR).stroke({ color: MAT.canvas.edge, width: 1 });
-  g.circle(cx, cy, radius * 0.1).fill({ color: MAT.iron.front });
+  });
 
-  // Seats hanging at rest over the platform drawn above.
-  const ring = radius * 0.72;
-  for (let i = 0; i < 12; i += 1) {
-    const a = (i / 12) * Math.PI * 2 + 0.13;
-    const px = cx + Math.cos(a) * ring;
-    const py = cy + Math.sin(a) * ring;
-    /**
-     * No chains. They were drawn short on purpose — "a full-length spoke is a dial" — and
-     * twelve short spokes are a dial too. What reads as a ride at rest is the ring of
-     * seats alone: discrete masses at a radius, with nothing joining them to the hub.
-     */
-    // Rounded rectangles set square to the ring, not circles: a ring of discs reads as
-    // festoon bulbs, and a bulb is 20 units across while a seat is 40.
-    const seat = radius * 0.17;
-    g.roundRect(px - seat / 2, py - seat / 2, seat, seat * 0.82, seat * 0.3)
-      .fill({ color: shade(MAT.canvas.top, 0.74) });
-    g.roundRect(px - seat / 2 + 1.5, py - seat / 2 + 1.5, seat - 3, seat * 0.82 - 3, seat * 0.24)
-      .fill({ color: shade(MAT.canvas.top, 1.02) });
-    g.roundRect(px - seat / 2, py - seat / 2, seat, seat * 0.82, seat * 0.3)
-      .stroke({ color: MAT.canvas.edge, width: 0.9 });
+  /**
+   * The middle: sheeting across the ridge between the two masts, split at the ridge so
+   * each half is its own face.
+   *
+   * Bands rather than a fan, because there is no single centre here to fan from — and
+   * that change of direction is the strongest single cue that this is a tent with two
+   * poles in it rather than a very large round canopy. Splitting at the ridge is what
+   * stops the middle reading as a floor: the two halves land two full steps of value
+   * apart, which is a roofline.
+   */
+  const runLength = Math.hypot(bx - ax, by - ay);
+  const bands = Math.max(2, Math.round(runLength / ((r / PANELS) * 2.6)));
+  for (let i = 0; i < bands; i += 1) {
+    const t0 = i / bands;
+    const t1 = (i + 1) / bands;
+    for (const side of [-1, 1]) {
+      const strip: Vec2[] = across
+        ? [
+          { x: ax + (bx - ax) * t0, y: ay }, { x: ax + (bx - ax) * t1, y: ay },
+          { x: ax + (bx - ax) * t1, y: ay + r * side }, { x: ax + (bx - ax) * t0, y: ay + r * side },
+        ]
+        : [
+          { x: ax, y: ay + (by - ay) * t0 }, { x: ax, y: ay + (by - ay) * t1 },
+          { x: ax + r * side, y: ay + (by - ay) * t1 }, { x: ax + r * side, y: ay + (by - ay) * t0 },
+        ];
+      const normal: Vec2 = across ? { x: 0, y: side } : { x: side, y: 0 };
+      fillPoly(g, strip, shade(MAT.canvas.top, faceLight(normal) * stripeOf(i % 2 === 1)));
+    }
+  }
+
+  /**
+   * The ridge: the line the canvas is pulled along, drawn as a tapered highlight rather
+   * than a stroke.
+   *
+   * A gradient across it, which is the first use of one in this kit and the reason to
+   * reach for it here: a ridge is not a line, it is the brightest part of a curved
+   * surface falling away both ways, and two flat halves meeting at a hard seam is a
+   * folded card. `textureSpace: "local"` maps the stops across the shape's own bounds, so
+   * the same code works whichever axis the tent is authored on.
+   */
+  const spine = r * 0.13;
+  const ridge: Vec2[] = across
+    ? [{ x: ax, y: ay - spine }, { x: bx, y: by - spine }, { x: bx, y: by + spine }, { x: ax, y: ay + spine }]
+    : [{ x: ax - spine, y: ay }, { x: ax + spine, y: ay }, { x: bx + spine, y: by }, { x: bx - spine, y: by }];
+  g.poly(ridge.map((p) => [p.x, p.y]).flat()).fill(new FillGradient({
+    type: "linear",
+    start: across ? { x: 0, y: 0 } : { x: 0, y: 0 },
+    end: across ? { x: 0, y: 1 } : { x: 1, y: 0 },
+    textureSpace: "local",
+    colorStops: [
+      { offset: 0, color: shade(MAT.canvas.top, faceLight({ x: 0, y: -1 })) },
+      { offset: 0.46, color: MAT.canvas.lit },
+      { offset: 1, color: shade(MAT.canvas.top, faceLight({ x: 0, y: 1 })) },
+    ],
+  }));
+
+  /**
+   * SAG: the one mark that says this tent has been standing for fifty years.
+   *
+   * Canvas between two poles holds water halfway down each slope, and a damp patch on
+   * canvas is darker than the canvas. Laid over the panels rather than between them, so
+   * it crosses the stripes — which is what makes it read as something ON the surface
+   * rather than as another panel.
+   *
+   * SECOND ATTEMPT. The first drew each pool in `GRD.deep` at full opacity, sized from
+   * `runLength * 0.34` against `r * 0.3` — and since this tent's poles are only 140 apart
+   * against a 160 radius, "wide and shallow" came out as a circle. Two hard blue-grey
+   * discs on a pale tent, one per slope. It read as a swimming pool, and it is a good
+   * example of the thing to distrust: a detail sized off the wrong dimension, in a
+   * material from the wrong family, at an opacity chosen by not choosing one.
+   *
+   * A stain is a low-alpha wash of the surface's OWN tone, and its shape comes off the
+   * radius, which is the dimension that is always there.
+   */
+  for (const side of [-1, 1]) {
+    const long = r * 0.78;
+    const short = r * 0.2;
+    const pool: Vec2[] = [];
+    const steps = 24;
+    for (let i = 0; i <= steps; i += 1) {
+      const angle = (i / steps) * Math.PI * 2;
+      const u = Math.cos(angle) * long;
+      const v = Math.sin(angle) * short + r * 0.52 * side;
+      pool.push(across
+        ? { x: (ax + bx) / 2 + u, y: ay + v }
+        : { x: ax + v, y: (ay + by) / 2 + u });
+    }
+    fillPoly(g, pool, shade(MAT.canvas.top, 0.56), 0.32);
+  }
+
+  /**
+   * The entrance, on the side the tent addresses.
+   *
+   * Placed GEOMETRICALLY rather than by an index into the hem, because the first version
+   * counted points round the outline and landed 45° off south the moment the tent was
+   * authored on its other axis. Where the way in is depends on where the crowd comes
+   * from, so it comes off `facing` and defaults south — which is the promenade.
+   */
+  const facing = o.facing ?? "S";
+  const dir: Vec2 = facing === "N"
+    ? { x: 0, y: -1 }
+    : facing === "S"
+      ? { x: 0, y: 1 }
+      : facing === "E" ? { x: 1, y: 0 } : { x: -1, y: 0 };
+  // Where on the ridge the doorway hangs off: the end the tent faces, or the middle of
+  // the run when the ridge is square to the way in.
+  const along = (bx - ax) * dir.x + (by - ay) * dir.y;
+  const t = along > 0 ? 1 : along < 0 ? 0 : 0.5;
+  const doorAt: Vec2 = {
+    x: ax + (bx - ax) * t + dir.x * r,
+    y: ay + (by - ay) * t + dir.y * r,
+  };
+
+  // The hem: a scalloped edge all the way round, with the run at the doorway left plain.
+  // Drawn from the hem polygon itself, so it can never sit outside the collider.
+  const scallops = stadiumPoly(ax, ay, bx, by, r * 0.985, 34);
+  const doorGap = r * 0.42;
+  for (const point of scallops) {
+    if (Math.hypot(point.x - doorAt.x, point.y - doorAt.y) < doorGap) continue;
+    g.circle(point.x, point.y, r * 0.075).fill({ color: shade(MAT.canvas.top, 0.8) });
+  }
+  g.poly(hem.map((p) => [p.x, p.y]).flat()).stroke({ color: MAT.canvas.edge, width: 1.2 });
+
+  /**
+   * The doorway: the two canvas flaps tied back, and the dark of the tent behind them.
+   *
+   * Drawn INWARD from the hem, never out — a porch past the collider would be canvas you
+   * could walk through. It is also the one mark on the glyph at a bot's own scale, which
+   * is what stops a tent this large reading as a marquee-shaped rock.
+   *
+   * The first version was a light trapezoid with a dark one inside it and read as a hatch
+   * cut in the roof, because a symmetrical shape with a dark middle is a hole. What a tent
+   * door looks like from above is TWO flaps, held open at an angle, with the black of the
+   * inside between them — an asymmetric pair, not a rectangle.
+   */
+  const perp: Vec2 = { x: -dir.y, y: dir.x };
+  // Shallow, and the number matters. At r * 0.36 the mouth reached a third of the way to
+  // the ridge and read as a hatch cut in the roof; a door seen from directly above a tent
+  // is a NOTCH IN THE HEM, because the canvas overhangs almost all of it.
+  const half = r * 0.22;
+  const depth = r * 0.17;
+  const step = (from: number, spread: number): Vec2 => ({
+    x: doorAt.x - dir.x * from + perp.x * spread,
+    y: doorAt.y - dir.y * from + perp.y * spread,
+  });
+  // The mouth, first and darkest: the inside of a tent in daylight is nearly black.
+  fillPoly(g, [
+    step(0, -half * 0.72), step(0, half * 0.72),
+    step(depth, half * 0.44), step(depth, -half * 0.44),
+  ], shade(GRD.abyss, 1.24));
+  // Then a flap either side, each drawn back to the hem and each catching the light on
+  // its own face — which is what makes them flaps rather than a frame round a hole.
+  for (const side of [-1, 1]) {
+    fillPoly(g, [
+      step(0, side * half * 0.66), step(0, side * half * 1.5),
+      step(depth * 0.62, side * half * 1.16), step(depth * 0.5, side * half * 0.5),
+    ], shade(MAT.canvas.top, side < 0 ? faceLight({ x: -0.6, y: -0.8 }) : faceLight({ x: 0.7, y: 0.4 })));
+  }
+
+  /**
+   * The crowns, one per mast: the ring the canvas is laced to, and the pole head in it.
+   * TWO of them, and that is the count that names the building — one crown is a
+   * roundabout, two is a big top.
+   *
+   * THE SECOND ATTEMPT, and the first was reported on sight: at r * 0.2 with a bright
+   * flat fill and a dark disc dead centre, two of them on a symmetrical mass read as a
+   * pair of EYES with a bar between them. Three things were wrong and all three are the
+   * same mistake — drawing a diagram of a mast head rather than a mast head.
+   *
+   *  - SIZE. Two-fifths of the tent's half-width is not a fitting, it is a feature. 0.12.
+   *  - THE OUTLINE. A dark ring round a light disc IS an iris, and it was the single
+   *    strongest part of the effect. There is no stroke here at all now — the apex is
+   *    lighter than the canvas around it, and that is enough to be an apex.
+   *  - FLATNESS. A radial gradient from the pole outward makes the apex a dome. This is
+   *    what a gradient is FOR, and the kit had never used one.
+   *
+   * What replaces the ring is the LACING: six short ticks where the canvas is tied to the
+   * crown hoop. Radial line work on something round is normally the dial trap, but a dial
+   * needs marks long enough to sweep — at a tenth of the tent's radius these read as
+   * stitching, and they are what says mast rather than blob.
+   */
+  for (const peak of peaks) {
+    const crown = r * 0.12;
+    g.circle(peak.x, peak.y, crown).fill(new FillGradient({
+      type: "radial",
+      center: { x: 0.38, y: 0.36 },
+      innerRadius: 0,
+      outerCenter: { x: 0.5, y: 0.5 },
+      outerRadius: 0.5,
+      textureSpace: "local",
+      colorStops: [
+        { offset: 0, color: MAT.canvas.lit },
+        { offset: 0.62, color: MAT.canvas.top },
+        { offset: 1, color: shade(MAT.canvas.top, faceLight({ x: 0.4, y: 1 })) },
+      ],
+    }));
+    for (let i = 0; i < 6; i += 1) {
+      const a = (i / 6) * Math.PI * 2 + 0.4;
+      g.moveTo(peak.x + Math.cos(a) * crown * 0.5, peak.y + Math.sin(a) * crown * 0.5)
+        .lineTo(peak.x + Math.cos(a) * crown * 1.05, peak.y + Math.sin(a) * crown * 1.05)
+        .stroke({ color: shade(MAT.canvas.edge, 1.1), width: 0.7, alpha: 0.65 });
+    }
+    // The pole head: small, dark, and pushed south-east off the crown's centre, so it
+    // sits at the foot of the lit slope instead of dead centre of a shape.
+    const pole = crown * 0.24;
+    g.circle(peak.x + crown * 0.18, peak.y + crown * 0.22, pole).fill({ color: MAT.iron.edge });
   }
 };
 
@@ -761,9 +1096,10 @@ const serpentHeadGlyph: LandmarkFn = (g, pad, o) => {
 /**
  * A brazier: a stone bowl on a plinth, cold.
  *
- * No flame, no smoke — the language's fourth rule, and the one place it is genuinely
- * a constraint rather than a licence. A frozen flame is an artefact; a cold brazier
- * on an abandoned court is the truth about the place anyway.
+ * No flame, no smoke, because a frozen flame is an artefact — and on an abandoned
+ * court a cold brazier is the truth about the place anyway, so nothing is lost. If
+ * the temple ever gets an inhabited quarter, the answer there is a LIT brazier with
+ * real flicker, not a painted one.
  */
 const brazierGlyph: LandmarkFn = (g, pad, o) => {
   const { x: cx, y: cy } = centre(o);
@@ -791,9 +1127,9 @@ export const landmarkGlyphs: Partial<Record<MapObject["kind"], LandmarkFn>> = {
   waterTank: waterTankGlyph,
   coalingTower: coalingTowerGlyph,
   carousel: carouselGlyph,
-  ferrisWheel: ferrisWheelGlyph,
   waltzer: waltzerGlyph,
-  swingRide: swingRideGlyph,
+  helterSkelter: helterSkelterGlyph,
+  bigTop: bigTopGlyph,
   stele: steleGlyph,
   altar: altarGlyph,
   serpentHead: serpentHeadGlyph,

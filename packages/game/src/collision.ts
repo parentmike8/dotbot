@@ -1,5 +1,13 @@
 import { pointToSolidDistanceSquared, rectSolid, separateCircleFromSolid } from "./geometry";
-import { BLOB_KINDS, isSolidObject, objectCollisionRects, physicsFloorId, ROUND_KINDS, stairGuardRects } from "./mapModel";
+import {
+  isSolidObject,
+  objectCollisionRects,
+  physicsFloorId,
+  ROUND_KINDS,
+  stadiumAxis,
+  STADIUM_KINDS,
+  stairGuardRects,
+} from "./mapModel";
 import type { MapDocument, MapObject, Rect, Solid, Vec2 } from "./types";
 
 /**
@@ -34,18 +42,21 @@ export function objectSolids(object: MapObject): Solid[] {
  * when the box is the honest answer.
  *
  * "Only the proper objects should be impassable, and their impassable barriers
- * should match their own edges." That is the whole rule, and three kinds of glyph
+ * should match their own edges." That is the whole rule, and two families of glyph
  * break it in the same direction — by drawing something inscribed in the box and
  * leaving the corners solid and invisible:
  *
  *   - ROUND_KINDS draw a disc, so they get a disc.
- *   - BLOB_KINDS draw an organic mass at rx = w/2, ry = h/2, so they get the
- *     stadium inscribed in the box. A rough blob is far better approximated by a
+ *   - STADIUM_KINDS draw round ends with straight sides between them, so they get
+ *     the stadium inscribed in the box. A rough blob is far better approximated by a
  *     stadium than by a rectangle, and the stadium is never wider than the mass.
- *   - A vertical wheel seen from overhead is a LINE. `ferrisWheel` draws its rim at
- *     0.22 of its short side — 29 units of a 132-wide object — and then collided
- *     across the whole 132. What made it read as solid ground was its cast shadow,
- *     which is drawn from the full box at tower height and is not the object.
+ *
+ * There used to be a third: `ferrisWheel`, which drew a rim 0.22 of its short side
+ * — 29 units of a 132-wide object — and collided across the whole 132. It got a
+ * capsule at half the short side, and then the kind was cut entirely, because a
+ * glyph that needs a special case to stop being a wall is a glyph that is mostly
+ * not there. What had made it read as solid ground in the first place was its cast
+ * shadow, drawn from the full box at tower height, which is not the object.
  *
  * Where a shape cannot be matched exactly the error goes INWARD, every time. A
  * collider inside its mark costs a few units of overlap nobody notices; a collider
@@ -60,36 +71,8 @@ function inscribedSolid(object: MapObject): Solid | null {
     return { kind: "capsule", ax: cx, ay: cy, bx: cx, by: cy, r };
   }
 
-  if (BLOB_KINDS.has(object.kind)) {
-    const r = Math.min(object.w, object.h) / 2;
-    const reach = Math.max(object.w, object.h) / 2 - r;
-    const across = object.w >= object.h;
-    return {
-      kind: "capsule",
-      ax: across ? cx - reach : cx,
-      ay: across ? cy : cy - reach,
-      bx: across ? cx + reach : cx,
-      by: across ? cy : cy + reach,
-      r,
-    };
-  }
-
-  if (object.kind === "ferrisWheel") {
-    // The rim plus the A-frames straddling the axle: half the short side, centred,
-    // running the full span. The glyph draws the rim at 0.22 and the frames sit
-    // just outside it, so half is the structure with nothing to spare.
-    const band = Math.min(object.w, object.h);
-    const r = (band * 0.5) / 2;
-    const reach = Math.max(object.w, object.h) / 2 - r;
-    const across = object.w >= object.h;
-    return {
-      kind: "capsule",
-      ax: across ? cx - reach : cx,
-      ay: across ? cy : cy - reach,
-      bx: across ? cx + reach : cx,
-      by: across ? cy : cy + reach,
-      r,
-    };
+  if (STADIUM_KINDS.has(object.kind)) {
+    return { kind: "capsule", ...stadiumAxis(object) };
   }
 
   return null;

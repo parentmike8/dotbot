@@ -4,7 +4,7 @@ import { downtownMap } from "./content/downtown";
 import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, deriveBaseInteractionDots, starterBaseLayout, validateBaseLayout } from "./content/base";
 import { interactionDotReach } from "./interactions";
 import type { BaseLayout } from "./types";
-import { BLOB_KINDS, isGroundFloor, objectCollisionRects, physicsFloorId, ROUND_KINDS, stairExitPoint, stairHalves } from "./mapModel";
+import { isGroundFloor, objectCollisionRects, physicsFloorId, ROUND_KINDS, stadiumAxis, STADIUM_KINDS, stairExitPoint, stairHalves } from "./mapModel";
 import { objectSolids } from "./collision";
 import { pointToSolidDistanceSquared } from "./geometry";
 import { auditDotPlacement, auditBuildingFloorQuality, type FloorQualityIssue } from "./mapQuality";
@@ -833,7 +833,7 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
       (object) =>
         isSolidObject(object) &&
         !object.collisionParts?.length &&
-        (ROUND_KINDS.has(object.kind) || BLOB_KINDS.has(object.kind) || object.kind === "ferrisWheel"),
+        (ROUND_KINDS.has(object.kind) || STADIUM_KINDS.has(object.kind)),
     );
     if (inscribed.length === 0) return;
 
@@ -864,6 +864,23 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
           const at = { x: cx + Math.cos(angle) * (radius + 2), y: cy + Math.sin(angle) * (radius + 2) };
           if (solids.some((solid) => pointToSolidDistanceSquared(at, solid) <= 0)) {
             offenders.push(`${object.id} (${object.kind}) is solid outside its own rim`);
+          }
+        }
+      }
+
+      // The same sweep for a stadium: just outside the hem, all the way round both caps
+      // and both straight sides. A big top DRAWS to this line, so anything solid past it
+      // is canvas the player can see through and walk into.
+      if (STADIUM_KINDS.has(object.kind)) {
+        const { ax, ay, bx, by, r } = stadiumAxis(object);
+        const axis = Math.atan2(by - ay, bx - ax);
+        for (let step = 0; step < 64; step += 1) {
+          const angle = (step / 64) * Math.PI * 2;
+          // Which end cap the sample belongs to: the one it leans toward.
+          const lean = Math.cos(angle - axis) >= 0 ? { x: bx, y: by } : { x: ax, y: ay };
+          const at = { x: lean.x + Math.cos(angle) * (r + 2), y: lean.y + Math.sin(angle) * (r + 2) };
+          if (solids.some((solid) => pointToSolidDistanceSquared(at, solid) <= 0)) {
+            offenders.push(`${object.id} (${object.kind}) is solid outside its own hem`);
           }
         }
       }

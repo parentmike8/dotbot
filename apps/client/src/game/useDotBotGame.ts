@@ -12,6 +12,7 @@ import {
   type FeedbackPreferences,
   type ImpactPerspective,
 } from "./feedback/ImpactFeedback";
+import { earshotGain } from "./feedback/earshot";
 import { selectSpectatedBot } from "./spectate";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
@@ -235,6 +236,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
          *
          * Panned by which side of the screen it is on, so the sound carries a rough direction
          * before you look for the pin.
+         *
+         * NOT gated by earshot, unlike an impact, and the difference is the point of the
+         * feature rather than an oversight. A hit is a sound the world makes and you happen
+         * to be near; a mark is a squadmate TELLING you about somewhere, and the somewhere
+         * they most need to tell you about is the one you cannot see. Earshot on this would
+         * silence it exactly when it matters.
          */
         for (const event of frameEvents) {
           if (event.type !== "pinged") continue;
@@ -255,10 +262,24 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           return;
         }
 
+        /**
+         * Where the ears are: the bot the camera is following, which is your own body
+         * until you go down and a squadmate's after that.
+         *
+         * Not `session.playerId`, which is what the panning used to use. While spectating
+         * those are different bots in different regions, so a sound got its direction from
+         * a body lying somewhere the player cannot even see. One listener, used for both
+         * the pan and the earshot, so the two can never disagree about where "here" is.
+         */
+        const listenerId = spectatedBotIdRef.current ?? session.playerId;
+        const listener = nextSnapshot.bots.find((bot) => bot.id === listenerId)?.position
+          ?? nextSnapshot.bots.find((bot) => bot.id === session.playerId)?.position;
+        const view = renderer.visibleWorldBounds();
+
         const predictedImpacts = session.drainPredictedImpacts?.() ?? [];
         for (const impact of predictedImpacts) {
           const result = renderer.queueImpact(impact, nextSnapshot);
-          feedback.playPredicted(result, impactPan(nextSnapshot, session.playerId, { x: impact.x, y: impact.y }));
+          feedback.playPredicted(result, impactPan(listener, { x: impact.x, y: impact.y }));
         }
         for (const event of frameEvents) {
           if (event.type === "plea") renderer.queuePlea(event);
@@ -273,11 +294,24 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             const worldPoint = event.tick > 0 || event.position.x !== 0 || event.position.y !== 0
               ? event.position
               : nextSnapshot.bots.find((bot) => bot.id === event.botId)?.position ?? event.position;
+            /**
+             * Somebody else's fight is only heard from within earshot; your own is always
+             * audible, because you are standing at one end of it.
+             *
+             * Note where this gate is NOT: the two renderer calls above it. A hit outside
+             * earshot still leaves its mark and still reaches the kill feed. Silencing the
+             * sound is the fix; dropping the event would be a different bug, and one that
+             * would make a squadmate's death across the map simply not happen.
+             */
+            const earshot = perspective === "observer" && listener
+              ? earshotGain(worldPoint, listener, view)
+              : 1;
             feedback.playConfirmed(
               event.result,
               perspective,
               alreadyPredicted,
-              impactPan(nextSnapshot, session.playerId, worldPoint),
+              impactPan(listener, worldPoint),
+              earshot,
             );
           }
         }
@@ -751,8 +785,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   };
 }
 
-function impactPan(snapshot: GameSnapshot, playerId: string, point: Vec2): number {
-  const player = snapshot.bots.find((bot) => bot.id === playerId);
-  if (!player) return 0;
-  return clamp((point.x - player.position.x) / 320, -1, 1);
+/** Which side of the listener a sound is on, saturating a third of a screen out. */
+function impactPan(listener: Vec2 | undefined, point: Vec2): number {
+  if (!listener) return 0;
+  return clamp((point.x - listener.x) / 320, -1, 1);
 }

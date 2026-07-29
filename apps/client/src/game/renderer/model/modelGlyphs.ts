@@ -811,10 +811,11 @@ function deskGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
  * Vegetation as one irregular mass, not a cluster of discs.
  *
  * Overlapping equal-value circles are the worst reading in the kit: from directly
- * above they are indistinguishable from a puff of smoke, which is both wrong and
- * against the rule that nothing in motion is drawn statically. A closed blob with
- * a genuinely dark underside, a mid body and a bright north-west crown reads as a
- * canopy at every zoom, and the notches are what make it leaves rather than a lump.
+ * above they are indistinguishable from a puff of smoke — which is exactly the
+ * static-smoke defect rule 4 was written about, arrived at by accident on a tree.
+ * A closed blob with a genuinely dark underside, a mid body and a bright north-west
+ * crown reads as a canopy at every zoom, and the notches are what make it leaves
+ * rather than a lump.
  */
 function foliageMass(g: Graphics, cx: number, cy: number, radius: number, seed: string, spread = 1): void {
   const steps = 20;
@@ -1267,12 +1268,13 @@ function hvacGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   const fcy = fan.y + fan.h / 2;
   g.circle(fcx, fcy, cr).fill({ color: MAT.steelDeep.top });
   /**
-   * A stationary guard grille, not fan blades.
+   * A stationary guard grille, not fan blades — for now.
    *
-   * Nothing that is actually in motion may be drawn as a static mark: frozen
-   * blades read as a swirl or a puff of smoke, and they promise animation the
-   * renderer never delivers. The grille is the part that genuinely does not
-   * move, and it reads better at play zoom besides.
+   * Frozen blades read as a swirl or a puff of smoke, so until the renderer turns
+   * them the grille is the honest mark: it is the part that genuinely does not move,
+   * and it reads better at play zoom besides. This is rule 4 applied the way it was
+   * meant, as a choice about DRAWING rather than about content — the answer once
+   * ambient motion lands is spinning blades behind this grille, not no fan.
    */
   for (const ring of [0.86, 0.58, 0.3]) {
     g.circle(fcx, fcy, cr * ring).stroke({ color: MAT.steelDark.top, width: 1, alpha: 0.85 });

@@ -1,21 +1,35 @@
 # Motion in the world, and who owns it
 
-A decision record, not a contract. It exists because the obvious next question about a
-world with a river, a fairground and a mountain in it is "can things move", and the answer
-has a shape worth writing down once.
+**Motion is wanted.** Start here, because this document used to start somewhere else and
+the difference mattered.
 
-## The rule it looks like it breaks
+The goal, in Mike's words: *"to make the world come alive."* Concretely asked for — the
+merry-go-round slowly turning, trees swaying a bit, leaves falling and disappearing after a
+while, a subtle trail left in grass or dirt as you move through it that fades, and later a
+vehicle of some kind plus various transportation and fast-travel mechanisms.
 
-`renderer/model/tone.ts` rule 4: **nothing in motion is drawn statically.** No smoke, no
-steam, no spray, no fan blades, no flapping. A frozen moving thing reads as an artefact and
-promises animation the renderer never delivers.
+## The rule this does not break
 
-Every consequence drawn from that rule so far has been subtractive — a stationary guard
-grille instead of fan blades, no smoke over the depot. That was the correct reading while
-the renderer had no animation. But the rule's own justification is a conditional, and once
-the renderer *does* deliver, it points the other way: draw the moving thing moving.
+`renderer/model/tone.ts` rule 4 says a moving thing is either animated or not drawn. It
+came from **one specific defect**: smoke drawn as a puff of frozen circles over a chimney,
+which reads as a solid blob of debris. That is the whole of it. A moving thing frozen into a
+still mark is an artefact.
 
-So the rule is not a ban on motion. It is a ban on *pretending*.
+It is **not** a ban on motion, and it has been misread as one repeatedly — badly enough to
+change what exists in the world rather than how it is drawn:
+
+- a chairoplane was **deleted** rather than given swinging seats, on the grounds that a ride
+  at rest has no motion to draw;
+- the entire fairground was justified as derelict *because* stillness satisfied the rule,
+  and this document's earlier version called that "making a virtue of it";
+- braziers, chimneys and fans are all drawn cold, and only the fans were ever the point.
+
+Mike has corrected this more than once, and each correction was lost at the next context
+compaction. Hence the emphasis, in three places: here, in `tone.ts`, and in
+`docs/map-building-contract.md` §2.0.
+
+**Never cite rule 4 as a reason to cut, avoid or restyle a subject because it would need to
+move.** If a subject should move, animate it.
 
 ## The line that actually matters
 
@@ -23,8 +37,8 @@ Not "should it move" but **who owns the motion**.
 
 **AMBIENT motion is cosmetic.** A pure function of the client clock. It touches no
 simulation state, is never replicated, and if two players see slightly different frames of
-it nothing is wrong. Flowing water, swaying canopy, drifting dust, a turning windmill.
-Cost: one `Graphics` redrawn per frame. Netcode risk: zero.
+it nothing is wrong. A turning ride, a swaying canopy, drifting leaves, flowing water,
+footprints fading out of the dirt. Netcode risk: zero.
 
 **TRAVERSAL motion moves a DotBot.** That is simulation. It has to live in `packages/game`,
 be deterministic, be replicated, and be predicted client-side, or a player gets dragged
@@ -39,18 +53,47 @@ The second kind splits again by cost:
   relative to a mover, which means a moving reference frame inside a predicted netcode —
   the classic hard problem, because the platform's position at the tick the client predicts
   and at the tick the server simulates must agree exactly.
+- **FAST TRAVEL is somewhere in between,** and cheaper than it looks, because a teleport
+  between two authored points is a state change rather than a moving frame. The hard part is
+  not the motion, it is what stops a squad using it to escape a fight.
 
-Both are worth having. They are not worth having in the same milestone, and a current buys
-most of the delight for a fraction of the risk.
+All three are wanted. They are not worth having in the same milestone.
+
+## What ambient motion costs, and why it is cheap here
+
+The renderer builds its geometry ONCE — `buildMapArt(map)` runs at load and every frame
+after that only moves containers. The parallax pass already proved the pattern: "a transform
+per building per frame, and nothing is redrawn."
+
+Everything on the ambient list fits that pattern:
+
+| effect | mechanism | per-frame cost |
+| --- | --- | --- |
+| a ride turning | its moving parts in their own `Container`, set `rotation` | one transform |
+| canopy / tree sway | a `Container` per tree, small rotation from a per-id phase | one transform each |
+| leaves, dust | a fixed pool of sprites recycled oldest-first, age → alpha | pool size, capped |
+| trails in grass | the same: a pool of soft stamps dropped at the walker's feet | pool size, capped |
+
+The one thing that would genuinely cost is `g.clear()` plus a redraw per frame, because that
+re-tessellates the geometry. Nothing on this list needs it. **No `RenderTexture` either** —
+a pool of fading stamps gets the same result as painting into a texture without the
+read-back or the per-frame draw call.
+
+Two things to hold to when implementing:
+
+- **Spawn only what is on screen.** `GameRenderer.visibleWorldBounds()` already exists, for
+  audio earshot; particles should use the same answer.
+- **Respect `reducedMotion`.** The renderer already carries the preference, and camera
+  look-ahead already honours it. Ambient motion is exactly what that setting is for.
 
 ## Where the current regions stand
 
-None of the four regions on the sheet needs animation to be finished, and one of them makes
-a virtue of that. **The fairground is derelict**, so every ride on it is genuinely still: a
-rusted wheel that does not turn is the truth about the place, and rule 4 is satisfied with
-no animated frames at all. The temple's cenote is standing water, which breathes rather
-than flows. The yard is a working depot whose motion is engines, and there are no engines.
+Every one of the four has somewhere obvious for ambient motion, and none of them has any:
 
-The first real use for ambient motion is water with a direction in it — a creek, a mill
-leat, a shoreline — and the first real use for a current is the same water once a player can
-be carried by it. Neither is blocked by anything except being asked for.
+- **The fairground.** The carousel and the waltzer should turn, slowly and unevenly. This is
+  not a compromise on the derelict story — *wind* moving a ride nobody maintains is a better
+  version of it than a ride welded still. The big top's canvas should breathe.
+- **The temple.** The cenote is standing water, which breathes rather than flows. The forest
+  is the largest sway surface in the world.
+- **The yard.** A working depot whose motion is engines, and there are no engines yet.
+- **Downtown.** Street trees, and the first honest place for a vehicle.
