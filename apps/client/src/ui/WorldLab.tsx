@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
-import type { Rect } from "@dotbot/game/types";
+import type { MapDocument, Rect } from "@dotbot/game/types";
 import { buildMapArt } from "../game/renderer/mapArt";
 import { selectMapDocument } from "../mapSelection";
 
@@ -72,6 +72,64 @@ const FRAMES: Array<{ id: string; title: string; rect: Rect; floorId?: string }>
   { id: "cenote", title: "The cenote", rect: { x: 3560, y: 1800, w: 700, h: 640 } },
 ];
 
+/**
+ * Air left round a floor crop, so the exterior wall and the ground outside a door are in
+ * frame. A room judged with its doorway cropped off is a room judged without the one fact
+ * that decides where the furniture belongs.
+ */
+const FLOOR_PAD = 70;
+
+/**
+ * A shot name the endpoint will accept, from any floor id.
+ *
+ * Floor ids are `mercy:F2` — a colon and capitals, both of which the shot endpoint rejects
+ * as an unsafe filename. It rejects them into the results array rather than into a thrown
+ * error, so the pass reports 43 frames rendered and writes 39 files, and the four missing
+ * ones are the four nobody notices. `temple-B1` already cost a review cycle that way and
+ * the fix at the time was to hand-author lowercase ids, which fixes the instance and leaves
+ * the trap. Deriving the name means a new floor cannot fall into it.
+ */
+function shotName(floorId: string): string {
+  return floorId.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+/**
+ * One frame per interior floor, derived from the map.
+ *
+ * The hand-authored list above is right for what it does — a region crop is a composition
+ * choice, and "show me the fairground" has to mean the same rectangle every time or two
+ * screenshots cannot be compared. It is wrong as the ONLY way in: it had 4 of the world's 27
+ * floors in it, the temple's four, added because a dungeon could not be reviewed otherwise.
+ * The other 23 interiors had never been rendered as an image at all, which is the practical
+ * reason "just look at the rooms" was not something anyone did — there was nothing to look
+ * at, and every layout bug in them had to be found by walking into it.
+ *
+ * Derived from `floor.bounds`, which is the floor's own extent rather than the building's
+ * bounding box. That distinction is the whole reason this is possible now: before `bounds`
+ * existed, the only rectangle available for a floor was the footprint of the building around
+ * it, so a stepped or fanned floor came out as a small plan adrift in a large empty crop.
+ */
+function floorFrames(map: MapDocument): Array<{ id: string; title: string; rect: Rect; floorId: string }> {
+  const frames: Array<{ id: string; title: string; rect: Rect; floorId: string }> = [];
+  for (const building of map.buildings) {
+    for (const floor of building.floors) {
+      const box = floor.bounds ?? building.footprint;
+      frames.push({
+        id: `floor-${shotName(floor.id)}`,
+        title: `${building.name} — ${floor.label}`,
+        rect: {
+          x: box.x - FLOOR_PAD,
+          y: box.y - FLOOR_PAD,
+          w: box.w + FLOOR_PAD * 2,
+          h: box.h + FLOOR_PAD * 2,
+        },
+        floorId: floor.id,
+      });
+    }
+  }
+  return frames;
+}
+
 export function WorldLab() {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
@@ -109,6 +167,8 @@ export function WorldLab() {
 
       const map = selectMapDocument(window.location.search);
       const art = buildMapArt(map);
+      /** Region crops first, then every interior floor. `?worlds&pick=` reaches both. */
+      const allFrames = [...FRAMES, ...floorFrames(map)];
 
       /**
        * Every roof at rest.
@@ -165,7 +225,7 @@ export function WorldLab() {
          * composition and value, and both survive a downscale.
          */
         const results: string[] = [];
-        for (const shot of FRAMES) {
+        for (const shot of allFrames) {
           showFloor(shot.floorId ?? null);
           const long = Math.max(shot.rect.w, shot.rect.h);
           const scale = Math.min(1, 2200 / long);
@@ -187,7 +247,7 @@ export function WorldLab() {
         return;
       }
 
-      const chosen = FRAMES.find((candidate) => candidate.id === pick) ?? FRAMES[0];
+      const chosen = allFrames.find((candidate) => candidate.id === pick) ?? allFrames[0];
       showFloor(chosen.floorId ?? null);
       const draw = (): void => {
         created.renderer.resize(host.clientWidth, host.clientHeight);
