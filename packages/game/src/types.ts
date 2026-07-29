@@ -411,6 +411,30 @@ export type MapObject = {
   h: number;
   /** Which way the object faces (pillow end, chair side, …). Default "S". */
   facing?: Facing;
+  /**
+   * Rotation about the object's own centre, in radians. Default 0, meaning axis-aligned.
+   *
+   * WHY THE FORMAT NEEDED THIS. Until now an object was `x/y/w/h` plus a cardinal `facing`,
+   * so nothing in the world could sit at an angle — and the world has a fan, an octagon, a
+   * drum and a cross-shaped undercroft in it. In every one of them the contents were FORCED
+   * to contradict the shell. The roundhouse is the clearest case: a roundhouse *is* a fan of
+   * bays radiating from a turntable, because an engine cannot steer, and all three of its
+   * inspection pits were axis-aligned rectangles. The file even documented the fix as done —
+   * "proportioned to the direction its own bay runs" — which means the aspect ratio gestured
+   * at the angle while the rectangle stayed square to the world. No audit could see it. It is
+   * not carelessness, it is a gap in what the format could express.
+   *
+   * ONLY PASSABLE OBJECTS MAY BE ROTATED, and `compileBuilding` throws otherwise. A solid
+   * object's collider is a rect or an inscribed capsule, and a rotated glyph over an
+   * unrotated collider is precisely the invisible-wall lie the contract exists to prevent —
+   * better to refuse it in the format than to ship a drawing that disagrees with physics.
+   * Rotating solids needs poly colliders and poly-aware layout audits (`false-aisle` and
+   * `wedged-fixture` both reason in rectangles, and a rotated rect has no honest one).
+   *
+   * `facing` is unaffected and still cardinal: it selects which END of a glyph is the head,
+   * a discrete choice inside the object's own frame, and rotation then turns that frame.
+   */
+  angle?: number;
   /** Solid objects get physics colliders. Default varies by kind (see solidByDefault). */
   solid?: boolean;
   /** Optional collision pieces in object-local coordinates for compound plan

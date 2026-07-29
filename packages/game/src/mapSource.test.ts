@@ -264,4 +264,56 @@ describe("map source", () => {
       })).toThrow(/unknown floors/);
     });
   });
+
+  /**
+   * Rotation, and the one thing it is not allowed to do.
+   *
+   * `angle` exists because the world contains a fan, an octagon, a drum and a cross, and
+   * until it existed every object in all four was forced square to the world — the
+   * roundhouse's three engine roads were axis-aligned rectangles in a building whose entire
+   * logic is that they radiate. No check could see it, because a pit is passable and nothing
+   * measures passable geometry.
+   *
+   * So the guard matters more than the feature: a rotated glyph over an axis-aligned collider
+   * is a wall the player cannot see, which is the fault the contract exists to prevent. The
+   * format has to refuse it rather than document it.
+   */
+  describe("a turned object", () => {
+    /**
+     * Its own one-floor fixture rather than the stair one, because the question here is about
+     * objects and a shared fixture would drag a flight into every assertion.
+     */
+    const withObject = (extra: Record<string, unknown>): SourceBuilding => ({
+      id: "shed",
+      kind: "warehouse",
+      name: "SHED",
+      shellThickness: 12,
+      outline: { shape: "rect", x: 0, y: 0, w: 400, h: 400 },
+      floors: [{
+        label: "GROUND",
+        objects: [{ id: "turned", kind: "track", x: 160, y: 140, w: 40, h: 120, ...extra }],
+      }],
+    });
+
+    it("carries the angle through to the compiled object", () => {
+      const ground = compileBuilding(withObject({ angle: 0.4 })).floors[0];
+      expect(ground.objects.find((object) => object.id === "turned")?.angle).toBeCloseTo(0.4);
+    });
+
+    it("leaves angle off entirely when it is zero, so an unturned object stays plain data", () => {
+      const ground = compileBuilding(withObject({ angle: 0 })).floors[0];
+      expect(ground.objects.find((object) => object.id === "turned")).not.toHaveProperty("angle");
+    });
+
+    it("REFUSES a rotated solid, because its collider would stay square to the world", () => {
+      // Same object, same angle, only `solid` added. `track` is passable by default, so this
+      // isolates the guard to the one property it is about.
+      expect(() => compileBuilding(withObject({ angle: 0.4, solid: true })))
+        .toThrow(/angle is only supported on passable objects/);
+    });
+
+    it("allows a solid object at no angle, so the guard is about rotation and not about solidity", () => {
+      expect(() => compileBuilding(withObject({ solid: true }))).not.toThrow();
+    });
+  });
 });

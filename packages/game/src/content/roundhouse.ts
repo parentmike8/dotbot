@@ -51,6 +51,17 @@ const TO = Math.PI * 0.9;
 const BAY_END = Math.PI * 0.755;
 const BAYS = [0, 1, 2].map((i) => FROM + ((BAY_END - FROM) * (i + 0.5)) / 3);
 
+/**
+ * The inspection pit down each bay: how long, how wide, and where its centre sits on the ray.
+ *
+ * A pit is a road, so it runs most of the bay's depth. 190 long centred at r 368 puts it
+ * between r 273 and r 463, which is the walkable band (263..477) less a little air at each end
+ * — an engine standing over the pit still has shed floor in front of and behind it.
+ */
+const PIT_LENGTH = 190;
+const PIT_WIDTH = 64;
+const PIT_R = 368;
+
 export const ROUNDHOUSE_SOURCE: SourceBuilding = {
   id: "roundhouse",
   kind: "warehouse",
@@ -85,16 +96,45 @@ export const ROUNDHOUSE_SOURCE: SourceBuilding = {
       ],
       objects: [
         /**
-         * The inspection pits, one down each bay, laid as track.
+         * The inspection pits, one down each bay, laid as track ALONG ITS OWN RAY.
          *
          * `track` is flat and passable, which is right twice over: a pit is a hole a fitter
          * stands in rather than an obstacle, and a rail proud of the floor is not cover for
-         * anybody. Each one is proportioned to the direction its own bay runs, so a bay
-         * reads as a bay from the doorway.
+         * anybody. It is also what makes this possible at all — `angle` is refused on solid
+         * objects, because a rotated glyph over an axis-aligned collider is an invisible wall.
+         *
+         * WHAT THIS REPLACES, because the old comment claimed the fix was already done.
+         * It said each pit was "proportioned to the direction its own bay runs, so a bay reads
+         * as a bay from the doorway", and what that meant in practice was that pit 1 was 130x90
+         * and pits 2 and 3 were 90x130 — the ASPECT RATIO gestured at the angle while the
+         * rectangle stayed square to the world. So the shed's whole reason for existing, three
+         * roads converging on a table because an engine cannot steer, was drawn as one
+         * landscape box and two portrait boxes at 0 degrees. Nothing could catch it: the pits
+         * are passable, so no clearance, overlap or connectivity check looks at them at all,
+         * and the audit was clean the entire time. It is visible in one glance at the floor
+         * render and in no other way.
+         *
+         * Derived from `BAYS` rather than placed, so a fourth bay gets its road for free. The
+         * authored `x/y/w/h` is the box BEFORE rotation, long axis pointing south, and `angle`
+         * turns it onto the ray: a south-pointing vector sits at 90 degrees, so the turn is
+         * `ray - 90`.
+         *
+         * Checked against the band, which a curved building always demands. At r 273..463 with
+         * a half-width of 32 the rotated corners land between r 277 and r 464, inside the
+         * 263..477 floor, and the bays are 39 degrees apart while a pit spans under 7.
          */
-        { id: "rh-pit-1", kind: "track", x: 3172, y: 1399, w: 130, h: 90 },
-        { id: "rh-pit-2", kind: "track", x: 2994, y: 1506, w: 90, h: 130 },
-        { id: "rh-pit-3", kind: "track", x: 2760, y: 1489, w: 90, h: 130 },
+        ...BAYS.map((angle, index) => {
+          const at = radial(TABLE, angle, PIT_R);
+          return {
+            id: `rh-pit-${index + 1}`,
+            kind: "track" as const,
+            x: at.x - PIT_WIDTH / 2,
+            y: at.y - PIT_LENGTH / 2,
+            w: PIT_WIDTH,
+            h: PIT_LENGTH,
+            angle: angle - Math.PI / 2,
+          };
+        }),
 
         /**
          * The shop end, past the last bay, and every piece of it checked against the band.

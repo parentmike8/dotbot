@@ -725,6 +725,31 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
     if (!isSolidObject(object) && !SURFACE_KINDS.has(object.kind)) {
       markPassable(g, { x: object.x, y: object.y, w: object.w, h: object.h });
     }
+    /**
+     * A turned object, rotated about its own centre.
+     *
+     * Costs nothing and needs no glyph to know about it, because of two facts that happen to
+     * line up: this loop already builds one `Graphics` per object, and every glyph draws in
+     * WORLD coordinates. So setting the pivot to the object's world-space centre and the
+     * position to that same point spins the finished drawing in place. Fifty glyph functions
+     * stay untouched.
+     *
+     * Only passable kinds reach here with an angle set — `compileObject` throws on a rotated
+     * solid, because its collider would stay square to the world.
+     *
+     * KNOWN AND ACCEPTED: the ambient-occlusion smudge from `occlude(objectAo, object, 7)`
+     * further up is keyed to the unrotated rect, so a turned object's ground darkening does
+     * not turn with it. It is a soft wash under a flat floor marking and invisible at play
+     * zoom; it becomes worth fixing when solids can turn, since a box's contact shadow is not
+     * subtle. Written down rather than left to be rediscovered.
+     */
+    if (object.angle) {
+      const cx = object.x + object.w / 2;
+      const cy = object.y + object.h / 2;
+      g.pivot.set(cx, cy);
+      g.position.set(cx, cy);
+      g.rotation = object.angle;
+    }
     objects.addChild(g);
     objectViews.set(object.id, { object, view: g });
   }

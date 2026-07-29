@@ -8,6 +8,7 @@ import {
   splitPathByGaps,
   thickenPath,
 } from "./geometry";
+import { isSolidObject } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type {
   Barrier,
@@ -116,6 +117,8 @@ export type SourceObject = {
   solid?: boolean;
   scannable?: boolean;
   collisionParts?: Rect[];
+  /** Radians about the object's centre. Passable kinds only; `compileObject` throws otherwise. */
+  angle?: number;
 };
 
 export type SourceDot = { id: string; item: Item; x: number; y: number; radius?: number };
@@ -333,8 +336,8 @@ function shellWall(source: SourceBuilding, floor: SourceFloor): SourceWall {
 }
 
 function compileObject(object: SourceObject): MapObject {
-  const { id, kind, x, y, w, h, facing, solid, scannable, collisionParts } = object;
-  return {
+  const { id, kind, x, y, w, h, facing, solid, scannable, collisionParts, angle } = object;
+  const compiled: MapObject = {
     id,
     kind,
     x,
@@ -345,7 +348,31 @@ function compileObject(object: SourceObject): MapObject {
     ...(solid === undefined ? {} : { solid }),
     ...(scannable ? { scannable } : {}),
     ...(collisionParts ? { collisionParts } : {}),
+    ...(angle ? { angle } : {}),
   };
+
+  /**
+   * The format refuses a rotated SOLID, rather than shipping a drawing that lies.
+   *
+   * A solid object's collider is its rect, or a capsule inscribed in that rect. Rotating the
+   * glyph and leaving the collider square to the world produces exactly the fault the whole
+   * contract is built to prevent: a wall the player can see is not there, and an opening they
+   * can see that will not let them through. `false-aisle` and `wedged-fixture` also both
+   * reason in rectangles, and a rotated rect has no honest one, so the layout audits would go
+   * quiet on the very objects most likely to be wrong.
+   *
+   * Refused here rather than documented, because a rule an author can write down anyway is a
+   * rule that gets written down anyway. Lifting this means poly colliders and poly-aware
+   * layout audits, and until then a turned object has to be one nothing can collide with.
+   */
+  if (angle && isSolidObject(compiled)) {
+    throw new Error(
+      `${id}: angle is only supported on passable objects, and ${kind} is solid. `
+      + "A rotated glyph over an axis-aligned collider is an invisible wall. "
+      + "Rotating solids needs poly colliders and poly-aware layout audits.",
+    );
+  }
+  return compiled;
 }
 
 /**

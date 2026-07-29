@@ -7,6 +7,7 @@ import { validateInsertionMap } from "../insertion";
 import { auditBuildingFloorQuality, auditDotPlacement } from "../mapQuality";
 import { findNavigationPath } from "../navigation";
 import { OUTDOOR_FLOOR_ID } from "../types";
+import { roundhouse, TABLE } from "./roundhouse";
 import { worldMap } from "./world";
 
 /**
@@ -132,5 +133,63 @@ describe("the world is one place", () => {
   it.each(pairs)("a bot can walk from the %s to the %s", (from, to) => {
     const path = findNavigationPath(worldMap, OUTDOOR_FLOOR_ID, HERE[from], HERE[to], RADIUS);
     expect(path.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The roundhouse's roads point at the turntable.
+ *
+ * This is the one claim the building is making. A roundhouse is a fan of bays around a table
+ * because an engine cannot steer, so a bay whose road does not aim at the table is not a bay —
+ * and for four rounds all three of them were axis-aligned rectangles, one landscape and two
+ * portrait, with a source comment asserting they were "proportioned to the direction its own
+ * bay runs". Nothing caught it: a pit is `track`, which is passable, so no clearance, overlap
+ * or connectivity check looks at it, and `world.audit` was clean throughout.
+ *
+ * Asserted as an ANGLE rather than as coordinates, so the pits can be moved, lengthened or
+ * renumbered and a fourth bay can be added without touching this test. What it pins is the
+ * relationship, including the 90-degree term that turns a south-pointing box onto its ray —
+ * the easiest thing here to get backwards, and invisible in a still if only one pit is wrong.
+ */
+describe("the roundhouse reads as a fan", () => {
+  const floor = roundhouse.floors.find((plan) => plan.label === "GROUND")!;
+  const pits = floor.objects.filter((object) => object.id.startsWith("rh-pit-"));
+
+  it("has one pit per bay", () => {
+    expect(pits).toHaveLength(3);
+  });
+
+  it.each(pits.map((pit) => [pit.id, pit] as const))("%s runs along its own ray", (_id, pit) => {
+    const cx = pit.x + pit.w / 2;
+    const cy = pit.y + pit.h / 2;
+    // Where the pit sits, as seen from the table.
+    const bearing = Math.atan2(cy - TABLE.y, cx - TABLE.x);
+    // Where its long axis points. The authored box is taller than it is wide, so its axis
+    // starts due south — at +90 degrees — and `angle` turns it from there.
+    const axis = Math.PI / 2 + (pit.angle ?? 0);
+
+    expect(pit.h).toBeGreaterThan(pit.w);
+    // Within a degree: the road lies on the line from the table, not merely near it.
+    expect(axis).toBeCloseTo(bearing, 2);
+  });
+
+  it("keeps every rotated corner inside the shed's floor band", () => {
+    for (const pit of pits) {
+      const cx = pit.x + pit.w / 2;
+      const cy = pit.y + pit.h / 2;
+      const angle = pit.angle ?? 0;
+      const along = { x: Math.cos(angle + Math.PI / 2), y: Math.sin(angle + Math.PI / 2) };
+      const across = { x: -along.y, y: along.x };
+      for (const end of [-1, 1]) {
+        for (const side of [-1, 1]) {
+          const x = cx + along.x * (pit.h / 2) * end + across.x * (pit.w / 2) * side;
+          const y = cy + along.y * (pit.h / 2) * end + across.y * (pit.w / 2) * side;
+          const r = Math.hypot(x - TABLE.x, y - TABLE.y);
+          // The walkable annulus, shell thickness already taken off both arcs.
+          expect(r).toBeGreaterThan(263);
+          expect(r).toBeLessThan(477);
+        }
+      }
+    }
   });
 });
