@@ -201,10 +201,29 @@ export const APERTURE_RANGE = 420;
  * bounded by a box this far around the viewer rather than by the whole sheet, which caps
  * both directions with one number and keeps the ray count down as a bonus.
  *
- * Generous enough to cover a room and a street width, so it reads as a limit of sight
- * rather than as a spotlight following you around.
+ * 1200, RAISED FROM 560 BECAUSE 560 WAS ALMOST EXACTLY THE SCREEN'S HALF-DIAGONAL.
+ *
+ * The camera picks `scale = clamp(shortSide / 620, 0.55, 1.0)`, so on any window taller than
+ * 620 CSS pixels the scale pins at 1.0 and one world unit is one pixel. A viewport around
+ * 950 x 650 therefore has a half-diagonal of 576 — sixteen units past this cap. The fog
+ * boundary sat right on the edge of the screen, so a body a little to one side of centre
+ * popped out of existence for a few units of camera movement and back in again. Reported
+ * from play: "I can see the downed bots here, but then the second I move slightly further
+ * away, they disappear... basically anything in the viewport should be visible."
+ *
+ * ONE NUMBER, ON PURPOSE, AND RAISING IT IS A COMBAT CHANGE. `seesOutdoors` caps sighting at
+ * this same value so that what is drawn and what can be seen are the same set — otherwise a
+ * bot is targetable from inside the fog. Splitting it into a wide "render reach" and a narrow
+ * "sighting reach" was the first instinct and it is worse: it would let the player see bodies
+ * and bots that the AI, still sighting at 560, cannot see back. Keeping one number keeps the
+ * two symmetric, which is why this is a deliberate raise rather than a rendering tweak.
+ *
+ * 1200 covers the corners of a 1920 x 1080 viewport (half-diagonal 1101) with margin. Watch
+ * frame time if it goes much higher: the polygon's ray count scales with the wall segments
+ * inside the bounds box, and this change already grew that box's area by about four and a
+ * half times.
  */
-export const OUTDOOR_SIGHT = 560;
+export const OUTDOOR_SIGHT = 1200;
 
 /** Buildings whose walls should stand in for their footprint, for a viewer here. */
 export function openBuildings(map: MapDocument, position: Vec2): string[] {

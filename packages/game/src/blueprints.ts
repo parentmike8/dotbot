@@ -1,6 +1,6 @@
 import { pointToSolidDistanceSquared, rectSolid } from "./geometry";
 import { interactionDotReach } from "./interactions";
-import { isGroundFloor, MIN_DOT_SEPARATION, objectCollisionRects } from "./mapModel";
+import { isGroundFloor, MIN_DOT_SEPARATION, objectCollisionRects, rectContains, stairHalves } from "./mapModel";
 import type { Building, DotSpawn, FloorPlan, MapDocument, MapObject, Rect, Solid, Vec2 } from "./types";
 
 const PUSH_CLEARANCE = 10;
@@ -68,6 +68,21 @@ function mostOpenSide(
 ): Vec2 {
   const clearOfDots = (position: Vec2): boolean => placed.every((other) =>
     Math.hypot(other.x - position.x, other.y - position.y) >= MIN_DOT_SEPARATION);
+  /**
+   * Not on the far side of a flight, which is open floor a bot can never occupy.
+   *
+   * `isReachable` floods the solids and calls the exit half reachable, because it IS — there
+   * is nothing solid there and the navigator will happily route through it. What it cannot
+   * know is that `resolveStairs` swaps floor on the way in, so the step that would land a bot
+   * there lands it on the other floor instead. This placer put `blueprint-mercy-locker` past
+   * the break line of `mercy-stair-up` and it was uncollectable from the day it shipped.
+   *
+   * Fixed in the placer rather than in a coordinate, because nothing here is authored: a
+   * blueprint goes to the most open side of its object, so moving the locker or adding a
+   * fixture beside it can put the spawn back on the stair at any time.
+   */
+  const offTheFarSideOfAStair = (position: Vec2): boolean =>
+    floor.stairs.every((stair) => !rectContains(stairHalves(stair).exit, position));
   const solids: Solid[] = [
     ...floorSolids(floor),
     ...floor.objects.filter((candidate) => candidate.id !== object.id).flatMap(objectCollisionRects).map(rectSolid),
@@ -91,6 +106,7 @@ function mostOpenSide(
       position,
       order,
       score: isReachable(map, floor, position, botRadius) && clearOfDots(position)
+        && offTheFarSideOfAStair(position)
         ? openness(position, building.footprint, solids, botRadius)
         : Number.NEGATIVE_INFINITY,
     }))
@@ -113,7 +129,8 @@ function mostOpenSide(
       if (
         Number.isFinite(openness(expanded, building.footprint, solids, botRadius)) &&
         isReachable(map, floor, expanded, botRadius) &&
-        clearOfDots(expanded)
+        clearOfDots(expanded) &&
+        offTheFarSideOfAStair(expanded)
       ) return expanded;
     }
   }

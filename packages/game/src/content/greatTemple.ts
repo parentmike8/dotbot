@@ -256,7 +256,23 @@ export const GREAT_TEMPLE_SOURCE: SourceBuilding = {
         { id: "temple-high-brazier-e", kind: "brazier", x: IN.e - 52, y: 2280, w: 52, h: 52 },
       ],
       dots: [
-        { id: "temple-dot-roof", item: { kind: "powerup", type: "dashOvercharge" }, x: CX, y: 2360 },
+        /**
+         * Beside the stair head on the summit floor, not on the flight.
+         *
+         * It used to sit at `CX, 2360` — dead centre of the grand stair, 40 units past its
+         * midline, which is the one place on a flight nothing can ever be picked up from.
+         * `GRAND` runs y 2200..2440 so the break line is 2320, and `resolveStairs` swaps a
+         * bot to the hall below the moment it crosses that going south. The step that would
+         * have reached the Dot put the bot on GROUND instead, every time.
+         *
+         * Reported from play: "since this is a stairwell that transitions halfway through,
+         * that which is on the other side of the stairs actually is never accessible."
+         *
+         * West of the flight now, clear of it by 61 units, so arriving at the summit shows
+         * the reward off to one side rather than underfoot — and it is somewhere a bot can
+         * actually stop.
+         */
+        { id: "temple-dot-roof", item: { kind: "powerup", type: "dashOvercharge" }, x: 3150, y: 2370 },
         // Inside the cell, 39 units off its west wall. At x 3210 it was 19 off — a Dot in
         // a wall, because a 22-thick wall centred on 3180 has its inner face at 3191 and a
         // bot needs 24.

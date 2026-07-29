@@ -1,6 +1,6 @@
 import { defaultGameConfig } from "./config";
 import { pointToSolidDistanceSquared, polygonContains, rectSolid, solidBounds } from "./geometry";
-import { isGroundFloor, MIN_DOT_SEPARATION, objectCollisionRects, objectLayoutRects, physicsFloorId, stairGuardRects, stairHalves } from "./mapModel";
+import { isGroundFloor, MIN_DOT_SEPARATION, objectCollisionRects, objectLayoutRects, physicsFloorId, rectContains, stairGuardRects, stairHalves } from "./mapModel";
 import { collectSolids } from "./collision";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Building, DotSpawn, FloorPlan, MapDocument, Rect, Solid, Vec2 } from "./types";
@@ -690,6 +690,37 @@ export function auditDotPlacement(map: MapDocument, radius = defaultGameConfig.b
         message: `${floorId}: ${dot.id} at ${dot.position.x},${dot.position.y} is somewhere a bot cannot stand`,
       });
     }
+    /**
+     * A Dot on a stair's EXIT half can never be collected, and no clearance check can see it.
+     *
+     * Reported from play, on a Dot sitting past the break line: "since this is a stairwell
+     * that transitions halfway through, that which is on the other side of the stairs actually
+     * is never accessible by the user."
+     *
+     * Exactly right, and it is a fourth instance of the same blind spot: every other check here
+     * asks IS THERE A COLLIDER HERE, and the exit half has none. It is open, drawn, flooded as
+     * reachable by the navigator, and a bot can still never occupy it — because `resolveStairs`
+     * swaps floor the moment a bot crosses the midline out of the entry half, so the step that
+     * would land it there lands it on the other floor instead. Walkable geometry that cannot be
+     * stood on is invisible to anything reasoning about space rather than about traversal.
+     *
+     * The ENTRY half is fine and deliberately not flagged: a bot can stand there, and a Dot at
+     * the foot of a flight is a real placement. Only the far side is impossible.
+     */
+    for (const { dot, floorId } of placed) {
+      const building = map.buildings.find((item) => item.floors.some((floor) => floor.id === floorId));
+      const plan = building?.floors.find((floor) => floor.id === floorId);
+      for (const stair of plan?.stairs ?? []) {
+        if (!rectContains(stairHalves(stair).exit, dot.position)) continue;
+        issues.push({
+          floorId,
+          kind: "dot-unreachable",
+          message: `${floorId}: ${dot.id} at ${dot.position.x},${dot.position.y} sits on the far half of `
+            + `${stair.id}; crossing the midline changes floor, so nothing there can ever be picked up`,
+        });
+      }
+    }
+
     for (let i = 0; i < placed.length; i += 1) {
       for (let j = i + 1; j < placed.length; j += 1) {
         const a = placed[i];
