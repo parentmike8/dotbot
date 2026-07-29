@@ -890,8 +890,16 @@ export class GameRenderer {
         .closePath()
         .stroke(ink);
     } else {
-      // "Here" points down at the tip it sits above.
-      this.dynamicGfx.moveTo(x - 4, cy - 2).lineTo(x, cy + 3.4).lineTo(x + 4, cy - 2).stroke(ink);
+      /**
+       * "Here" points down at the tip it sits above, centred on the circle.
+       *
+       * It read low, because it was: the chevron ran from `cy - 2` to `cy + 3.4`, so its
+       * whole mass sat below centre while the ring around it was centred on `cy`. Symmetric
+       * about `cy` now — a downward glyph already looks bottom-heavy, so it must be measured
+       * rather than eyeballed.
+       */
+      this.dynamicGfx
+        .moveTo(x - 4.4, cy - 2.7).lineTo(x, cy + 2.7).lineTo(x + 4.4, cy - 2.7).stroke(ink);
     }
   }
 

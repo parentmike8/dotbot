@@ -158,8 +158,26 @@ export function PingPicker({
       event.preventDefault();
       onClose();
     };
+    /**
+     * A click anywhere else closes it, and must not also place a mark.
+     *
+     * Bound in the CAPTURE phase for that second reason: the canvas's own `pointerdown` marks
+     * wherever you clicked, so a bubbling listener would close the menu and drop a mark in the
+     * same gesture. Capturing lets this run first and stop the event before the canvas ever
+     * sees it, so dismissing a menu is only ever a dismissal.
+     */
+    const onDown = (event: globalThis.PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".ping-picker")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onDown, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onDown, { capture: true });
+    };
   }, [onClose]);
 
   return (
@@ -167,7 +185,6 @@ export function PingPicker({
       className="ping-picker"
       aria-label="Choose a mark"
       style={{ left: at.x, top: at.y }}
-      onPointerLeave={onClose}
     >
       {PING_KINDS.map((kind) => (
         <button key={kind} type="button" onClick={() => onChoose(kind)}>{PING_LABEL[kind]}</button>

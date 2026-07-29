@@ -64,11 +64,20 @@ export const defaultGameConfig: GameConfig = {
   /**
    * How often one bot may mark a place.
    *
-   * Short enough to point at a moving rival twice in a fight, long enough that holding the
-   * button cannot paper the map. This IS the spam control — pings keep no state, so there
-   * is nothing else to cap.
+   * WAS 900, and that was a bug rather than a tuning choice: 900ms is over half a second, so a
+   * second click at any normal pace landed inside the cooldown and was swallowed with nothing
+   * to say so. Reported exactly as "every other click, the ping doesn't land".
+   *
+   * The mistake was reasoning about spam from the wrong input. A held key repeats; a mouse
+   * button does not — `pointerdown` fires once per press — so there was never a stream to
+   * defend against, and the cost of guessing wrong was silently dropping half the player's
+   * deliberate clicks. Short enough now that no intended click is lost, still long enough to
+   * swallow a double-fire from one press.
+   *
+   * The real limits are elsewhere and are the ones doing the work: the client keeps four live
+   * marks, and the AI remembers one per kind per squad.
    */
-  pingCooldownMs: 900,
+  pingCooldownMs: 180,
   minInsertionSpacing: 900,
   coverCenterTolerance: 12,
   maxSquadSize: 4,

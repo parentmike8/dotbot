@@ -1894,6 +1894,21 @@ button {
  * straight back onto a near-white slab, which is precisely the bug play reported. Light
  * ink cannot float, so under a skin these become panes like everything else.
  */
+/**
+ * The FOURTH unplated surface, and the last of this family.
+ *
+ * `.prompt-key`'s label and `.prompt-text-action` carry no background either — "PLEA" and
+ * "LEAVE RUN" sat as bare words on the floor. Reported with a screenshot: "the text below is
+ * not visible - plea and leave run. Can probably also be on dark backgrounds like the other
+ * text." The `kbd` cap had a plate, so the key was visible and the thing it did was not.
+ *
+ * Same cause as the three before it: every plateless treatment in this stylesheet was tuned
+ * against dark ink, and a dark skin inverts the ink without inverting the assumption. Worth
+ * stating once more because that is now four for four — a plateless text surface in this
+ * overlay is a latent bug, not a style.
+ */
+.hud-skin .prompt-key span,
+.hud-skin .prompt-text-action,
 .hud-skin .prompt-title,
 .hud-skin .prompt-line,
 .hud-skin .floor-rail {
@@ -1910,6 +1925,22 @@ button {
  * is what caught it; over the dark half alone all three would have looked fine.
  */
 .hud-skin .floor-rail { padding: 8px 10px; }
+
+/* The two action labels are inline, so they get a tighter pane than a block of prose. */
+.hud-skin .prompt-key span,
+.hud-skin .prompt-text-action {
+  padding: 4px 7px;
+}
+
+/* Its underline was the affordance and reads as a stray rule once it has a pane of its own. */
+.hud-skin .prompt-text-action {
+  border-bottom: none;
+  color: var(--muted-strong);
+}
+
+.hud-skin .prompt-text-action:hover {
+  color: var(--ink);
+}
 
 /**
  * The dash ring fills with `--ink`, which is right exactly once: while the ink is
