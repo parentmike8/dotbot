@@ -7,6 +7,7 @@ import {
   stadiumAxis,
   STADIUM_KINDS,
   stairGuardRects,
+  treeTrunkRadius,
 } from "./mapModel";
 import type { MapDocument, MapObject, Rect, Solid, Vec2 } from "./types";
 
@@ -69,6 +70,17 @@ function inscribedSolid(object: MapObject): Solid | null {
   if (ROUND_KINDS.has(object.kind)) {
     const r = Math.min(object.w, object.h) / 2;
     return { kind: "capsule", ax: cx, ay: cy, bx: cx, by: cy, r };
+  }
+
+  /**
+   * A tree stops you at its trunk. See `treeTrunkRadius` for why, and for why a thicket
+   * does not get this treatment.
+   */
+  if (object.kind === "tree") {
+    const r = treeTrunkRadius(object);
+    // The trunk is drawn a touch below centre, so the collider sits where the mark is.
+    const trunkY = cy + (Math.min(object.w, object.h) / 2) * 0.06;
+    return { kind: "capsule", ax: cx, ay: trunkY, bx: cx, by: trunkY, r };
   }
 
   if (STADIUM_KINDS.has(object.kind)) {

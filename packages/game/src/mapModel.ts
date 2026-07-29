@@ -323,6 +323,35 @@ export const ROUND_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
 ]);
 
 /**
+ * A tree collides at its TRUNK, not at its canopy.
+ *
+ * The glyph has drawn a trunk from the beginning — `treeGlyph` lays a `cylinder` at the
+ * centre with the comment "A crown with no trunk floats" — and the collider was the whole
+ * 104 x 104 bounding square. So the art said "a tree, which you walk under" and physics said
+ * "a solid box, larger than the leaves you can see". Reported from play twice in one message:
+ * "I actually can't go left anymore, despite the fact that I'm not even against the edge",
+ * and "if it's a tree, we would actually assume that there's a trunk in the middle of that,
+ * and I should be able to pass underneath the leaves."
+ *
+ * It also silently sealed a shrine. `tmp-dot-2` sat between two altars and two braziers with
+ * a 65-unit way in, and a tree's square corner closed the diagonal — the Dot was unreachable
+ * from the player spawn and no clearance check saw it, because every solid around it was
+ * individually fine.
+ *
+ * EXPORTED AND SHARED WITH THE GLYPH ON PURPOSE. The trunk is the one piece of a tree that
+ * both the drawing and the collider have to agree about, so there is exactly one number for
+ * it. A separate constant in the renderer is how the canopy and the box drifted apart in the
+ * first place.
+ *
+ * `thicket` is deliberately NOT this. A thicket is a mass of undergrowth rather than a canopy
+ * on a stem — it is solid all the way down, keeps its stadium collider, and is what the map
+ * should use where foliage is meant to stop somebody.
+ */
+export function treeTrunkRadius(object: Pick<MapObject, "w" | "h">): number {
+  return Math.max(5, (Math.min(object.w, object.h) / 2) * 0.16);
+}
+
+/**
  * Physics rectangles for a map object. Most objects occupy their authored
  * bounds. Compound plan shapes can declare local collision parts, while the
  * contracts table collides only at its visible tabletop so a bot is never

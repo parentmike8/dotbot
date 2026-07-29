@@ -339,9 +339,29 @@ const templeObjects: MapObject[] = [
   ...rhythm(2820, 3740, 152, [[3060, 3120], [3200, 3400]])
     .map((x) => obj("stele", x, PLAZA.y + PLAZA.h - 116, 52, 104)),
 
-  // Ring stones at the ball court's ends, which is what a ball court is for.
-  obj("altar", COURT.x + COURT.alley / 2 - 54, COURT.y + 22, 108, 54),
-  obj("altar", COURT.x + COURT.alley / 2 - 54, COURT.y + COURT.len - 76, 108, 54),
+  /**
+   * Ring stones in the court's END ZONES, not across its alley.
+   *
+   * They used to sit on the alley's centreline at each end — `alley / 2 - 54`, so 108 wide in
+   * a 120-wide alley, 6 units of daylight either side. That sealed the playing surface at both
+   * ends, and the Dot at centre court was unreachable from the player spawn: a walled slot
+   * 120 x 228 with a stone plugging each mouth. Reported from play: "there are these four
+   * blocks, and there's a dot in the middle of them that is not accessible because the blocks
+   * are blocking the user from getting in... let's at least make them so that they're sort of
+   * workable, either able to get in through a direction or something like that."
+   *
+   * Nothing measured it. Every solid here is individually fine and correctly placed — two
+   * benches and two markers, which is what a ball court IS — and `auditDotPlacement` asks
+   * whether a Dot has clearance, not whether anything can walk to it. Centre court had 48
+   * units of clearance in every direction and no way in.
+   *
+   * The I-plan's whole point is that the alley runs clear end to end and the end zones are the
+   * wings either side, so the markers belong in a wing. Each sits clear of its bench in y —
+   * the benches span 2061..2319 and these are outside that — so the alley is open north and
+   * south and a marker still reads as belonging to the end it marks.
+   */
+  obj("altar", COURT.x - 90, COURT.y, 108, 54),
+  obj("altar", COURT.x + COURT.alley - 18, COURT.y + COURT.len - 54, 108, 54),
   obj("brazier", COURT.x - 74, COURT.y + COURT.len / 2 - 26, 50, 50),
   obj("brazier", COURT.x + COURT.alley + 24, COURT.y + COURT.len / 2 - 26, 50, 50),
 

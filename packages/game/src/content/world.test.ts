@@ -193,3 +193,27 @@ describe("the roundhouse reads as a fan", () => {
     }
   });
 });
+
+/**
+ * Every outdoor Dot can actually be walked to from where the player starts.
+ *
+ * `auditDotPlacement` asks whether a Dot has bot-radius CLEARANCE, which is a question about
+ * the space immediately around it, and the ball court answered yes while being sealed: a
+ * walled alley 120 x 228 with a 108-wide ring stone plugging each mouth. Centre court had 48
+ * units clear in every direction and no way in. Reported from play — "there's a dot in the
+ * middle of them that is not accessible because the blocks are blocking the user from getting
+ * in" — and invisible to every check in the suite, because each solid was individually correct
+ * and correctly placed.
+ *
+ * Asked of the NAVIGATOR rather than of a hand-rolled flood, for the reason settled earlier:
+ * a private flood produced two false positives the navigator disagreed with, and the navigator
+ * is what actually moves a bot.
+ */
+describe("every outdoor Dot is reachable from the player spawn", () => {
+  const spawn = worldMap.botSpawns.find((s) => s.id === "player")!.position;
+
+  it.each(worldMap.outdoor.dotSpawns.map((dot) => [dot.id, dot] as const))("%s", (_id, dot) => {
+    const path = findNavigationPath(worldMap, OUTDOOR_FLOOR_ID, spawn, dot.position, RADIUS);
+    expect(path.length).toBeGreaterThan(0);
+  });
+});

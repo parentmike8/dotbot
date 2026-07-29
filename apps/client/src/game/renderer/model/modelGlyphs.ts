@@ -1,5 +1,6 @@
 import type { Graphics } from "pixi.js";
 import type { Facing, MapObject, Vec2 } from "@dotbot/game/types";
+import { treeTrunkRadius } from "@dotbot/game/mapModel";
 import { landmarkGlyphs } from "./modelLandmarks";
 import {
   contact,
@@ -963,8 +964,18 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   const radius = Math.min(o.w, o.h) / 2;
   contactRound(pad, cx, cy, radius * 0.88, LIFT.column + 4);
 
-  // Trunk, visible where the canopy thins. A crown with no trunk floats.
-  cylinder(g, cx, cy + radius * 0.06, Math.max(2.2, radius * 0.13), MAT.woodDark, 3);
+  /**
+   * Trunk, visible where the canopy thins. A crown with no trunk floats.
+   *
+   * Sized from `treeTrunkRadius`, which is also the COLLIDER, so the one part of a tree that
+   * stops a bot is the one part drawn at that size. It used to be `max(2.2, radius * 0.13)`
+   * here while physics used the whole bounding square — the drawing said "walk under the
+   * leaves" and the box said "this is a wall wider than the leaves you can see". Sharing the
+   * number is what stops that coming back.
+   *
+   * Drawn a touch below centre; `inscribedSolid` applies the same 0.06 offset.
+   */
+  cylinder(g, cx, cy + radius * 0.06, treeTrunkRadius(o), MAT.woodDark, 3);
 
   foliageMass(g, cx, cy, radius * 0.96, o.id);
 }
