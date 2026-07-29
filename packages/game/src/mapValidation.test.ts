@@ -15,6 +15,183 @@ import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Doorway, MapDocument, MapObject, Rect, StairLink, Vec2 } from "./types";
 
 /**
+ * Every solid object footprint standing in a doorway's threshold, on any floor.
+ *
+ * The corridor is as wide as the opening and 14 units deep either side: the rule
+ * is the THRESHOLD, not the approach. See the downtown test that first used this
+ * for why a full approach depth on both sides is the wrong demand — an 88x68 WC
+ * with a 56-unit door cannot give it, and requiring it means bathrooms with
+ * nothing in them. Getting from the gap to somewhere useful is the flood-fill
+ * checks' job.
+ */
+function doorwayBlockers(map: MapDocument): string[] {
+  const APPROACH = 14;
+  const blockers = new Set<string>();
+  const floors = new Map<string, MapObject[]>();
+  const add = (floorId: string, objects: readonly MapObject[]) => {
+    const pool = floors.get(floorId) ?? [];
+    pool.push(...objects.filter(isSolidObject));
+    floors.set(floorId, pool);
+  };
+  add(OUTDOOR_FLOOR_ID, map.outdoor.objects);
+  for (const building of map.buildings) {
+    for (const floor of building.floors) add(physicsFloorId(map, floor.id), floor.objects);
+  }
+
+  for (const building of map.buildings) {
+    for (const floor of building.floors) {
+      const floorId = physicsFloorId(map, floor.id);
+      for (const doorway of floor.doorways) {
+        const half = doorway.width / 2;
+        const corridor: Rect = doorway.dir === "h"
+          ? { x: doorway.x - half, y: doorway.y - APPROACH, w: doorway.width, h: APPROACH * 2 }
+          : { x: doorway.x - APPROACH, y: doorway.y - half, w: APPROACH * 2, h: doorway.width };
+        for (const object of floors.get(floorId) ?? []) {
+          for (const rect of objectCollisionRects(object)) {
+            const overlapX = Math.min(corridor.x + corridor.w, rect.x + rect.w) - Math.max(corridor.x, rect.x);
+            const overlapY = Math.min(corridor.y + corridor.h, rect.y + rect.h) - Math.max(corridor.y, rect.y);
+            if (overlapX > 0 && overlapY > 0) {
+              blockers.add(`${object.id} blocks ${doorway.id} (${doorway.x},${doorway.y}) on ${floorId}`);
+            }
+          }
+        }
+      }
+    }
+  }
+  return [...blockers].sort();
+}
+
+/**
+ * Solid objects standing in the APPROACH to a building's outside entrance.
+ *
+ * `doorwayBlockers` deliberately checks the threshold only, and its comment says
+ * why: an 88x68 WC with a 56-unit door cannot give a bot's full approach depth on
+ * both sides, so demanding it means bathrooms with nothing in them. That reasoning
+ * is sound for a door between two rooms and wrong for the way into a building.
+ *
+ * Reported from play, twice in one message: "you have objects blocking entrances
+ * in the octagon", "the sign at the north entrance doesn't let me get there". Both
+ * cleared the threshold band and sat just past it, squarely in the line you walk.
+ * An entrance is the one door whose whole job is to be walked through, and it is
+ * approached across open ground where nothing needs to be tucked in tight, so it
+ * gets a bot's full diameter of clear run on both sides.
+ *
+ * Only perimeter doorways: an entrance is one on the shell, which is where a
+ * player crosses from the street into the building.
+ */
+function entranceApproachBlockers(map: MapDocument): string[] {
+  const DEPTH = BOT_RADIUS * 2;
+  const ON_SHELL = 26;
+  const found = new Set<string>();
+
+  for (const building of map.buildings) {
+    const fp = building.footprint;
+    const ground = building.floors.find(isGroundFloor);
+    if (!ground) continue;
+    const floorId = physicsFloorId(map, ground.id);
+    const pool = [
+      ...map.outdoor.objects.filter(isSolidObject),
+      ...building.floors
+        .filter((floor) => physicsFloorId(map, floor.id) === floorId)
+        .flatMap((floor) => floor.objects.filter(isSolidObject)),
+    ];
+
+    for (const doorway of ground.doorways) {
+      const onShell =
+        Math.abs(doorway.y - fp.y) < ON_SHELL ||
+        Math.abs(doorway.y - (fp.y + fp.h)) < ON_SHELL ||
+        Math.abs(doorway.x - fp.x) < ON_SHELL ||
+        Math.abs(doorway.x - (fp.x + fp.w)) < ON_SHELL;
+      if (!onShell) continue;
+
+      const half = doorway.width / 2;
+      const corridor: Rect = doorway.dir === "h"
+        ? { x: doorway.x - half, y: doorway.y - DEPTH, w: doorway.width, h: DEPTH * 2 }
+        : { x: doorway.x - DEPTH, y: doorway.y - half, w: DEPTH * 2, h: doorway.width };
+
+      for (const object of pool) {
+        for (const rect of objectCollisionRects(object)) {
+          const overlapX = Math.min(corridor.x + corridor.w, rect.x + rect.w) - Math.max(corridor.x, rect.x);
+          const overlapY = Math.min(corridor.y + corridor.h, rect.y + rect.h) - Math.max(corridor.y, rect.y);
+          if (overlapX > 0 && overlapY > 0) {
+            found.add(`${object.id} stands in the approach to ${building.id}'s ${doorway.id} (${Math.round(doorway.x)},${Math.round(doorway.y)})`);
+          }
+        }
+      }
+    }
+  }
+  return [...found].sort();
+}
+
+/**
+ * Gates in outdoor wall runs, and whether a bot can still fit through them.
+ *
+ * A gap in a run of collinear wall segments is a gate, and it is the ONLY way
+ * through the wall it interrupts — there is no second route the way there is round
+ * a piece of furniture. Two of The Reach's three were plugged by their own
+ * scenery: a wagon abandoned in the middle of a 140-wide gate left two 33-unit
+ * slots, and the yard's only route to the temple went through it.
+ *
+ * Measured as the widest remaining clear lane, not as "does anything overlap".
+ * Something standing in a gateway is fine if you can still walk past it, and a
+ * wagon stopped at the gate is the story that gate is telling.
+ */
+function gateWidths(map: MapDocument): Array<{ where: string; clear: number }> {
+  const runs = new Map<string, Rect[]>();
+  for (const wall of map.outdoor.walls) {
+    const vertical = wall.h > wall.w;
+    const key = vertical ? `v|${wall.x}|${wall.w}` : `h|${wall.y}|${wall.h}`;
+    runs.set(key, [...(runs.get(key) ?? []), wall]);
+  }
+
+  const solids = map.outdoor.objects.filter(isSolidObject).flatMap(objectCollisionRects);
+  const gates: Array<{ where: string; clear: number }> = [];
+
+  for (const [key, group] of runs) {
+    if (group.length < 2) continue;
+    const vertical = key.startsWith("v");
+    const sorted = [...group].sort((a, b) => (vertical ? a.y - b.y : a.x - b.x));
+    for (let i = 0; i < sorted.length - 1; i += 1) {
+      const before = sorted[i];
+      const after = sorted[i + 1];
+      const from = vertical ? before.y + before.h : before.x + before.w;
+      const to = vertical ? after.y : after.x;
+      if (to - from < 8) continue; // segments touching, not a gate
+
+      // Everything blocking the gate, projected onto the gate's own axis.
+      const band = vertical
+        ? { lo: before.x - BOT_RADIUS, hi: before.x + before.w + BOT_RADIUS }
+        : { lo: before.y - BOT_RADIUS, hi: before.y + before.h + BOT_RADIUS };
+      const spans: Array<[number, number]> = [];
+      for (const rect of solids) {
+        const acrossLo = vertical ? rect.x : rect.y;
+        const acrossHi = vertical ? rect.x + rect.w : rect.y + rect.h;
+        if (acrossHi <= band.lo || acrossLo >= band.hi) continue;
+        const alongLo = vertical ? rect.y : rect.x;
+        const alongHi = vertical ? rect.y + rect.h : rect.x + rect.w;
+        if (alongHi <= from || alongLo >= to) continue;
+        spans.push([Math.max(alongLo, from), Math.min(alongHi, to)]);
+      }
+
+      // Widest surviving lane between the blockers.
+      spans.sort((a, b) => a[0] - b[0]);
+      let clear = 0;
+      let cursor = from;
+      for (const [lo, hi] of spans) {
+        clear = Math.max(clear, lo - cursor);
+        cursor = Math.max(cursor, hi);
+      }
+      clear = Math.max(clear, to - cursor);
+      gates.push({
+        where: `${vertical ? "x" : "y"} ${vertical ? before.x : before.y}, gate ${Math.round(from)}-${Math.round(to)}`,
+        clear: Math.round(clear),
+      });
+    }
+  }
+  return gates;
+}
+
+/**
  * Every map a player can actually load. The base shells are here too: they are
  * maps, they get simulations built on them, and they were as exposed as the
  * world to a map-wide cap nobody was testing against.
@@ -426,56 +603,7 @@ describe("downtown map validation", () => {
      * Getting from the gap to somewhere useful is what the flood-fill checks above are
      * for, and they are the right shape for it.
      */
-    const APPROACH = 14;
-    const blockers = new Set<string>();
-    for (const world of worlds) {
-      const solids = new Map<string, Rect[]>();
-      const collect = (objects: readonly MapObject[]) => {
-        for (const object of objects) {
-          if (!isSolidObject(object)) continue;
-          solids.set(object.id, objectCollisionRects(object));
-        }
-      };
-      if (world.floorId === OUTDOOR_FLOOR_ID) collect(downtownMap.outdoor.objects);
-      for (const building of downtownMap.buildings) {
-        for (const floor of building.floors) {
-          if (physicsFloorId(downtownMap, floor.id) === world.floorId) collect(floor.objects);
-        }
-      }
-
-      for (const doorway of world.doorways) {
-        // The corridor: as wide as the opening, as deep as a bot's approach on both
-        // sides. `dir` is the wall's run, so the corridor crosses it.
-        const half = doorway.width / 2;
-        const corridor: Rect = doorway.dir === "h"
-          ? { x: doorway.x - half, y: doorway.y - APPROACH, w: doorway.width, h: APPROACH * 2 }
-          : { x: doorway.x - APPROACH, y: doorway.y - half, w: APPROACH * 2, h: doorway.width };
-        for (const [id, rects] of solids) {
-          for (const rect of rects) {
-            const overlapX = Math.min(corridor.x + corridor.w, rect.x + rect.w) - Math.max(corridor.x, rect.x);
-            const overlapY = Math.min(corridor.y + corridor.h, rect.y + rect.h) - Math.max(corridor.y, rect.y);
-            if (overlapX > 0 && overlapY > 0) {
-              blockers.add(`${id} @ ${doorway.id} (${doorway.x},${doorway.y}) ${world.floorId}`);
-            }
-          }
-        }
-      }
-    }
-    /**
-     * Zero, and it stays zero. Not a ratchet — there is no debt left to record.
-     *
-     * Nine were found the first time this ran. Three of those were fixtures the same
-     * session's bathroom repair had just moved into their own thresholds, which is
-     * exactly what a new check earns its keep on. The other six were pre-existing
-     * authoring: a basin or counter standing in a doorway, each clipping the threshold
-     * by two to six units, none of it visible without measuring.
-     *
-     * Every repair was a nudge along the fixture's own wall. What made them tractable
-     * was doing the arithmetic first — door centre, threshold reach, the fixture's span,
-     * and what else is on that wall — rather than sliding things and re-running. Two of
-     * the three would have gone into a wall if moved the obvious direction.
-     */
-    expect([...blockers].sort()).toEqual([]);
+    expect(doorwayBlockers(downtownMap)).toEqual([]);
   });
 
   it("keeps every bot spawn somewhere the navigator can plan FROM", () => {
@@ -661,6 +789,37 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
    * Two of them on The Reach cost 12ms of a 16.7ms budget: the map was
    * unplayable for a reason no read-only audit could see.
    */
+  /**
+   * Reported from play, with a screenshot: "you have objects blocking entrances in
+   * the octagon — the sign at the north entrance doesn't let me get there."
+   *
+   * There is a test for exactly this, written the last time it happened, with the
+   * appropriate amount of laughter recorded in its comment. Like every other
+   * navigation check in this file it ran on downtown alone, so the four regions
+   * shipped with no threshold checking at all. Same lesson as the wedged spawns
+   * and the floor cap, for the third time in one day: a check that names a real
+   * failure is worthless if it only ever looks at one map.
+   */
+  it("keeps the walking line through every doorway clear of solid objects", () => {
+    expect(doorwayBlockers(map)).toEqual([]);
+  });
+
+  it("keeps a bot's full diameter of clear run either side of every entrance", () => {
+    expect(entranceApproachBlockers(map)).toEqual([]);
+  });
+
+  /**
+   * A gate is the only hole in the wall it interrupts, so it may never be narrowed
+   * below a bot's diameter plus slack. Two of The Reach's three were plugged.
+   */
+  it("leaves every gate in an outdoor wall wide enough to walk through", () => {
+    const MIN = BOT_RADIUS * 2 + 16;
+    const tight = gateWidths(map)
+      .filter((gate) => gate.clear < MIN)
+      .map((gate) => `${gate.where} — only ${gate.clear} clear, needs ${MIN}`);
+    expect(tight).toEqual([]);
+  });
+
   it("keeps every bot spawn somewhere the navigator can plan FROM", () => {
     // Every wedged spawn, not just the first. Stopping at one turns a single
     // authoring pass into as many round trips as there are mistakes.

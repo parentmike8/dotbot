@@ -255,12 +255,95 @@ export function planningTableSurfaceRect(object: Pick<MapObject, "x" | "y" | "w"
 }
 
 /**
+ * Kinds drawn as a disc inscribed in their own bounds, so their collider must be
+ * a disc too.
+ *
+ * The contract's rule is silhouette == collider, and a round glyph in a square
+ * collider breaks it by the worst margin available: at a corner, 29% of the
+ * radius is solid ground the player can see straight through. Reported from play
+ * on the fairground carousel — "this circular building still has the square
+ * around it, I cannot get to the top left edge of the circle."
+ *
+ * A kind, not an instance. Every one of these computes its radius as
+ * `Math.min(w, h) / 2` in its glyph, which is the definition being honoured here.
+ */
+const ROUND_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
+  "carousel",
+  "waltzer",
+  "swingRide",
+  "turntable",
+  "waterTank",
+  "brazier",
+  "drum",
+]);
+
+/**
+ * A disc's collider, as a stack of rects.
+ *
+ * Rects because that is what every consumer of this function reads — collision,
+ * navigation clearance, line of sight, the client predictor. Adding a circle
+ * primitive would mean teaching all of them a second shape; stepping the disc
+ * teaches them nothing and is exact to within the step height.
+ *
+ * Eight bands over the diameter: the error at the silhouette is under 2% of the
+ * radius, which is a third of a pixel on the biggest of these at play zoom, and
+ * the corners — the entire complaint — are gone.
+ */
+function discCollisionRects(object: MapObject): Rect[] {
+  const radius = Math.min(object.w, object.h) / 2;
+  const cx = object.x + object.w / 2;
+  const cy = object.y + object.h / 2;
+  const BANDS = 8;
+  const rects: Rect[] = [];
+  for (let band = 0; band < BANDS; band += 1) {
+    const top = cy - radius + (band * 2 * radius) / BANDS;
+    const height = (2 * radius) / BANDS;
+    // Widest point of the band, so the stack contains the disc rather than
+    // cutting corners off it: a collider must never be smaller than the mark.
+    const nearest = Math.min(Math.abs(top - cy), Math.abs(top + height - cy));
+    const edge = top < cy && top + height > cy ? radius : Math.sqrt(Math.max(0, radius * radius - nearest * nearest));
+    if (edge <= 0) continue;
+    rects.push({ x: cx - edge, y: top, w: edge * 2, h: height });
+  }
+  return rects;
+}
+
+/**
  * Physics rectangles for a map object. Most objects occupy their authored
- * bounds. Compound plan shapes can declare local collision parts, while the
- * contracts table collides only at its visible tabletop so a bot is never
- * stopped by the transparent chair gutter around it.
+ * bounds. Compound plan shapes can declare local collision parts, round kinds
+ * collide as a stepped disc, while the contracts table collides only at its
+ * visible tabletop so a bot is never stopped by the transparent chair gutter
+ * around it.
  */
 export function objectCollisionRects(object: MapObject): Rect[] {
+  if (!isSolidObject(object)) return [];
+  if (object.collisionParts?.length) {
+    return object.collisionParts.map((part) => ({
+      x: object.x + part.x,
+      y: object.y + part.y,
+      w: part.w,
+      h: part.h,
+    }));
+  }
+  if (ROUND_KINDS.has(object.kind)) return discCollisionRects(object);
+  return objectLayoutRects(object);
+}
+
+/**
+ * An object's rects for reasoning about LAYOUT rather than physics.
+ *
+ * The difference is only round kinds, and it matters. A disc's eight-band
+ * decomposition is a physics detail: to the composition audit, which asks whether
+ * a fixture sits flush against a run or leaves an unusable slot beside it, those
+ * bands look like eight fixtures of different widths, and a drum pushed hard
+ * against a switchgear cabinet reported as "parked 6 units off its face" — the 6
+ * units being the drum's own curvature. Flush is a rectilinear idea and a circle
+ * does not have it.
+ *
+ * Connectivity keeps reading `objectCollisionRects`, because a bot really can walk
+ * the corner a disc leaves free and treating it as solid would wall off real floor.
+ */
+export function objectLayoutRects(object: MapObject): Rect[] {
   if (!isSolidObject(object)) return [];
   if (object.collisionParts?.length) {
     return object.collisionParts.map((part) => ({

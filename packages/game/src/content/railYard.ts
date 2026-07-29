@@ -62,8 +62,14 @@ const LEAD_X = 2934;
 
 const cityPlan: CityPlan = {
   streets: [{
+    /**
+     * Starts 26 units WEST of the region, inside the city's fence line, for the same
+     * reason `fair-drive` starts north of its own: Main St ends at x 2374 and this
+     * began at 2400, leaving the fence's thickness of bare ground across the
+     * carriageway in the middle of the gate.
+     */
     id: "works-rd",
-    from: { x: W0, y: WORKS_Y },
+    from: { x: W0 - 26, y: WORKS_Y },
     to: { x: W1, y: WORKS_Y },
     width: CARRIAGEWAY,
     footway: FOOTWAY,
@@ -145,7 +151,9 @@ const yardObjects: MapObject[] = [
   obj("coalingTower", 2470, 330, 190, 168),
   // The stage is fed from a bank of wagons on the coal road behind it.
   obj("wagon", 2700, 494, 200, 76, { facing: "E" }),
-  obj("wagon", 2440, 596, 190, 74, { facing: "E" }),
+  // x 2470, not 2440: at 2440 its west end reached into the Main St gate's approach,
+  // pinching the city's own road where it enters the yard.
+  obj("wagon", 2470, 596, 190, 74, { facing: "E" }),
 
   /** The water tank, beside the lead: an engine takes water on its way to the table. */
   obj("waterTank", 2760, 336, 132, 132),
@@ -251,7 +259,17 @@ export const railYard: RegionParts = {
      * the single gap is the abandoned spur running south into the jungle — the one way
      * on to the temple, and legible as a way out from anywhere in the yard.
      */
-    ...fenceRun("yard-fence-s", "h", S1, W0 - 26, 4200, 26, [[3260, 3400]]),
+    /**
+     * The gate the spur leaves through, 240 wide rather than 140.
+     *
+     * At 140 it was a gate with a 74-wide wagon abandoned in the middle of it,
+     * leaving two 33-unit slots for a 48-wide bot: the only route from the yard to
+     * the temple, plugged by its own scenery. Widening it is the honest fix rather
+     * than moving the wagon out of the gateway, because the wagon stopping AT the
+     * gate is the point of the wagon — and a gate a wagon was driven through was
+     * never 140 wide in the first place.
+     */
+    ...fenceRun("yard-fence-s", "h", S1, W0 - 26, 4200, 26, [[3220, 3460]]),
   ],
   objects: yardObjects,
   dotSpawns: [

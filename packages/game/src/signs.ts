@@ -1,7 +1,7 @@
 import { buildingContaining, physicsFloorId } from "./mapModel";
 import { distance } from "./math";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import type { MapDocument, MapObject, Vec2 } from "./types";
+import type { Building, MapDocument, MapObject, Vec2 } from "./types";
 
 /**
  * What a sign says, and when you are close enough to read it.
@@ -93,20 +93,51 @@ export function signText(
     { at: { x: centre.x, y: centre.y + REACH }, toward: { x: 0, y: 1 } },
     { at: { x: centre.x, y: centre.y - REACH }, toward: { x: 0, y: -1 } },
   ];
-  for (const probe of probes) {
-    const building = buildingContaining(map, probe.at);
-    if (!building) continue;
+  const describe = (building: Building, toward: Vec2) => {
     // ROOF is the exterior, not a storey you can stand on, so it is not counted.
     const storeys = building.floors.filter((floor) => floor.label !== "ROOF").length;
     return {
       title: building.name,
       detail: `${storeys} ${storeys === 1 ? "FLOOR" : "FLOORS"}`,
       // Away from the building, which is the footway the sign faces.
-      open: { x: -probe.toward.x, y: -probe.toward.y },
+      open: { x: -toward.x, y: -toward.y },
     };
+  };
+  for (const probe of probes) {
+    const building = buildingContaining(map, probe.at);
+    if (building) return describe(building, probe.toward);
   }
-  // Nothing to face away from, so north, which is where captions have always gone.
-  return { title: "DOWNTOWN", detail: "", open: { x: 0, y: -1 } };
+
+  /**
+   * Still nothing, so fall back to the NEAREST footprint rather than to a place
+   * name — and only if it is close enough to be the thing this sign is for.
+   *
+   * The cardinal probes reach 48 units, which is a bot's width, and that is fine
+   * for a sign bolted to a flat wall. It is not enough for a sign on the queueing
+   * ground outside a faceted building: the pavilion's sign stood 54 units off its
+   * own octagon and missed by six, then fell through to the old hardcoded
+   * "DOWNTOWN". A sign in an abandoned fairground reading DOWNTOWN was reported
+   * from play, and it was wrong twice over — wrong building, and a place name that
+   * only ever made sense while the city WAS the map.
+   */
+  const NEARBY = 170;
+  let closest: { building: Building; away: number; toward: Vec2 } | null = null;
+  for (const building of map.buildings) {
+    const fp = building.footprint;
+    const dx = centre.x - Math.max(fp.x, Math.min(centre.x, fp.x + fp.w));
+    const dy = centre.y - Math.max(fp.y, Math.min(centre.y, fp.y + fp.h));
+    const away = Math.hypot(dx, dy);
+    if (away > NEARBY || (closest && away >= closest.away)) continue;
+    const span = Math.hypot(dx, dy) || 1;
+    closest = { building, away, toward: { x: -dx / span, y: -dy / span } };
+  }
+  if (closest) return describe(closest.building, closest.toward);
+
+  /**
+   * Nothing within reach at all. The map's own name, not a district's: a sign has
+   * to say something, and the sheet is the only thing left that is certainly true.
+   */
+  return { title: map.name.toUpperCase(), detail: "", open: { x: 0, y: -1 } };
 }
 
 /**

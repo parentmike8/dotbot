@@ -60,10 +60,10 @@ export const PAVILION_SOURCE: SourceBuilding = {
     {
       label: "GROUND",
       brief: {
-        purpose: "The dance floor: one room, entered from four sides, with the bar and the band at the ends of it.",
-        zones: ["the floor", "the bandstand north", "the bar west", "the stair corner south-east"],
+        purpose: "The dance floor: one room, entered from four sides, with the bar and the band in the corners of it.",
+        zones: ["the floor", "the bandstand north-west", "the bar south-west", "the stair corner south-east"],
         sequence: "In off the midway at any cardinal, across the floor, out the far side. Nobody stops in the middle.",
-        adjacency: "Bar backs a blind wall so its whole length is servable; the bandstand faces the floor and blocks nothing.",
+        adjacency: "Both cross-axes stay clear end to end, because all four walls they meet are doors. The fittings take the quadrants between.",
         negativeSpace: "The centre of the floor is left completely open — it is the room's purpose, and with four doors on it, it is the most exposed ground in the region.",
       },
       shellOpenings: [
@@ -85,44 +85,51 @@ export const PAVILION_SOURCE: SourceBuilding = {
        * box — puts it 20 units outside the wall on every diagonal face, which is what the
        * first pass did to the bar, the shelf and the fridge all at once.
        */
+      /**
+       * ONE FITTING PER QUADRANT, AND NOTHING AGAINST A CARDINAL WALL.
+       *
+       * The hall has archways on all four cardinals, so it has no available wall
+       * runs at all — every axis-aligned bank against a cardinal facet lands in a
+       * doorway. The first pass put the bandstand against the north wall and the bar
+       * down the west one, exactly as the brief above described them, and both stood
+       * in an entrance. Reported from play: "you have objects blocking entrances in
+       * the octagon."
+       *
+       * Worse, the diagonals are no help either. This octagon is flat-topped, so its
+       * eight facet MIDPOINTS fall on the cardinals *and* the diagonals — all eight
+       * are 259 from the centre, and the roomy directions are the 22.5-degree family
+       * in between. There is no direction in this plan where a rect can sit against a
+       * wall and be out of a door's way.
+       *
+       * So the fittings stand clear of the shell entirely, one per quadrant, leaving
+       * all four cross-axes open. That is what the plan wants anyway: four doors
+       * facing each other across an empty floor. Every rect below is verified for
+       * worst-corner radius against the inset octagon and against all four archway
+       * corridors — in a faceted plan the only honest check is arithmetic on all four
+       * corners, never the eye.
+       */
       objects: [
-        // The bandstand: a raised deck against the north face, facing the floor. 180 wide,
-        // not 220: at 220 its west end left a 50-unit slot to the north-west facet, which
-        // sealed that corner of the hall off from the rest of the floor.
-        { id: "pav-stage", kind: "planningTable", x: HALL.x - 90, y: HALL.y - 234, w: 180, h: 60, facing: "S", scannable: true },
+        // The bandstand, north-west quadrant, facing the floor. Clear of the north
+        // archway's corridor by 50 and of the west one by 40.
+        { id: "pav-stage", kind: "planningTable", x: HALL.x - 180, y: HALL.y - 170, w: 160, h: 56, facing: "S", scannable: true },
         /**
-         * The bar down the west facet: back-bar, counter and cooler as ONE continuous bank.
+         * The bar, south-west quadrant: counter, back-bar and cooler as ONE bank.
          *
-         * Every gap in this run is 0 or 16, on purpose. A shelf 8 units behind a counter is
+         * Every gap in this run is 0, on purpose. A shelf 8 units behind a counter is
          * `parallel-banks` — two fixture faces with no work aisle between them — and a
-         * cooler 6 units off the end of a bench is `wedged-fixture`, which is the same
-         * mistake at the other end of the run. Touching, they are one fitting.
+         * cooler 6 units off the end is `wedged-fixture`, the same mistake at the other
+         * end of the run. Touching, they are one fitting.
          */
-        { id: "pav-bar", kind: "counter", x: HALL.x - 216, y: HALL.y - 90, w: 40, h: 180, facing: "E" },
-        { id: "pav-shelf", kind: "shelf", x: HALL.x - 240, y: HALL.y - 60, w: 24, h: 120 },
-        { id: "pav-fridge", kind: "fridge", x: HALL.x - 216, y: HALL.y + 90, w: 44, h: 44, facing: "E" },
-        /**
-         * ONE long bench down the east facet, not two with a seam.
-         *
-         * Two 120-unit benches 12 apart still cut the 63-unit strip behind them into pockets
-         * a bot could see and not reach: the seam was too narrow to walk through and each
-         * end was the only way round. A single 220 bench has two open ends and no seam.
-         */
-        { id: "pav-bench-a", kind: "bench", x: HALL.x + 140, y: HALL.y - 110, w: 26, h: 220, facing: "W" },
-        { id: "pav-bench-c", kind: "bench", x: HALL.x - 60, y: HALL.y + 190, w: 130, h: 26, facing: "N" },
-        /**
-         * FIVE fixtures, all of them against a wall, and no table in the middle.
-         *
-         * Ten were authored first. Two overlapped each other, one stood in the stair, and
-         * the loose table in the floor forced the east bench out to within 63 units of the
-         * facet behind it — which tapers, so the strip behind the bench closed. The brief
-         * says the centre of the floor is the room's purpose. Five fixtures is what a hall
-         * cleared for dancing has in it, and it is what the plan can hold.
-         */
+        { id: "pav-bar", kind: "counter", x: HALL.x - 196, y: HALL.y + 92, w: 150, h: 40, facing: "N" },
+        { id: "pav-shelf", kind: "shelf", x: HALL.x - 196, y: HALL.y + 132, w: 150, h: 22 },
+        { id: "pav-fridge", kind: "fridge", x: HALL.x - 196, y: HALL.y + 42, w: 44, h: 44, facing: "E" },
+        // One bench, north-east quadrant. The south-east quadrant is the stair's.
+        { id: "pav-bench-a", kind: "bench", x: HALL.x + 80, y: HALL.y - 150, w: 110, h: 26, facing: "S" },
       ],
       dots: [
         { id: "pav-dot-a", item: { kind: "powerup", type: "health" }, x: HALL.x - 110, y: HALL.y + 60 },
-        { id: "pav-dot-b", item: { kind: "powerup", type: "dashOvercharge" }, x: HALL.x - 60, y: HALL.y - 130 },
+        // Was at (HALL.x - 60, HALL.y - 130), which the relocated bandstand now covers.
+        { id: "pav-dot-b", item: { kind: "powerup", type: "dashOvercharge" }, x: HALL.x, y: HALL.y - 110 },
       ],
     },
     {

@@ -339,12 +339,16 @@ const templeObjects: MapObject[] = [
    * which is the world's gradient landing on its final beat.
    */
   obj("track", 3300, N0 - 26, 60, 90),
-  obj("bufferStop", 3288, 1840, 84, 46, { facing: "S" }),
+  // Shoved to the east side of the widened gate's mouth, leaving a walkable lane down
+  // the west of it. Was at x 3288 in a 140-wide gate, i.e. dead centre of the only way
+  // through, with 33 units either side of a 48-wide bot.
+  obj("bufferStop", 3376, 1840, 84, 46, { facing: "S" }),
   // The wagon is on the yard side of the fence, which is where it was abandoned: the
-  // company got as far as the gate and stopped.
+  // company got as far as the gate and stopped. East side, for the same reason as the
+  // buffer stop — the gate is 240 wide and this leaves 126 of it clear.
   // North of the shed's outer arc: at y 1560 its top corner was 5 units inside the
   // roundhouse, which the bounding box could not have told anyone.
-  obj("wagon", 3286, 1600, 74, 174, { facing: "N" }),
+  obj("wagon", 3372, 1600, 74, 174, { facing: "N" }),
   obj("boulder", 3700, 2180, 78, 70),
 ];
 

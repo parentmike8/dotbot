@@ -89,7 +89,10 @@ export const QUAY_SOURCE: SourceBuilding = {
         { id: "quay-crate-a", kind: "crateStack", x: 620, y: 300, w: 34, h: 34 },
         { id: "quay-crate-b", kind: "crateStack", x: 660, y: 300, w: 32, h: 32 },
         { id: "quay-drum", kind: "drum", x: 620, y: 380, w: 26, h: 26 },
-        { id: "quay-desk", kind: "desk", x: 800, y: 300, w: 90, h: 44, facing: "N" },
+        // x 700, not 800: at 800 the desk stood squarely in the tally office's own
+        // doorway, which the threshold sweep found the first time it was asked to look
+        // at a map other than downtown.
+        { id: "quay-desk", kind: "desk", x: 700, y: 300, w: 90, h: 44, facing: "N" },
       ],
       dots: [
         { id: "quay-dot-a", item: { kind: "powerup", type: "health" }, x: 390, y: 560 },

@@ -65,8 +65,17 @@ const MIDWAY: Array<{ x: number; y: number }> = [
 
 const cityPlan: CityPlan = {
   streets: [{
+    /**
+     * Starts 26 units NORTH of the region, inside the city's fence line.
+     *
+     * Third Ave ends at y 1574 and this began at 1600, which is the fence's own
+     * thickness — so the carriageway had a 26-unit hole in it exactly where the gate
+     * is, and the one place the two regions are meant to read as one street was the
+     * one place the street stopped. Reported from play: "the break in the road is not
+     * good." A street that continues has to continue THROUGH the wall it passes.
+     */
     id: "fair-drive",
-    from: { x: DRIVE_X, y: N0 },
+    from: { x: DRIVE_X, y: N0 - 26 },
     to: { x: DRIVE_X, y: DRIVE_END },
     width: CARRIAGEWAY,
     footway: FOOTWAY,
@@ -208,9 +217,16 @@ const fairObjects: MapObject[] = [
   // otherwise fine street ruins a building. The south line has no building to dodge.
   ...rhythm(240, 2300, 190, [[1620, 1900]]).map((x) => obj("lampPost", x, 2244, 18, 18)),
   ...rhythm(340, 2300, 190).map((x) => obj("lampPost", x, 2452, 18, 18)),
-  // One sign, on the queueing ground outside the pavilion's north arch. What it reads
-  // is derived from the building behind it.
-  obj("sign", HALL.x - 22, 1636, 44, 12),
+  /**
+   * One sign on the queueing ground outside the pavilion's north arch, BESIDE the
+   * arch rather than in front of it.
+   *
+   * It was at HALL.x - 22, which is the archway's own centre line — a 44-wide sign
+   * squarely in the middle of a 110-wide opening, leaving two 33-unit slots for a
+   * 48-wide bot. Reported from play: "the sign at the north entrance doesn't let me
+   * get there." What it reads is derived from the building nearest it.
+   */
+  obj("sign", HALL.x + 96, 1636, 44, 12),
 
   // -- The gate and the car park ------------------------------------------
   obj("bollard", DRIVE_W_KERB - 24, 1980, 18, 18),

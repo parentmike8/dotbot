@@ -150,9 +150,16 @@ export const MERCY_SOURCE: SourceBuilding = {
         { id: "mercy-wc-basin", kind: "sink", x: 618, y: 494, w: 24, h: 16 },
         { id: "mercy-staff-locker-a", kind: "locker", x: 728, y: 490, w: 26, h: 38, scannable: true },
         { id: "mercy-staff-locker-b", kind: "locker", x: 728, y: 532, w: 26, h: 36 },
-        // West along the south wall, out of the staff entrance's walking line: the
-        // door at 820,528 opens into x 794 and the plant reached to 808.
-        { id: "mercy-staff-plant", kind: "plant", x: 762, y: 548, w: 18, h: 18 },
+        /**
+         * West along the south wall, out of the staff entrance's walking line: the
+         * door at 820,528 opens into x 794 and the plant reached to 808.
+         *
+         * Moved west again, to 700. "Out of the walking line" was measured against the
+         * door's own clear width; an ENTRANCE gets a bot's full diameter of approach on
+         * both sides, which is the wider rule the octagon's blocked archways bought us,
+         * and at 762 this still clipped it.
+         */
+        { id: "mercy-staff-plant", kind: "plant", x: 700, y: 548, w: 18, h: 18 },
       ],
       dots: [
         { id: "mercy-dot-exam", item: { kind: "powerup", type: "health" }, x: 470, y: 208 },

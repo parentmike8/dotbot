@@ -16,8 +16,36 @@ import type { MapDocument } from "@dotbot/game/types";
  * and curved geometry: also a fixture for review, not a destination.
  */
 export function selectMapDocument(search: string): MapDocument {
-  const pick = new URLSearchParams(search).get("map");
-  if (pick === "quayside") return quaysideMap;
-  if (pick === "downtown") return downtownMap;
-  return worldMap;
+  const query = new URLSearchParams(search);
+  const pick = query.get("map");
+  const base = pick === "quayside" ? quaysideMap : pick === "downtown" ? downtownMap : worldMap;
+  return spawnAt(base, query.get("at"));
+}
+
+/**
+ * `?at=fair` starts you in the fairground instead of walking there.
+ *
+ * The world is 4200 x 3400 and the player spawns in the city, so reviewing the far
+ * side of it meant a two-minute walk before every single look — which is the kind of
+ * friction that stops a region getting reviewed at all. This moves the player's spawn
+ * to the arrival point of the named region and changes nothing else.
+ *
+ * Matched on the insertion point's own id prefix rather than a table of coordinates,
+ * so a region that gains an arrival point is reachable by this without an edit here.
+ */
+function spawnAt(map: MapDocument, region: string | null): MapDocument {
+  if (!region) return map;
+  const arrival = map.insertionPoints.find((point) => point.id.startsWith(region.toLowerCase()));
+  if (!arrival) return map;
+  return {
+    ...map,
+    botSpawns: map.botSpawns.map((spawn) =>
+      spawn.id === "player" ? { ...spawn, position: { ...arrival.position }, floorId: undefined } : spawn,
+    ),
+  };
+}
+
+/** Region prefixes `?at=` accepts, for anything that wants to offer them. */
+export function spawnRegions(map: MapDocument): string[] {
+  return [...new Set(map.insertionPoints.map((point) => point.id.split("-")[0]))];
 }

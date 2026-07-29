@@ -1,6 +1,6 @@
 import { defaultGameConfig } from "./config";
 import { pointToSolidDistanceSquared, polygonContains, rectSolid, solidBounds } from "./geometry";
-import { isGroundFloor, MIN_DOT_SEPARATION, objectCollisionRects, physicsFloorId, stairGuardRects, stairHalves } from "./mapModel";
+import { isGroundFloor, MIN_DOT_SEPARATION, objectCollisionRects, objectLayoutRects, physicsFloorId, stairGuardRects, stairHalves } from "./mapModel";
 import { collectSolids } from "./collision";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Building, DotSpawn, FloorPlan, MapDocument, Rect, Solid, Vec2 } from "./types";
@@ -108,7 +108,7 @@ function ownedSolids(floor: FloorPlan): OwnedRect[] {
         .map(axisAlignedWallRect)
         .filter((rect): rect is Rect => rect !== null)
         .map((rect) => ({ ownerId: barrier.id, ownerKind: "wall" as const, rect }))),
-    ...floor.objects.flatMap((object) => objectCollisionRects(object).map((rect) => ({
+    ...floor.objects.flatMap((object) => objectLayoutRects(object).map((rect) => ({
       ownerId: object.id,
       ownerKind: "object" as const,
       rect,

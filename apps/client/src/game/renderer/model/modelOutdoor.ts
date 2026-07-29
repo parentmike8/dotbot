@@ -12,12 +12,14 @@ import {
   contactShape,
   inlay,
   jitter,
+  LIFT,
   markPassable,
   MAT,
   occlude,
   shade,
   SHADOW_ALPHA,
   V,
+  volume,
   volumeShape,
   type ShadowPad,
 } from "./tone";
@@ -518,15 +520,38 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   drawEntranceAprons(pads, map);
   drawExtractionPads(pads, map);
 
-  // Outdoor collision that isn't the sheet edge — hedges, site walls.
+  /**
+   * Outdoor collision that isn't the sheet edge — hedges, site walls, city fences.
+   *
+   * THE SHEET EDGE IS NOT "ANYTHING THAT TOUCHES THE EDGE". It used to be tested
+   * that way, and the day the map grew a fence that starts at x = 0 the test began
+   * hiding a real wall: The Reach's city fences run from the sheet's own west and
+   * north edges inward, so the first segment of each was classed as boundary and
+   * never drawn — while still colliding. Reported from play as "there's an
+   * invisible barrier below the city that I can't cross", which is exactly what it
+   * was, for eleven hundred units.
+   *
+   * The four boundary walls are the ones that span an entire side. Nothing else is
+   * the edge of the world, however close to it it starts.
+   */
   const siteWalls = new Graphics();
   for (const wall of map.outdoor.walls) {
-    const atEdge = wall.x <= 0 || wall.y <= 0 || wall.x + wall.w >= map.width || wall.y + wall.h >= map.height;
-    if (atEdge) continue;
+    const spansWidth = wall.x <= 0 && wall.x + wall.w >= map.width;
+    const spansHeight = wall.y <= 0 && wall.y + wall.h >= map.height;
+    const isSheetEdge =
+      (spansWidth && (wall.y <= 0 || wall.y + wall.h >= map.height)) ||
+      (spansHeight && (wall.x <= 0 || wall.x + wall.w >= map.width));
+    if (isSheetEdge) continue;
     occlude(aoPad, wall, 9);
     contact(pad, wall, 9);
-    inlay(siteWalls, wall, V.wallCap);
-    inlay(siteWalls, { x: wall.x, y: wall.y + wall.h - 4, w: wall.w, h: 4 }, V.wall);
+    /**
+     * MASONRY, not interior partition. `V.wallCap` over `V.wall` is 0x33383d over
+     * 0x14171a — nearly black, right for a partition seen from inside a lit room
+     * and wrong for anything standing outdoors. The barriers below were moved off
+     * it for exactly this reason and the walls were left behind, so the city's
+     * fence came out as a black bar laid across the south of the map.
+     */
+    volume(siteWalls, wall, MAT.stoneWorn, LIFT.column);
   }
 
   /**
