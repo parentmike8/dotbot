@@ -4,7 +4,7 @@ import { downtownMap } from "./content/downtown";
 import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, deriveBaseInteractionDots, starterBaseLayout, validateBaseLayout } from "./content/base";
 import { interactionDotReach } from "./interactions";
 import type { BaseLayout } from "./types";
-import { isGroundFloor, objectCollisionRects, physicsFloorId, ROUND_KINDS, stairExitPoint, stairHalves } from "./mapModel";
+import { BLOB_KINDS, isGroundFloor, objectCollisionRects, physicsFloorId, ROUND_KINDS, stairExitPoint, stairHalves } from "./mapModel";
 import { objectSolids } from "./collision";
 import { pointToSolidDistanceSquared } from "./geometry";
 import { auditDotPlacement, auditBuildingFloorQuality, type FloorQualityIssue } from "./mapQuality";
@@ -825,27 +825,45 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
    * both earlier attempts shipped; a few units of slack on the inside would be
    * invisible and is not worth testing for.
    */
-  it("never puts collision outside the circle a round object draws", () => {
-    const rounds = [
+  it("never puts collision outside the shape an inscribed object draws", () => {
+    const inscribed = [
       ...map.outdoor.objects,
       ...map.buildings.flatMap((building) => building.floors.flatMap((floor) => floor.objects)),
-    ].filter((object) => ROUND_KINDS.has(object.kind) && isSolidObject(object));
-    if (rounds.length === 0) return;
+    ].filter(
+      (object) =>
+        isSolidObject(object) &&
+        !object.collisionParts?.length &&
+        (ROUND_KINDS.has(object.kind) || BLOB_KINDS.has(object.kind) || object.kind === "ferrisWheel"),
+    );
+    if (inscribed.length === 0) return;
 
     const offenders: string[] = [];
-    for (const object of rounds) {
-      const radius = Math.min(object.w, object.h) / 2;
+    for (const object of inscribed) {
+      const solids = objectSolids(object);
       const cx = object.x + object.w / 2;
       const cy = object.y + object.h / 2;
-      const solids = objectSolids(object);
-      // Just past the drawn rim, all the way round, plus the four bbox corners —
-      // which is where every version of this bug has lived.
-      for (let step = 0; step < 64; step += 1) {
-        const angle = (step / 64) * Math.PI * 2;
-        const at = { x: cx + Math.cos(angle) * (radius + 2), y: cy + Math.sin(angle) * (radius + 2) };
-        for (const solid of solids) {
-          if (pointToSolidDistanceSquared(at, solid) <= 0) {
-            offenders.push(`${object.id} (${object.kind}) is solid at ${Math.round(angle * 57.3)}deg, outside its own rim`);
+
+      // The four corners of the bounding box. Every version of this bug has lived
+      // there, and no glyph in this group draws anything in them.
+      for (const corner of [
+        { x: object.x + 1, y: object.y + 1 },
+        { x: object.x + object.w - 1, y: object.y + 1 },
+        { x: object.x + 1, y: object.y + object.h - 1 },
+        { x: object.x + object.w - 1, y: object.y + object.h - 1 },
+      ]) {
+        if (solids.some((solid) => pointToSolidDistanceSquared(corner, solid) <= 0)) {
+          offenders.push(`${object.id} (${object.kind}) is solid in its bounding-box corner`);
+        }
+      }
+
+      // And for a disc, the whole ring just outside the drawn rim.
+      if (ROUND_KINDS.has(object.kind)) {
+        const radius = Math.min(object.w, object.h) / 2;
+        for (let step = 0; step < 64; step += 1) {
+          const angle = (step / 64) * Math.PI * 2;
+          const at = { x: cx + Math.cos(angle) * (radius + 2), y: cy + Math.sin(angle) * (radius + 2) };
+          if (solids.some((solid) => pointToSolidDistanceSquared(at, solid) <= 0)) {
+            offenders.push(`${object.id} (${object.kind}) is solid outside its own rim`);
           }
         }
       }

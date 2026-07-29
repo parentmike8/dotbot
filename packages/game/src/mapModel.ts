@@ -267,6 +267,17 @@ export function planningTableSurfaceRect(object: Pick<MapObject, "x" | "y" | "w"
  * A kind, not an instance. Every one of these computes its radius as
  * `Math.min(w, h) / 2` in its glyph, which is the definition being honoured here.
  */
+/**
+ * Kinds drawn as an organic mass inscribed in their bounds — a blob at rx = w/2,
+ * ry = h/2 — so their collider is the stadium inside the box, not the box.
+ *
+ * Reported from play at the temple, squeezing a bare core through a gap: "I cannot
+ * pass through this gap." The gap was between a boulder and a thicket, and it was
+ * open on the screen and shut in the physics by two corners of undergrowth that
+ * nothing was drawn in.
+ */
+export const BLOB_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>(["boulder", "thicket"]);
+
 export const ROUND_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "carousel",
   "waltzer",

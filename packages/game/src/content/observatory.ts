@@ -35,16 +35,34 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
     rect: { x: CX - 150, y: CY - 80, w: 88, h: 160 },
     from: "GROUND",
     to: "F1",
-    bottom: "S",
     /**
-     * NO `openEnd` here, unlike the pavilion's, and the difference is the shell.
+     * Entered from the NORTH, which is where the door is.
      *
-     * This flight is hard against the drum's west wall, so one long side is already
-     * enclosed by authored geometry — which is exactly the condition `access` says to
-     * omit it for. Declaring it anyway walls the exit half's east side too, and with
-     * the shell on the west that leaves the flight with no full-size side exit at
-     * all: the audit reported both stair heads sealed and a 17,216-unit pocket
-     * stranded on F1. A guard rail against a wall is a wall on both sides.
+     * It was `"S"`, so you came off the drum's only door, walked the length of the
+     * room, and turned back on yourself to climb. Reported from play, and correct:
+     * "the entry of the stairs should probably face the door." A stair's open end is
+     * the one piece of a building whose orientation is decided for it by the way in.
+     *
+     * Turning it also made the guards work. With the entry south, `openEnd` walled
+     * the NORTH half — the half against the door — and with the shell close on the
+     * west that left the flight no full-size side exit at all: the audit reported
+     * both stair heads sealed and a 17,216-unit pocket stranded on F1. Entered from
+     * the north, the guards fall on the south half and the room stays open.
+     */
+    bottom: "N",
+    /**
+     * NO `access: "openEnd"`, because an authored wall does the job instead — see
+     * `observatory-stair-guard` on both floors.
+     *
+     * Derived guards wall the exit half on both long sides plus its far cap, and this
+     * drum is 200 across with the flight hard against its shell. Whichever way the
+     * flight is turned, that seals it: entered from the south the audit reported both
+     * stair heads blocked and 17,216 units stranded on F1, and entered from the north
+     * it reported the same thing 6,000 units smaller. A guard rail against a wall is a
+     * wall on both sides, and a round room this size has no third side to spare.
+     *
+     * One wall down the open flank is what every stair in the city actually is, and it
+     * leaves both ends of the flight open, which is what a stair needs.
      */
   }],
   floors: [
@@ -69,6 +87,13 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
         { id: "obs-brazier", kind: "brazier", x: CX + 74, y: CY + 78, w: 46, h: 46 },
         { id: "obs-jar", kind: "drum", x: CX - 120, y: CY + 104, w: 30, h: 30 },
       ],
+      walls: [{
+        // The stair's open flank, so you cannot step onto the flight sideways from the
+        // room. The shell closes its other side. See the note on the stair.
+        id: "observatory-stair-guard",
+        thickness: 12,
+        path: [{ x: CX - 62, y: CY - 80 }, { x: CX - 62, y: CY + 80 }],
+      }],
       dots: [{ id: "obs-dot-a", item: { kind: "powerup", type: "radar" }, x: CX + 40, y: CY + 60 }],
     },
     {
@@ -89,6 +114,13 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
         { kind: "window", width: 54, near: { x: CX - R, y: CY } },
         { kind: "window", width: 54, near: { x: CX + R, y: CY } },
       ],
+      walls: [{
+        // The stair's open flank. See the note on the stair itself for why this is an
+        // authored wall rather than a derived guard.
+        id: "observatory-stair-guard-f1",
+        thickness: 12,
+        path: [{ x: CX - 62, y: CY - 80 }, { x: CX - 62, y: CY + 80 }],
+      }],
       objects: [
         // The gnomon: the pin the whole building is an instrument around.
         { id: "obs-gnomon", kind: "column", x: CX - 22, y: CY - 22, w: 44, h: 44 },
@@ -96,10 +128,24 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
         // Flush with the table's west end rather than parked mid-face: the attached-seam
         // allowance is only for a module that extends a bank at its end.
         { id: "obs-stool", kind: "chair", x: CX + 70, y: CY - 54, w: 30, h: 28, facing: "N" },
-        { id: "obs-case", kind: "cabinet", x: CX - 130, y: CY + 74, w: 34, h: 30, facing: "N" },
+        /**
+         * `obs-case`, a cabinet, is GONE rather than moved.
+         *
+         * It stood at (CX - 130, CY + 74) — squarely in the stair's south end, which is
+         * the end you arrive at on F1 — so 16,704 units of chamber, the whole east half,
+         * was cut off from its own arrival route by a cabinet. Moved north of the flight
+         * it pinched a 6,016-unit pocket against the gnomon instead.
+         *
+         * Which is the room telling us something. This floor is a 170-radius drum whose
+         * brief reserves "the whole ring of floor, deliberately", and it was carrying
+         * five fixtures plus a stair. Four is what it holds.
+         */
         { id: "obs-stele", kind: "stele", x: CX + 86, y: CY + 66, w: 40, h: 74 },
       ],
-      dots: [{ id: "obs-dot-b", item: { kind: "powerup", type: "health" }, x: CX - 78, y: CY - 74 }],
+      // Was at (CX - 78, CY - 74), which is INSIDE the stair rect — a Dot on the
+      // flight itself. It went unreported while the flight had no guards, because the
+      // audit could still flood into it from the side.
+      dots: [{ id: "obs-dot-b", item: { kind: "powerup", type: "health" }, x: CX - 20, y: CY + 96 }],
     },
   ],
 };
