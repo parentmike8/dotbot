@@ -7,9 +7,13 @@ import {
   doorEntityCollisionRect,
   floorPlanById,
   isGroundFloor,
+  physicsFloorId,
   resolvePlan,
 } from "@dotbot/game/mapModel";
-import { hasLineOfSight, visibilityPolygon, visionContext } from "@dotbot/game/visibility";
+import { buildingMouths } from "@dotbot/game/entrances";
+import {
+  DOORWAY_SIGHT, hasLineOfSight, seesThroughDoorway, visibilityPolygon, visionContext,
+} from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import type { MatchIntel } from "@dotbot/protocol";
@@ -687,6 +691,51 @@ export class GameRenderer {
       layer.rect(vision.boundsRect.x, vision.boundsRect.y, vision.boundsRect.w, vision.boundsRect.h).fill(fogStyle);
       layer.poly(flat).cut();
     }
+
+    /**
+     * Sight through a doorway, as a disc at the mouth.
+     *
+     * A disc rather than a cone, and unclipped by the wall, because the polygon cannot do
+     * this job at all: it is cast inside ONE vision context, and the far side of an
+     * elevation is a different context whose occluders it has never seen. From the street
+     * the building is a solid footprint; from inside, the footprint is the arena boundary
+     * and rays terminate on it. Either way the ray never reaches the other side.
+     *
+     * So the reveal is added rather than derived, and it is added to the mask AND cut from
+     * both fog layers — the mask decides whether a bot drawn there survives, the fog
+     * decides whether the player can see the ground they are standing on.
+     */
+    for (const mouth of this.doorwayEyes(player)) {
+      this.visionMaskGfx.circle(mouth.x, mouth.y, DOORWAY_SIGHT).fill({ color: 0xffffff });
+      for (const layer of [this.fogGfx, this.foregroundFogGfx]) {
+        layer.circle(mouth.x, mouth.y, DOORWAY_SIGHT).cut();
+      }
+    }
+  }
+
+  /**
+   * The doorway mouths this viewer is close enough to see through.
+   *
+   * Spatially filtered rather than enumerated: a mouth sits on a footprint's edge, so a
+   * player further than the reach from the whole footprint cannot be near any of its
+   * mouths, and the rect test rejects almost every building before any mouth is measured.
+   * That is what keeps this honest at a hundred buildings instead of four.
+   */
+  private doorwayEyes(player: DotBotEntity): Vec2[] {
+    if (physicsFloorId(this.map, player.floorId) !== OUTDOOR_FLOOR_ID) return [];
+    const { x, y } = this.viewerDisplayPosition(player);
+    const reach = DOORWAY_SIGHT * DOORWAY_SIGHT;
+    const eyes: Vec2[] = [];
+    for (const building of this.map.buildings) {
+      const fp = building.footprint;
+      const dx = Math.max(fp.x - x, 0, x - (fp.x + fp.w));
+      const dy = Math.max(fp.y - y, 0, y - (fp.y + fp.h));
+      if (dx * dx + dy * dy > reach) continue;
+      for (const mouth of buildingMouths(this.map, building.id)) {
+        if ((mouth.x - x) ** 2 + (mouth.y - y) ** 2 <= reach) eyes.push(mouth);
+      }
+    }
+    return eyes;
   }
 
   /**
@@ -1006,8 +1055,18 @@ export class GameRenderer {
             this.doorOccluders(snapshot, player.floorId),
           )));
         this.updateBotView(bot, snapshot, viewerSquadId, seen ? 1 : 0.35, this.dynamicBotsLayer);
-      } else if (sameArena) {
-        // Enemies render into the masked layer: hidden outside line of sight.
+      } else if (sameArena || (player && seesThroughDoorway(
+        this.map, player.floorId, player.position, bot.floorId, bot.position,
+      ))) {
+        /**
+         * Enemies render into the masked layer: hidden outside line of sight.
+         *
+         * The doorway clause is the client half of the same rule the sim uses, and both
+         * halves are needed or the feature only exists for the AI. This gate says "draw
+         * them"; `updateLineOfSight` opens a hole in the mask at the mouth, which is what
+         * decides whether the drawing survives. Miss either one and a bot across a
+         * threshold is either invisible or visible through the wall beside the door.
+         */
         this.updateBotView(bot, snapshot, viewerSquadId, 1, this.maskedBotsLayer);
       }
     }

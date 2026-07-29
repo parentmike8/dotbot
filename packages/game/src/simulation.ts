@@ -45,7 +45,7 @@ import {
   restoreShieldPlate,
 } from "./shields";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import { hasLineOfSight } from "./visibility";
+import { hasLineOfSight, seesThroughDoorway } from "./visibility";
 import type {
   BayIndex,
   BotSpawn,
@@ -1027,6 +1027,55 @@ export class DotBotSimulation {
   }
 
   /**
+   * Whether one bot can perceive another at all: same arena, or through a doorway.
+   *
+   * Everything that used to ask `sameArena` asks this instead, and the change is
+   * deliberately symmetric. The street and a building's ground floor are separate arenas
+   * even though a door joins them, so standing just outside an exit was a free hold: the
+   * camper knew where the door was and whoever came out had no warning and no recourse.
+   * Now both of them see the same patch either side of the mouth, which turns a guaranteed
+   * ambush into a mutual first sighting.
+   *
+   * It cuts both ways for the AI too — hunters will engage across a threshold now. That is
+   * the point rather than a side effect: a rule that only helped the player leaving would
+   * just move the unfairness.
+   */
+  private canPerceive(bot: InternalBot, floorId: string, position: Vec2): boolean {
+    return (
+      this.sameArena(bot, floorId, position) ||
+      seesThroughDoorway(this.map, bot.floorId, bot.position, floorId, position)
+    );
+  }
+
+  /**
+   * Whether a bot can actually SEE a point: perception, and then walls.
+   *
+   * Two filters spelled this out identically — arena check, range check, then the same
+   * five-argument `hasLineOfSight` call — which is two places for one sighting rule to
+   * live, and the doorway change had to be made in both. Now it is one.
+   *
+   * A doorway sighting deliberately skips the wall test. It cannot be done: the two
+   * positions are in different contexts, so there is no single occluder list to cast the
+   * ray against, and casting it in the viewer's own context means casting it at the
+   * building footprint — which is opaque, so the answer would always be no. The proximity
+   * rule in `seesThroughDoorway` is doing the occlusion work instead, by only ever
+   * granting sight within a bot-length or so of the gap itself.
+   */
+  private canSee(bot: InternalBot, floorId: string, position: Vec2): boolean {
+    if (seesThroughDoorway(this.map, bot.floorId, bot.position, floorId, position)) return true;
+    return (
+      this.sameArena(bot, floorId, position) &&
+      hasLineOfSight(
+        this.map,
+        contextKey(this.map, bot.floorId, bot.position),
+        bot.position,
+        position,
+        this.doorOccludersForFloor(bot.floorId),
+      )
+    );
+  }
+
+  /**
    * A bot that asks to move and goes nowhere eventually stops asking.
    *
    * Nothing in the AI knows another bot exists: the navigator plans on static
@@ -1287,7 +1336,7 @@ export class DotBotSimulation {
       const targetPlan = resolvePlan(this.map, target.floorId, target.position);
       return botPlan !== null && targetPlan !== null && botPlan.buildingId === targetPlan.buildingId;
     };
-    const localOrVertical = (target: { floorId: string; position: Vec2 }) => this.sameArena(bot, target.floorId, target.position) || sameBuilding(target);
+    const localOrVertical = (target: { floorId: string; position: Vec2 }) => this.canPerceive(bot, target.floorId, target.position) || sameBuilding(target);
     const available = (target: { id: string }) => !bot.aiAvoidTargets.has(target.id);
     const rank = <T extends { floorId: string; position: Vec2 }>(values: T[]) =>
       values.sort((a, b) => this.strategicDistance(bot, a) - this.strategicDistance(bot, b))[0];
@@ -1331,15 +1380,8 @@ export class DotBotSimulation {
           target.state === "alive" &&
           !areFriendly(bot, target) &&
           available(target) &&
-          this.sameArena(bot, target.floorId, target.position) &&
           distance(bot.position, target.position) < 540 &&
-          hasLineOfSight(
-            this.map,
-            contextKey(this.map, bot.floorId, bot.position),
-            bot.position,
-            target.position,
-            this.doorOccludersForFloor(bot.floorId),
-          ),
+          this.canSee(bot, target.floorId, target.position),
       ),
     );
 
@@ -1415,14 +1457,8 @@ export class DotBotSimulation {
     const hostile = [...this.bots.values()]
       .filter((target) =>
         target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && available(target) &&
-        this.sameArena(bot, target.floorId, target.position) && distance(bot.position, target.position) < 540 &&
-        hasLineOfSight(
-          this.map,
-          contextKey(this.map, bot.floorId, bot.position),
-          bot.position,
-          target.position,
-          this.doorOccludersForFloor(bot.floorId),
-        ))
+        distance(bot.position, target.position) < 540 &&
+        this.canSee(bot, target.floorId, target.position))
       .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
     if (hostile) {
       return this.huntTarget(bot, hostile);
@@ -1766,7 +1802,7 @@ export class DotBotSimulation {
     }
 
     const hostile = this.bots.get(target.targetId);
-    if (!hostile || hostile.state !== "alive" || !this.sameArena(bot, hostile.floorId, hostile.position)) {
+    if (!hostile || hostile.state !== "alive" || !this.canPerceive(bot, hostile.floorId, hostile.position)) {
       return;
     }
 

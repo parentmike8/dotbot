@@ -1,48 +1,18 @@
-import { isGroundFloor, isVehicleDoor } from "@dotbot/game/mapModel";
-import type { Building, Doorway, Rect } from "@dotbot/game/types";
+import type { Rect } from "@dotbot/game/types";
+import { type PerimeterEntrance } from "@dotbot/game/entrances";
 
 /**
- * Where a building can be entered from the street.
+ * Drawing helpers for building entrances.
  *
- * Two things need this and must agree: the apron on the ground outside, and the
- * recess cut through the roof above. If they disagree the player is told the door
- * is in two different places.
+ * The entrance geometry itself moved to `@dotbot/game/entrances` when the simulation
+ * started needing it — vision leaks through a doorway, which is a rule about the world
+ * and not about the picture of it. Re-exported here so the two drawing modules that
+ * already import from this path keep working, and so there is still one place a renderer
+ * asks "where are the doors".
  */
 
-export type Side = "N" | "S" | "W" | "E";
-
-export type PerimeterEntrance = {
-  door: Doorway;
-  side: Side;
-  /** A roll-up takes vehicles; anything else is a person door. */
-  vehicle: boolean;
-};
-
-export function perimeterEntrances(building: Building): PerimeterEntrance[] {
-  const ground = building.floors.find(isGroundFloor);
-  if (!ground) return [];
-  const fp = building.footprint;
-  const tol = 12;
-  const out: PerimeterEntrance[] = [];
-
-  for (const door of ground.doorways) {
-    // A door with no stated kind is read by width, the way the old rect maps
-    // implied it: a wide opening standing permanently open is a vehicle door.
-    const vehicle = isVehicleDoor(door);
-    let side: Side | null = null;
-    if (door.dir === "h" && Math.abs(door.y - fp.y) <= tol) side = "N";
-    else if (door.dir === "h" && Math.abs(door.y - (fp.y + fp.h)) <= tol) side = "S";
-    else if (door.dir === "v" && Math.abs(door.x - fp.x) <= tol) side = "W";
-    else if (door.dir === "v" && Math.abs(door.x - (fp.x + fp.w)) <= tol) side = "E";
-    if (side) out.push({ door, side, vehicle });
-  }
-  return out;
-}
-
-/** True when the entrance runs east-west, i.e. sits in the north or south wall. */
-export function isAcross(side: Side): boolean {
-  return side === "N" || side === "S";
-}
+export { entranceMouth, isAcross, perimeterEntrances } from "@dotbot/game/entrances";
+export type { PerimeterEntrance, Side } from "@dotbot/game/entrances";
 
 /** A band of the given depth reaching out from the entrance's own elevation. */
 export function outwardBand(entrance: PerimeterEntrance, fp: Rect, depth: number, half: number): Rect {

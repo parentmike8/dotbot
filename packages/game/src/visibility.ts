@@ -1,5 +1,7 @@
-import { floorPlanById, isGroundFloor } from "./mapModel";
+import { contextKey, floorPlanById, isGroundFloor, physicsFloorId } from "./mapModel";
+import { buildingMouths } from "./entrances";
 import { pointToSegmentDistanceSquared, pointToSolidDistanceSquared, rectSolid, solidSegments } from "./geometry";
+import { OUTDOOR_FLOOR_ID } from "./types";
 import type { Barrier, MapDocument, Rect, Solid, Vec2 } from "./types";
 
 /**
@@ -177,6 +179,72 @@ export function hasLineOfSight(
   }
 
   return true;
+}
+
+/**
+ * How far vision reaches through a doorway, from either side of it.
+ *
+ * Four bot radii. Far enough that stepping out of a building is not walking blind into a
+ * held position, close enough that a doorway is not a permanent hole in the fog you can
+ * watch from across a room — the rule is "standing in front of it", not "aimed at it".
+ */
+export const DOORWAY_SIGHT = 96;
+
+/**
+ * Whether two positions can see each other through a building's front door.
+ *
+ * WHY THIS EXISTS AS A SEPARATE RULE, rather than as a change to the occluders.
+ *
+ * Interior doorways already work and need nothing: `compileWall` cuts an opening as a
+ * GENUINE GAP in the wall solids, so the polygon and `hasLineOfSight` both pass straight
+ * through one. The blindness is at an ARENA boundary. `contextKey` splits the outdoor
+ * plane into the street and one context per building ground floor — physically connected,
+ * deliberately separate — and everything that asks "can these two interact" first asks
+ * whether the context keys match. A bot on the pavement and a bot two feet inside the
+ * lobby are in different arenas, so they cannot see, target or be targeted by each other
+ * at all. On top of that the street's occluder list contains every building FOOTPRINT, so
+ * even within one context vision stops dead at an elevation with no gap at the door.
+ *
+ * The result is that camping an exit is not merely favourable, it is airtight: the camper
+ * knows where the door is and the player coming out gets no warning whatsoever. That is
+ * the asymmetry this closes, and it closes it BOTH WAYS on purpose — the bot inside sees
+ * the patch of street outside its door, and the bot outside sees into the mouth.
+ *
+ * Proximity to a shared mouth is the whole test, with no line-of-sight check after it.
+ * That is deliberate: within 96 units either side of a door there is nothing to hide
+ * behind that ought to save you, and a ray test here would reintroduce the same problem
+ * one step further in, because the two sides do not share an occluder list. Loud and
+ * simple beats subtle and half-working for a rule whose entire job is to deny a hiding
+ * place.
+ */
+export function seesThroughDoorway(
+  map: MapDocument,
+  aFloorId: string,
+  a: Vec2,
+  bFloorId: string,
+  b: Vec2,
+): boolean {
+  // Only the outdoor plane has two contexts touching. Upper floors are separated by a
+  // storey, not by a wall with a hole in it.
+  if (physicsFloorId(map, aFloorId) !== OUTDOOR_FLOOR_ID) return false;
+  if (physicsFloorId(map, bFloorId) !== OUTDOOR_FLOOR_ID) return false;
+
+  const aContext = contextKey(map, aFloorId, a);
+  const bContext = contextKey(map, bFloorId, b);
+  // Same arena already sees normally; this rule is only for the boundary.
+  if (aContext === bContext) return false;
+
+  const reach = DOORWAY_SIGHT * DOORWAY_SIGHT;
+  for (const context of [aContext, bContext]) {
+    if (!context.startsWith("outdoor:") || context === "outdoor:street") continue;
+    for (const mouth of buildingMouths(map, context.slice("outdoor:".length))) {
+      const da = (a.x - mouth.x) ** 2 + (a.y - mouth.y) ** 2;
+      if (da > reach) continue;
+      const db = (b.x - mouth.x) ** 2 + (b.y - mouth.y) ** 2;
+      if (db <= reach) return true;
+    }
+  }
+  return false;
 }
 
 /**
