@@ -7,7 +7,7 @@ import { FeedbackControls } from "../FeedbackControls";
 import { BodyPromptView, DownedSelfView } from "../downed/DownedPrompts";
 import { useDownedPrompts } from "../downed/useDownedPrompts";
 import {
-  BayBank, DebugPanel, FloorRail, HoldPicker, RunReadout, SettingsPanel, TouchControls,
+  BayBank, DebugPanel, FloorRail, HoldPicker, PingPicker, RunReadout, SettingsPanel, TouchControls,
 } from "../hud/Overlay";
 import { hudSkinClass } from "../hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "../hud/hud";
@@ -35,6 +35,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
     selectDownedVerb, plea, useBay, swapBayItem, takeFromBody, setBodyAction,
+    pingHandlers, pingPicker, choosePingKind, closePingPicker,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ session, spectate: true });
   const [swapBay, setSwapBay] = useState<number | null>(null);
@@ -75,7 +76,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       data-frame-p99={networkDebug?.frameP99Ms}
       data-buffer-ms={networkDebug?.interpolationDelayMs}
     >
-      <div ref={hostRef} className="game-canvas" />
+      <div ref={hostRef} className="game-canvas" {...pingHandlers} />
 
       {connectionMessage ? (
         <aside className="net-game-connection" role="status" aria-live="polite">
@@ -173,6 +174,10 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
             || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)
           }
         />
+      ) : null}
+
+      {pingPicker ? (
+        <PingPicker at={pingPicker.screen} onChoose={choosePingKind} onClose={closePingPicker} />
       ) : null}
 
       {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}

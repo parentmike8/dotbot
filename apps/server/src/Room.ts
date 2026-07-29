@@ -284,6 +284,7 @@ export class Room {
           downedVerb: message.downedVerb,
           take: message.take,
           plea: message.plea,
+          ping: message.ping,
         }];
         this.enqueueInputFrames(member, frames);
         return;
@@ -464,6 +465,7 @@ export class Room {
       downedVerb: frame.downedVerb,
       take: frame.take,
       plea: frame.plea,
+      ping: frame.ping ? { kind: frame.ping.kind, position: { x: frame.ping.position[0], y: frame.ping.position[1] } } : undefined,
     };
     member.heldInput = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
     return input;

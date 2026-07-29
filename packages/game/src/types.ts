@@ -156,7 +156,24 @@ export type SimEvent =
   | { type: "dotCaptured"; botId: string; dotId: string }
   | { type: "extracted"; botId: string; squadId: string; items: Item[] }
   | { type: "mineRotated"; botId: string; mineId: string }
-  | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: Vec2; floorId: string };
+  | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: Vec2; floorId: string }
+  /** A squadmate marked a place. Delivered to that squad only. */
+  | { type: "pinged"; botId: string; squadId: string; pingId: string; kind: PingKind; position: Vec2; floorId: string };
+
+/**
+ * What a squad mark means.
+ *
+ * Three, and plain words rather than lore: the standing rule for anything the player reads
+ * is no invented terminology and no more elements than the game needs. "Here" is the
+ * default because it is the one you send most and it needs no thought; the other two are
+ * the two facts worth interrupting a squadmate for.
+ *
+ * A fourth was considered and cut. "Danger" overlaps "enemy", "regroup" overlaps "here",
+ * and every extra entry costs a slot in a menu that has to be readable while being shot at.
+ */
+export type PingKind = "here" | "enemy" | "loot";
+
+export const PING_KINDS: readonly PingKind[] = ["here", "enemy", "loot"];
 
 // ---------------------------------------------------------------------------
 // Map document model
@@ -640,11 +657,13 @@ export type InputCommand = {
   downedVerb?: DownedVerb;
   take?: TakeCommand;
   plea?: boolean;
+  /** Mark a world position for your squad. */
+  ping?: { kind: PingKind; position: Vec2 };
 };
 
 export type CoverageKind = "capture" | "loot" | "revive" | "extract" | "swap";
 
-export type NoiseKind = "dash" | "impact" | "stairs" | "channel" | "door" | "mineDetonation";
+export type NoiseKind = "dash" | "impact" | "stairs" | "channel" | "door" | "mineDetonation" | "ping";
 
 /** A sound the simulation emitted; rendered as an expanding ink ring. */
 export type NoiseEvent = {
@@ -703,6 +722,7 @@ export type GameConfig = {
   /** Stripping a body of what it carries. */
   lootDurationMs: number;
   pleaCooldownMs: number;
+  pingCooldownMs: number;
   minInsertionSpacing: number;
   coverCenterTolerance: number;
   /**

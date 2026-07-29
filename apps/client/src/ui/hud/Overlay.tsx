@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
-import type { DotBotEntity, GameConfig, GameSnapshot, Item } from "@dotbot/game/types";
+import type { DotBotEntity, GameConfig, GameSnapshot, Item, PingKind } from "@dotbot/game/types";
+import { PING_KINDS } from "@dotbot/game/types";
 import { arrivalSparkline, type NetworkDebugStats } from "../../game/session/netgraph";
 import { itemFamily, itemGlyph, itemLabel } from "../items";
 import { bayStrip, formatRunClock, type FloorColumn } from "./hud";
+import { PING_LABEL } from "../../game/pings";
 
 /**
  * The overlay, once — used by both the solo sandbox and a real match.
@@ -121,6 +123,36 @@ export function BayBank({
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * Choosing what a mark means, at the point you right-clicked.
+ *
+ * Positioned at the click rather than in a corner, because the whole interaction is "this
+ * spot, and this is what about it" — a menu across the screen from the place it refers to
+ * makes you look away from the thing you are marking.
+ */
+export function PingPicker({
+  at,
+  onChoose,
+  onClose,
+}: {
+  at: { x: number; y: number };
+  onChoose: (kind: PingKind) => void;
+  onClose: () => void;
+}) {
+  return (
+    <aside
+      className="ping-picker"
+      aria-label="Choose a mark"
+      style={{ left: at.x, top: at.y }}
+      onPointerLeave={onClose}
+    >
+      {PING_KINDS.map((kind) => (
+        <button key={kind} type="button" onClick={() => onChoose(kind)}>{PING_LABEL[kind]}</button>
+      ))}
+    </aside>
   );
 }
 

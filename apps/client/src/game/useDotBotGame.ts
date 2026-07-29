@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
@@ -15,7 +15,8 @@ import {
 import { selectSpectatedBot } from "./spectate";
 import { createSession } from "./session/createSession";
 import type { GameSession } from "./session/GameSession";
-import type { BayIndex, DotBotEntity, DownedVerb, GameSnapshot, Item, MapDocument, SimEvent, TakeCommand, Vec2 } from "@dotbot/game/types";
+import type { BayIndex, DotBotEntity, DownedVerb, GameSnapshot, InputCommand, Item, MapDocument, PingKind, SimEvent, TakeCommand, Vec2 } from "@dotbot/game/types";
+import { CLICK_PING_KIND, collectPings, type LiveMark } from "./pings";
 import type { NetworkDebugStats } from "./session/netgraph";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
@@ -77,6 +78,17 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const downedVerbRef = useRef<DownedVerb | undefined>(undefined);
   const takeQueuedRef = useRef<TakeCommand | undefined>(undefined);
   const pleaQueuedRef = useRef(false);
+  const longPressRef = useRef<number | null>(null);
+  /**
+   * Squad marks live in a ref for the loop and in state for the overlay.
+   *
+   * The loop reads and rewrites them every frame; React state alone would re-render the
+   * whole tree 60 times a second. The state copy exists only so a picker can be positioned
+   * and the marks counted — it is set from the ref, never the other way round.
+   */
+  const pingQueuedRef = useRef<InputCommand["ping"]>(undefined);
+  const marksRef = useRef<LiveMark[]>([]);
+  const [pingPicker, setPingPicker] = useState<{ screen: Vec2; world: Vec2 } | null>(null);
   const spectateCycleQueuedRef = useRef(false);
   const spectatedBotIdRef = useRef<string | null>(null);
   const runEndedRef = useRef(false);
@@ -199,6 +211,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             downedVerb: downedVerbRef.current,
             take: takeQueuedRef.current,
             plea: pleaQueuedRef.current,
+            ping: pingQueuedRef.current,
           });
         }
         dashQueuedRef.current = false;
@@ -206,11 +219,16 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         swapQueuedRef.current = undefined;
         takeQueuedRef.current = undefined;
         pleaQueuedRef.current = false;
+        pingQueuedRef.current = undefined;
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
         const frameEvents = session.drainEvents();
         const uiEvents = frameEvents.filter((event) => event.type !== "hit");
         if (uiEvents.length > 0) setEvents((current) => [...current, ...uiEvents]);
+
+        const nextMarks = collectPings(marksRef.current, frameEvents, now);
+        if (nextMarks !== marksRef.current) marksRef.current = nextMarks;
+        rendererRef.current?.setSquadMarks(nextMarks);
 
         if (!nextSnapshot) {
           session.recordClientFrame?.(elapsedMs, performance.now() - frameWorkStartedAt);
@@ -589,8 +607,84 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     feedbackRef.current?.playTest();
   }, []);
 
+  /**
+   * Where a click on the canvas points, in world units.
+   *
+   * Goes through the renderer's own last-drawn camera rather than recomputing one: the
+   * camera eases and leads a dash, so un-projecting through a fresh camera lands slightly
+   * off the pixel that was actually clicked. What the player aimed at is what was drawn.
+   */
+  const worldFromPointer = useCallback((event: { clientX: number; clientY: number }): Vec2 | null => {
+    const host = hostRef.current;
+    const renderer = rendererRef.current;
+    if (!host || !renderer) return null;
+    const box = host.getBoundingClientRect();
+    return renderer.worldAt(event.clientX - box.left, event.clientY - box.top);
+  }, []);
+
+  /** Mark a place. A bare click always means "here" — there is no armed type to track. */
+  const markHere = useCallback((world: Vec2) => {
+    pingQueuedRef.current = { kind: CLICK_PING_KIND, position: world };
+  }, []);
+
+  /**
+   * Left-click marks "here". Right-click opens the picker, and choosing fires that type
+   * there without arming it for later — see `CLICK_PING_KIND` for why the sticky version was
+   * dropped. Touch has no right button, so a long press stands in for it.
+   */
+  const pingHandlers = useMemo(() => ({
+    onPointerDown: (event: PointerEvent) => {
+      // Touch has no right button, so a long press opens the picker instead.
+      if (event.pointerType === "touch") {
+        const world = worldFromPointer(event);
+        if (!world) return;
+        const screen = { x: event.clientX, y: event.clientY };
+        longPressRef.current = window.setTimeout(() => {
+          longPressRef.current = null;
+          setPingPicker({ screen, world });
+        }, 380);
+        return;
+      }
+      if (event.button === 0) {
+        const world = worldFromPointer(event);
+        if (world) markHere(world);
+      }
+    },
+    onPointerUp: (event: PointerEvent) => {
+      if (event.pointerType !== "touch") return;
+      if (longPressRef.current === null) return;
+      // Released before the press became long: it was a tap, so it marks.
+      window.clearTimeout(longPressRef.current);
+      longPressRef.current = null;
+      const world = worldFromPointer(event);
+      if (world) markHere(world);
+    },
+    onPointerCancel: () => {
+      if (longPressRef.current === null) return;
+      window.clearTimeout(longPressRef.current);
+      longPressRef.current = null;
+    },
+    onContextMenu: (event: MouseEvent) => {
+      // Right-click is the picker, so the browser menu must not also open.
+      event.preventDefault();
+      const world = worldFromPointer(event);
+      if (world) setPingPicker({ screen: { x: event.clientX, y: event.clientY }, world });
+    },
+  }), [markHere, worldFromPointer]);
+
+  /** Right-click chose a type: fire that one here, and change nothing about left-click. */
+  const choosePingKind = useCallback((kind: PingKind) => {
+    const picker = pingPicker;
+    setPingPicker(null);
+    if (picker) pingQueuedRef.current = { kind, position: picker.world };
+  }, [pingPicker]);
+
   return {
     hostRef,
+    pingHandlers,
+    pingPicker,
+    choosePingKind,
+    closePingPicker: useCallback(() => setPingPicker(null), []),
     snapshot,
     events,
     runResult,

@@ -1,4 +1,4 @@
-import type { BayIndex, DownedVerb, GameConfig, MapDocument, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
+import type { BayIndex, DownedVerb, GameConfig, MapDocument, PingKind, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
@@ -152,7 +152,16 @@ export type WireSimEvent =
   | { type: "dotCaptured"; botId: string; dotId: string }
   | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[] }
   | { type: "mineRotated"; botId: string; mineId: string }
-  | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: { x: number; y: number }; floorId: string };
+  | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: { x: number; y: number }; floorId: string }
+  | {
+      type: "pinged";
+      botId: string;
+      squadId: string;
+      pingId: string;
+      kind: PingKind;
+      position: { x: number; y: number };
+      floorId: string;
+    };
 
 /**
  * One prediction tick's worth of input. The client emits exactly one frame
@@ -172,6 +181,7 @@ export type WireInputFrame = {
   downedVerb?: DownedVerb;
   take?: TakeCommand;
   plea?: boolean;
+  ping?: { kind: PingKind; position: [number, number] };
 };
 
 /**
@@ -192,6 +202,7 @@ export type ActionEdges = {
   swapBay?: unknown;
   take?: unknown;
   plea?: boolean;
+  ping?: unknown;
 };
 
 export function carriesAction(frame: ActionEdges): boolean {
@@ -199,7 +210,10 @@ export function carriesAction(frame: ActionEdges): boolean {
     || frame.useBay !== undefined
     || frame.swapBay !== undefined
     || frame.take !== undefined
-    || frame.plea === true;
+    || frame.plea === true
+    // A ping is the most obviously one-shot input there is: shedding it loses the mark
+    // outright, and the player has no way to know it did not arrive.
+    || frame.ping !== undefined;
 }
 
 export type ClientMessage =
@@ -227,6 +241,7 @@ export type ClientMessage =
       downedVerb?: DownedVerb;
       take?: TakeCommand;
       plea?: boolean;
+      ping?: { kind: PingKind; position: [number, number] };
       /** Tick-stamped frame batch (newest last), including redundant copies
        * of recent frames so a dropped packet cannot lose an input. When
        * present, the top-level fields mirror the newest frame and exist for

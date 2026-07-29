@@ -70,6 +70,7 @@ export class NetSession implements GameSession {
   private stagedDownedVerb: InputCommand["downedVerb"];
   private queuedTake: InputCommand["take"];
   private queuedPlea = false;
+  private queuedPing: InputCommand["ping"];
   private edgeAwaitingFlush = false;
   private predictor: LitePredictor | null = null;
   private predictionAccumulatorMs = 0;
@@ -180,6 +181,7 @@ export class NetSession implements GameSession {
     if (input.take && !this.queuedTake) this.queuedTake = input.take;
     this.stagedDownedVerb = input.downedVerb;
     this.queuedPlea ||= input.plea ?? false;
+    if (input.ping && !this.queuedPing) this.queuedPing = input.ping;
   }
 
   getNetworkDebug(): NetworkDebugStats {
@@ -507,6 +509,7 @@ export class NetSession implements GameSession {
     this.queuedUseBay = undefined;
     this.queuedSwapBay = undefined;
     this.queuedPlea = false;
+    this.queuedPing = undefined;
     this.edgeAwaitingFlush = false;
     this.pendingInputs = [];
   }
@@ -559,6 +562,7 @@ export class NetSession implements GameSession {
       downedVerb: this.stagedDownedVerb,
       take: this.queuedTake,
       plea: this.queuedPlea || undefined,
+      ping: this.queuedPing,
     };
     this.predictionDashQueued = false;
     this.queuedUseBay = undefined;
@@ -600,6 +604,7 @@ export class NetSession implements GameSession {
       downedVerb: input.downedVerb,
       take: input.take,
       plea: input.plea,
+      ping: input.ping ? { kind: input.ping.kind, position: [input.ping.position.x, input.ping.position.y] as [number, number] } : undefined,
     }));
     const top = frames[frames.length - 1];
     const delivery: DeliveryClass = frames.some(carriesAction) ? "reliable" : "latest";
@@ -614,6 +619,7 @@ export class NetSession implements GameSession {
       downedVerb: top.downedVerb,
       take: top.take,
       plea: top.plea,
+      ping: top.ping,
       frames,
     }, delivery);
   }

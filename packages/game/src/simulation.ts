@@ -72,6 +72,7 @@ import type {
   StairLink,
   TakeCommand,
   Vec2,
+  PingKind,
 } from "./types";
 
 const NOISE_TTL_MS = 900;
@@ -163,6 +164,21 @@ const AI_SLOT_ARRIVAL = 6;
 /** Past this a bot is travelling toward a fight, not queueing at one. */
 const AI_SLOT_CLAIM_RANGE = 420;
 
+/**
+ * How long an AI squadmate keeps acting on a mark.
+ *
+ * Longer than the client's visual lifetime on purpose: the mark fades off your screen once
+ * you have read it, but the squadmate you sent is still walking. Shorter than a run, so a
+ * mark placed at insertion is not still steering somebody five minutes later.
+ */
+const PING_MEMORY_MS = 14_000;
+
+/** How near a mark something has to be for the mark to be about it. */
+const PING_PULL = 260;
+
+/** Close enough to a `here` mark to count as arrived. */
+const PING_ARRIVED = 56;
+
 const NOISE_LOUDNESS = {
   dash: 0.8,
   impact: 1.0,
@@ -171,6 +187,15 @@ const NOISE_LOUDNESS = {
   coverChannel: 0.65,
   extractChannel: 0.7,
   mineDetonation: 1.0,
+  /**
+   * Quietest thing in the table.
+   *
+   * A mark is a voice, not a dash, and `classifyNoise` uses loudness to decide whether a
+   * sound leaks through walls at all — so at this level it is heard by a squadmate in the
+   * room and not by a rival two rooms away. Which is the point: audible enough to notice,
+   * quiet enough that marking is not a beacon.
+   */
+  ping: 0.35,
 } as const;
 
 type InternalBot = DotBotEntity & {
@@ -220,6 +245,7 @@ type InternalBot = DotBotEntity & {
   shapeFacing: number;
   shapeSegments: number[];
   pleaCooldownMs: number;
+  pingCooldownMs: number;
   radarPingElapsedMs: number;
   activeSwap?: { bayIndex: BayIndex; holdIndex: number; progressMs: number };
 };
@@ -263,6 +289,17 @@ export class DotBotSimulation {
   private readonly bots = new Map<string, InternalBot>();
   private readonly controllers = new Map<string, Controller>();
   private readonly inputs = new Map<string, InputCommand>();
+  /**
+   * Squad marks, newest first, one per kind per squad. AI memory only — see `pingFor`.
+   * Never on the snapshot: a mark has no authority in the world.
+   */
+  private squadMarks: Array<{
+    squadId: string;
+    kind: PingKind;
+    position: Vec2;
+    floorId: string;
+    atMs: number;
+  }> = [];
   private readonly dots = new Map<string, InternalDot>();
   private readonly mines = new Map<string, InternalMine>();
   private readonly coverages = new Map<string, ActiveCoverage>();
@@ -474,6 +511,7 @@ export class DotBotSimulation {
       shapeFacing: Number.NaN,
       shapeSegments: [],
       pleaCooldownMs: 0,
+      pingCooldownMs: 0,
     };
 
     this.bots.set(bot.id, bot);
@@ -500,6 +538,7 @@ export class DotBotSimulation {
       downedVerb: input.downedVerb,
       take: current?.take ?? input.take,
       plea: (current?.plea ?? false) || input.plea,
+      ping: current?.ping ?? input.ping,
     });
   }
 
@@ -745,6 +784,7 @@ export class DotBotSimulation {
       bot.dashActiveMs = Math.max(0, bot.dashActiveMs - dtMs);
       bot.invulnerabilityMs = Math.max(0, bot.invulnerabilityMs - dtMs);
       bot.pleaCooldownMs = Math.max(0, bot.pleaCooldownMs - dtMs);
+      bot.pingCooldownMs = Math.max(0, bot.pingCooldownMs - dtMs);
       bot.incognitoMs = Math.max(0, bot.incognitoMs - dtMs);
       const previousRadarMs = bot.radarActiveMs;
       bot.radarActiveMs = Math.max(0, bot.radarActiveMs - dtMs);
@@ -816,7 +856,10 @@ export class DotBotSimulation {
         if (bot.state === "downed" && input?.plea && !bot.isAmbient && bot.pleaCooldownMs <= 0) {
           this.pleaFor(bot);
         }
-        if (input?.dash || input?.useBay !== undefined || input?.swapBay || input?.plea) {
+        // A downed bot may still mark. Watching a rival walk past while you wait for a
+        // pickup is exactly when telling your squad where they are matters most.
+        if (input?.ping) this.pingFor(bot, input.ping.kind, input.ping.position);
+        if (input?.dash || input?.useBay !== undefined || input?.swapBay || input?.plea || input?.ping) {
           this.inputs.set(bot.id, { move: zeroVec(), dash: false, plea: false });
         }
         continue;
@@ -856,8 +899,11 @@ export class DotBotSimulation {
         // A press is consumed on the tick it is considered, fired or not.
         // Pressing during cooldown must never bank a dash for later.
       }
-      if (input.dash || input.useBay !== undefined || input.swapBay || input.take || input.plea) {
-        this.inputs.set(bot.id, { ...input, dash: false, useBay: undefined, swapBay: undefined, take: undefined, plea: false });
+      if (input.ping) this.pingFor(bot, input.ping.kind, input.ping.position);
+      if (input.dash || input.useBay !== undefined || input.swapBay || input.take || input.plea || input.ping) {
+        this.inputs.set(bot.id, {
+          ...input, dash: false, useBay: undefined, swapBay: undefined, take: undefined, plea: false, ping: undefined,
+        });
       }
     }
   }
@@ -1295,6 +1341,133 @@ export class DotBotSimulation {
    * one-tick flag would mean the recruit had to land inside the same tick as the
    * shout, which is not a thing a player can aim at.
    */
+  /**
+   * Mark a place for your squad.
+   *
+   * AN EVENT AND NOTHING ELSE — no simulation state, no snapshot field, no entity list.
+   * That is the design decision worth recording, because the obvious build is a `pings`
+   * array on the world with a TTL and a per-squad cap, and it is more machinery than a
+   * mark deserves. A ping carries no authority: it cannot be shot, cannot be walked into,
+   * decides nothing, and expires. Everything it needs is in the one event that announces
+   * it, so the client holds it for a few seconds and forgets it.
+   *
+   * The cost is honest and small: a player who reconnects mid-run does not inherit marks
+   * placed while they were away. For something whose whole value is "look here NOW", a
+   * stale mark restored on reconnect would be worse than a missing one.
+   *
+   * Rate limited per bot, which is also the spam control. There is no per-squad cap because
+   * without stored state there is nothing to cap — four players each limited to one mark
+   * every `pingCooldownMs` cannot paper the map faster than the marks expire.
+   *
+   * The position is clamped to the sheet but deliberately NOT checked against line of
+   * sight. Marking somewhere you cannot see is the point: round a corner, up a floor, where
+   * they were last seen.
+   */
+  private pingFor(bot: InternalBot, kind: PingKind, position: Vec2): void {
+    if (bot.pingCooldownMs > 0) return;
+    bot.pingCooldownMs = this.config.pingCooldownMs;
+    /**
+     * A mark makes a sound, which is a deliberate cost rather than only feedback.
+     *
+     * The squad needs to know one arrived without staring at the map, and the ring is how
+     * every other event in this game announces itself. It is quiet — a mark is a voice, not
+     * a dash — but it is audible, so pinging is not free: spam it beside a rival and you
+     * have told them where you are.
+     */
+    this.emitNoise("ping", bot.position, bot.floorId, NOISE_LOUDNESS.ping, bot);
+    const at = {
+      x: clamp(position.x, 0, this.map.width),
+      y: clamp(position.y, 0, this.map.height),
+    };
+    /**
+     * Held for the AI, and this REVERSES the event-only design that was here an hour ago.
+     *
+     * That design was right for the renderer and wrong for the squad: an AI squadmate has to
+     * still be acting on a mark seconds after it lands, while it walks there, so something
+     * has to remember it. Reacting only in the tick the event fires would mean the marks did
+     * nothing for exactly the squadmates they were asked to command.
+     *
+     * The half of the decision that survives is the one that mattered: this does NOT go on
+     * the snapshot. A mark has no authority — nothing collides with it, nothing shoots it —
+     * so the authoritative world stays clean and the client still builds its own marks from
+     * events. This list is AI memory, not world state.
+     */
+    this.squadMarks = this.squadMarks
+      .filter((mark) => mark.squadId !== bot.squadId || this.timeMs - mark.atMs < PING_MEMORY_MS)
+      .filter((mark) => !(mark.squadId === bot.squadId && mark.kind === kind))
+      .concat({ squadId: bot.squadId, kind, position: at, floorId: bot.floorId, atMs: this.timeMs });
+    this.events.push({
+      type: "pinged",
+      botId: bot.id,
+      squadId: bot.squadId,
+      pingId: `ping-${bot.id}-${Math.round(this.timeMs)}`,
+      kind,
+      position: { ...at },
+      floorId: bot.floorId,
+    });
+  }
+
+  /**
+   * The freshest live mark of a kind for this bot's squad, on a floor it can act on.
+   *
+   * One per kind per squad, newest replacing older, because an AI cannot chase two "enemy"
+   * marks and choosing between them is not a decision worth modelling — the newest is the
+   * one carrying current information. Same reasoning as the client's cap, arrived at from
+   * the other end.
+   */
+  private markFor(bot: InternalBot, kind: PingKind): { position: Vec2; floorId: string } | null {
+    const mark = this.squadMarks.find(
+      (candidate) => candidate.squadId === bot.squadId
+        && candidate.kind === kind
+        && this.timeMs - candidate.atMs < PING_MEMORY_MS,
+    );
+    return mark ? { position: mark.position, floorId: mark.floorId } : null;
+  }
+
+  /**
+   * Bias an AI squadmate's objective toward what its squad has marked.
+   *
+   * A NUDGE, not an order, and the distinction is the whole design. A mark that overrode the
+   * AI outright would let one click walk a squadmate off a roof or out of a fight it was
+   * winning, and a player cannot see enough of the AI's situation to be given that power. So
+   * a mark bends what the bot was already choosing between:
+   *
+   *  - `enemy` promotes a rival NEAR THE MARK, so pointing at nothing does nothing
+   *  - `loot`  promotes an uncollected Dot near the mark, same condition
+   *  - `here`  is the universal one: go there, and take whatever is worth taking on arrival
+   *
+   * `here` deliberately has no "is there something there" test, because that is what makes
+   * it universal — it is the mark you use when you cannot say why, and the bot working out
+   * what is nearby when it arrives is exactly the behaviour asked for.
+   */
+  private markedObjective(bot: InternalBot): AiTarget | null {
+    const enemyMark = this.markFor(bot, "enemy");
+    if (enemyMark) {
+      const rival = [...this.bots.values()]
+        .filter((target) => target.state === "alive" && !areFriendly(bot, target))
+        .filter((target) => distance(target.position, enemyMark.position) < PING_PULL)
+        .sort((a, b) => distance(a.position, enemyMark.position) - distance(b.position, enemyMark.position))[0];
+      if (rival) return this.huntTarget(bot, rival);
+    }
+
+    const lootMark = this.markFor(bot, "loot");
+    if (lootMark) {
+      const dot = [...this.dots.values()]
+        .filter((candidate) => candidate.active)
+        .filter((candidate) => distance(candidate.position, lootMark.position) < PING_PULL)
+        .sort((a, b) => distance(a.position, lootMark.position) - distance(b.position, lootMark.position))[0];
+      if (dot) {
+        return makeAiTarget(dot.position, dot.floorId, this.config.botRadius * 0.5, this.config.botRadius * 2, "loot", dot.id);
+      }
+    }
+
+    const here = this.markFor(bot, "here");
+    if (here && distance(bot.position, here.position) > PING_ARRIVED) {
+      return makeAiTarget(here.position, here.floorId, PING_ARRIVED, PING_ARRIVED * 1.6, "investigate");
+    }
+    return null;
+  }
+
   private pleaFor(bot: InternalBot): void {
     bot.pleaCooldownMs = this.config.pleaCooldownMs;
     bot.pleaded = true;
@@ -1332,6 +1505,10 @@ export class DotBotSimulation {
 
   private pickBotTarget(bot: InternalBot): AiTarget {
     if (bot.isAmbient) return this.pickAmbientTarget(bot);
+    // A squad's marks steer its own AI members. Ambient greys are nobody's squadmates and
+    // ignore them, which is also what keeps a mark from herding the whole map.
+    const marked = this.markedObjective(bot);
+    if (marked) return marked;
     const sameBuilding = (target: { floorId: string; position: Vec2 }) => {
       const botPlan = resolvePlan(this.map, bot.floorId, bot.position);
       const targetPlan = resolvePlan(this.map, target.floorId, target.position);

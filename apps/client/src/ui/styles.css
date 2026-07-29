@@ -1777,6 +1777,45 @@ button {
   left: 14px;
 }
 
+/**
+ * The mark picker, at the click.
+ *
+ * `position: fixed` because it is placed from `clientX/clientY` — a viewport coordinate. In
+ * an absolutely-positioned parent it would be offset by wherever that parent starts, which
+ * puts the menu somewhere near but not at the place being marked.
+ */
+.ping-picker {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  gap: 2px;
+  padding: 3px;
+  /* Off the cursor, so the pointer is not sitting on the first option. */
+  transform: translate(6px, 6px);
+  border-radius: 6px;
+  background: var(--panel-glass);
+  backdrop-filter: blur(10px) saturate(.9);
+  pointer-events: auto;
+}
+
+.ping-picker button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink);
+  font: 800 9px/1 var(--font-mono);
+  letter-spacing: .12em;
+  text-align: left;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.ping-picker button:hover {
+  background: var(--squad-cyan);
+  color: #0d0f11;
+}
+
 /* ---------------------------------------------------------------------------
    Four takes on glass.
 

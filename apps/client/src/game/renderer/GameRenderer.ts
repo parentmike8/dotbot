@@ -33,6 +33,7 @@ import {
 import { drawDotDisc, drawDotGloss, drawDotMark } from "./dotArt";
 import { arrowTarget, edgeArrow, type Camera } from "./edgeArrow";
 import { drawGroundShadow } from "./grounding";
+import { markAge, type LiveMark } from "../pings";
 import {
   drawBareEdges,
   drawBodyOutline,
@@ -172,6 +173,10 @@ function advanceDisplayPosition(view: BotView, target: Vec2, now: number): Vec2 
 export class GameRenderer {
   private readonly app: Application;
   private readonly worldLayer = new Container();
+  /** The camera as of the last drawn frame, so a click can be un-projected. */
+  private lastCamera: Camera = { x: 0, y: 0, scale: 1 };
+  /** Squad marks, held by the client — see game/pings.ts for why they are not sim state. */
+  private squadMarks: readonly LiveMark[] = [];
   private readonly art: MapArt;
   /** Faint wash over everything outside the player's line of sight. */
   private readonly fogGfx = new Graphics();
@@ -443,6 +448,7 @@ export class GameRenderer {
 
     this.worldLayer.scale.set(camera.scale);
     this.worldLayer.position.set(camera.x, camera.y);
+    this.lastCamera = camera;
     this.updateRoofParallax(camera.center, player?.floorId);
     this.updateObjectParallax(camera.center, player?.floorId);
 
@@ -468,6 +474,7 @@ export class GameRenderer {
       this.drawNoises(snapshot, player);
       this.drawPleaSignals(player);
       this.drawMineSignals(player);
+      this.drawSquadMarks(playerContext, nowMs, camera);
       this.drawDownedSquadmateArrow(snapshot, player, camera);
     }
     this.drawImpactFlashes(snapshot, nowMs);
@@ -749,6 +756,95 @@ export class GameRenderer {
       open.set(building.id, clamp01(1 - nearest / PEEK_RANGE));
     }
     return open;
+  }
+
+  /**
+   * Where a point on the canvas is in the world.
+   *
+   * Uses the camera from the frame that is currently on screen rather than recomputing one,
+   * because those are not the same thing: the camera eases and leads a dash, so a click
+   * un-projected through a freshly computed camera lands slightly off the pixel the player
+   * actually clicked. What they aimed at is what was drawn.
+   */
+  worldAt(canvasX: number, canvasY: number): Vec2 {
+    const { x, y, scale } = this.lastCamera;
+    return { x: (canvasX - x) / scale, y: (canvasY - y) / scale };
+  }
+
+  /** Hand the renderer this frame's live squad marks. */
+  setSquadMarks(marks: readonly LiveMark[]): void {
+    this.squadMarks = marks;
+  }
+
+  /**
+   * Squad marks, drawn in the world and never hidden by fog.
+   *
+   * On the always-visible layer on purpose: the entire point of a mark is that it tells you
+   * about somewhere you cannot see. Masking one to line of sight would leave it visible only
+   * where you did not need it.
+   *
+   * Same context only. A mark two floors up drawn at its world position would sit on top of
+   * the floor you are actually on, claiming something is there — worse than not drawing it.
+   * Carrying it onto the floor rail instead is the right answer and is not built.
+   */
+  private drawSquadMarks(playerContext: string, nowMs: number, camera: Camera): void {
+    for (const mark of this.squadMarks) {
+      if (this.contextKey(mark.floorId, mark.position) !== playerContext) continue;
+      /**
+       * Off screen, the mark becomes an arrow at the edge.
+       *
+       * The same treatment a downed squadmate gets, and for the same reason: a mark you
+       * cannot see is a mark that failed. Most of the value of "enemy, over there" is when
+       * over there is not on your screen yet.
+       */
+      const arrow = edgeArrow(mark.position, camera, this.viewport);
+      if (arrow) {
+        const edgeFade = 1 - markAge(mark, nowMs);
+        this.screenGfx
+          .poly([arrow.tip.x, arrow.tip.y, arrow.left.x, arrow.left.y, arrow.right.x, arrow.right.y])
+          .fill({ color: SQUAD_CYAN, alpha: 0.4 + edgeFade * 0.55 })
+          .stroke({ color: INK.structure, width: 2 });
+        continue;
+      }
+      const fade = 1 - markAge(mark, nowMs);
+      if (fade <= 0) continue;
+      const { x, y } = mark.position;
+      // Rises and settles as it lands, so a mark arriving is noticed without a flash.
+      const drop = Math.max(0, 1 - (nowMs - mark.placedAtMs) / 260);
+      const lift = drop * drop * 16;
+      const alpha = 0.4 + fade * 0.6;
+      // Reported as "a bit thin (hard to see)". Heavier stroke, bigger glyph, and a dark
+      // backing ring so the cyan has something to sit against on a pale slab — the same
+      // problem the world captions had, and the same answer.
+      const width = 4;
+
+      this.dynamicGfx.circle(x, y - lift, 19)
+        .stroke({ color: INK.structure, width: 5.5, alpha: alpha * 0.5 });
+      this.dynamicGfx.circle(x, y - lift, 19)
+        .stroke({ color: SQUAD_CYAN, width: 2.4, alpha: alpha * 0.9 });
+      // A dot on the spot itself, so the mark still says WHERE at a glance when the glyph
+      // is riding above it.
+      this.dynamicGfx.circle(x, y, 2.6).fill({ color: SQUAD_CYAN, alpha });
+      if (mark.kind === "enemy") {
+        // Crossed strokes: the one mark that has to read as a warning at a glance.
+        for (const [dx, dy] of [[-1, -1], [1, -1]]) {
+          this.dynamicGfx
+            .moveTo(x - dx * 9, y - lift - dy * 9)
+            .lineTo(x + dx * 9, y - lift + dy * 9)
+            .stroke({ color: SQUAD_CYAN, width, alpha });
+        }
+      } else if (mark.kind === "loot") {
+        this.dynamicGfx
+          .moveTo(x, y - lift - 11).lineTo(x + 9, y - lift).lineTo(x, y - lift + 11).lineTo(x - 9, y - lift)
+          .closePath()
+          .stroke({ color: SQUAD_CYAN, width, alpha });
+      } else {
+        // "Here" is a chevron pointing at the spot, which is what a finger does.
+        this.dynamicGfx
+          .moveTo(x - 10, y - lift - 7).lineTo(x, y - lift + 6).lineTo(x + 10, y - lift - 7)
+          .stroke({ color: SQUAD_CYAN, width, alpha });
+      }
+    }
   }
 
   /**

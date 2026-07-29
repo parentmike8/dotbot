@@ -9,7 +9,7 @@ import { selectMapDocument } from "../mapSelection";
 import { BodyPromptView, DownedSelfView } from "./downed/DownedPrompts";
 import { useDownedPrompts } from "./downed/useDownedPrompts";
 import {
-  BayBank, DebugPanel, FloorRail, HoldPicker, RunReadout, SettingsPanel, TouchControls,
+  BayBank, DebugPanel, FloorRail, HoldPicker, PingPicker, RunReadout, SettingsPanel, TouchControls,
 } from "./hud/Overlay";
 import { hudSkinClass } from "./hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "./hud/hud";
@@ -29,7 +29,8 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
   const {
     hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, settingsVisible, toggleSettings,
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, leaveRun, selectDownedVerb, plea,
-    takeFromBody, setBodyAction, spectating,
+    takeFromBody, setBodyAction,
+    pingHandlers, pingPicker, choosePingKind, closePingPicker, spectating,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ map: requestedMap, spectate: true });
   const [swapBay, setSwapBay] = useState<number | null>(null);
@@ -60,7 +61,7 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
       data-player-y={player ? Math.round(player.position.y) : undefined}
       data-dash-ready={player ? player.dashCooldownMs <= 0 : false}
     >
-      <div ref={hostRef} className="game-canvas" />
+      <div ref={hostRef} className="game-canvas" {...pingHandlers} />
 
       <RunReadout
         remainingRunMs={remainingRunMs}
@@ -114,6 +115,10 @@ function GameSession({ map: requestedMap, onRestart }: { map: MapDocument; onRes
       ) : null}
 
       {column ? <FloorRail column={column} /> : null}
+
+      {pingPicker ? (
+        <PingPicker at={pingPicker.screen} onChoose={choosePingKind} onClose={closePingPicker} />
+      ) : null}
 
       {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}
 

@@ -61,6 +61,14 @@ export const defaultGameConfig: GameConfig = {
   /** Stripping a body is the slow, committing act — it was the consume channel. */
   lootDurationMs: 3000,
   pleaCooldownMs: 10_000,
+  /**
+   * How often one bot may mark a place.
+   *
+   * Short enough to point at a moving rival twice in a fight, long enough that holding the
+   * button cannot paper the map. This IS the spam control — pings keep no state, so there
+   * is nothing else to cap.
+   */
+  pingCooldownMs: 900,
   minInsertionSpacing: 900,
   coverCenterTolerance: 12,
   maxSquadSize: 4,

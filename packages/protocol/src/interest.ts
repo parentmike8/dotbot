@@ -122,6 +122,10 @@ export function filterEventsForViewer(
   );
   return events.filter((event) => {
     if (event.type === "mineSensor") return event.squadId === squadId;
+    // A mark is for the squad that made it, wherever it points and whoever can see the
+    // bot that made it. Leaking one to a rival hands them both the place and the fact
+    // that somebody is watching it.
+    if (event.type === "pinged") return event.squadId === squadId;
     if (event.type === "mineRotated") return metaById.get(event.botId)?.squadId === squadId;
     return event.type === "plea" || visibleBot(event.botId) || ("byBotId" in event && visibleBot(event.byBotId));
   });

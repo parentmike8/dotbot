@@ -147,6 +147,29 @@ describe("filterForViewer", () => {
     expect(events.map((event) => event.type)).toEqual(["downed", "revived"]);
   });
 
+  it("delivers a squad mark to that squad only", () => {
+    /**
+     * A leaked ping hands a rival two things: the place your squad is looking at, and the
+     * fact that somebody is watching it. The second is worse — it is information the mark
+     * itself does not even carry.
+     */
+    const mark = {
+      type: "pinged" as const,
+      botId: "viewer",
+      squadId: "a",
+      pingId: "ping-viewer-1200",
+      kind: "enemy" as const,
+      position: { x: 640, y: 420 },
+      floorId: "outdoor",
+    };
+    const mine = filterEventsForViewer([mark], [], new Set(["viewer"]), "a");
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ type: "pinged", kind: "enemy" });
+
+    // A rival, even one who can see the bot that placed it.
+    expect(filterEventsForViewer([mark], [], new Set(["viewer"]), "b")).toHaveLength(0);
+  });
+
   it("keeps mine sensor pings squad-private", () => {
     const event = { type: "mineSensor" as const, botId: "viewer", squadId: "a", mineId: "mine-alpha-0", position: { x: 1, y: 2 }, floorId: "outdoor" };
     expect(filterEventsForViewer([event], meta, new Set(["viewer"]), "a")).toEqual([event]);
