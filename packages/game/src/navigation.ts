@@ -4,6 +4,7 @@ import {
   objectCollisionRects,
   physicsFloorId as normalizePhysicsFloorId,
 } from "./mapModel";
+import { objectSolids } from "./collision";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import {
   pointToSolidDistanceSquared,
@@ -666,7 +667,7 @@ function collisionRectsForFloor(map: MapDocument, floorId: string): Solid[] | nu
   if (floorId === OUTDOOR_FLOOR_ID) {
     const result: Solid[] = [
       ...map.outdoor.walls.map(rectSolid),
-      ...map.outdoor.objects.flatMap(objectCollisionRects).map(rectSolid),
+      ...map.outdoor.objects.flatMap(objectSolids),
       ...(map.outdoor.barriers ?? []).flatMap((barrier) => barrier.solids),
     ];
 
@@ -675,7 +676,7 @@ function collisionRectsForFloor(map: MapDocument, floorId: string): Solid[] | nu
         if (isGroundFloor(floor)) {
           result.push(
             ...floor.walls.map(rectSolid),
-            ...floor.objects.flatMap(objectCollisionRects).map(rectSolid),
+            ...floor.objects.flatMap(objectSolids),
             ...(floor.barriers ?? []).flatMap((barrier) => barrier.solids),
           );
         }
@@ -689,7 +690,7 @@ function collisionRectsForFloor(map: MapDocument, floorId: string): Solid[] | nu
   if (!plan) return null;
   return [
     ...plan.walls.map(rectSolid),
-    ...plan.objects.flatMap(objectCollisionRects).map(rectSolid),
+    ...plan.objects.flatMap(objectSolids),
     ...(plan.barriers ?? []).flatMap((barrier) => barrier.solids),
   ];
 }

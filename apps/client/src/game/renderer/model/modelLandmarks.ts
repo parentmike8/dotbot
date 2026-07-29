@@ -600,7 +600,23 @@ const waltzerGlyph: LandmarkFn = (g, pad, o) => {
 const swingRideGlyph: LandmarkFn = (g, pad, o) => {
   const { x: cx, y: cy } = centre(o);
   const radius = Math.min(o.w, o.h) / 2 - 0.5;
-  contactRound(pad, cx, cy, radius * 0.34, LIFT.tower);
+  contactRound(pad, cx, cy, radius, LIFT.column);
+
+  /**
+   * THE PLATFORM, and it is drawn because it is the collider.
+   *
+   * The seats hang at 0.7 of the radius, so a fifth of this ride's radius was solid
+   * ground with nothing drawn on it — reported from play as being stopped short of
+   * the ride by nothing at all. The old note here said the seats hung "well inside
+   * the footprint so the silhouette is the collider", which has it exactly backwards:
+   * drawing INSIDE the footprint makes the collider bigger than the mark, which is
+   * the one direction a collider must never be wrong in.
+   *
+   * A chairoplane stands on a boarding platform, so the honest fix is to draw the
+   * thing that is actually there rather than to shrink what collides.
+   */
+  cylinder(g, cx, cy, radius, MAT.painted, LIFT.column);
+  g.circle(cx, cy, radius * 0.9).stroke({ color: shade(MAT.painted.edge, 0.9), width: 1.2 });
 
   // The canopy over the mast: a small striped cone, echoing the carousel because
   // they came from the same works.
@@ -618,8 +634,8 @@ const swingRideGlyph: LandmarkFn = (g, pad, o) => {
   g.circle(cx, cy, hubR).stroke({ color: MAT.canvas.edge, width: 1 });
   g.circle(cx, cy, radius * 0.1).fill({ color: MAT.iron.front });
 
-  // Seats hanging at rest, well inside the footprint so the silhouette is the collider.
-  const ring = radius * 0.7;
+  // Seats hanging at rest over the platform drawn above.
+  const ring = radius * 0.72;
   for (let i = 0; i < 12; i += 1) {
     const a = (i / 12) * Math.PI * 2 + 0.13;
     const px = cx + Math.cos(a) * ring;

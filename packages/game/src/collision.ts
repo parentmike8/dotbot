@@ -1,6 +1,35 @@
 import { pointToSolidDistanceSquared, rectSolid, separateCircleFromSolid } from "./geometry";
-import { objectCollisionRects, physicsFloorId, stairGuardRects } from "./mapModel";
-import type { MapDocument, Rect, Solid, Vec2 } from "./types";
+import { isSolidObject, objectCollisionRects, physicsFloorId, ROUND_KINDS, stairGuardRects } from "./mapModel";
+import type { MapDocument, MapObject, Rect, Solid, Vec2 } from "./types";
+
+/**
+ * An object's TRUE collision shape, which for a round kind is an actual disc — a
+ * capsule collapsed to a point, which the kernel already understands everywhere
+ * and even has a name for (`isDisc`). Nothing approximated, nothing protruding.
+ *
+ * The first attempt stepped the disc into eight rects, on the theory that rects
+ * were the only shape every consumer could read. Both halves of that were wrong:
+ * capsules were already supported throughout the kernel, and the stepping took each
+ * band's WIDEST point so the stack would contain the circle — which means it
+ * circumscribed it, standing a slab of invisible collider off the top and bottom of
+ * every drawn disc. Reported at once, and fairly: "there's still a square
+ * protruding from the merry go round."
+ *
+ * The lesson is not about the arithmetic. A collider LARGER than its mark is a
+ * worse failure than one that is smaller, because the player can neither see it nor
+ * learn it — and offered a choice between approximating outward and approximating
+ * inward, the right answer was to stop approximating.
+ */
+export function objectSolids(object: MapObject): Solid[] {
+  if (!isSolidObject(object)) return [];
+  if (!object.collisionParts?.length && ROUND_KINDS.has(object.kind)) {
+    const radius = Math.min(object.w, object.h) / 2;
+    const cx = object.x + object.w / 2;
+    const cy = object.y + object.h / 2;
+    return [{ kind: "capsule", ax: cx, ay: cy, bx: cx, by: cy, r: radius }];
+  }
+  return objectCollisionRects(object).map((rect) => rectSolid(rect));
+}
 
 /**
  * Static geometry on one physics plane. GROUND plans share the outdoor plane.
@@ -18,7 +47,7 @@ export function collectSolids(map: MapDocument, floorId: string): Solid[] {
 
   if (targetFloorId === physicsFloorId(map, "outdoor")) {
     addRects(map.outdoor.walls);
-    addRects(map.outdoor.objects.flatMap(objectCollisionRects));
+    for (const object of map.outdoor.objects) solids.push(...objectSolids(object));
     for (const barrier of map.outdoor.barriers ?? []) solids.push(...barrier.solids);
   }
 
@@ -26,7 +55,7 @@ export function collectSolids(map: MapDocument, floorId: string): Solid[] {
     for (const floor of building.floors) {
       if (physicsFloorId(map, floor.id) !== targetFloorId) continue;
       addRects(floor.walls);
-      addRects(floor.objects.flatMap(objectCollisionRects));
+      for (const object of floor.objects) solids.push(...objectSolids(object));
       addRects(floor.stairs.flatMap(stairGuardRects));
       for (const barrier of floor.barriers ?? []) solids.push(...barrier.solids);
     }

@@ -267,7 +267,7 @@ export function planningTableSurfaceRect(object: Pick<MapObject, "x" | "y" | "w"
  * A kind, not an instance. Every one of these computes its radius as
  * `Math.min(w, h) / 2` in its glyph, which is the definition being honoured here.
  */
-const ROUND_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
+export const ROUND_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "carousel",
   "waltzer",
   "swingRide",
@@ -278,54 +278,16 @@ const ROUND_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
 ]);
 
 /**
- * A disc's collider, as a stack of rects.
- *
- * Rects because that is what every consumer of this function reads — collision,
- * navigation clearance, line of sight, the client predictor. Adding a circle
- * primitive would mean teaching all of them a second shape; stepping the disc
- * teaches them nothing and is exact to within the step height.
- *
- * Eight bands over the diameter: the error at the silhouette is under 2% of the
- * radius, which is a third of a pixel on the biggest of these at play zoom, and
- * the corners — the entire complaint — are gone.
- */
-function discCollisionRects(object: MapObject): Rect[] {
-  const radius = Math.min(object.w, object.h) / 2;
-  const cx = object.x + object.w / 2;
-  const cy = object.y + object.h / 2;
-  const BANDS = 8;
-  const rects: Rect[] = [];
-  for (let band = 0; band < BANDS; band += 1) {
-    const top = cy - radius + (band * 2 * radius) / BANDS;
-    const height = (2 * radius) / BANDS;
-    // Widest point of the band, so the stack contains the disc rather than
-    // cutting corners off it: a collider must never be smaller than the mark.
-    const nearest = Math.min(Math.abs(top - cy), Math.abs(top + height - cy));
-    const edge = top < cy && top + height > cy ? radius : Math.sqrt(Math.max(0, radius * radius - nearest * nearest));
-    if (edge <= 0) continue;
-    rects.push({ x: cx - edge, y: top, w: edge * 2, h: height });
-  }
-  return rects;
-}
-
-/**
  * Physics rectangles for a map object. Most objects occupy their authored
- * bounds. Compound plan shapes can declare local collision parts, round kinds
- * collide as a stepped disc, while the contracts table collides only at its
- * visible tabletop so a bot is never stopped by the transparent chair gutter
- * around it.
+ * bounds. Compound plan shapes can declare local collision parts, while the
+ * contracts table collides only at its visible tabletop so a bot is never
+ * stopped by the transparent chair gutter around it.
+ *
+ * Round kinds are their bounding box HERE, and a real disc in `objectSolids`.
+ * This is the rect-only view, and its callers are authoring audits: over-stating
+ * a round object by its corners makes them stricter, never wrong.
  */
 export function objectCollisionRects(object: MapObject): Rect[] {
-  if (!isSolidObject(object)) return [];
-  if (object.collisionParts?.length) {
-    return object.collisionParts.map((part) => ({
-      x: object.x + part.x,
-      y: object.y + part.y,
-      w: part.w,
-      h: part.h,
-    }));
-  }
-  if (ROUND_KINDS.has(object.kind)) return discCollisionRects(object);
   return objectLayoutRects(object);
 }
 

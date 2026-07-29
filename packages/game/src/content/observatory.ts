@@ -36,6 +36,16 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
     from: "GROUND",
     to: "F1",
     bottom: "S",
+    /**
+     * NO `openEnd` here, unlike the pavilion's, and the difference is the shell.
+     *
+     * This flight is hard against the drum's west wall, so one long side is already
+     * enclosed by authored geometry — which is exactly the condition `access` says to
+     * omit it for. Declaring it anyway walls the exit half's east side too, and with
+     * the shell on the west that leaves the flight with no full-size side exit at
+     * all: the audit reported both stair heads sealed and a 17,216-unit pocket
+     * stranded on F1. A guard rail against a wall is a wall on both sides.
+     */
   }],
   floors: [
     {

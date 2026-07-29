@@ -55,6 +55,17 @@ export const PAVILION_SOURCE: SourceBuilding = {
     from: "GROUND",
     to: "F1",
     bottom: "N",
+    /**
+     * Enclosed on its three other sides, because nothing else encloses it.
+     *
+     * `access` may be omitted only when authored walls already control the way onto
+     * a flight — which is what every stair in the city is, a shaft with a door. This
+     * one stands in the middle of an open hall, and without the guards it was a flight
+     * you could walk onto sideways from anywhere. Reported from play: "the stairs in
+     * the grand pavilion don't have the walls surrounding the side you shouldn't cross
+     * into like we have in our city buildings."
+     */
+    access: "openEnd",
   }],
   floors: [
     {

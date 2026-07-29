@@ -4,7 +4,9 @@ import { downtownMap } from "./content/downtown";
 import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, deriveBaseInteractionDots, starterBaseLayout, validateBaseLayout } from "./content/base";
 import { interactionDotReach } from "./interactions";
 import type { BaseLayout } from "./types";
-import { isGroundFloor, objectCollisionRects, physicsFloorId, stairExitPoint, stairHalves } from "./mapModel";
+import { isGroundFloor, objectCollisionRects, physicsFloorId, ROUND_KINDS, stairExitPoint, stairHalves } from "./mapModel";
+import { objectSolids } from "./collision";
+import { pointToSolidDistanceSquared } from "./geometry";
 import { auditDotPlacement, auditBuildingFloorQuality, type FloorQualityIssue } from "./mapQuality";
 import { FLAT_KINDS, isSolidObject } from "./mapModel";
 import { findNavigationPath } from "./navigation";
@@ -806,6 +808,49 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
 
   it("keeps a bot's full diameter of clear run either side of every entrance", () => {
     expect(entranceApproachBlockers(map)).toEqual([]);
+  });
+
+  /**
+   * A ROUND OBJECT COLLIDES AS A ROUND OBJECT, and never as anything larger.
+   *
+   * Third attempt at this, so it gets a check rather than a comment. The bounding
+   * box came first, and the corner of a 310-wide carousel was 45 units of solid
+   * ground you could see straight through. Then eight stepped bands, each sized at
+   * its widest point so the stack would contain the circle — which circumscribed
+   * it, standing slabs off the top and bottom, and was reported the same way: "a
+   * square protruding from the merry go round." It is a real disc now.
+   *
+   * The assertion is one-directional on purpose. Sampling just OUTSIDE the drawn
+   * radius must be clear, because a collider the player cannot see is the failure
+   * both earlier attempts shipped; a few units of slack on the inside would be
+   * invisible and is not worth testing for.
+   */
+  it("never puts collision outside the circle a round object draws", () => {
+    const rounds = [
+      ...map.outdoor.objects,
+      ...map.buildings.flatMap((building) => building.floors.flatMap((floor) => floor.objects)),
+    ].filter((object) => ROUND_KINDS.has(object.kind) && isSolidObject(object));
+    if (rounds.length === 0) return;
+
+    const offenders: string[] = [];
+    for (const object of rounds) {
+      const radius = Math.min(object.w, object.h) / 2;
+      const cx = object.x + object.w / 2;
+      const cy = object.y + object.h / 2;
+      const solids = objectSolids(object);
+      // Just past the drawn rim, all the way round, plus the four bbox corners —
+      // which is where every version of this bug has lived.
+      for (let step = 0; step < 64; step += 1) {
+        const angle = (step / 64) * Math.PI * 2;
+        const at = { x: cx + Math.cos(angle) * (radius + 2), y: cy + Math.sin(angle) * (radius + 2) };
+        for (const solid of solids) {
+          if (pointToSolidDistanceSquared(at, solid) <= 0) {
+            offenders.push(`${object.id} (${object.kind}) is solid at ${Math.round(angle * 57.3)}deg, outside its own rim`);
+          }
+        }
+      }
+    }
+    expect([...new Set(offenders)]).toEqual([]);
   });
 
   /**
