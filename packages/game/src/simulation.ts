@@ -324,6 +324,8 @@ export class DotBotSimulation {
   private tickCount = 0;
   private fps = 0;
   private rngState = 481516234;
+  /** Which bot, if any, may run A* this tick. See `grantPlanningPermit`. */
+  private planPermit: string | null = null;
   private noises: NoiseEvent[] = [];
   private noiseSeq = 0;
   private mineSeq = 0;
@@ -1056,12 +1058,44 @@ export class DotBotSimulation {
     return at;
   }
 
+  /**
+   * ONE bot may run A* per tick, and this decides which.
+   *
+   * The throttle spreads replans over about a second, but it does not stop them
+   * landing together, and they start together: every bot begins at
+   * `aiRepathMs = 0`, so tick one is a stampede, and `targetChanged` re-clusters
+   * them afterwards whenever a squad chases the same quarry. Measured in the
+   * browser, that produced a 50-100ms freeze roughly every two seconds — seven in
+   * fifteen seconds, against a median frame of 8.3ms. The average was never the
+   * problem. Four searches in one frame was.
+   *
+   * Deferring a replan is close to free: the bot keeps walking the path it
+   * already has, which is at most one tick out of date. Deferring it for LONG is
+   * not free, so the permit goes to whoever needs it most — a bot with no path at
+   * all cannot move until it plans, so those come first, then the most overdue.
+   * Ties break on id, because this runs inside the authoritative simulation and
+   * two hosts must make the same choice.
+   */
+  private grantPlanningPermit(candidates: InternalBot[]): void {
+    this.planPermit = null;
+    let best: InternalBot | null = null;
+    let bestRank = -Infinity;
+    for (const bot of candidates) {
+      // Overdue by how long, with a large bonus for having nothing to walk.
+      const rank = (bot.aiPath.length === 0 ? 1e9 : 0) - bot.aiRepathMs;
+      if (rank > bestRank || (rank === bestRank && best !== null && bot.id < best.id)) {
+        best = bot;
+        bestRank = rank;
+      }
+    }
+    this.planPermit = best?.id ?? null;
+  }
+
   private updateBotAi(): void {
     const humans = this.humanPositions();
+    const active: InternalBot[] = [];
     for (const bot of this.bots.values()) {
-      if (this.controllers.get(bot.id) !== "ai" || bot.state !== "alive") {
-        continue;
-      }
+      if (this.controllers.get(bot.id) !== "ai" || bot.state !== "alive") continue;
 
       let nearest = Infinity;
       for (const human of humans) {
@@ -1069,7 +1103,11 @@ export class DotBotSimulation {
         if (away < nearest) nearest = away;
       }
       bot.aiAttention = nearest;
+      active.push(bot);
+    }
+    this.grantPlanningPermit(active);
 
+    for (const bot of active) {
       const objective = this.pickBotTarget(bot);
       if (this.noteAiStall(bot, objective)) {
         // Blacklisted this tick: the objective it has been leaning on is gone, so
@@ -1904,7 +1942,17 @@ export class DotBotSimulation {
     const reach = (target.intent === "hunt" || target.intent === "escort" ? 64 : 20) * slack;
     const targetChanged = bot.aiPathFloorId !== bot.floorId || distance(bot.aiPathTarget, target.position) > reach;
 
-    if (bot.aiRepathMs <= 0 || targetChanged) {
+    if ((bot.aiRepathMs <= 0 || targetChanged) && this.planPermit !== bot.id) {
+      /**
+       * Wants to plan, is not this tick's permit holder. Walking a path that is
+       * one tick stale is invisible; steering with no path at all is not, because
+       * the fallback below aims straight at the target and would cut through
+       * geometry. So a bot with nothing to walk waits instead, and
+       * `grantPlanningPermit` ranks exactly that bot first, so the wait is a tick
+       * or two. `aiRepathMs` is deliberately left overdue so it keeps its claim.
+       */
+      if (bot.aiPath.length === 0) return zeroVec();
+    } else if (bot.aiRepathMs <= 0 || targetChanged) {
       let path = findNavigationPath(this.map, bot.floorId, bot.position, target.position, bot.radius);
       let projected = false;
 

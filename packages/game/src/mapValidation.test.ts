@@ -613,6 +613,42 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
   });
 
   /**
+   * Bots have to actually GET somewhere, which no other test in this file asks.
+   *
+   * A* is rationed: one bot may plan per tick, because several searches landing
+   * in one frame was a 50-100ms freeze every couple of seconds. Rationing is
+   * exactly the kind of optimisation that can starve the thing it rations, and
+   * the failure would be silent — bots standing about, every audit still green,
+   * nothing in the suite the wiser. So this measures the outcome the rationing
+   * risks rather than the mechanism.
+   *
+   * Thresholds are deliberately loose. The floor is total paralysis, not slow
+   * progress: a bot on the signal box's operating floor covers 16 units in three
+   * seconds because the room is 300 wide, and that is correct behaviour.
+   */
+  it("gets every AI bot moving within three seconds", { timeout: 30_000 }, async () => {
+    const sim = await DotBotSimulation.create({ map, config: defaultGameConfig });
+    const from = new Map(sim.getSnapshot().bots.map((bot) => [bot.id, { ...bot.position }]));
+    for (let tick = 0; tick < 180; tick += 1) sim.step();
+
+    const travelled = sim
+      .getSnapshot()
+      .bots.filter((bot) => bot.id !== "player" && from.has(bot.id))
+      .map((bot) => {
+        const start = from.get(bot.id)!;
+        return { id: bot.id, moved: Math.hypot(bot.position.x - start.x, bot.position.y - start.y) };
+      });
+    sim.dispose();
+    // The base shells ship the player alone; there is nothing here to assert.
+    if (travelled.length === 0) return;
+
+    expect(travelled.filter((bot) => bot.moved < 10).map((bot) => bot.id), "these bots never moved at all").toEqual([]);
+
+    const median = travelled.map((bot) => bot.moved).sort((a, b) => a - b)[Math.floor(travelled.length / 2)];
+    expect(median, "the typical bot barely moved — planning is probably being starved").toBeGreaterThan(120);
+  });
+
+  /**
    * The same probe as "keeps every bot spawn somewhere the navigator can plan
    * FROM", asked of every map. See that test for why it asks the shipped
    * pathfinder rather than this file's own coarse flood, and why it probes at
