@@ -26,7 +26,19 @@ const HERE = {
   downtown: { x: 1020, y: 676 },
   yard: { x: 2500, y: 1080 },
   fairground: { x: 1250, y: 2340 },
-  temple: { x: 3320, y: 2760 },
+  /**
+   * The temple's own FORECOURT, in front of the archway at the foot of the grand stair.
+   *
+   * It was 3320,2760 — the middle of the plaza — and it is a better landmark here than
+   * that, because reaching this point is reaching the temple's front door. The forecourt
+   * spent a while sealed: the plaza altar and the two serpent heads flanking the arch
+   * overlapped by 20 units at each end, so the only way in was round the entire base to
+   * the blind north face and back through the tomb chamber. A path test whose target is
+   * open plaza cannot tell that apart from a path test whose target is the way in.
+   *
+   * (The old point is also inside the altar now, which is how this got looked at.)
+   */
+  temple: { x: 3320, y: 2520 },
 } as const;
 
 describe("the world's ledgers", () => {

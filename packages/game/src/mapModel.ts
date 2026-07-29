@@ -1,3 +1,5 @@
+// `geometry` imports only `math` and `types`, so this cannot close a cycle.
+import { polygonContains } from "./geometry";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type {
   Building,
@@ -370,11 +372,37 @@ export function rectContains(rect: Rect, point: Vec2, inset = 0): boolean {
   );
 }
 
+/**
+ * Which building a point is inside — against the building's PLAN, not its bounding box.
+ *
+ * The bounding box was the last consumer in the codebase still treating a box as a plan,
+ * and it was the loudest of them. Everything about being indoors keys on this: which floor
+ * the renderer shows, whether a roof is lifted, which arena you share, what the floor rail
+ * says. So for a round or fanned building, every corner of its bounding box read as INSIDE
+ * — and the observatory's drum has four of them.
+ *
+ * Reported from play with a screenshot of the whole observatory interior on show while the
+ * player stood outside on the plaza, touching the shell: "I shouldn't be able to see inside
+ * of buildings just because I touch their wall. I noticed this in the train yard too."
+ * The yard is the roundhouse, whose fan of engine bays sits in a 922 x 406 box it occupies
+ * about a third of — so its dead corners are enormous, and standing in one put you inside a
+ * shed you were nowhere near.
+ *
+ * Four other places had already been fixed for exactly this: `modelFloor` clips its slab to
+ * the outline, `offFloorIssues` measures furniture against it, `connectivityIssues` floods
+ * it, and `world.audit`'s trespass check tests it. Each of those was a drawing or an audit.
+ * This one is the game.
+ *
+ * The box stays as a PREFILTER, because it is a rejection test and a cheap one: this runs
+ * per bot per tick through `contextKey`, and only the one or two buildings whose box a point
+ * falls in ever pay for the polygon.
+ */
 export function buildingContaining(map: MapDocument, point: Vec2): Building | null {
   for (const building of map.buildings) {
-    if (rectContains(building.footprint, point, 6)) {
-      return building;
-    }
+    if (!rectContains(building.footprint, point, 6)) continue;
+    const plan = building.outline;
+    if (plan && plan.length >= 3 && !polygonContains(plan, point)) continue;
+    return building;
   }
 
   return null;

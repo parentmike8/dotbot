@@ -384,7 +384,24 @@ function outdoorPlan(): OutdoorPlan {
     obj("bench", 2210, 1300, 100, 22, { facing: "N" }),
     obj("planter", 2150, 1032, 40, 28),
     obj("planter", 2320, 1032, 40, 28),
-    obj("lampPost", 2244, 1224, 18, 18),
+    /**
+     * THE COURTYARD LAMP POST IS GONE, and it is the second time it has done this.
+     *
+     * It stood at 2244,1224 — dead centre of PARK PAD, which is 2210..2320 x 1180..1290.
+     * So the extraction pad in the park had three units of clearance at its middle and no
+     * navigable route to it at all, in the regression map, since street furniture became
+     * solid. The note below already records it swallowing a Dot at 2250,1230 for the same
+     * reason; the Dot moved and the post stayed.
+     *
+     * Nothing checked it, and that is the actual finding. `validateInsertionMap` proves a
+     * squad FITS at every arrival point and no audit had ever asked whether the outdoor
+     * plane is CONNECTED — so a pad you cannot stand on, an arrival you cannot walk out of
+     * and a doorway you cannot reach were all invisible. There is a test for it now.
+     *
+     * Deleted rather than moved: the courtyard is 200 wide and already holds two benches,
+     * four trees, two planters and a 110-unit pad. A lamp in the middle of the one open
+     * space is not a thing anybody would put there.
+     */
   ];
 
   /**

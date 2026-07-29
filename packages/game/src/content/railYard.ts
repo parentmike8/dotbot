@@ -174,9 +174,22 @@ const yardObjects: MapObject[] = [
     .map((x) => obj("lampPost", x - 9, WORKS_N_KERB - 22, 18, 18)),
   ...rhythm(W0 + 200, W1 - 100, 200, [[LEAD_X - 90, LEAD_X + 140]])
     .map((x) => obj("lampPost", x - 9, WORKS_S_KERB + 4, 18, 18)),
-  // One sign on the works road, outside the box. What it says is derived from the
-  // building it stands against — see `signs.ts` — never typed here.
-  obj("sign", 3118, 660, 44, 12),
+  /**
+   * One sign on the works road, outside the box — and BESIDE its door, not in front of it.
+   *
+   * It was at x 3118, which spans the doorway's own centre line (3140) fifty units out from
+   * the shell. A bot needs 24 units of clearance from each of them, so the only standable
+   * ground in front of the signal box's ONLY door was a band about two units wide, and the
+   * navigator could not find a route into the building at all.
+   *
+   * This is the third sign to do exactly this, and the second in as many sessions — the
+   * fairground's north arch had one dead centre of a 110-wide opening. A sign belongs at the
+   * edge of an approach, because the approach is what it is pointing at.
+   *
+   * What it says is derived from the building it stands against — see `signs.ts` — never
+   * typed here.
+   */
+  obj("sign", 3216, 660, 44, 12),
 
   // -- The turntable and its apron ---------------------------------------
   /**

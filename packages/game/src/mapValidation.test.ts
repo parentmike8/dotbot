@@ -4,9 +4,10 @@ import { downtownMap } from "./content/downtown";
 import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, deriveBaseInteractionDots, starterBaseLayout, validateBaseLayout } from "./content/base";
 import { interactionDotReach } from "./interactions";
 import type { BaseLayout } from "./types";
-import { isGroundFloor, objectCollisionRects, physicsFloorId, ROUND_KINDS, stadiumAxis, STADIUM_KINDS, stairExitPoint, stairHalves } from "./mapModel";
+import { buildingContaining, isGroundFloor, objectCollisionRects, physicsFloorId, ROUND_KINDS, stadiumAxis, STADIUM_KINDS, stairExitPoint, stairHalves } from "./mapModel";
 import { collectSolids, objectSolids } from "./collision";
-import { pointToSolidDistanceSquared } from "./geometry";
+import { buildingMouths } from "./entrances";
+import { pointToSolidDistanceSquared, polygonContains } from "./geometry";
 import { auditDotPlacement, auditBuildingFloorQuality, type FloorQualityIssue } from "./mapQuality";
 import { FLAT_KINDS, isSolidObject } from "./mapModel";
 import { findNavigationPath } from "./navigation";
@@ -925,6 +926,58 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
   });
 
   /**
+   * THE OUTDOOR PLANE IS CONNECTED: you can walk from the spawn to everything that matters.
+   *
+   * This is the check that did not exist, and its absence is the reason two shipped defects
+   * were invisible for as long as they were:
+   *
+   *  - The temple's front door. The plaza altar and the two serpent heads flanking the
+   *    archway overlapped by 20 units at each end, sealing the forecourt into a 160 x 100
+   *    pocket. Reported from play as "there's no way to get into the temple, there's a
+   *    massive block at the entry" — and no audit disagreed, because a path DID exist: all
+   *    the way round a 660-wide pyramid to the blind north face and back through the tomb.
+   *  - `extract-park` in DOWNTOWN, the regression map. A courtyard lamp post stood dead
+   *    centre of the pad, so the one thing a run is for could not be done there, and had
+   *    not been doable since street furniture became solid.
+   *
+   * Every floor INSIDE a building has been flood-filled for connectivity since Civic Tower
+   * turned out to be two buildings. Nobody ever pointed the same question at the street.
+   *
+   * It asks the NAVIGATOR rather than flooding a grid here, and that matters: a hand-rolled
+   * 12-unit 4-connected flood reported `nw-corner` and `extract-north` as cut off, and both
+   * were false — it cannot turn a diagonal the way the real pathfinder can. The authority on
+   * "can a bot get there" is the thing that moves bots.
+   */
+  it("can walk from the player's spawn to every pad, arrival point and doorway", {
+    timeout: 60_000,
+  }, () => {
+    const spawn = map.botSpawns.find((bot) => bot.id === "player");
+    if (!spawn || spawn.floorId) return;
+
+    const targets: Array<{ what: string; at: Vec2 }> = [
+      ...map.insertionPoints
+        .filter((point) => !point.floorId)
+        .map((point) => ({ what: `arrival ${point.id}`, at: point.position })),
+      ...map.extractionPoints.map((pad) => ({
+        what: `pad ${pad.id}`,
+        at: { x: pad.rect.x + pad.rect.w / 2, y: pad.rect.y + pad.rect.h / 2 },
+      })),
+      // A perimeter doorway's mouth is the middle of the gap itself, so reaching it is
+      // exactly "a bot can get to this building's front door from the street".
+      ...map.buildings.flatMap((building) =>
+        buildingMouths(map, building.id).map((at, index) => ({
+          what: `${building.id} doorway ${index + 1}`,
+          at,
+        }))),
+    ];
+
+    const unreachable = targets
+      .filter(({ at }) => findNavigationPath(map, OUTDOOR_FLOOR_ID, spawn.position, at, BOT_RADIUS).length === 0)
+      .map(({ what, at }) => `${what} at (${Math.round(at.x)}, ${Math.round(at.y)})`);
+    expect(unreachable).toEqual([]);
+  });
+
+  /**
    * AN ARRIVAL POINT IS SOMEWHERE A BOT STANDS, not somewhere near it.
    *
    * `validateInsertionMap` already checks that a squad of three FITS at every arrival
@@ -1008,6 +1061,68 @@ const maximalExpandedBaseLayout: BaseLayout = {
   "up-floor-a": "bed",
   "up-floor-b": "couch",
 };
+
+/**
+ * BEING INSIDE A BUILDING IS A QUESTION ABOUT ITS PLAN, never about its bounding box.
+ *
+ * Everything indoors keys on `buildingContaining`: which floor the renderer draws, whether
+ * a roof lifts, which arena you share, what the floor rail names. It tested the bounding
+ * box, so every dead corner of a round or fanned plan read as INSIDE — and the two worst
+ * offenders in the world are the observatory, a 400-wide drum with four dead corners, and
+ * the roundhouse, a fan of engine bays in a 922 x 406 box it fills about a third of.
+ *
+ * Reported from play with a screenshot of the observatory's whole interior on show while
+ * standing outside on the plaza: "I shouldn't be able to see inside of buildings just
+ * because I touch their wall. I noticed this in the train yard too."
+ *
+ * Sampled at the corners rather than at one hand-picked point, because a corner is where
+ * the box and the plan disagree most and any shape with a curve or a notch has some.
+ */
+describe("standing outside a round or fanned building", () => {
+  const shaped = worldMap.buildings.filter((building) => (building.outline?.length ?? 0) >= 3);
+
+  it("has buildings whose plan is not their bounding box, or this proves nothing", () => {
+    const nonRect = shaped.filter((building) => {
+      const fp = building.footprint;
+      const area = building.outline!.reduce((sum, a, index) => {
+        const b = building.outline![(index + 1) % building.outline!.length];
+        return sum + (a.x * b.y - b.x * a.y);
+      }, 0) / 2;
+      return Math.abs(area) < fp.w * fp.h * 0.92;
+    });
+    expect(nonRect.map((building) => building.id)).toEqual(
+      expect.arrayContaining(["observatory", "roundhouse"]),
+    );
+  });
+
+  it("is outside it, at every corner of its bounding box", () => {
+    const inside: string[] = [];
+    for (const building of shaped) {
+      const fp = building.footprint;
+      for (const corner of [
+        { x: fp.x + 8, y: fp.y + 8 },
+        { x: fp.x + fp.w - 8, y: fp.y + 8 },
+        { x: fp.x + 8, y: fp.y + fp.h - 8 },
+        { x: fp.x + fp.w - 8, y: fp.y + fp.h - 8 },
+      ]) {
+        if (polygonContains(building.outline!, corner)) continue; // a genuinely square plan
+        const found = buildingContaining(worldMap, corner);
+        if (found?.id === building.id) {
+          inside.push(`${building.id}: (${Math.round(corner.x)}, ${Math.round(corner.y)}) is outside its plan but read as inside`);
+        }
+      }
+    }
+    expect(inside).toEqual([]);
+  });
+
+  it("still knows you are inside when you are", () => {
+    for (const building of shaped) {
+      const fp = building.footprint;
+      const middle = { x: fp.x + fp.w / 2, y: fp.y + fp.h / 2 };
+      expect(buildingContaining(worldMap, middle)?.id, `${building.id} centre`).toBe(building.id);
+    }
+  });
+});
 
 describe("canonical base slot roster", () => {
   it("keeps ten legacy ground slots unchanged and adds exactly six canonical F1 slots", () => {

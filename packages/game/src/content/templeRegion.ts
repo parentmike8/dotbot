@@ -296,15 +296,36 @@ const templeObjects: MapObject[] = [
   obj("serpentHead", PYRAMID.x + PYRAMID.w / 2 + 80, PYRAMID.y + PYRAMID.h + 4, 76, 116, { facing: "S" }),
 
   /**
-   * The altar on the stair's axis, out in the plaza.
+   * The altar on the stair's axis, OUT IN THE PLAZA — and the second word is the fix.
    *
-   * On the axis, not beside it. An altar off-axis is furniture; an altar on the axis is
-   * the reason the stair points where it does, and it gives a player crossing the plaza
-   * one piece of cover in the middle of the region's biggest sightline.
+   * On the axis, not beside it: an altar off-axis is furniture, an altar on the axis is the
+   * reason the stair points where it does, and it is a player's one piece of cover crossing
+   * the region's biggest sightline. None of that changed. What changed is that it was at
+   * y 2580, and when the plaza moved 120 south for the bigger pyramid that stopped being
+   * "out in the plaza" and became "jammed into the 100-unit gap in front of the door".
+   *
+   * WHICH SEALED THE TEMPLE'S FRONT DOOR. The two serpent heads run y 2484..2600 and the
+   * altar ran 2580..2672, so head and altar overlapped by 20 units at each end — and the
+   * forecourt in front of the archway became a 160 x 100 pocket with no way in from the
+   * plaza at all. Reported from play: "there's no way to get into the temple, there's a
+   * massive block at the entry." The navigator could still reach it, which is why nothing
+   * complained: it walked the entire 660-wide base to the blind north face and came back
+   * through the tomb chamber.
+   *
+   * At y 2700 there are 100 clear units between the heads and the altar, and the approach
+   * to the arch is open across its full 160.
    */
-  obj("altar", PYRAMID.x + PYRAMID.w / 2 - 86, 2580, 172, 92),
-  obj("brazier", PYRAMID.x + PYRAMID.w / 2 - 200, 2596, 56, 56),
-  obj("brazier", PYRAMID.x + PYRAMID.w / 2 + 144, 2596, 56, 56),
+  obj("altar", PYRAMID.x + PYRAMID.w / 2 - 86, 2700, 172, 92),
+  /**
+   * The braziers flank the ARCHWAY now, not the altar.
+   *
+   * Beside the altar they were 58 units off it — a false aisle, and one more thing narrowing
+   * the one approach that had to stay wide. At the pyramid's face they are flush against the
+   * serpent heads, outside the forecourt's 160, and they mark the way in rather than the
+   * thing in front of it.
+   */
+  obj("brazier", 3096, 2500, 56, 56),
+  obj("brazier", 3468, 2500, 56, 56),
 
   /**
    * The stelae, on a rhythm along the plaza's south edge, all facing the pyramid.
@@ -313,7 +334,10 @@ const templeObjects: MapObject[] = [
    * trees are: a spacing with a rule behind it reads as designed however carefully a
    * hand-placed one is chosen. The gap is where the trail arrives.
    */
-  ...rhythm(2820, 3740, 152, [[3060, 3120]]).map((x) => obj("stele", x, PLAZA.y + PLAZA.h - 116, 52, 104)),
+  // Two gaps: where the trail arrives, and ON THE PYRAMID'S AXIS. You do not stand a stele
+  // across a ceremonial approach, and the extraction pad is on that axis too.
+  ...rhythm(2820, 3740, 152, [[3060, 3120], [3200, 3400]])
+    .map((x) => obj("stele", x, PLAZA.y + PLAZA.h - 116, 52, 104)),
 
   // Ring stones at the ball court's ends, which is what a ball court is for.
   obj("altar", COURT.x + COURT.alley / 2 - 54, COURT.y + 22, 108, 54),
@@ -437,8 +461,13 @@ export const templeRegion: RegionParts = {
      *
      * The most exposed pad in the world: open flags, watched from a summit, a tower and
      * a court, and the nearest cover is the altar. An extraction should cost something.
+     *
+     * At y 2760 it was UNDER the altar once the altar moved south to unseal the temple's
+     * front door — three things on one 540-deep axis is one too many. 2880 keeps it south
+     * of the altar with 88 units between them, and the stele rhythm now has a gap on this
+     * axis so nothing stands across the approach behind it either.
      */
-    { id: "extract-plaza", name: "GREAT PLAZA", rect: { x: PYRAMID.x + PYRAMID.w / 2 - 55, y: 2760, w: 110, h: 110 } },
+    { id: "extract-plaza", name: "GREAT PLAZA", rect: { x: PYRAMID.x + PYRAMID.w / 2 - 55, y: 2880, w: 110, h: 110 } },
   ],
   insertionPoints: [
     { id: "tmp-trail", name: "WEST TRAIL", position: { x: 2620, y: 2930 } },
