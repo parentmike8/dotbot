@@ -4,7 +4,11 @@
  *
  * A bot's shields are ablative plates: `maxShields` arcs spaced evenly around
  * the body, anchored to the bot's facing, with plate 0 centered dead ahead.
- * Each plate is 1 (intact), 0.5 (cracked), or 0 (broken).
+ * Each plate is 1 (intact) or 0 (broken). There is no half state, and the reason is worth
+ * keeping: a hit lands in exactly one arc and either takes a whole plate or reaches the core,
+ * so nothing in combat has ever produced a fraction. A third outcome once did — a hit on bare
+ * body cracked the nearest surviving plate by half, so damage was never wasted — and removing
+ * it left 0.5 behind as a value with one producer and no rule.
  *
  * Damage model: every hit lands in exactly one plate's arc. A live plate takes it
  * and breaks. A plate that has already broken is not there any more, so the hit

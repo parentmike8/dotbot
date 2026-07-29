@@ -335,28 +335,14 @@ export function drawPlates(
     const center = bot.facing + index * step;
     const start = center - span / 2;
 
-    if (state >= 1) {
+    // A plate is there or it is not: `state` is 1 or 0, so this is the whole live case.
+    if (state > 0) {
       strokeArc(g, at, shieldRadius, start, start + span, { color, width: PLATE_WIDTH, alpha: fade });
       if (serrated) {
         strokeArc(g, at, shieldRadius - SERRATION_INSET, start, start + span, {
           color,
           width: 2,
           alpha: fade,
-        });
-      }
-      continue;
-    }
-
-    if (state > 0) {
-      // Cracked: the plate splits into two halves around a central break.
-      for (const [from, to] of [
-        [start, start + span * 0.42],
-        [start + span * 0.58, start + span],
-      ]) {
-        strokeArc(g, at, shieldRadius, from, to, {
-          color,
-          width: Math.max(2, PLATE_WIDTH - 2),
-          alpha: 0.9 * fade,
         });
       }
       continue;

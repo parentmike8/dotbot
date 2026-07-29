@@ -945,11 +945,12 @@ describe("DotBotSimulation", () => {
 
     const enemy = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy");
     expect(enemy?.shields).toBeLessThan(3);
-    // Damage only ever lands as full plates (1) or cracks (0.5).
+    // Damage only ever lands as whole plates. There is no fractional plate any more: a hit
+    // takes an arc or reaches the core, so 0.5 had one producer (revive) and no rule.
     expect((enemy!.shields * 2) % 1).toBe(0);
     // The visible plates always account exactly for the shield total.
     expect(enemy!.shieldSegments.reduce((total, plate) => total + plate, 0)).toBe(enemy!.shields);
-    expect(enemy!.shieldSegments.every((plate) => [0, 0.5, 1].includes(plate))).toBe(true);
+    expect(enemy!.shieldSegments.every((plate) => [0, 1].includes(plate))).toBe(true);
     simulation.dispose();
   });
 
@@ -1238,7 +1239,7 @@ describe("DotBotSimulation", () => {
       expect(target.state).toBe(finalState);
       if (verb === "revive") {
         // Revived on half a plate, and keeps everything it was carrying.
-        expect(target.shieldSegments).toEqual([0.5, 0, 0]);
+        expect(target.shieldSegments).toEqual([1, 0, 0]);
         expect(target.bays.filter(Boolean)).toEqual([healthItem, radarItem]);
         expect(actor.bays.filter(Boolean)).toEqual([]);
       } else {
@@ -1358,7 +1359,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("revives a downed friendly bot for free with one cracked plate", async () => {
+  it("revives a downed friendly bot for free, with one whole plate back", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 }, bays: testBays(0), hold: [] }),
       allySpawn({
@@ -1373,8 +1374,8 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.state).toBe("alive");
-    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(0.5);
-    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shieldSegments).toEqual([0.5, 0, 0]);
+    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(1);
+    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shieldSegments).toEqual([1, 0, 0]);
     expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(0);
     simulation.dispose();
   });
@@ -1394,7 +1395,7 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "ally")?.state).toBe("alive");
-    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(0.5);
+    expect(snapshot.bots.find((bot) => bot.id === "ally")?.shields).toBe(1);
     expect(snapshot.bots.find((bot) => bot.id === "player")?.bays.filter(Boolean).length).toBe(1);
     simulation.dispose();
   });

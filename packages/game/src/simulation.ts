@@ -2855,10 +2855,18 @@ export class DotBotSimulation {
     target.state = "alive";
     // Back on its feet, and closed back up: whatever is left is its own again.
     target.searched = false;
-    target.shieldSegments = platesForCount(target.maxShields, 0);
-    if (target.shieldSegments.length > 0) {
-      target.shieldSegments[0] = 0.5;
-    }
+    /**
+     * Back on its feet with ONE WHOLE PLATE, where it used to be one cracked half.
+     *
+     * The intent was always "up, but fragile", and one of three still says that. The half was
+     * the last surviving user of a state the rest of the game had already lost: hits break a
+     * whole plate or reach the core, so a fraction could be created here and by nothing else,
+     * and `shields.ts` documented three states while two were real.
+     *
+     * `shieldInvulnerabilityMs` covers standing up, so the fragility does not need to be
+     * finer-grained than a plate.
+     */
+    target.shieldSegments = platesForCount(target.maxShields, 1);
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     const nudge = scale(length(reviver.lastAim) > 0 ? reviver.lastAim : { x: 1, y: 0 }, this.config.botRadius * 2.4);

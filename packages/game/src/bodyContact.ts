@@ -90,7 +90,9 @@ export function makeContactShape(maxShields: number): ContactShape {
  *
  *     core disc  U  one full-cell sector per surviving plate.
  *
- * A cracked plate (0.5) is a plate, exactly as `contactReach` treats it.
+ * Any live plate is a plate, exactly as `contactReach` treats it. This used to say "a cracked
+ * plate (0.5) is a plate", from when a hit on bare body could half-break one; plates are now
+ * whole or gone, so the distinction has nothing left to describe.
  *
  * The one place the two disagree is a hair's breadth wide and deliberate. On the
  * seam angle exactly between a live plate and a dead one, `contactReach` picks a

@@ -577,7 +577,7 @@ export type DotBotEntity = GameEntity & {
   maxShields: number;
   /** Sum of shieldSegments, kept for HUD and AI threshold checks. */
   shields: number;
-  /** Per-plate state: 1 intact, 0.5 cracked, 0 broken. Plate 0 faces forward. */
+  /** Per-plate state: 1 intact, 0 broken. Plate 0 faces forward. */
   shieldSegments: number[];
   bays: (Item | null)[];
   hold: Item[];

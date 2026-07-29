@@ -201,3 +201,45 @@ describe("contactReach", () => {
     }
   });
 });
+
+describe("a plate is there or it is not", () => {
+  /**
+   * The two-state model, pinned so the fraction cannot come back by accident.
+   *
+   * 0.5 outlived the rule that made it. A third hit outcome once cracked the nearest surviving
+   * plate by half so damage was never wasted; removing that outcome left the VALUE behind with
+   * exactly one producer — a revived bot — and `shields.ts` still documenting three states while
+   * two were real. A value with one producer and no rule is how the next person builds on
+   * something that is not there.
+   */
+  it("only ever builds whole plates", () => {
+    for (const max of [1, 2, 3, 4, 6]) {
+      for (let count = 0; count <= max; count += 1) {
+        const plates = platesForCount(max, count);
+        expect(plates).toHaveLength(max);
+        for (const plate of plates) expect([0, 1]).toContain(plate);
+        expect(plateSum(plates)).toBe(count);
+      }
+    }
+  });
+
+  it("resolves every hit to a whole plate or the core, never a fraction", () => {
+    /**
+     * Against the damage path rather than the constructor, because that is where a fraction
+     * would have to be reintroduced to matter. Every arc, from full plating down to none.
+     */
+    for (const max of [1, 3, 4]) {
+      const segments = platesForCount(max, max);
+      let previous = plateSum(segments);
+      for (let step = 0; step < max * 3; step += 1) {
+        const angle = (step / (max * 3)) * Math.PI * 2;
+        applyArmourHit(0, segments, angle);
+        for (const plate of segments) expect([0, 1], `max ${max} step ${step}`).toContain(plate);
+        // Plating only ever goes down, and only ever by a whole plate at a time.
+        const now = plateSum(segments);
+        expect([previous, previous - 1], `max ${max} step ${step}`).toContain(now);
+        previous = now;
+      }
+    }
+  });
+});
