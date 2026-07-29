@@ -24,13 +24,17 @@ import type { Barrier, MapObject } from "../types";
  *
  * The region brief:
  *
- *  - PURPOSE: a ceremonial precinct the forest has closed over.
+ *  - PURPOSE: a ceremonial precinct the forest has closed over, and the way underneath it.
  *  - ZONES: the plaza; the pyramid on its north side; the ball court down the west
  *    flank; the observatory south-east; the cenote outside the precinct to the
- *    north-east; the forest all round.
+ *    north-east; the forest all round. And below all of it, the UNDERCROFT — a cross of
+ *    tunnel galleries running out from under the pyramid and beneath the plaza. It is
+ *    authored as floors of the temple rather than as scenery here, because you get into
+ *    it by walking down.
  *  - SEQUENCE: in off the trail or the spur, onto the plaza, and everything is arranged
  *    round that one space. Climb the pyramid last, because it is the only thing here
- *    with one way down.
+ *    with one way down — and go UNDER it last of all, because the tunnels have exactly
+ *    one entrance and it is four floors from the surface.
  *  - ADJACENCY: every structure ADDRESSES THE PLAZA. That is the same rule the city
  *    audit applies to a street, and it is the rule that stops a set of monuments reading
  *    as objects at arbitrary distances from each other — which is exactly what the first
@@ -39,11 +43,16 @@ import type { Barrier, MapObject } from "../types";
  *    end, watched from a summit, a tower and a court. It is the largest sightline in the
  *    world and it is meant to be frightening to cross.
  *
- * The one thing the earlier version got worst was the pyramid, and both faults were
- * geometric rather than aesthetic: a 460 x 400 base that read as a lopsided wedding
- * cake, and a stair authored 162 units long against a 130-unit climb, which overshot the
- * summit and lay across the top of it. Both are fixed in `greatTemple.ts`, and the note
- * there says how.
+ * The pyramid went from 520 to 660 across and from two floors to four, and the knock-on
+ * through this file is the interesting part. A precinct is a set of things arranged round
+ * ONE space, so growing the thing at its head moved the plaza 120 south, pushed the cenote
+ * east, sent the abandoned spur back behind the yard's fence, and rerouted the trail that
+ * used to start 400 units inside the new terrace wall. Four of those were caught by audits
+ * rather than by looking, which is the argument for having them.
+ *
+ * Faults from earlier versions, kept because they were paid for: a 460 x 400 base read as
+ * a lopsided wedding cake (a pyramid is SQUARE), and a stair authored 162 units long
+ * against a 130-unit climb overshot the summit and lay across the top of it.
  */
 
 const obj = objects("tmp");
@@ -54,14 +63,29 @@ const W1 = 4174;
 const N0 = 1800;
 const S1 = 3374;
 
-/** The plaza: the region's armature. Everything else is placed off its edges. */
-const PLAZA = { x: 2700, y: 2440, w: 1160, h: 660 };
+/**
+ * The plaza: the region's armature. Everything else is placed off its edges.
+ *
+ * Pushed 120 south and 120 shallower to clear the rebuilt pyramid, which went from 520
+ * to 660 across. That is the whole knock-on of making the temple bigger and it is worth
+ * naming: a precinct is a set of things arranged round ONE space, so growing the thing at
+ * the head of it moves everything else rather than just its own four corners.
+ *
+ * It also now sits directly over the undercroft's east-west gallery, which runs 2560..2800
+ * — so the tunnels do genuinely go under the plaza, which is the point.
+ */
+const PLAZA = { x: 2700, y: 2560, w: 1160, h: 540 };
 
 /** The ball court, down the plaza's west flank, in the I-plan every one of them has. */
 const COURT = { x: 2470, y: 2000, alley: 190, bench: 70, len: 380 };
 
-/** The cenote: outside the precinct, north-east, because that is where the water was. */
-const CENOTE = { x: 3880, y: 2080, rx: 210, ry: 165 };
+/**
+ * The cenote: outside the precinct, north-east, because that is where the water was.
+ *
+ * Moved east and shrunk, because the pyramid's east face is now at x 3640 and the pool's
+ * own trodden edge reached 3602 — a flooded sinkhole overlapping a terrace wall.
+ */
+const CENOTE = { x: 3940, y: 2070, rx: 190, ry: 150 };
 
 const cityPlan: CityPlan = {
   /** No streets. Not everywhere has roads, and this is the place that proves it. */
@@ -155,18 +179,33 @@ const cityPlan: CityPlan = {
         { x: PLAZA.x + 120, y: PLAZA.y + PLAZA.h - 90 },
       ], (t) => 150 - t * 30),
     },
-    // The bed stops 40 units short of the pyramid. It ran 470 units south at first, which
-    // put the buffer stop and the wagon INSIDE the terrace wall — and the wagon then sat
-    // on top of a Dot in the tomb chamber, which is how the collision was found at all.
-    { id: "tmp-spur-bed", kind: "ballast", points: boxPoly(3260, N0 - 26, 140, 86) },
+    /**
+     * The spur bed, now entirely NORTH of the yard's back fence.
+     *
+     * The 660-wide pyramid reaches y 1820 and the fence is at 1774, so there are 46 units
+     * between them — which is not room for a railway. The company therefore got as far as
+     * the fence and no further, which is a better version of the same story than stopping
+     * 40 units short of a wall. Everything it left is on the yard side.
+     *
+     * The bed ran 470 units south in the first draft and put the buffer stop and the wagon
+     * INSIDE the terrace wall, with the wagon on top of a Dot in the tomb chamber — found
+     * only because `auditDotPlacement` complained about the Dot.
+     */
+    { id: "tmp-spur-bed", kind: "ballast", points: boxPoly(3300, 1620, 140, 190) },
     {
+      /**
+       * The trail from the spur's end round the pyramid's east flank to the plaza.
+       *
+       * It used to start at (3330, 2250), which is now 400 units inside the pyramid. Round
+       * the east side rather than the west, because the west is the ball court's and a
+       * trail through a court is a trail through the one place a game was played.
+       */
       id: "tmp-spur-trail",
       kind: "clearing",
       points: ribbonPoly([
-        { x: 3330, y: 2250 },
-        { x: 3330, y: 2340 },
-        { x: PYRAMID.x + PYRAMID.w + 60, y: PYRAMID.y - 60 },
-        { x: 3760, y: 2340 },
+        { x: 3400, y: 1815 },
+        { x: 3660, y: 1870 },
+        { x: 3700, y: 2350 },
         { x: 3820, y: PLAZA.y + 60 },
       ], (t) => 140 - t * 20),
     },
@@ -324,11 +363,26 @@ const templeObjects: MapObject[] = [
   obj("tree", 3460, 3020, 92, 92),
   obj("tree", 2900, 3040, 86, 86),
 
-  // Fallen masonry: boulders that came off the terraces, on the pyramid's flanks.
-  obj("boulder", PYRAMID.x - 96, PYRAMID.y + 300, 92, 84),
-  obj("boulder", PYRAMID.x - 74, PYRAMID.y + 400, 68, 62),
-  obj("boulder", PYRAMID.x + PYRAMID.w + 20, PYRAMID.y + 250, 86, 78),
-  obj("boulder", 3560, 2460, 74, 66),
+  /**
+   * Fallen masonry: boulders that came off the terraces, on the pyramid's flanks.
+   *
+   * Measured OFF the pyramid rather than at fixed coordinates, which is why they survived
+   * the base growing by 140 units. The two that did not were both authored as absolute
+   * numbers — one at 3560,2460 now four hundred units inside the terrace wall, and one at
+   * the old east flank now standing in the cenote.
+   */
+  obj("boulder", PYRAMID.x - 110, PYRAMID.y + 300, 92, 84),
+  obj("boulder", PYRAMID.x - 88, PYRAMID.y + 420, 68, 62),
+  obj("boulder", PYRAMID.x - 130, PYRAMID.y + 120, 74, 66),
+  /**
+   * The east flank gets ONE, and it is 520 down rather than 660.
+   *
+   * At 660 it landed at 3684,2480 — which is the approach to the observatory's only door,
+   * 3700,2560. Caught by `entranceApproachBlockers`, the check that requires a bot's full
+   * diameter of clear run either side of every entrance, and it also wedged a bot spawn
+   * inside the same rock. Two failures from one boulder measured off the wrong corner.
+   */
+  obj("boulder", PYRAMID.x + PYRAMID.w + 30, PYRAMID.y + 520, 86, 78),
   obj("boulder", 2900, 3140, 96, 88),
   obj("log", 3260, 3180, 250, 52, { facing: "E" }),
   obj("log", 2680, 2860, 200, 46, { facing: "E" }),
@@ -338,18 +392,25 @@ const templeObjects: MapObject[] = [
    * wagon they left on it. It is the one modern thing in the region and it is broken,
    * which is the world's gradient landing on its final beat.
    */
-  obj("track", 3300, N0 - 26, 60, 90),
-  // Shoved to the east side of the widened gate's mouth, leaving a walkable lane down
-  // the west of it. Was at x 3288 in a 140-wide gate, i.e. dead centre of the only way
-  // through, with 33 units either side of a 48-wide bot.
-  obj("bufferStop", 3376, 1840, 84, 46, { facing: "S" }),
-  // The wagon is on the yard side of the fence, which is where it was abandoned: the
-  // company got as far as the gate and stopped. East side, for the same reason as the
-  // buffer stop — the gate is 240 wide and this leaves 126 of it clear.
-  // North of the shed's outer arc: at y 1560 its top corner was 5 units inside the
-  // roundhouse, which the bounding box could not have told anyone.
-  obj("wagon", 3372, 1600, 74, 174, { facing: "N" }),
-  obj("boulder", 3700, 2180, 78, 70),
+  /**
+   * The last hundred units of the spur, all of it north of the fence now.
+   *
+   * Three objects in three distinct lanes of a 240-wide gate, because they were in two
+   * before and the buffer stop sat on the wagon. Track, then the stop flush at its end,
+   * then the wagon beside both — 24 units clear of the pyramid's north face, which is
+   * every unit there is.
+   */
+  obj("track", 3330, 1660, 60, 90),
+  obj("bufferStop", 3330, 1750, 84, 46, { facing: "S" }),
+  /**
+   * The wagon, east of the shed's outer arc.
+   *
+   * Checked against the roundhouse's PLAN and not its bounding box, twice now and for the
+   * same reason: at y 1560 its top corner was 5 units inside the shed, and at x 3230 its
+   * whole west end was — and in both cases the bounding box could not have told anyone,
+   * because a fan of engine bays is a 922 x 406 box that the shed occupies a third of.
+   */
+  obj("wagon", 3420, 1600, 74, 174, { facing: "N" }),
 ];
 
 export const templeRegion: RegionParts = {
@@ -365,7 +426,9 @@ export const templeRegion: RegionParts = {
     dot("radar", 3400, 2900),
     dot("dashOvercharge", COURT.x + COURT.alley / 2, COURT.y + COURT.len / 2),
     dot("incognito", CENOTE.x - 40, CENOTE.y + CENOTE.ry + 70),
-    dot("health", 3700, 2520),
+    // Off the pyramid's south-east corner. It was at 3700,2520, which the enlarged base
+    // put inside a boulder that came off the new east flank.
+    dot("health", 3700, 2620),
   ],
   buildings: [greatTemple, observatory],
   extractionPoints: [
@@ -379,12 +442,30 @@ export const templeRegion: RegionParts = {
   ],
   insertionPoints: [
     { id: "tmp-trail", name: "WEST TRAIL", position: { x: 2620, y: 2930 } },
-    // Off the pyramid's own footprint: at 3480,2320 the drop was inside the terrace wall.
-    { id: "tmp-spur", name: "END OF LINE", position: { x: 3720, y: 2340 } },
+    /**
+     * Off the pyramid's own footprint, and off its rubble.
+     *
+     * Third position for this drop. At 3480,2320 it was inside the terrace wall; at
+     * 3720,2340 it was 0.1 units from a boulder that came off the enlarged east flank —
+     * and `validateInsertionMap` passed it, because it searches OUTWARD from an arrival
+     * point for room and a squad of three found some. That is the right behaviour at
+     * runtime and it hides an authoring mistake, so the point itself is checked directly:
+     * 69 units of clearance here against the 24 a bot needs.
+     */
+    { id: "tmp-spur", name: "END OF LINE", position: { x: 3700, y: 2500 } },
   ],
   botSpawns: [
     { id: "tmp-1", name: "Jade", squadId: "rival-19", isAmbient: true, color: "#4f9a7a", position: { x: 3120, y: 2740 } },
-    { id: "tmp-2", name: "Obsidian", squadId: "rival-20", isAmbient: true, color: "#4a4a55", position: { x: 3700, y: 2520 } },
+    /**
+     * On the plaza's west half, and the second attempt at moving it.
+     *
+     * It was 40 units off the observatory's north wall with a boulder on its other side,
+     * which is where a bot gets wedged and stays wedged. Moved to 3150,2720 it was 30 units
+     * from `tmp-1` — and a bot is 48 across, so the two of them started the run inside each
+     * other and neither could plan a first step. Both checks caught it, which is the point
+     * of having a spawn-clearance test and a bots-actually-move test rather than one.
+     */
+    { id: "tmp-2", name: "Obsidian", squadId: "rival-20", isAmbient: true, color: "#4a4a55", position: { x: 3020, y: 2880 } },
     // On the summit platform outside the shrine door, which is at y 2180. The old
     // position — the pyramid's centre, 170 down — is the middle of the high altar,
     // and "the centre of the landmark" is the middle of a solid every time.

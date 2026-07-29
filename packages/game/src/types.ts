@@ -184,7 +184,7 @@ export const PING_KINDS: readonly PingKind[] = ["here", "enemy", "loot"];
 
 export const OUTDOOR_FLOOR_ID = "outdoor";
 
-export type FloorLabel = "GROUND" | "B1" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "ROOF";
+export type FloorLabel = "GROUND" | "B3" | "B2" | "B1" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "ROOF";
 
 export type WallSegment = Rect & {
   id: string;
@@ -463,6 +463,31 @@ export type FloorPlan = {
   /** Globally unique, e.g. "mercy:F2". The outdoor plan uses OUTDOOR_FLOOR_ID. */
   id: string;
   label: FloorLabel;
+  /**
+   * This floor's own extent, which is usually the building's footprint and is not
+   * required to be.
+   *
+   * It exists because a floor below ground is not bound by the mass above it. The
+   * temple's undercroft runs out beyond the pyramid and under the plaza, and three
+   * systems used to ask the BUILDING how big a floor was — interior line of sight,
+   * the stair side-exit audit, and where an indoor bot wanders. All three answered
+   * "the pyramid", so line of sight stopped at a wall that was not there, and bots
+   * on the lower levels wandered toward a box they were standing outside of.
+   *
+   * Optional only for the player base, which builds its `Building` by hand rather
+   * than through `compileBuilding`; callers fall back to the footprint.
+   */
+  bounds?: Rect;
+  /**
+   * This floor's plan, as a closed polygon — the twin of `bounds`, and needed for the
+   * same reason by everything that must not treat a bounding box as a plan.
+   *
+   * The undercroft is a cross of galleries, so its bounding box is four fifths rock.
+   * Flooding the box and calling the rest "open floor disconnected from its arrival
+   * route" reported 269,760 square units of solid stone as a defect — the same blind
+   * spot that made the roundhouse's fan report a phantom 18k pocket for four rounds.
+   */
+  outline?: Vec2[];
   walls: WallSegment[];
   /**
    * Non-rectangular geometry: angled runs, curved partitions, hulls. Compiled

@@ -624,7 +624,15 @@ export function redrawFloorObjects(
  * `architecture` for the same reason.
  */
 export function buildFloorModel(building: Building, floor: FloorPlan): FloorModel {
-  const fp = building.footprint;
+  /**
+   * THE FLOOR's extent and plan, falling back to the building's.
+   *
+   * A floor below ground is not bound by the mass standing on it — the temple's undercroft
+   * is a cross of tunnel galleries reaching out well past the pyramid — so paving it to the
+   * pyramid's outline drew a slab over a fifth of the level and nothing over the rest.
+   */
+  const fp = floor.bounds ?? building.footprint;
+  const plan = floor.outline ?? building.outline;
   const view = new Container();
   const architecture = new Container();
   const furniture = new Container();
@@ -651,16 +659,16 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   const objectAo = makePad(AO_ALPHA);
 
   const rooms = findRooms(fp, floor);
-  drawSlab(slab, fp, building.outline);
+  drawSlab(slab, fp, plan);
   /**
    * Clip the ground stack to the building's real outline. The pour grid, room
    * finishes and wear are all laid out across the bounding box, so without this an
    * L-plan's notch gets paved with floor a player can see and never stand on.
    */
   let slabClip: Graphics | null = null;
-  if (building.outline && building.outline.length >= 3) {
+  if (plan && plan.length >= 3) {
     slabClip = new Graphics();
-    slabClip.poly(building.outline.map((point) => ({ x: point.x, y: point.y }))).fill({ color: 0xffffff });
+    slabClip.poly(plan.map((point) => ({ x: point.x, y: point.y }))).fill({ color: 0xffffff });
   }
   drawRoomFinishes(finishes, rooms);
   drawWear(wear, floor, fp);

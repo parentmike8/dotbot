@@ -2152,11 +2152,19 @@ export class DotBotSimulation {
     this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
   }
 
-  /** Indoor bots wander their building footprint; outdoor bots wander the map. */
+  /**
+   * Indoor bots wander their own FLOOR's extent; outdoor bots wander the map.
+   *
+   * The floor rather than the building, because a level below ground can reach past the
+   * mass standing on it. On the temple's undercroft the building footprint is the pyramid,
+   * so a bot two hundred units down a tunnel picked a wander target back inside a shape it
+   * was standing outside of, over and over.
+   */
   private pickWanderTarget(bot: InternalBot): Vec2 {
     const bounds =
       bot.floorId !== OUTDOOR_FLOOR_ID
-        ? this.map.buildings.find((building) => building.floors.some((floor) => floor.id === bot.floorId))?.footprint
+        ? floorPlanById(this.map, bot.floorId)?.bounds
+          ?? this.map.buildings.find((building) => building.floors.some((floor) => floor.id === bot.floorId))?.footprint
         : buildingContaining(this.map, bot.position)?.footprint;
 
     if (bounds) {

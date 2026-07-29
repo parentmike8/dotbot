@@ -132,6 +132,22 @@ export type FloorBrief = {
 export type SourceFloor = {
   label: string;
   brief?: FloorBrief;
+  /**
+   * This floor's own outline, when it is not the building's.
+   *
+   * The reason it exists is below ground: a cellar, a crypt or a tunnel system is not
+   * bound by the footprint of the mass standing on it. The temple's undercroft runs out
+   * from under the pyramid and beneath the plaza, and that is one building with two
+   * different plans at two different elevations rather than two buildings — because a
+   * stair links floors of ONE building, so anything reachable from the entrance hall has
+   * to be a floor of the temple.
+   *
+   * The building's `outline` and `footprint` stay the SURFACE shape whatever this says.
+   * Everything about street presence reads those — which building you are standing in,
+   * where its frontage is, what blocks line of sight along a road — and none of that is
+   * true of something underground.
+   */
+  outline?: SourceOutline;
   /** Openings cut into the shared exterior shell. */
   shellOpenings?: SourceOpening[];
   /** Interior partitions, at any angle. */
@@ -294,11 +310,22 @@ export function shellCentreline(source: SourceBuilding): Vec2[] {
   return insetPolygon(outlinePoints(source.outline), source.shellThickness / 2);
 }
 
-/** The building's exterior shell as one closed wall, shared by every floor. */
+/** The outline a floor is shelled from: its own, or the building's. */
+function floorOutline(source: SourceBuilding, floor: SourceFloor): SourceOutline {
+  return floor.outline ?? source.outline;
+}
+
+/**
+ * A floor's exterior shell, as one closed wall.
+ *
+ * Usually the building's own outline, and a floor may override it — see
+ * `SourceFloor.outline`. That is what lets one building hold a pyramid and the tunnel
+ * system underneath it: a level below ground is not bound by the mass standing on it.
+ */
 function shellWall(source: SourceBuilding, floor: SourceFloor): SourceWall {
   return {
     id: `${floor.label}-shell`,
-    path: shellCentreline(source),
+    path: insetPolygon(outlinePoints(floorOutline(source, floor)), source.shellThickness / 2),
     thickness: source.shellThickness,
     closed: true,
     openings: floor.shellOpenings ?? [],
@@ -377,6 +404,7 @@ export function compileBuilding(source: SourceBuilding): Building {
      */
     const walls: SourceWall[] = [shellWall(source, floor), ...(floor.walls ?? [])];
     const compiled = walls.map(compileWall);
+    const plan = outlinePoints(floorOutline(source, floor));
 
     const barriers = compiled.map((item) => item.barrier).filter((item): item is Barrier => item !== null);
     const windows = compiled.flatMap((item) => item.windows);
@@ -384,6 +412,11 @@ export function compileBuilding(source: SourceBuilding): Building {
     return {
       id: `${source.id}:${floor.label}`,
       label: floor.label as FloorPlan["label"],
+      // This floor's own plan and extent. Equal to the building's unless the floor
+      // overrode the outline, which is how the interior systems stop asking the mass
+      // above how far a cellar reaches.
+      outline: plan,
+      bounds: outlineBounds(plan),
       // Every wall in this format is a path, so nothing lands in the
       // rect-only `walls` array; the runtime reads geometry from `barriers`.
       walls: [],

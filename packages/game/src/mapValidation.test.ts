@@ -5,7 +5,7 @@ import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_
 import { interactionDotReach } from "./interactions";
 import type { BaseLayout } from "./types";
 import { isGroundFloor, objectCollisionRects, physicsFloorId, ROUND_KINDS, stadiumAxis, STADIUM_KINDS, stairExitPoint, stairHalves } from "./mapModel";
-import { objectSolids } from "./collision";
+import { collectSolids, objectSolids } from "./collision";
 import { pointToSolidDistanceSquared } from "./geometry";
 import { auditDotPlacement, auditBuildingFloorQuality, type FloorQualityIssue } from "./mapQuality";
 import { FLAT_KINDS, isSolidObject } from "./mapModel";
@@ -922,6 +922,66 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
       `these bots are wedged: the navigator cannot plan a path from where they stand, in any`
         + ` direction, so they will never move — and each re-runs a failed exhaustive search every tick`,
     ).toEqual([]);
+  });
+
+  /**
+   * AN ARRIVAL POINT IS SOMEWHERE A BOT STANDS, not somewhere near it.
+   *
+   * `validateInsertionMap` already checks that a squad of three FITS at every arrival
+   * point, and it does that by searching outward for room — which is exactly right at
+   * runtime and is why it cannot catch this. The temple's "END OF LINE" drop sat 0.1 units
+   * from a boulder and passed, because three bots found space a little way off it. The
+   * authored point is the thing a designer moves and reasons about, so the authored point
+   * is what gets asserted.
+   */
+  it("puts every insertion point somewhere a bot can actually stand", () => {
+    const solids = collectSolids(map, OUTDOOR_FLOOR_ID);
+    const buried = map.insertionPoints
+      .filter((point) => solids.some((solid) =>
+        pointToSolidDistanceSquared(point.position, solid) < BOT_RADIUS * BOT_RADIUS))
+      .map((point) => `${point.id} at (${point.position.x}, ${point.position.y})`);
+    expect(buried).toEqual([]);
+  });
+
+  /**
+   * EVERY FLOOR KNOWS ITS OWN EXTENT, and it agrees with what is drawn on it.
+   *
+   * A floor used to take its extent from its building, on the assumption that a building
+   * is one shape all the way up. That is false below ground: the temple's undercroft is a
+   * cross of tunnel galleries reaching out from under the pyramid and beneath the plaza,
+   * and FIVE separate systems asked the building how big it was — interior line of sight,
+   * the connectivity flood, the stair side-exit rule, the off-floor furniture check, and
+   * where an indoor bot wanders. Every one of them answered "the pyramid", which reported
+   * 269,760 square units of solid rock as unreachable floor and put a wall across a tunnel.
+   *
+   * The invariant that replaces the assumption: a floor's `bounds` contains everything
+   * authored on that floor. It holds trivially for a building whose floors all share one
+   * outline, which is every building but one — and that is the point of asserting it over
+   * every shipped map rather than over the temple.
+   */
+  it("gives every floor bounds that contain what is authored on it", () => {
+    const outside: string[] = [];
+    for (const building of map.buildings) {
+      for (const floor of building.floors) {
+        const extent = floor.bounds;
+        if (!extent) continue;
+        const holds = (r: { x: number; y: number; w: number; h: number }): boolean =>
+          r.x >= extent.x && r.y >= extent.y
+          && r.x + r.w <= extent.x + extent.w && r.y + r.h <= extent.y + extent.h;
+        for (const object of floor.objects) {
+          if (!holds(object)) outside.push(`${floor.id}: object ${object.id} is outside the floor's own bounds`);
+        }
+        for (const dot of floor.dotSpawns) {
+          if (!holds({ x: dot.position.x, y: dot.position.y, w: 0, h: 0 })) {
+            outside.push(`${floor.id}: dot ${dot.id} is outside the floor's own bounds`);
+          }
+        }
+        for (const stair of floor.stairs) {
+          if (!holds(stair.rect)) outside.push(`${floor.id}: stair ${stair.id} is outside the floor's own bounds`);
+        }
+      }
+    }
+    expect(outside).toEqual([]);
   });
 });
 

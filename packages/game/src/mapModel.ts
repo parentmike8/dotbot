@@ -568,6 +568,8 @@ export function stairExitPoint(stair: StairLink): Vec2 {
 }
 
 const FLOOR_HEIGHTS: Record<FloorLabel, number> = {
+  B3: -3,
+  B2: -2,
   B1: -1,
   GROUND: 0,
   F1: 1,

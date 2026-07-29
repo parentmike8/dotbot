@@ -157,7 +157,10 @@ function connectivityIssues(
   solids: Solid[],
   radius: number,
 ): FloorQualityIssue[] {
-  const { footprint } = building;
+  // THE FLOOR's extent, not the building's. On the temple's undercroft the building
+  // footprint is the pyramid, so the fill sampled the mass above the tunnels and called
+  // 269,760 square units of solid rock "open floor disconnected from its arrival route".
+  const footprint = floor.bounds ?? building.footprint;
   const cols = Math.ceil(footprint.w / CONNECTIVITY_CELL);
   const rows = Math.ceil(footprint.h / CONNECTIVITY_CELL);
   const center = (index: number): Vec2 => ({
@@ -177,8 +180,13 @@ function connectivityIssues(
    * Two other places had the same blind spot and had it fixed for the same reason —
    * `modelFloor` clips its slab to the outline, `offFloorIssues` below checks objects
    * against it — so this was the last consumer still treating a bounding box as a plan.
+   *
+   * The FLOOR's plan where it has one. A cross of tunnel galleries has a bounding box
+   * that is four fifths rock, so a plan taken from the building is no better here than a
+   * bounding box was for the roundhouse.
    */
-  const plan = building.outline && building.outline.length >= 3 ? building.outline : null;
+  const shape = floor.outline ?? building.outline;
+  const plan = shape && shape.length >= 3 ? shape : null;
 
   for (let index = 0; index < cols * rows; index += 1) {
     const point = center(index);
@@ -315,9 +323,14 @@ function connectivityIssues(
  *
  * Checked against the authored outline where there is one, so an L-plan is not
  * judged by its bounding box.
+ *
+ * And against the FLOOR's own extent, not the building's. A level below ground is not
+ * bound by the mass above it — the temple's undercroft runs out from under the pyramid and
+ * under the plaza — so measuring its furniture against the pyramid reported the whole
+ * level as furniture sliding off a roof.
  */
 function offFloorIssues(building: Building, floor: FloorPlan): FloorQualityIssue[] {
-  const fp = building.footprint;
+  const fp = floor.bounds ?? building.footprint;
   const issues: FloorQualityIssue[] = [];
   for (const object of floor.objects) {
     const over = [
@@ -612,11 +625,14 @@ export function auditBuildingFloorQuality(
             { x: midpoint.x, y: stair.rect.y - radius - 4 },
             { x: midpoint.x, y: stair.rect.y + stair.rect.h + radius + 4 },
           ];
+      // The floor's own extent, so a stair on a level that reaches beyond the mass above
+      // it is judged against the room it is actually in.
+      const extent = floor.bounds ?? building.footprint;
       const hasClearSide = sidePoints.some((point) =>
-        point.x >= building.footprint.x + radius &&
-        point.x <= building.footprint.x + building.footprint.w - radius &&
-        point.y >= building.footprint.y + radius &&
-        point.y <= building.footprint.y + building.footprint.h - radius &&
+        point.x >= extent.x + radius &&
+        point.x <= extent.x + extent.w - radius &&
+        point.y >= extent.y + radius &&
+        point.y <= extent.y + extent.h - radius &&
         circleClearsSolids(point, radius - 1, blocking));
 
       if (!hasClearSide) {

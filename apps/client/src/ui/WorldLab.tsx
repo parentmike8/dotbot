@@ -31,7 +31,7 @@ import { selectMapDocument } from "../mapSelection";
  * tool, and "show me the fairground" wants a fixed, repeatable crop so two screenshots of
  * the same region can be compared. Nothing in the game reads it.
  */
-const FRAMES: Array<{ id: string; title: string; rect: Rect }> = [
+const FRAMES: Array<{ id: string; title: string; rect: Rect; floorId?: string }> = [
   { id: "world", title: "The Reach", rect: { x: 0, y: 0, w: 4200, h: 3400 } },
   { id: "downtown", title: "Downtown", rect: { x: 0, y: 0, w: 2400, h: 1600 } },
   { id: "yard", title: "Fenchurch Yard", rect: { x: 2374, y: 0, w: 1826, h: 1800 } },
@@ -49,6 +49,19 @@ const FRAMES: Array<{ id: string; title: string; rect: Rect }> = [
    */
   { id: "rides-west", title: "Helter-skelter and carousel", rect: { x: 300, y: 1900, w: 1200, h: 750 } },
   { id: "rides-east", title: "The big top, at the end of the midway", rect: { x: 1700, y: 2400, w: 800, h: 700 } },
+  /**
+   * The temple's four levels, one frame each.
+   *
+   * The only surface that can show a floor below ground at all: `?worlds` draws the map's
+   * GROUND stack, and the crypt and the undercroft are never on screen in a run unless you
+   * have walked down to them. A `floor=` frame renders one named plan instead.
+   */
+  // Ids stay lowercase-and-dashes: the shot endpoint rejects anything else as an unsafe
+  // filename, so `temple-B1` silently wrote nothing while reporting a frame rendered.
+  { id: "temple-close", title: "The Great Temple, from the plaza", rect: { x: 2800, y: 1700, w: 1000, h: 1000 } },
+  { id: "temple-crypt", title: "The crypt (B1)", rect: { x: 2900, y: 1740, w: 800, h: 820 }, floorId: "temple:B1" },
+  { id: "temple-undercroft", title: "The undercroft (B2)", rect: { x: 2560, y: 2040, w: 1380, h: 1070 }, floorId: "temple:B2" },
+  { id: "temple-summit", title: "The summit (ROOF)", rect: { x: 2900, y: 1740, w: 800, h: 820 }, floorId: "temple:ROOF" },
 ];
 
 export function WorldLab() {
@@ -105,6 +118,25 @@ export function WorldLab() {
       stage.addChild(art.root);
       created.stage.addChild(stage);
 
+      /**
+       * Show one interior floor, for the frames that name one.
+       *
+       * `buildMapArt` builds every floor and hides all but GROUND, because in a run you only
+       * ever see the plan you are standing on. That makes the levels below ground invisible
+       * to every review surface there is — the crypt and the undercroft could not be looked
+       * at at all without walking down to them in a live match. So a frame may name a floor,
+       * and the roofs come off so the plan underneath is not covered by the mass above it.
+       */
+      const showFloor = (floorId: string | null): void => {
+        for (const building of art.buildings) {
+          for (const mass of building.roofMasses) mass.visible = floorId === null;
+          building.roof.visible = floorId === null;
+          for (const floor of building.floors) {
+            floor.view.visible = floorId === null ? floor.floor.label === "GROUND" : floor.floor.id === floorId;
+          }
+        }
+      };
+
       /** Fit a world rect to the canvas, with a little air round it. */
       const frame = (rect: Rect, width: number, height: number): void => {
         const pad = 0.985;
@@ -126,6 +158,7 @@ export function WorldLab() {
          */
         const results: string[] = [];
         for (const shot of FRAMES) {
+          showFloor(shot.floorId ?? null);
           const long = Math.max(shot.rect.w, shot.rect.h);
           const scale = Math.min(1, 2200 / long);
           const width = Math.round(shot.rect.w * scale);
@@ -147,6 +180,7 @@ export function WorldLab() {
       }
 
       const chosen = FRAMES.find((candidate) => candidate.id === pick) ?? FRAMES[0];
+      showFloor(chosen.floorId ?? null);
       const draw = (): void => {
         created.renderer.resize(host.clientWidth, host.clientHeight);
         frame(chosen.rect, created.renderer.width, created.renderer.height);

@@ -104,7 +104,10 @@ export function visionContext(map: MapDocument, context: string): VisionContext 
     const building = plan ? map.buildings.find((item) => item.floors.some((floor) => floor.id === plan.id)) : null;
     wallRects = plan?.walls ?? [];
     barriers = plan?.barriers ?? [];
-    boundsRect = building?.footprint ?? { x: 0, y: 0, w: map.width, h: map.height };
+    // THE FLOOR's extent, not the building's. A floor below ground is not bound by the
+    // mass above it: the temple's undercroft runs out from under the pyramid, and clipping
+    // its sight lines to the pyramid put a wall across a tunnel where nothing stands.
+    boundsRect = plan?.bounds ?? building?.footprint ?? { x: 0, y: 0, w: map.width, h: map.height };
   }
 
   const wallSolids: Solid[] = [
