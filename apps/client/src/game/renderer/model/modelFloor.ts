@@ -435,14 +435,49 @@ function drawFloorPaint(layer: Container, g: Graphics, floor: FloorPlan, fp: Rec
  * opening the way a turned object gets one. Task #78.
  */
 function spanRect(span: NonNullable<WindowBand["span"]>, thickness: number): Rect {
-  const midX = (span.ax + span.bx) / 2;
-  const midY = (span.ay + span.by) / 2;
-  const length = Math.max(Math.hypot(span.bx - span.ax, span.by - span.ay), 2);
-  // Laid along whichever axis the wall is nearer to, since the band cannot turn yet.
-  const across = Math.abs(span.bx - span.ax) >= Math.abs(span.by - span.ay);
-  return across
-    ? { x: midX - length / 2, y: midY - thickness / 2, w: length, h: thickness }
-    : { x: midX - thickness / 2, y: midY - length / 2, w: thickness, h: length };
+  const { at, length } = spanFrame(span);
+  // Always laid along +x. `spanFrame`'s angle turns it onto the wall, so there is no
+  // dominant axis to choose any more — the band is built in its own frame and rotated.
+  return { x: at.x - length / 2, y: at.y - thickness / 2, w: length, h: thickness };
+}
+
+/**
+ * An opening's own frame: where its centre is, how long it is, and which way it points.
+ *
+ * The angle is what makes a band sit ON a curved wall rather than across it. A straight bar
+ * laid over an arc touches at one point along its length, which is what read as "windows are
+ * not properly aligned at the walls" and as bay doors that ignore their own radial roads.
+ */
+function spanFrame(span: NonNullable<WindowBand["span"]>): { at: Vec2; angle: number; length: number } {
+  return {
+    at: { x: (span.ax + span.bx) / 2, y: (span.ay + span.by) / 2 },
+    angle: Math.atan2(span.by - span.ay, span.bx - span.ax),
+    length: Math.max(Math.hypot(span.bx - span.ax, span.by - span.ay), 2),
+  };
+}
+
+/**
+ * Draw an angled opening into its own Graphics, turned onto the wall it sits in.
+ *
+ * The same trick a turned object uses, and it works for the same two reasons: the marks are
+ * laid out in WORLD coordinates around the span's midpoint, and a Pixi `Graphics` is itself a
+ * container — so pivoting at that midpoint and setting a rotation spins the finished drawing in
+ * place. `drawWindow` and `drawVehicleDoorHead` need no changes at all; they are handed a band
+ * that has already been squared up along +x, and the rotation puts it back on the arc.
+ *
+ * KNOWN, and the same limitation rotated objects carry: `contact` writes the door head's
+ * ground shadow into the shared axis-aligned pad, so that one mark does not turn with the
+ * opening. It is a soft wash at lift 5 under a dark curtain. Worth fixing when the pad learns
+ * about rotation, not before.
+ */
+function turnedOpening(span: NonNullable<WindowBand["span"]>, draw: (g: Graphics) => void): Graphics {
+  const g = new Graphics();
+  draw(g);
+  const { at, angle } = spanFrame(span);
+  g.pivot.set(at.x, at.y);
+  g.position.set(at.x, at.y);
+  g.rotation = angle;
+  return g;
 }
 
 function windowRect(band: WindowBand, walls: WallSegment[]): Rect | null {
@@ -701,7 +736,25 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   drawFloorPaint(paintLayer, paint, floor, fp);
   paintLayer.addChildAt(paint, 0);
 
-  for (const band of floor.windows ?? []) drawLightSpill(light, band, floor.walls, fp);
+  /**
+   * Daylight on the floor inside each window, turned with the window it comes through.
+   *
+   * Missed on the first pass, and the render is what caught it: with the glazing turned onto
+   * the arc and the spill still square to the world, every bay had a pale axis-aligned patch
+   * sitting at an angle to its own opening. A light pool that does not agree with its window is
+   * worse than no light pool.
+   *
+   * These join `groundStack` rather than `architecture`, so they stay under the walls and inside
+   * the slab clip like the flat `light` layer they came from.
+   */
+  const turnedSpill: Graphics[] = [];
+  for (const band of floor.windows ?? []) {
+    if (band.span) {
+      turnedSpill.push(turnedOpening(band.span, (g) => drawLightSpill(g, { ...band, dir: "h" }, floor.walls, fp)));
+    } else {
+      drawLightSpill(light, band, floor.walls, fp);
+    }
+  }
 
   // Ambient occlusion hugging every solid. Without it a room reads as shapes
   // cut out of paper; with it the slab looks like it meets something.
@@ -712,13 +765,33 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   for (const object of floor.objects) occlude(objectAo, object, 7);
 
   drawWalls(structure, structurePad, floor, fp);
+  /**
+   * Openings that sit on a turning wall get their own rotated Graphics; the rest draw
+   * straight into the shared layers as before.
+   *
+   * `dir` is forced to "h" for a turned one, because `spanRect` now builds the band along +x
+   * in its own frame — so the mullions, the sill highlight and the curtain slats all run
+   * ACROSS that length, and the rotation carries them onto the wall together.
+   */
+  const turned: Graphics[] = [];
   for (const door of floor.doorways) {
     // An archway is a hole in a wall: no curtain, no rails. Where the opening
     // does not say what it is, a wide open one is a roll-up by convention.
-    const rollup = isVehicleDoor(door);
-    if (rollup) drawVehicleDoorHead(structure, structurePad, door, floor.walls);
+    if (!isVehicleDoor(door)) continue;
+    if (door.span && door.thickness !== undefined) {
+      turned.push(turnedOpening(door.span, (g) =>
+        drawVehicleDoorHead(g, structurePad, { ...door, dir: "h" }, floor.walls)));
+    } else {
+      drawVehicleDoorHead(structure, structurePad, door, floor.walls);
+    }
   }
-  for (const band of floor.windows ?? []) drawWindow(glazing, band, floor.walls);
+  for (const band of floor.windows ?? []) {
+    if (band.span) {
+      turned.push(turnedOpening(band.span, (g) => drawWindow(g, { ...band, dir: "h" }, floor.walls)));
+    } else {
+      drawWindow(glazing, band, floor.walls);
+    }
+  }
 
   for (const stair of floor.stairs) {
     const stairView = new Container();
@@ -780,7 +853,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   }
 
   const groundStack = new Container();
-  groundStack.addChild(slab, finishes, wear, bays, paintLayer, light);
+  groundStack.addChild(slab, finishes, wear, bays, paintLayer, light, ...turnedSpill);
   if (slabClip) {
     groundStack.addChild(slabClip);
     groundStack.mask = slabClip;
@@ -789,6 +862,9 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
     groundStack,
     ...structureAo, ...structurePad,
     structure, glazing,
+    // After the flat layers, so a turned curtain or window reads as sitting in the wall
+    // rather than under it. Same z-intent as `structure` and `glazing`, one node each.
+    ...turned,
   );
   furniture.addChild(...objectAo, ...objectPad, objects);
   annotation.addChild(annotationGfx);
