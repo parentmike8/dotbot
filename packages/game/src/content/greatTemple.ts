@@ -61,21 +61,26 @@ const GRAND = { x: CX - 75, y: 2200, w: 150, h: IN.s - 2200 };
 const CROSS_Y = GRAND.y - 13;
 
 /**
- * The descent to the crypt, in the tomb chamber's north-west corner.
+ * The descent to the crypt, down the tomb chamber's west wall.
  *
- * FLUSH with both the west and north shells, and that is not tidiness. Set 40 off the
- * north wall it left a 100 x 40 sliver behind it belonging to nothing — the exact defect
- * that stranded floor either side of the grand stair in the first draft, at a twentieth
- * of the size and just as unreachable.
+ * Flush with the WEST shell, and 60 units clear of the NORTH one — and that second number
+ * is the whole fix for a stair that could not be used at all.
  *
- * `bottom: "N"` so the flight descends northward and is therefore ENTERED from the south,
- * facing the chamber it serves. Entered from the north its mouth would have been 40 units
- * off the shell, which is less than a bot's diameter — you could only have reached it
- * sideways.
+ * It was flush with both. A bot descending arrives on B1 standing in that floor's ENTRY
+ * half, and every route out of a flight that crosses into the exit half sends it straight
+ * back up (`resolveStairs` swaps on entry → exit). With the north end against the shell,
+ * the arriving bot's only move WAS back across the midline: "I can't even get into the
+ * temple lower level, I go down the stairs and I'm met with a wall on my right-hand side."
+ *
+ * Nothing caught it because every existing stair check is geometric — the flight was
+ * reachable, it had a side exit, its destination existed — and this is a rule about
+ * traversal. There is a test for it now.
+ *
+ * So the rule, written where the next flight will be authored: A FLIGHT NEEDS OPEN FLOOR
+ * AT BOTH ENDS, on both floors. A stair with its back to a wall is a stair you can only
+ * ride one way.
  */
-const DESCENT = { x: IN.w, y: IN.n, w: 88, h: 160 };
-/** The descent's open flank. Its other side is the shell. */
-const DESCENT_GUARD_X = DESCENT.x + DESCENT.w + 6;
+const DESCENT = { x: IN.w, y: IN.n + 60, w: 88, h: 160 };
 
 /**
  * THE UNDERCROFT's plan: two galleries crossing, and four arms that go somewhere.
@@ -98,10 +103,29 @@ const DESCENT_GUARD_X = DESCENT.x + DESCENT.w + 6;
  */
 const ARM = 240;
 const CROSS = { x: CX - ARM / 2, y: 2560 }; // the east-west gallery's north edge
+/**
+ * The north arm is WIDER THAN THE OTHERS, all the way, and that is a shape decision forced
+ * by the shaft.
+ *
+ * A 240 gallery is 160 of corridor, and a 88 flight in it leaves 36 either side — a slot a
+ * bot can squeeze along, not a side exit, which `blocked-stair-side` calls out and is right
+ * to. Putting the shaft at the arm's blind head instead was worse: the arriving bot landed 8
+ * units from the end wall with nowhere to step, which is the same trap the descent had.
+ *
+ * A first attempt widened only the arm's HEAD into a chamber, with a 60-unit step back to the
+ * gallery on each side. The step is the problem: `insetPolygon` has to turn two reflex corners
+ * 60 units apart, and at a 40-unit shell it folds — the arm came out with its side walls
+ * missing for 100 units and 120,256 units of the level cut off from its own stair. Measured,
+ * not guessed: the walkable span jumped from 3252..3368 to 3120..3500 across that stretch.
+ *
+ * So the arm is 360 for its whole length. No steps, no reflex pair, and the shaft gets 96
+ * units of floor on each flank.
+ */
+const NORTH_ARM = 360;
 const UNDERCROFT: Array<{ x: number; y: number }> = [
-  { x: CROSS.x, y: 2100 },
-  { x: CROSS.x + ARM, y: 2100 },
-  { x: CROSS.x + ARM, y: CROSS.y },
+  { x: CX - NORTH_ARM / 2, y: 2100 },
+  { x: CX + NORTH_ARM / 2, y: 2100 },
+  { x: CX + NORTH_ARM / 2, y: CROSS.y },
   { x: 3880, y: CROSS.y },
   { x: 3880, y: CROSS.y + ARM },
   { x: CROSS.x + ARM, y: CROSS.y + ARM },
@@ -110,19 +134,20 @@ const UNDERCROFT: Array<{ x: number; y: number }> = [
   { x: CROSS.x, y: CROSS.y + ARM },
   { x: 2620, y: CROSS.y + ARM },
   { x: 2620, y: CROSS.y },
-  { x: CROSS.x, y: CROSS.y },
+  { x: CX - NORTH_ARM / 2, y: CROSS.y },
 ];
 
 /**
  * The shaft from the crypt to the undercroft, at the head of the north arm.
  *
- * AT THE ARM'S TERMINUS, not partway along it, and that is the whole reason it works.
- * The arm is 160 of walkable width and the shaft is 88, which leaves 36 either side —
- * less than a bot. Anywhere along the arm the shaft would therefore SEVER it, because
- * the only way past would be across a flight, and crossing a flight changes floor. At the
- * head there is nothing beyond it to cut off.
+ * IN THE CHAMBER, with 96 units of floor on each flank and 60 clear of the end wall.
+ *
+ * It sat at the arm's blind terminus first, on the reasoning that nothing beyond it could be
+ * cut off. That reasoning was about severing a corridor and it missed the actual failure: a
+ * bot arriving on B2 lands in that floor's entry half, and with the end wall 8 units away it
+ * had nowhere to step but back across the midline. Same trap as the descent, one floor down.
  */
-const SHAFT = { x: CX - 44, y: 2148, w: 88, h: 150 };
+const SHAFT = { x: CX - 44, y: 2200, w: 88, h: 150 };
 
 /**
  * The crypt's two aisle walls, and their spacing is a lane count rather than a look.
@@ -161,11 +186,17 @@ export const GREAT_TEMPLE_SOURCE: SourceBuilding = {
       from: "GROUND",
       to: "B1",
       bottom: "N",
-      // No `access`. Derived guards wall the exit half on BOTH long sides plus its far
-      // cap, and this flight has the shell hard against one side already — the
-      // observatory proved what that does twice over, sealing the flight and stranding
-      // 17,216 then 10,560 units of floor. One authored wall down the open flank instead,
-      // on both floors, which is what every stair in the city actually is.
+      /**
+       * `access: "openEnd"`, and the authored guards it replaces are gone.
+       *
+       * Hand-authored rails were the wrong tool and got it wrong the same way twice. A
+       * guard has to cap the EXIT half's far end, and which half that is DIFFERS BY FLOOR —
+       * on GROUND the exit is the north half, on B1 the south. Two identical authored walls
+       * cannot express that, so both floors got a rail down one flank and no cap at either
+       * end, and you could walk onto the wrong side from the room. `stairGuardRects` derives
+       * the cap from the link's own direction, which is the only place that fact lives.
+       */
+      access: "openEnd",
     },
     {
       id: "temple-shaft",
@@ -173,9 +204,10 @@ export const GREAT_TEMPLE_SOURCE: SourceBuilding = {
       from: "B1",
       to: "B2",
       bottom: "S",
-      // Same reasoning, and here the undercroft's own gallery walls are the guards: 36
-      // units of rock either side is closer than any rail. Only the crypt end needs
-      // authored flanks, because up there the shaft stands in an open nave.
+      // Same, for the same reason: the gallery walls stop you reaching the shaft's flanks
+      // on B2 but nothing capped its ends, so the crypt could walk onto the undercroft's
+      // half of the flight.
+      access: "openEnd",
     },
   ],
   floors: [
@@ -269,13 +301,6 @@ export const GREAT_TEMPLE_SOURCE: SourceBuilding = {
             { kind: "door", width: 84, near: { x: 3500, y: CROSS_Y } },
           ],
         },
-        {
-          // The descent's open flank, so you cannot step onto the flight sideways out of
-          // the chamber. The shell closes its other side. See the note on the stair.
-          id: "temple-descent-guard",
-          thickness: 12,
-          path: [{ x: DESCENT_GUARD_X, y: DESCENT.y }, { x: DESCENT_GUARD_X, y: DESCENT.y + DESCENT.h }],
-        },
       ],
       objects: [
         /**
@@ -331,7 +356,7 @@ export const GREAT_TEMPLE_SOURCE: SourceBuilding = {
            */
           id: "temple-crypt-aisle-w",
           thickness: 24,
-          path: [{ x: AISLE_W, y: 2120 }, { x: AISLE_W, y: IN.s }],
+          path: [{ x: AISLE_W, y: 2140 }, { x: AISLE_W, y: IN.s }],
           openings: [{ kind: "door", width: 84, near: { x: AISLE_W, y: 2200 } }],
         },
         {
@@ -340,25 +365,8 @@ export const GREAT_TEMPLE_SOURCE: SourceBuilding = {
           path: [{ x: AISLE_E, y: 1900 }, { x: AISLE_E, y: IN.s }],
           openings: [{ kind: "door", width: 84, near: { x: AISLE_E, y: 2150 } }],
         },
-        // The shaft's two flanks. Both, because up here it stands in open nave — 102 units
-        // of floor on one side and 114 on the other, which is walk-on width.
-        {
-          id: "temple-shaft-guard-w",
-          thickness: 12,
-          path: [{ x: SHAFT.x - 6, y: SHAFT.y }, { x: SHAFT.x - 6, y: SHAFT.y + SHAFT.h }],
-        },
-        {
-          id: "temple-shaft-guard-e",
-          thickness: 12,
-          path: [{ x: SHAFT.x + SHAFT.w + 6, y: SHAFT.y }, { x: SHAFT.x + SHAFT.w + 6, y: SHAFT.y + SHAFT.h }],
-        },
-        {
-          // The descent's flank again, one floor down. A guard that exists on one floor
-          // only is a flight you can step onto sideways at the bottom.
-          id: "temple-descent-guard-b1",
-          thickness: 12,
-          path: [{ x: DESCENT_GUARD_X, y: DESCENT.y }, { x: DESCENT_GUARD_X, y: DESCENT.y + DESCENT.h }],
-        },
+        // No authored stair guards on this floor either: `access: "openEnd"` derives both
+        // flights' rails and their per-floor far caps. See the notes on the stairs.
       ],
       objects: [
         /**
@@ -370,7 +378,7 @@ export const GREAT_TEMPLE_SOURCE: SourceBuilding = {
          * it, which the audit calls a `false-aisle` and is right to: 26 units is a gap that
          * looks like a way through and is not.
          */
-        { id: "temple-crypt-tomb-w1", kind: "altar", x: IN.w, y: 2120, w: 90, h: 54 },
+        { id: "temple-crypt-tomb-w1", kind: "altar", x: IN.w, y: 2160, w: 90, h: 54 },
         { id: "temple-crypt-tomb-w2", kind: "altar", x: IN.w, y: 2300, w: 90, h: 54 },
         { id: "temple-crypt-shelf-w", kind: "shelf", x: IN.w, y: 2354, w: 90, h: 28 },
         // The east cell, the same rule mirrored.
@@ -385,7 +393,7 @@ export const GREAT_TEMPLE_SOURCE: SourceBuilding = {
         { id: "temple-crypt-stele", kind: "stele", x: 3340, y: 1880, w: 44, h: 74, scannable: true },
       ],
       dots: [
-        { id: "temple-dot-crypt-w", item: { kind: "powerup", type: "health" }, x: 3100, y: 2230 },
+        { id: "temple-dot-crypt-w", item: { kind: "powerup", type: "health" }, x: 3100, y: 2257 },
         { id: "temple-dot-crypt-e", item: { kind: "powerup", type: "dashOvercharge" }, x: 3500, y: 2150 },
       ],
     },
@@ -443,8 +451,8 @@ export const GREAT_TEMPLE_SOURCE: SourceBuilding = {
         { id: "temple-under-rock-e1", kind: "boulder", x: 3720, y: 2688, w: 82, h: 72 },
         // The north arm: 160 units of clear y between these two, which is what the first
         // pass did not leave.
-        { id: "temple-under-rock-n", kind: "boulder", x: 3230, y: 2320, w: 70, h: 64 },
-        { id: "temple-under-brazier-j", kind: "brazier", x: 3330, y: 2480, w: 48, h: 48 },
+        { id: "temple-under-rock-n", kind: "boulder", x: 3230, y: 2420, w: 70, h: 64 },
+        { id: "temple-under-brazier-j", kind: "brazier", x: 3330, y: 2500, w: 48, h: 48 },
 
         /**
          * The cistern, and it is the one thing down here allowed to plug a gallery.

@@ -43,6 +43,16 @@ export const QUAY_SOURCE: SourceBuilding = {
     from: "GROUND",
     to: "B1",
     bottom: "S",
+    /**
+     * Freestanding, so it takes the derived guards.
+     *
+     * The traversal audit found the whole exit half reachable from the room on BOTH floors —
+     * every cell of it — which is what a flight standing in the open with no rails is. The
+     * "stair core" in the brief is a zone, not a shaft. 88 wide takes an 8-unit rail each
+     * side and still leaves 72 for a 48-wide bot.
+     */
+    access: "openEnd",
+
   }],
   floors: [
     {

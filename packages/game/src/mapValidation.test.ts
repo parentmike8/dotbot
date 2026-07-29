@@ -926,6 +926,147 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
   });
 
   /**
+   * A STAIR IS A DOOR BETWEEN FLOORS, and both halves of that have to hold.
+   *
+   * Everything else about stairs is checked geometrically — the flight is reachable, it has
+   * a side exit, its destination exists — and geometry cannot see the one rule that makes a
+   * stair work, because that rule is about TRAVERSAL. `resolveStairs` swaps a bot's floor
+   * when its previous position was in the ENTRY half and its new one is in the EXIT half. So
+   * on any floor, the exit half is not floor: it is the act of leaving. Two consequences,
+   * and both were shipped broken:
+   *
+   *  - YOU MUST BE ABLE TO GET OFF. Arriving on a floor puts a bot in that floor's entry
+   *    half, and every route out that crosses into the exit half sends it straight back.
+   *    The temple's descent had the flight flush against the shell at the very end the
+   *    arriving bot lands at, so the only move available re-triggered the stair: "I can't
+   *    even get into the temple lower level, I go down the stairs and I'm met with a wall on
+   *    my right-hand side." Nothing complained, because geometrically every cell was
+   *    reachable — you just could not be there.
+   *  - YOU MUST NOT BE ABLE TO WALK ONTO THE WRONG SIDE. The exit half belongs to the other
+   *    floor. Reached from the room instead of across the midline, a bot stands on treads
+   *    that are drawn as the flight going away from it: "we still have this issue where you
+   *    can go on the wrong side of the stairway."
+   *
+   * Both are floods rather than clearance probes, and that matters — a first attempt
+   * measured the space beyond the entry half's outer end and called 31 of 36 links broken,
+   * because a stair in a shaft is left SIDEWAYS through a door and the outer end is a wall
+   * by design. The question is never "is this particular edge open", it is "can a bot get
+   * from here to the rest of the floor".
+   */
+  describe("stairs, as traversal rather than as geometry", () => {
+    const STEP = 8;
+    const inside = (rect: Rect, at: Vec2): boolean =>
+      at.x >= rect.x && at.x <= rect.x + rect.w && at.y >= rect.y && at.y <= rect.y + rect.h;
+
+    /** Every stair link on the map, with the floor it belongs to and that floor's grid. */
+    const links = map.buildings.flatMap((building) =>
+      building.floors.flatMap((floor) => {
+        const bounds = floor.bounds ?? building.footprint;
+        const solids = collectSolids(map, physicsFloorId(map, floor.id));
+        const cols = Math.ceil(bounds.w / STEP);
+        const rows = Math.ceil(bounds.h / STEP);
+        const at = (index: number): Vec2 => ({
+          x: bounds.x + (index % cols) * STEP + STEP / 2,
+          y: bounds.y + Math.floor(index / cols) * STEP + STEP / 2,
+        });
+        const clear = new Uint8Array(cols * rows);
+        for (let index = 0; index < cols * rows; index += 1) {
+          if (solids.every((solid) => pointToSolidDistanceSquared(at(index), solid) > BOT_RADIUS * BOT_RADIUS)) {
+            clear[index] = 1;
+          }
+        }
+        /** Flood from `seeds`, refusing to enter `sealed`. */
+        const flood = (seeds: number[], sealed: Rect): Uint8Array => {
+          const seen = new Uint8Array(cols * rows);
+          const queue: number[] = [];
+          for (const seed of seeds) if (clear[seed] && !inside(sealed, at(seed))) { seen[seed] = 1; queue.push(seed); }
+          while (queue.length > 0) {
+            const index = queue.pop()!;
+            const column = index % cols;
+            for (const next of [index - cols, index + cols, column > 0 ? index - 1 : -1, column < cols - 1 ? index + 1 : -1]) {
+              if (next < 0 || next >= cols * rows || !clear[next] || seen[next]) continue;
+              if (inside(sealed, at(next))) continue;
+              seen[next] = 1;
+              queue.push(next);
+            }
+          }
+          return seen;
+        };
+        return floor.stairs.map((stair) => ({ floorId: floor.id, stair, cols, rows, at, clear, flood }));
+      }));
+
+    /**
+     * A map with no stairs is not a failure — an unexpanded player base has none — so the
+     * "these assertions prove nothing" guard cannot live here. It lives once, against the
+     * world, in `the world has stairs worth checking` below.
+     */
+    it("lets a bot arriving on any floor get off the flight without going back", () => {
+      const trapped: string[] = [];
+      for (const { floorId, stair, cols, rows, at, clear, flood } of links) {
+        const { entry, exit } = stairHalves(stair);
+        const seeds: number[] = [];
+        for (let index = 0; index < cols * rows; index += 1) {
+          if (clear[index] && inside(entry, at(index))) seeds.push(index);
+        }
+        if (seeds.length === 0) {
+          trapped.push(`${floorId}: ${stair.id} has no standing room in its entry half`);
+          continue;
+        }
+        const reached = flood(seeds, exit);
+        let off = 0;
+        for (let index = 0; index < cols * rows; index += 1) {
+          if (reached[index] && !inside(stair.rect, at(index))) off += 1;
+        }
+        if (off === 0) trapped.push(`${floorId}: ${stair.id} cannot be left except by re-crossing the midline`);
+      }
+      expect(trapped).toEqual([]);
+    });
+
+    /**
+     * ONE RECORDED EXCEPTION, and it is recorded rather than fixed on purpose.
+     *
+     * Mercy Clinic's flight is 196 x 80 inside a stair core whose only opening is at its
+     * WEST end — on both floors. That is the problem: `bottom` decides which half each floor
+     * enters by, and whichever way it points, one floor's entry half is the west one and the
+     * other's is the east. So the west half is always reachable from a room, and on the floor
+     * where the west half is the EXIT half you can stand on the wrong side. No value of
+     * `bottom` fixes it and no guard fixes it; the core needs a second opening, or the flight
+     * needs to be turned, which is a change to a shipped building's plan.
+     *
+     * Not attempted here because it is the regression map and it was not what was reported.
+     * The two things that WERE reported — the observatory and the temple — are fixed, and
+     * `openEnd` covers Quayside's freestanding flight. Filed instead.
+     */
+    const WRONG_SIDE_DEBT = ["mercy:F1: mercy-stair-down can be walked onto from the wrong side"];
+
+    it("keeps the far half of every flight off limits from the room", () => {
+      const open: string[] = [];
+      for (const { floorId, stair, cols, rows, at, clear, flood } of links) {
+        const { entry, exit } = stairHalves(stair);
+        // Every clear cell that is not the flight at all: the room, on this floor.
+        const room: number[] = [];
+        for (let index = 0; index < cols * rows; index += 1) {
+          if (clear[index] && !inside(stair.rect, at(index))) room.push(index);
+        }
+        const reached = flood(room, entry);
+        for (let index = 0; index < cols * rows; index += 1) {
+          if (reached[index] && inside(exit, at(index))) {
+            open.push(`${floorId}: ${stair.id} can be walked onto from the wrong side`);
+            break;
+          }
+        }
+      }
+      // Nothing beyond the recorded debt, so a second case cannot appear quietly.
+      expect(open.filter((entry) => !WRONG_SIDE_DEBT.includes(entry))).toEqual([]);
+      // And nothing recorded that is actually fine — scoped to the flights THIS map has, so
+      // the entry is only demanded of the map it describes.
+      const mine = WRONG_SIDE_DEBT.filter((entry) =>
+        links.some(({ floorId, stair }) => entry.startsWith(`${floorId}: ${stair.id} `)));
+      expect(mine.filter((entry) => !open.includes(entry)), "recorded debt that is now fixed — delete it").toEqual([]);
+    });
+  });
+
+  /**
    * THE OUTDOOR PLANE IS CONNECTED: you can walk from the spawn to everything that matters.
    *
    * This is the check that did not exist, and its absence is the reason two shipped defects
@@ -1078,6 +1219,27 @@ const maximalExpandedBaseLayout: BaseLayout = {
  * Sampled at the corners rather than at one hand-picked point, because a corner is where
  * the box and the plan disagree most and any shape with a curve or a notch has some.
  */
+/**
+ * The count the traversal checks above rest on.
+ *
+ * Asserted once, against the world, because a map with no stairs is legitimate — an
+ * unexpanded player base has none — so a per-map guard would fail on a map that is fine
+ * while saying nothing about the map that matters.
+ */
+describe("the world has stairs worth checking", () => {
+  it("links its floors with a real number of flights", () => {
+    const links = worldMap.buildings.flatMap((building) => building.floors.flatMap((floor) => floor.stairs));
+    expect(links.length).toBeGreaterThanOrEqual(30);
+    // Every one of them names a floor that exists — cheap, and a typo here is invisible
+    // until somebody walks it and changes floor to nowhere.
+    for (const stair of links) {
+      const known = stair.toFloorId === OUTDOOR_FLOOR_ID
+        || worldMap.buildings.some((building) => building.floors.some((floor) => floor.id === stair.toFloorId));
+      expect(known, `${stair.id} points at ${stair.toFloorId}`).toBe(true);
+    }
+  });
+});
+
 describe("standing outside a round or fanned building", () => {
   const shaped = worldMap.buildings.filter((building) => (building.outline?.length ?? 0) >= 3);
 

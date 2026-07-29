@@ -33,6 +33,7 @@ export const MERCY_SOURCE: SourceBuilding = {
     from: "GROUND",
     to: "F1",
     bottom: "W",
+
   }],
   floors: [
     {

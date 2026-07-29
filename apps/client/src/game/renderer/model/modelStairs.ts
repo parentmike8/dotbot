@@ -21,6 +21,10 @@ import { LIFT, MAT, contact, inlay, shade, volume, type ShadowPad } from "./tone
  */
 type TreadRun = { half: Rect; from: number; to: number };
 
+/** The shallowest and deepest a tread is drawn. Depth darkens it; see `drawTreadRun`. */
+const TOP_DEPTH = 0.02;
+const FOOT_DEPTH = 0.98;
+
 /**
  * The two runs of a flight, in draw order, with their depth ramps.
  *
@@ -28,18 +32,43 @@ type TreadRun = { half: Rect; from: number; to: number };
  * disappears into. That is the *exit* half whichever way the flight goes, which is
  * not the same as "the last one drawn": on a descending flight the exit run is
  * drawn second, and on an ascending one it is drawn first.
+ *
+ * DEPTH COMES FROM POSITION ALONG THE FLIGHT, not from which half a tread is in, and
+ * that is a fix rather than a preference. The ramp used to be handed to each half as a
+ * literal pair — entry 0.02→0.55, exit 0.55→0.98 — which is continuous only if the entry
+ * half happens to sit at the low coordinate. It does when `bottom` is "S" or "E", which
+ * is every stair in the city, and it does NOT when `bottom` is "N" or "W". Those flights
+ * came out running 0.55→0.98 and then jumping back to 0.02, so a bright tread sat against
+ * a black one exactly at the midline. Reported from play: "there's a weird sort of hard
+ * line in the stair, it doesn't gradually transition from light to dark... something is
+ * off relative to the stairs in other places."
+ *
+ * `bottom` says which end of the run is the foot, so the foot is the dark end and one
+ * ramp spans the whole flight whichever way it is turned.
  */
 function treadRuns(stair: StairLink): { runs: TreadRun[]; beyond: TreadRun; vertical: boolean } {
   const { entry, exit, vertical } = stairHalves(stair);
-  const down = stair.direction === "down";
-  const exitRun: TreadRun = down
-    ? { half: exit, from: 0.55, to: 0.98 }
-    : { half: exit, from: 0.98, to: 0.55 };
-  const entryRun: TreadRun = down
-    ? { half: entry, from: 0.02, to: 0.55 }
-    : { half: entry, from: 0.55, to: 0.02 };
+  const { x, y, w, h } = stair.rect;
+  const span = vertical ? h : w;
+  const low = vertical ? y : x;
+  // The foot at the low coordinate means depth grows as the coordinate SHRINKS.
+  const footAtLow = stair.bottom === "N" || stair.bottom === "W";
+
+  const depth = (along: number): number => {
+    const t = (along - low) / span;
+    return TOP_DEPTH + (footAtLow ? 1 - t : t) * (FOOT_DEPTH - TOP_DEPTH);
+  };
+  /** `drawTreadRun` always lays treads in increasing coordinate order. */
+  const ramp = (half: Rect): TreadRun => ({
+    half,
+    from: depth(vertical ? half.y : half.x),
+    to: depth(vertical ? half.y + half.h : half.x + half.w),
+  });
+
+  const exitRun = ramp(exit);
+  const entryRun = ramp(entry);
   return {
-    runs: down ? [entryRun, exitRun] : [exitRun, entryRun],
+    runs: stair.direction === "down" ? [entryRun, exitRun] : [exitRun, entryRun],
     beyond: exitRun,
     vertical,
   };

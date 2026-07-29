@@ -32,7 +32,7 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
      * the building has.
      */
     id: "observatory-stair",
-    rect: { x: CX - 150, y: CY - 80, w: 88, h: 160 },
+    rect: { x: CX - 150, y: CY - 60, w: 88, h: 120 },
     from: "GROUND",
     to: "F1",
     /**
@@ -51,18 +51,27 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
      */
     bottom: "N",
     /**
-     * NO `access: "openEnd"`, because an authored wall does the job instead — see
-     * `observatory-stair-guard` on both floors.
+     * NO `access: "openEnd"`, and this is the third time that has been settled. A flank wall
+     * plus a PER-FLOOR CAP instead — see `observatory-stair-guard` and `-cap` on each floor.
      *
-     * Derived guards wall the exit half on both long sides plus its far cap, and this
-     * drum is 200 across with the flight hard against its shell. Whichever way the
-     * flight is turned, that seals it: entered from the south the audit reported both
-     * stair heads blocked and 17,216 units stranded on F1, and entered from the north
-     * it reported the same thing 6,000 units smaller. A guard rail against a wall is a
-     * wall on both sides, and a round room this size has no third side to spare.
+     * What was missing before was only the cap. The flank wall was right: it runs the
+     * flight's length on the side the room is on, and the shell closes the other. But neither
+     * END was closed, so on F1 you could walk in off the sighting chamber and stand on the
+     * half of the flight that belongs to GROUND — "there should be a wall on the floor on the
+     * side of the stairs where you shouldn't be able to enter in from."
      *
-     * One wall down the open flank is what every stair in the city actually is, and it
-     * leaves both ends of the flight open, which is what a stair needs.
+     * `openEnd` derives that cap correctly and cannot be used here, which was measured
+     * rather than assumed: it rails the exit half's two long sides as well, and in a drum
+     * 340 across with the flight hard against the shell that costs both stair heads their
+     * full-size side exit and strands 10,560 units of F1. Tried it, read the audit, reverted.
+     *
+     * So the cap is authored, once per floor, because WHICH end needs it differs by floor:
+     * on GROUND the exit half is the south one, on F1 the north.
+     *
+     * 120 LONG, not 160, and the caps are why. The drum is 340 across, so a 160 flight against
+     * the shell leaves 53 units at each end — and once an end is capped, 53 minus two bot
+     * radii is a 5-unit window nothing can use, which stranded 9,856 units of F1. At 120 the
+     * strips are 73 and both stay walkable.
      */
   }],
   floors: [
@@ -79,6 +88,23 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
         { kind: "door", width: 84, near: { x: CX, y: CY - R } },
         { kind: "window", width: 60, near: { x: CX + R, y: CY + 40 } },
       ],
+      walls: [
+        // The flight's open flank. The shell closes its other side.
+        {
+          id: "observatory-stair-guard",
+          thickness: 12,
+          path: [{ x: CX - 62, y: CY - 60 }, { x: CX - 62, y: CY + 60 }],
+        },
+        /**
+         * The far cap, at the SOUTH end — this floor's exit half. Without it a bot could
+         * walk in off the chamber and stand on the treads that belong to F1.
+         */
+        {
+          id: "observatory-stair-cap",
+          thickness: 8,
+          path: [{ x: CX - 150, y: CY + 56 }, { x: CX - 56, y: CY + 56 }],
+        },
+      ],
       objects: [
         // 66 units off the altar, not 62. The aisle rule wants a real one or none.
         { id: "obs-niche-e", kind: "shelf", x: CX + 120, y: CY - 60, w: 28, h: 120 },
@@ -87,13 +113,6 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
         { id: "obs-brazier", kind: "brazier", x: CX + 74, y: CY + 78, w: 46, h: 46 },
         { id: "obs-jar", kind: "drum", x: CX - 120, y: CY + 104, w: 30, h: 30 },
       ],
-      walls: [{
-        // The stair's open flank, so you cannot step onto the flight sideways from the
-        // room. The shell closes its other side. See the note on the stair.
-        id: "observatory-stair-guard",
-        thickness: 12,
-        path: [{ x: CX - 62, y: CY - 80 }, { x: CX - 62, y: CY + 80 }],
-      }],
       dots: [{ id: "obs-dot-a", item: { kind: "powerup", type: "radar" }, x: CX + 40, y: CY + 60 }],
     },
     {
@@ -114,20 +133,37 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
         { kind: "window", width: 54, near: { x: CX - R, y: CY } },
         { kind: "window", width: 54, near: { x: CX + R, y: CY } },
       ],
-      walls: [{
-        // The stair's open flank. See the note on the stair itself for why this is an
-        // authored wall rather than a derived guard.
-        id: "observatory-stair-guard-f1",
-        thickness: 12,
-        path: [{ x: CX - 62, y: CY - 80 }, { x: CX - 62, y: CY + 80 }],
-      }],
+      walls: [
+        // The flight's open flank, one floor up. A guard on one floor only is a flight you
+        // can step onto sideways from the other.
+        {
+          id: "observatory-stair-guard-f1",
+          thickness: 12,
+          path: [{ x: CX - 62, y: CY - 60 }, { x: CX - 62, y: CY + 60 }],
+        },
+        // The far cap, at the NORTH end — this floor's exit half, and the opposite end from
+        // the one GROUND caps. That asymmetry is the whole reason a shared wall cannot do it.
+        {
+          id: "observatory-stair-cap-f1",
+          thickness: 8,
+          path: [{ x: CX - 150, y: CY - 56 }, { x: CX - 56, y: CY - 56 }],
+        },
+      ],
       objects: [
         // The gnomon: the pin the whole building is an instrument around.
         { id: "obs-gnomon", kind: "column", x: CX - 22, y: CY - 22, w: 44, h: 44 },
-        { id: "obs-table", kind: "draftingTable", x: CX + 70, y: CY - 100, w: 92, h: 44, facing: "S", scannable: true },
+        /**
+         * Turned onto the east wall rather than laid across the drum's north.
+         *
+         * At 92 x 44 across the north it left 48 units between itself and the gnomon — a bot's
+         * exact diameter, so zero freedom for its centre — and once the flight's north end was
+         * capped that pinch was the only route between F1's north and south halves. 11,392
+         * units of the sighting chamber went unreachable. Turned, the gap is 58.
+         */
+        { id: "obs-table", kind: "draftingTable", x: CX + 80, y: CY - 60, w: 44, h: 92, facing: "W", scannable: true },
         // Flush with the table's west end rather than parked mid-face: the attached-seam
         // allowance is only for a module that extends a bank at its end.
-        { id: "obs-stool", kind: "chair", x: CX + 70, y: CY - 54, w: 30, h: 28, facing: "N" },
+        { id: "obs-stool", kind: "chair", x: CX + 80, y: CY - 88, w: 30, h: 28, facing: "S" },
         /**
          * `obs-case`, a cabinet, is GONE rather than moved.
          *
