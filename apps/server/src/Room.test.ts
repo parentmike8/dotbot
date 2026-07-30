@@ -275,7 +275,13 @@ describe("Room victim-private kill cam", () => {
 
     type MutableBot = import("@dotbot/game/types").DotBotEntity;
     const internals = room as unknown as {
-      members: Map<string, { botId: string; lastKillCam: import("@dotbot/protocol").KillCamClip | null }>;
+      members: Map<string, {
+        botId: string;
+        lastKillCam: import("@dotbot/protocol").KillCamClip | null;
+        activeKillCamId: string | null;
+        inputQueue: import("@dotbot/protocol").WireInputFrame[];
+        inputStarved: boolean;
+      }>;
       simulation: {
         bots: Map<string, MutableBot>;
         getSnapshot(): import("@dotbot/game/types").GameSnapshot;
@@ -285,6 +291,13 @@ describe("Room victim-private kill cam", () => {
         events: import("@dotbot/game/types").SimEvent[],
         snapshot: import("@dotbot/game/types").GameSnapshot,
       ): void;
+      consumeInputFrame(member: {
+        botId: string;
+        lastKillCam: import("@dotbot/protocol").KillCamClip | null;
+        activeKillCamId: string | null;
+        inputQueue: import("@dotbot/protocol").WireInputFrame[];
+        inputStarved: boolean;
+      }): import("@dotbot/game/types").InputCommand;
     };
     const victimMember = internals.members.get("killcam-player-victim")!;
     const rivalMember = internals.members.get("killcam-player-rival")!;
@@ -324,6 +337,22 @@ describe("Room victim-private kill cam", () => {
       sourceBotId: rivalMember.botId,
     });
     expect(rival.messages.some((message) => message.type === "killCam")).toBe(false);
+    expect(victimMember.activeKillCamId).toBe(`${victimMember.botId}-123`);
+
+    victimMember.inputStarved = false;
+    victimMember.inputQueue = [{
+      seq: 44,
+      move: [1, 0],
+      dash: true,
+      useBay: 0,
+      plea: true,
+      drop: { from: "hold", index: 0, revision: 4, expected: { kind: "mine" } },
+    }];
+    expect(internals.consumeInputFrame(victimMember)).toEqual({
+      move: { x: 0, y: 0 },
+      dash: false,
+      plea: true,
+    });
 
     room.disconnect(victim.peer.id);
     const refreshed = collectingPeer("killcam-victim-refreshed");
@@ -335,6 +364,16 @@ describe("Room victim-private kill cam", () => {
       "alpha",
     )).not.toBeNull();
     expect(refreshed.messages.filter((message) => message.type === "killCam")).toHaveLength(1);
+    room.receive("killcam-player-victim", {
+      type: "killCamDone",
+      clipId: `${victimMember.botId}-stale`,
+    });
+    expect(victimMember.activeKillCamId).toBe(`${victimMember.botId}-123`);
+    room.receive("killcam-player-victim", {
+      type: "killCamDone",
+      clipId: `${victimMember.botId}-123`,
+    });
+    expect(victimMember.activeKillCamId).toBeNull();
 
     internals.processKillCamEvents([{
       type: "revived",

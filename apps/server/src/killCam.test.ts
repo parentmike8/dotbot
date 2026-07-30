@@ -163,4 +163,39 @@ describe("KillCamHistory", () => {
     expect(clip.sourceBotId).toBeUndefined();
     expect(clip.frames.every((frame) => frame.source === undefined)).toBe(true);
   });
+
+  it("records only blocking doors whose state the historical victim could observe", () => {
+    const history = new KillCamHistory(map);
+    const frame = snapshot(15, 100, { x: 220, y: 100 });
+    frame.doors = [
+      {
+        id: "visible-door",
+        doorwayId: "visible",
+        buildingId: "test",
+        floorId: "outdoor",
+        position: { x: 180, y: 100 },
+        width: 72,
+        dir: "v",
+        phase: "closed",
+        openness: 0,
+        blocking: true,
+      },
+      {
+        id: "hidden-door",
+        doorwayId: "hidden",
+        buildingId: "test",
+        floorId: "outdoor",
+        position: { x: 300, y: 100 },
+        width: 72,
+        dir: "v",
+        phase: "closed",
+        openness: 0,
+        blocking: true,
+      },
+    ];
+    history.record(frame);
+
+    const clip = history.createClip("victim", "killer", dashCause)!;
+    expect(clip.frames[0].blockingDoorIds).toEqual(["visible-door"]);
+  });
 });
