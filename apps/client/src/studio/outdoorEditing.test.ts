@@ -5,6 +5,7 @@ import {
   beginSession,
   commitOutdoor,
   editedSources,
+  nudgeOutdoor,
   outdoorHandles,
   pendingCount,
   rebuildMap,
@@ -40,6 +41,18 @@ describe("outdoor Studio handles", () => {
 });
 
 describe("outdoor edit session", () => {
+  it("accumulates two keyboard nudges from the current outdoor object", () => {
+    const session = beginSession([], worldMap);
+    const handle = outdoorHandles(worldMap, DOWNTOWN)
+      .find((candidate) => candidate.kind === "outdoorObject" && candidate.source?.kind === "authored")!;
+    const beforeX = session.outdoorObjects.find((object) => object.id === handle.id)!.x;
+
+    nudgeOutdoor(session, handle, { x: 4, y: 0 });
+    nudgeOutdoor(session, handle, { x: 4, y: 0 });
+
+    expect(session.outdoorObjects.find((object) => object.id === handle.id)?.x).toBe(beforeX + 8);
+  });
+
   it("moves an authored object, rebuilds the production map, undoes, and reloads cleanly", () => {
     const session = beginSession(
       worldMap.buildings.filter((building) => building.id === "mercy").map((building) => building.id),

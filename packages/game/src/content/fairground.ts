@@ -215,7 +215,7 @@ const fairObjects: MapObject[] = [
    * The carousel: the fair's own signature, and the most legible object in the region
    * from directly overhead. Round, striped, scalloped, with one horse missing.
    */
-  obj("carousel", 1015, 1965, 330, 330),
+  obj.authored("carousel-1015-1965", "carousel", 1015, 1965, 330, 330),
 
   /**
    * The helter-skelter, where the chairoplane used to stand.
@@ -227,14 +227,14 @@ const fairObjects: MapObject[] = [
    * end something to be — it was the one stretch of midway with no vertical accent on
    * it at all.
    */
-  obj("helterSkelter", 405, 1995, 310, 310),
+  obj.authored("helter-skelter-405-1995", "helterSkelter", 405, 1995, 310, 310),
 
   /**
    * The waltzer, south of the midway where the growth has already reached it. Its dish
    * holds rainwater, which is the one detail that says abandoned about a RIDE rather
    * than about the ground it stands on.
    */
-  obj("waltzer", 930, 2560, 300, 300),
+  obj.authored("waltzer-930-2560", "waltzer", 930, 2560, 300, 300),
 
   /**
    * THE BIG TOP, at the head of the midway, and it took over the ferris wheel's job.
@@ -261,7 +261,7 @@ const fairObjects: MapObject[] = [
    * That is the number that was checked first, and it is why the tent is not 30 units
    * further north: at y 2560 the gap was 42, and a bot is 48 across.
    */
-  obj("bigTop", 1900, 2590, 460, 320, { facing: "N" }),
+  obj.authored("big-top-1900-2590", "bigTop", 1900, 2590, 460, 320, { facing: "N" }),
 
   // -- The midway's furniture, on a rhythm with the rides punched out -----
   ...obj.derived(
@@ -295,11 +295,11 @@ const fairObjects: MapObject[] = [
    * 48-wide bot. Reported from play: "the sign at the north entrance doesn't let me
    * get there." What it reads is derived from the building nearest it.
    */
-  obj("sign", HALL.x - 172, 1636, 44, 12),
+  obj.authored("sign-hall-x-172-1636", "sign", HALL.x - 172, 1636, 44, 12),
 
   // -- The gate and the car park ------------------------------------------
-  obj("bollard", DRIVE_W_KERB - 24, 1980, 18, 18),
-  obj("bollard", DRIVE_E_KERB + 6, 1980, 18, 18),
+  obj.authored("bollard-drive-w-kerb-24-1980", "bollard", DRIVE_W_KERB - 24, 1980, 18, 18),
+  obj.authored("bollard-drive-e-kerb-6-1980", "bollard", DRIVE_E_KERB + 6, 1980, 18, 18),
   ...obj.derived(
     rhythmRule("fair-parking-n", "north car-park bay rhythm", "x", "rhythm(120, 900, 130)", 120, 900, 130),
     () => rhythm(120, 900, 130).map((x) => obj("parkingStall", x, 1660, 116, 54)),
@@ -308,10 +308,10 @@ const fairObjects: MapObject[] = [
     rhythmRule("fair-parking-s", "south car-park bay rhythm", "x", "rhythm(120, 900, 130)", 120, 900, 130),
     () => rhythm(120, 900, 130).map((x) => obj("parkingStall", x, 1780, 116, 54)),
   ),
-  obj("car", 258, 1668, 104, 42, { facing: "E" }),
-  obj("car", 518, 1790, 104, 42, { facing: "E" }),
-  obj("dumpster", 960, 1832, 70, 40, { solid: true }),
-  obj("drum", 1040, 1836, 28, 28),
+  obj.authored("car-258-1668", "car", 258, 1668, 104, 42, { facing: "E" }),
+  obj.authored("car-518-1790", "car", 518, 1790, 104, 42, { facing: "E" }),
+  obj.authored("dumpster-960-1832", "dumpster", 960, 1832, 70, 40, { solid: true }),
+  obj.authored("drum-1040-1836", "drum", 1040, 1836, 28, 28),
   ...obj.derived(
     rhythmRule("fair-drive-trees", "drive tree rhythm", "x", "rhythm(1450, 2280, 208)", 1450, 2280, 208),
     () => rhythm(1450, 2280, 208).map((x) => obj("tree", x, 1650, 46, 46)),
@@ -345,10 +345,10 @@ const fairObjects: MapObject[] = [
     rhythmRule("fair-south-kiosks", "south kiosk rhythm", "x", "rhythm(500, 1000, 170)", 500, 1000, 170),
     () => rhythm(500, 1000, 170).map((x) => obj("kiosk", x, 2720, 70, 50)),
   ),
-  obj("log", 1300, 2800, 230, 48, { facing: "E" }),
-  obj("log", 700, 3000, 200, 44, { facing: "E" }),
-  obj("thicket", 1720, 2960, 160, 140),
-  obj("thicket", 1980, 3120, 150, 134),
+  obj.authored("log-1300-2800", "log", 1300, 2800, 230, 48, { facing: "E" }),
+  obj.authored("log-700-3000", "log", 700, 3000, 200, 44, { facing: "E" }),
+  obj.authored("thicket-1720-2960", "thicket", 1720, 2960, 160, 140),
+  obj.authored("thicket-1980-3120", "thicket", 1980, 3120, 150, 134),
   /**
    * The generator house and the tanks that ran the lights, dumped where they stood.
    *
@@ -357,14 +357,14 @@ const fairObjects: MapObject[] = [
    * was fed from here — so putting it in the part the growth took first says both things
    * at once: what the place was for, and that nobody came back for it.
    */
-  obj("generator", 1320, 2600, 150, 90),
-  obj("drum", 1490, 2604, 34, 34),
-  obj("drum", 1490, 2644, 34, 34),
-  obj("drum", 1530, 2624, 32, 32),
-  obj("crateStack", 1340, 2710, 48, 48),
-  obj("dumpster", 1420, 2716, 74, 42, { solid: true }),
-  obj("kiosk", 1620, 2700, 78, 54),
-  obj("kiosk", 1760, 2760, 78, 54),
+  obj.authored("generator-1320-2600", "generator", 1320, 2600, 150, 90),
+  obj.authored("drum-1490-2604", "drum", 1490, 2604, 34, 34),
+  obj.authored("drum-1490-2644", "drum", 1490, 2644, 34, 34),
+  obj.authored("drum-1530-2624", "drum", 1530, 2624, 32, 32),
+  obj.authored("crate-stack-1340-2710", "crateStack", 1340, 2710, 48, 48),
+  obj.authored("dumpster-1420-2716", "dumpster", 1420, 2716, 74, 42, { solid: true }),
+  obj.authored("kiosk-1620-2700", "kiosk", 1620, 2700, 78, 54),
+  obj.authored("kiosk-1760-2760", "kiosk", 1760, 2760, 78, 54),
   ...obj.derived(
     rhythmRule("fair-south-trees", "south tree rhythm", "x", "rhythm(1180, 1560, 190)", 1180, 1560, 190),
     () => rhythm(1180, 1560, 190).map((x) => obj("tree", x, 3000, 96, 96)),
@@ -381,7 +381,7 @@ const fairObjects: MapObject[] = [
     rhythmRule("fair-west-trees-s", "south-west tree rhythm", "x", "rhythm(300, 760, 230)", 300, 760, 230),
     () => rhythm(300, 760, 230).map((x) => obj("tree", x, 2870, 92, 92)),
   ),
-  obj("tree", 360, 2180, 76, 76),
+  obj.authored("tree-360-2180", "tree", 360, 2180, 76, 76),
 
   /**
    * The wood closing in from the west, on its own rhythm.
@@ -399,14 +399,14 @@ const fairObjects: MapObject[] = [
     rhythmRule("fair-trail-trees", "trail tree rhythm", "x", "rhythm(300, 860, 224)", 300, 860, 224),
     () => rhythm(300, 860, 224).map((x) => obj("tree", x, 2960, 98, 98)),
   ),
-  obj("log", 420, 2680, 190, 44, { facing: "E" }),
-  obj("thicket", 1000, 2900, 150, 132),
+  obj.authored("log-420-2680", "log", 420, 2680, 190, 44, { facing: "E" }),
+  obj.authored("thicket-1000-2900", "thicket", 1000, 2900, 150, 132),
 
   /**
    * Midway extraction sign on the pad's east side. North and south are the promenade's
    * two long walking lanes, so neither is an acceptable place for a solid plate.
    */
-  obj("sign", 1018, 2348, 44, 12),
+  obj.authored("sign-1018-2348", "sign", 1018, 2348, 44, 12),
 ];
 
 export const fairground: RegionParts = {

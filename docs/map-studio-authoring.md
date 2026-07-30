@@ -44,7 +44,8 @@ shipped game server.
 
 Outdoor objects carry their source owner into the compiled map:
 
-- An individually authored `obj(...)` call is selectable, movable and resizable.
+- An individually authored `obj.authored("stable-key", ...)` call is selectable,
+  movable and resizable.
   Studio patches only that call's four geometry arguments. The ID expression,
   object kind, comments, options, rotation, facing, collision shape and other
   metadata remain untouched.
@@ -58,12 +59,14 @@ Outdoor objects carry their source owner into the compiled map:
   positions are presently assembled from semantic region fields rather than one
   safe literal patch target.
 
-Direct outdoor patch locations use the ordinal of authored `obj(...)` calls in a
-source file. Calls inside `obj.derived(...)` do not count, so changing the number
-of items emitted by a rhythm cannot renumber the patch target below it. A direct
-call whose ID is computed is refused unless its authored source locator is
-present. As with buildings, Studio refuses a save if the file changed on disk
-after the session loaded it.
+Direct outdoor patch locations use the authored key plus literal object kind as
+a stable call fingerprint. The patch scanner ignores comments, strings and
+templates, verifies that exactly one matching executable call still exists, and
+then changes only its geometry arguments. Runtime IDs use the same authored key;
+rule members derive theirs from the rule ID plus a stable member key, so inserting
+or reordering unrelated placements does not renumber existing objects. A computed
+runtime ID without this source locator is refused. As with buildings, Studio
+refuses a save if the file changed on disk after the session loaded it.
 
 ## Tools
 

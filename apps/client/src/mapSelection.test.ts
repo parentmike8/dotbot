@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
+import { quaysideMap } from "@dotbot/game/content/quaysideDepot";
+import { studioAreasForMap, studioStartForMap } from "@dotbot/game/content/sources";
 import { worldMap } from "@dotbot/game/content/world";
 import { arrivalGroups, selectBaseMap, spawnAt } from "./mapSelection";
 
@@ -80,5 +82,24 @@ describe("choosing where a run starts", () => {
     expect(selectBaseMap("").id).toBe("world");
     expect(selectBaseMap("?map=downtown").id).toBe(downtownMap.id);
     expect(selectBaseMap("?solo").id).toBe("world");
+  });
+
+  it("offers only outdoor review areas that belong to the selected map", () => {
+    expect(studioAreasForMap(worldMap).map((area) => area.id))
+      .toEqual(["downtown", "yard", "fair", "temple"]);
+    expect(studioAreasForMap(downtownMap).map((area) => area.id)).toEqual(["downtown"]);
+    expect(studioAreasForMap(quaysideMap)).toEqual([]);
+  });
+
+  it("opens the Quayside fixture on its authored building instead of a world-only area", () => {
+    expect(studioStartForMap(quaysideMap)).toEqual({
+      context: "building",
+      building: "quay",
+      areaId: "",
+    });
+    expect(studioStartForMap(downtownMap)).toMatchObject({
+      context: "area",
+      areaId: "downtown",
+    });
   });
 });

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BUILDING_SOURCES, STUDIO_AREAS } from "@dotbot/game/content/sources";
+import {
+  BUILDING_SOURCES,
+  studioAreasForMap,
+  studioStartForMap,
+} from "@dotbot/game/content/sources";
 import type { SourceWall } from "@dotbot/game/mapSource";
 import type { SourceEdit } from "@dotbot/game/mapSourcePatch";
 import type { ObjectKind, Vec2 } from "@dotbot/game/types";
@@ -18,6 +22,7 @@ import {
   KIND_SIZE,
   loadSessionBaselines,
   nextId,
+  nudgeOutdoor,
   OBJECT_TRAY,
   OPENING_TRAY,
   pendingCount,
@@ -65,6 +70,8 @@ export function MapStudio() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<StudioCanvas | null>(null);
   const baseMap = useMemo(() => selectMapDocument(window.location.search), []);
+  const studioAreas = useMemo(() => studioAreasForMap(baseMap), [baseMap]);
+  const start = useMemo(() => studioStartForMap(baseMap), [baseMap]);
 
   const editable = useMemo(
     () => baseMap.buildings.filter((building) => BUILDING_SOURCES[building.id]).map((building) => building.id),
@@ -72,9 +79,9 @@ export function MapStudio() {
   );
   const session = useMemo(() => beginSession(editable, baseMap), [editable, baseMap]);
 
-  const [building, setBuilding] = useState(editable[0] ?? "");
-  const [context, setContext] = useState<"area" | "building">("area");
-  const [areaId, setAreaId] = useState(STUDIO_AREAS[0]?.id ?? "");
+  const [building, setBuilding] = useState(start.building || editable[0] || "");
+  const [context, setContext] = useState<"area" | "building">(start.context);
+  const [areaId, setAreaId] = useState(start.areaId);
   const [floor, setFloor] = useState("GROUND");
   const [tool, setTool] = useState<Tool>("select");
   const [grid, setGrid] = useState(4);
@@ -116,7 +123,7 @@ export function MapStudio() {
     setDraft([]);
   }, []);
 
-  const area = STUDIO_AREAS.find((entry) => entry.id === areaId) ?? STUDIO_AREAS[0];
+  const area = studioAreas.find((entry) => entry.id === areaId) ?? studioAreas[0];
   const source = context === "building" ? session.sources[building] ?? null : null;
   const map = useMemo(() => rebuildMap(baseMap, session), [baseMap, session, revision]);
   const floors = useMemo(() => source?.floors.map((item) => item.label) ?? [], [source, revision]);
@@ -251,7 +258,7 @@ export function MapStudio() {
     map,
     building: context === "building" ? building : null,
     floor: context === "building" ? floor : null,
-    area: context === "area" ? area.bounds : null,
+    area: context === "area" ? area?.bounds ?? null : null,
     grid,
     tool: context === "area" ? "select" : tool,
     selection,
@@ -320,13 +327,14 @@ export function MapStudio() {
       if (!delta) return;
       event.preventDefault();
       if (selection.kind === "outdoorObject" && selection.source?.kind === "authored") {
-        recordOutdoor({
-          op: "moveOutdoorObject",
-          id: selection.id,
-          source: selection.source,
-          x: selection.rect.x + delta.x,
-          y: selection.rect.y + delta.y,
-        });
+        try {
+          nudgeOutdoor(session, selection, delta);
+          setPending(pendingCount(session));
+          setRevision((value) => value + 1);
+          setStatus({ tone: "idle", text: "moveOutdoorObject — unsaved" });
+        } catch (error) {
+          setStatus({ tone: "warn", text: (error as Error).message });
+        }
       } else if (selection.kind === "object" && source) {
         const object = findObject(source, selection.floor, selection.id);
         if (object) record({ op: "moveObject", floor: selection.floor, id: selection.id, x: object.x + delta.x, y: object.y + delta.y });
@@ -337,7 +345,7 @@ export function MapStudio() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selection, grid, source, record, recordOutdoor, takeBack]);
+  }, [selection, grid, source, session, record, takeBack]);
 
   const finishWall = useCallback(() => {
     if (draft.length < 2 || !source) {
@@ -436,10 +444,10 @@ export function MapStudio() {
       <aside className="studio__rail">
         <header className="studio__brand">MAP STUDIO</header>
 
-        <section>
+        {studioAreas.length > 0 && <section>
           <h2>Outdoor context</h2>
           <div className="studio__chips">
-            {STUDIO_AREAS.map((entry) => (
+            {studioAreas.map((entry) => (
               <button
                 key={entry.id}
                 type="button"
@@ -464,7 +472,7 @@ export function MapStudio() {
               bot clearance
             </button>
           </div>
-        </section>
+        </section>}
 
         <section>
           <h2>Building</h2>

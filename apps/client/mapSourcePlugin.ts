@@ -41,6 +41,24 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 }
 
 export function mapSourcePlugin(): Plugin {
+  /**
+   * Compare-and-write is one critical section per source file.
+   *
+   * Without this queue two tabs can both read the same baseline before either
+   * write lands, then both overwrite it. Different files remain independent.
+   */
+  const writeTails = new Map<string, Promise<unknown>>();
+  const serializeWrite = async <T>(path: string, work: () => Promise<T>): Promise<T> => {
+    const previous = writeTails.get(path) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(work);
+    writeTails.set(path, next);
+    try {
+      return await next;
+    } finally {
+      if (writeTails.get(path) === next) writeTails.delete(path);
+    }
+  };
+
   return {
     name: "dotbot-map-source",
     apply: "serve",
@@ -86,11 +104,13 @@ export function mapSourcePlugin(): Plugin {
              * against a stale base and applying it would silently drop the other
              * change. Refuse and let the editor reload.
              */
-            const onDisk = await readFile(path, "utf8");
-            if (base !== undefined && base !== onDisk) {
-              throw new Error(`${file} changed on disk since Studio read it. Reload before saving.`);
-            }
-            await writeFile(path, text, "utf8");
+            await serializeWrite(path, async () => {
+              const onDisk = await readFile(path, "utf8");
+              if (base !== undefined && base !== onDisk) {
+                throw new Error(`${file} changed on disk since Studio read it. Reload before saving.`);
+              }
+              await writeFile(path, text, "utf8");
+            });
             send(res, 200, { ok: true, file });
           } catch (error) {
             send(res, 400, { ok: false, error: (error as Error).message });

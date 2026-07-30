@@ -23,15 +23,28 @@ export type OutdoorSourceEdit =
     h: number;
   };
 
-export type OutdoorObjectFactory = {
-  (
-    kind: ObjectKind,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    extra?: Partial<MapObject>,
-  ): MapObject;
+type ObjectExtra = Partial<MapObject>;
+type MakeObject = (
+  kind: ObjectKind,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  extra?: ObjectExtra,
+) => MapObject;
+type MakeAuthoredObject = (
+  key: string,
+  kind: ObjectKind,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  extra?: ObjectExtra,
+) => MapObject;
+
+export type OutdoorObjectFactory = MakeObject & {
+  /** A direct source literal with an authored, stable, meaningful key. */
+  authored: MakeAuthoredObject;
   /**
    * Evaluate one placing rule while tagging every object it emits as derived.
    *
@@ -41,23 +54,61 @@ export type OutdoorObjectFactory = {
   derived(rule: OutdoorRule, build: () => MapObject[]): MapObject[];
 };
 
+function stableToken(value: string | number): string {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export function outdoorCallFingerprint(key: string, kind: ObjectKind): string {
+  return `${key}:${kind}`;
+}
+
 /**
  * Outdoor object authoring with stable runtime IDs and explicit source ownership.
  *
- * `prefix` may be a function for old maps whose public IDs have a historic shape.
- * Source ordinals count only direct calls, so expanding a rhythm never renumbers
- * the patch locator of the literal object below it.
+ * Direct objects require a literal authored key. Rule output derives its ID from
+ * the rule id plus a geometry-based member key, so iteration order is irrelevant.
  */
-export function objects(
-  prefix: string | (() => string),
-  file: string,
-): OutdoorObjectFactory {
-  let sequence = 0;
-  let authoredOrdinal = 0;
+export function objects(prefix: string, file: string): OutdoorObjectFactory {
   let activeRule: OutdoorRule | null = null;
-  const nextId = typeof prefix === "function"
-    ? prefix
-    : () => `${prefix}-o${sequence++}`;
+  const authoredKeys = new Set<string>();
+  let derivedKeys = new Set<string>();
+
+  const makeAuthored: MakeAuthoredObject = (
+    key,
+    kind,
+    x,
+    y,
+    w,
+    h,
+    extra = {},
+  ) => {
+    if (activeRule) throw new Error(`Use the rule member form inside ${activeRule.id}, not obj.authored(...).`);
+    if (!key || authoredKeys.has(key)) throw new Error(`Duplicate outdoor authored key "${key}" in ${file}.`);
+    authoredKeys.add(key);
+    const fingerprint = outdoorCallFingerprint(key, kind);
+    const source: OutdoorSource = {
+      kind: "authored",
+      file,
+      key,
+      objectKind: kind,
+      fingerprint,
+      call: "obj",
+    };
+    return {
+      id: `${stableToken(prefix)}-${stableToken(key)}`,
+      kind,
+      x,
+      y,
+      w,
+      h,
+      ...extra,
+      source,
+    };
+  };
 
   const object = ((
     kind: ObjectKind,
@@ -65,21 +116,43 @@ export function objects(
     y: number,
     w: number,
     h: number,
-    extra: Partial<MapObject> = {},
+    extra: ObjectExtra = {},
   ): MapObject => {
-    const source: OutdoorSource = activeRule
-      ? { kind: "derived", file, rule: activeRule }
-      : { kind: "authored", file, ordinal: authoredOrdinal++, call: "obj" };
-    return { id: nextId(), kind, x, y, w, h, ...extra, source };
+    if (!activeRule) {
+      throw new Error(`Direct outdoor objects in ${file} require obj.authored("meaningful-key", ...).`);
+    }
+    const memberKey = [
+      stableToken(kind),
+      stableToken(x),
+      stableToken(y),
+      `${stableToken(w)}x${stableToken(h)}`,
+    ].join("-");
+    if (derivedKeys.has(memberKey)) {
+      throw new Error(`Rule ${activeRule.id} emits duplicate member ${memberKey}.`);
+    }
+    derivedKeys.add(memberKey);
+    return {
+      id: `${stableToken(prefix)}-${stableToken(activeRule.id)}-${memberKey}`,
+      kind,
+      x,
+      y,
+      w,
+      h,
+      ...extra,
+      source: { kind: "derived", file, rule: activeRule, memberKey },
+    };
   }) as OutdoorObjectFactory;
 
+  object.authored = makeAuthored;
   object.derived = (rule, build) => {
     if (activeRule) throw new Error(`Outdoor placing rules cannot nest (${activeRule.id} -> ${rule.id}).`);
     activeRule = rule;
+    derivedKeys = new Set();
     try {
       return build();
     } finally {
       activeRule = null;
+      derivedKeys = new Set();
     }
   };
   return object;
@@ -131,10 +204,20 @@ function skipString(text: string, start: number): number {
     }
     if (text[at] === quote) return at;
   }
-  throw new OutdoorPatchError("Unterminated string in outdoor source");
+  throw new OutdoorPatchError("Unterminated string or template in outdoor source");
 }
 
-/** Match (), [] or {}, respecting strings and comments. */
+function skipComment(text: string, start: number): number {
+  if (text[start + 1] === "/") {
+    const end = text.indexOf("\n", start + 2);
+    return end < 0 ? text.length - 1 : end;
+  }
+  const end = text.indexOf("*/", start + 2);
+  if (end < 0) throw new OutdoorPatchError("Unterminated comment in outdoor source");
+  return end + 1;
+}
+
+/** Match (), [] or {}, respecting line/block comments, strings and templates. */
 function matchBracket(text: string, open: number): number {
   const pairs: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
   const opener = text[open];
@@ -147,16 +230,8 @@ function matchBracket(text: string, open: number): number {
       at = skipString(text, at);
       continue;
     }
-    if (char === "/" && text[at + 1] === "/") {
-      const end = text.indexOf("\n", at);
-      if (end < 0) break;
-      at = end;
-      continue;
-    }
-    if (char === "/" && text[at + 1] === "*") {
-      const end = text.indexOf("*/", at + 2);
-      if (end < 0) throw new OutdoorPatchError("Unterminated comment in outdoor source");
-      at = end + 1;
+    if (char === "/" && (text[at + 1] === "/" || text[at + 1] === "*")) {
+      at = skipComment(text, at);
       continue;
     }
     if (char === opener) depth += 1;
@@ -165,13 +240,11 @@ function matchBracket(text: string, open: number): number {
   throw new OutdoorPatchError(`Unbalanced ${opener} at ${open}`);
 }
 
-function callSpans(text: string, pattern: RegExp): Span[] {
-  const spans: Span[] = [];
-  for (const match of text.matchAll(pattern)) {
-    const open = text.indexOf("(", match.index);
-    spans.push({ start: match.index, end: matchBracket(text, open) + 1 });
-  }
-  return spans;
+function trimSpan(text: string, span: Span): Span {
+  let { start, end } = span;
+  while (start < end && /\s/.test(text[start])) start += 1;
+  while (end > start && /\s/.test(text[end - 1])) end -= 1;
+  return { start, end };
 }
 
 /** Top-level argument spans, excluding their surrounding whitespace. */
@@ -187,13 +260,8 @@ function argumentsOf(text: string, call: Span): Span[] {
       at = skipString(text, at);
       continue;
     }
-    if (char === "/" && text[at + 1] === "/") {
-      at = text.indexOf("\n", at);
-      if (at < 0) break;
-      continue;
-    }
-    if (char === "/" && text[at + 1] === "*") {
-      at = text.indexOf("*/", at + 2) + 1;
+    if (char === "/" && (text[at + 1] === "/" || text[at + 1] === "*")) {
+      at = skipComment(text, at);
       continue;
     }
     if ("([{".includes(char)) stack.push(char);
@@ -207,52 +275,118 @@ function argumentsOf(text: string, call: Span): Span[] {
   return spans;
 }
 
-function trimSpan(text: string, span: Span): Span {
-  let { start, end } = span;
-  while (start < end && /\s/.test(text[start])) start += 1;
-  while (end > start && /\s/.test(text[end - 1])) end -= 1;
-  return { start, end };
+function stringLiteral(text: string, span: Span): string | null {
+  const raw = text.slice(span.start, span.end);
+  if (raw.length < 2 || !["'", '"'].includes(raw[0]) || raw.at(-1) !== raw[0]) return null;
+  const body = raw.slice(1, -1);
+  return body.replace(/\\(['"\\])/g, "$1");
 }
 
-function directObjectCalls(text: string): Span[] {
-  const derived = callSpans(text, /\bobj\.derived\s*\(/g);
-  return callSpans(text, /\bobj\s*\(/g)
-    .filter((call) => !derived.some((rule) => call.start > rule.start && call.end < rule.end));
+/**
+ * Find only real `obj(...)` expressions in executable source.
+ *
+ * This scanner advances over comments, strings and entire templates before it
+ * considers an identifier, so a documentation example cannot become a patch target.
+ */
+function objectCallSpans(text: string): Span[] {
+  const spans: Span[] = [];
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at];
+    if (char === '"' || char === "'" || char === "`") {
+      at = skipString(text, at);
+      continue;
+    }
+    if (char === "/" && (text[at + 1] === "/" || text[at + 1] === "*")) {
+      at = skipComment(text, at);
+      continue;
+    }
+    if (!text.startsWith("obj", at)
+      || /[A-Za-z0-9_$]/.test(text[at - 1] ?? "")
+      || /[A-Za-z0-9_$]/.test(text[at + 3] ?? "")) continue;
+    let open = at + 3;
+    while (/\s/.test(text[open] ?? "")) open += 1;
+    if (text.startsWith(".authored", open)) {
+      open += ".authored".length;
+      while (/\s/.test(text[open] ?? "")) open += 1;
+    }
+    if (text[open] !== "(") continue;
+    spans.push({ start: at, end: matchBracket(text, open) + 1 });
+    at = spans.at(-1)!.end - 1;
+  }
+  return spans;
 }
 
-function replaceArguments(text: string, call: Span, replacements: Map<number, number>): string {
-  const args = argumentsOf(text, call);
-  if (args.length < 5) throw new OutdoorPatchError("Outdoor obj(...) call has fewer than five geometry arguments.");
+type DirectObjectCall = {
+  call: Span;
+  args: Span[];
+  key: string;
+  objectKind: ObjectKind;
+  fingerprint: string;
+};
+
+function directObjectCalls(text: string): DirectObjectCall[] {
+  const calls: DirectObjectCall[] = [];
+  for (const call of objectCallSpans(text)) {
+    const args = argumentsOf(text, call);
+    if (args.length < 6) continue;
+    const key = stringLiteral(text, args[0]);
+    const objectKind = stringLiteral(text, args[1]) as ObjectKind | null;
+    if (!key || !objectKind) continue;
+    calls.push({
+      call,
+      args,
+      key,
+      objectKind,
+      fingerprint: outdoorCallFingerprint(key, objectKind),
+    });
+  }
+  return calls;
+}
+
+function replaceArguments(
+  text: string,
+  direct: DirectObjectCall,
+  replacements: Map<number, number>,
+): string {
   let next = text;
   for (const [index, value] of [...replacements].sort((a, b) => b[0] - a[0])) {
-    const span = args[index];
+    const span = direct.args[index];
     if (!span) throw new OutdoorPatchError(`Outdoor obj(...) has no argument ${index}.`);
     next = next.slice(0, span.start) + String(value) + next.slice(span.end);
   }
   return next;
 }
 
-/**
- * Patch one direct outdoor object call. Derived output never reaches this path.
- *
- * Runtime IDs are deliberately not searched in the file: `fair-o17` is produced
- * by a sequence counter and is not a source anchor. The authored-call locator is.
- */
+/** Patch one stable authored outdoor call. Rule-derived output never reaches this path. */
 export function applyOutdoorEdit(text: string, edit: OutdoorSourceEdit): string {
   if (!edit.source || edit.source.kind !== "authored") {
     throw new OutdoorPatchError(
       `${edit.id} is a computed runtime id with no authored source locator; refusing to patch it.`,
     );
   }
-  const call = directObjectCalls(text)[edit.source.ordinal];
-  if (!call) {
+  const expected = outdoorCallFingerprint(edit.source.key, edit.source.objectKind);
+  if (edit.source.fingerprint !== expected) {
     throw new OutdoorPatchError(
-      `Could not find authored object ${edit.source.ordinal} in ${edit.source.file}; reload Studio before saving.`,
+      `${edit.id} has an invalid authored fingerprint ${edit.source.fingerprint}; expected ${expected}.`,
     );
   }
+  const calls = directObjectCalls(text);
+  const direct = calls.find((candidate) => candidate.fingerprint === expected);
+  if (!direct) {
+    const sameKey = calls.find((candidate) => candidate.key === edit.source.key);
+    const detail = sameKey
+      ? `kind is ${sameKey.objectKind}, not ${edit.source.objectKind}`
+      : "stable call was not found";
+    throw new OutdoorPatchError(
+      `Could not verify authored locator ${expected} in ${edit.source.file}: ${detail}. Reload Studio before saving.`,
+    );
+  }
+  if (calls.filter((candidate) => candidate.fingerprint === expected).length !== 1) {
+    throw new OutdoorPatchError(`Authored locator ${expected} is duplicated in ${edit.source.file}.`);
+  }
   return edit.op === "moveOutdoorObject"
-    ? replaceArguments(text, call, new Map([[1, edit.x], [2, edit.y]]))
-    : replaceArguments(text, call, new Map([[3, edit.w], [4, edit.h]]));
+    ? replaceArguments(text, direct, new Map([[2, edit.x], [3, edit.y]]))
+    : replaceArguments(text, direct, new Map([[4, edit.w], [5, edit.h]]));
 }
 
 export function applyOutdoorEdits(text: string, edits: readonly OutdoorSourceEdit[]): string {

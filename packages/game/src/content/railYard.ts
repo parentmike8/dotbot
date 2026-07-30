@@ -122,14 +122,12 @@ const cityPlan: CityPlan = {
 
 const { roads, surfaces, regions } = compileCityPlan(cityPlan);
 
-/** A length of running line: sleepers, ballast and two rails, drawn as ground. */
-function trackRun(id: string, x: number, y: number, w: number, h: number): MapObject {
-  return { id, kind: "track", x, y, w, h };
-}
-
 const yardObjects: MapObject[] = [
   // -- The main line ------------------------------------------------------
-  ...ROADS.map((y, i) => trackRun(`yard-main-${i}`, W0, y, W1 - W0, GAUGE)),
+  ...obj.derived(
+    rhythmRule("yard-main-lines", "main-line track list", "y", "ROADS", ROADS[0], ROADS.at(-1)!, 76),
+    () => ROADS.map((y) => obj("track", W0, y, W1 - W0, GAUGE)),
+  ),
 
   // -- The throat --------------------------------------------------------
   /**
@@ -139,8 +137,8 @@ const yardObjects: MapObject[] = [
    * what a works crossing is — the road gives way to the rail, not the other way
    * round — and it is the single detail that welds the two regions into one place.
    */
-  trackRun("yard-lead", LEAD_X, LINE_BOTTOM, GAUGE, 1065 - LINE_BOTTOM),
-  trackRun("yard-coal-road", W0, 506, LEAD_X - W0, GAUGE),
+  obj.authored("lead", "track", LEAD_X, LINE_BOTTOM, GAUGE, 1065 - LINE_BOTTOM),
+  obj.authored("coal-road", "track", W0, 506, LEAD_X - W0, GAUGE),
 
   /**
    * The coaling stage, standing over the coal road with its chute facing it.
@@ -149,23 +147,23 @@ const yardObjects: MapObject[] = [
    * of uniformly dark ironwork has no scale in it, and the one pale mass is what
    * gives the rest something to be measured against.
    */
-  obj("coalingTower", 2470, 330, 190, 168),
+  obj.authored("coaling-tower-2470-330", "coalingTower", 2470, 330, 190, 168),
   // The stage is fed from a bank of wagons on the coal road behind it.
-  obj("wagon", 2700, 494, 200, 76, { facing: "E" }),
+  obj.authored("wagon-2700-494", "wagon", 2700, 494, 200, 76, { facing: "E" }),
   // x 2470, not 2440: at 2440 its west end reached into the Main St gate's approach,
   // pinching the city's own road where it enters the yard.
-  obj("wagon", 2470, 596, 190, 74, { facing: "E" }),
+  obj.authored("wagon-2470-596", "wagon", 2470, 596, 190, 74, { facing: "E" }),
 
   /** The water tank, beside the lead: an engine takes water on its way to the table. */
-  obj("waterTank", 2760, 336, 132, 132),
+  obj.authored("water-tank-2760-336", "waterTank", 2760, 336, 132, 132),
 
   // Points rodding and the ground frame at the throat, tucked clear of the crossing.
-  obj("utilityBox", 2896, 320, 30, 22, { facing: "S" }),
-  obj("drum", 2870, 620, 28, 28),
-  obj("drum", 2900, 620, 28, 28),
-  obj("crateStack", 3320, 320, 44, 44),
-  obj("pallet", 3320, 380, 52, 38),
-  obj("pallet", 3380, 380, 52, 38),
+  obj.authored("utility-box-2896-320", "utilityBox", 2896, 320, 30, 22, { facing: "S" }),
+  obj.authored("drum-2870-620", "drum", 2870, 620, 28, 28),
+  obj.authored("drum-2900-620", "drum", 2900, 620, 28, 28),
+  obj.authored("crate-stack-3320-320", "crateStack", 3320, 320, 44, 44),
+  obj.authored("pallet-3320-380", "pallet", 3320, 380, 52, 38),
+  obj.authored("pallet-3380-380", "pallet", 3380, 380, 52, 38),
 
   // Sleepers stacked along the throat's east end, on a rhythm.
   ...obj.derived(
@@ -199,7 +197,7 @@ const yardObjects: MapObject[] = [
    * What it says is derived from the building it stands against — see `signs.ts` — never
    * typed here.
    */
-  obj("sign", 3216, 660, 44, 12),
+  obj.authored("sign-3216-660", "sign", 3216, 660, 44, 12),
 
   // -- The turntable and its apron ---------------------------------------
   /**
@@ -207,15 +205,18 @@ const yardObjects: MapObject[] = [
    * strongest single image the region has: everything round it is radial, which is
    * the one kind of structure a strict overhead view does not flatten.
    */
-  obj("turntable", TABLE.x - TABLE_RADIUS, TABLE.y - TABLE_RADIUS, TABLE_RADIUS * 2, TABLE_RADIUS * 2),
+  obj.authored("turntable-table-x-table-radius-table-y-table-radius", "turntable", TABLE.x - TABLE_RADIUS, TABLE.y - TABLE_RADIUS, TABLE_RADIUS * 2, TABLE_RADIUS * 2),
 
   // Ash and clinker where engines stand waiting for the road, north of the pit.
-  obj("drum", 2790, 1010, 30, 30),
-  obj("drum", 2822, 1012, 28, 28),
-  obj("dumpster", 3140, 1000, 70, 40, { solid: true }),
+  obj.authored("drum-2790-1010", "drum", 2790, 1010, 30, 30),
+  obj.authored("drum-2822-1012", "drum", 2822, 1012, 28, 28),
+  obj.authored("dumpster-3140-1000", "dumpster", 3140, 1000, 70, 40, { solid: true }),
 
   // -- The wagon sidings, east -------------------------------------------
-  ...[1000, 1090, 1180].map((y, i) => trackRun(`yard-siding-${i}`, 3420, y, W1 - 3420 - 40, GAUGE)),
+  ...obj.derived(
+    rhythmRule("yard-siding-lines", "siding track list", "y", "[1000, 1090, 1180]", 1000, 1180, 90),
+    () => [1000, 1090, 1180].map((y) => obj("track", 3420, y, W1 - 3420 - 40, GAUGE)),
+  ),
   ...obj.derived(
     rhythmRule("yard-siding-stops", "siding buffer-stop list", "y", "[1000, 1090, 1180]", 1000, 1180, 90),
     () => [1000, 1090, 1180].map((y) => obj("bufferStop", W1 - 62, y - 6, 46, GAUGE + 12, { facing: "E" })),
@@ -261,8 +262,8 @@ const yardObjects: MapObject[] = [
    * end and a bounding box does not say so. Placed by eye, six of these stood inside the
    * shed. In an annulus the only safe test is `271 <= r <= 469` from the turntable.
    */
-  trackRun("yard-scrap-road", 3460, 1290, W1 - 3500, GAUGE),
-  obj("bufferStop", W1 - 62, 1284, 46, GAUGE + 12, { facing: "E" }),
+  obj.authored("scrap-road", "track", 3460, 1290, W1 - 3500, GAUGE),
+  obj.authored("buffer-stop-w1-62-1284", "bufferStop", W1 - 62, 1284, 46, GAUGE + 12, { facing: "E" }),
   ...obj.derived(
     rhythmRule("yard-scrap-wagons", "scrap-road wagon rhythm", "x", "rhythm(3500, 3800, 216)", 3500, 3800, 216),
     () => rhythm(3500, 3800, 216).map((x) => obj("wagon", x, 1284, 200, 64, { facing: "E" })),
@@ -275,31 +276,31 @@ const yardObjects: MapObject[] = [
     rhythmRule("yard-scrap-pallets", "scrap-road pallet rhythm", "x", "rhythm(3520, 3980, 128)", 3520, 3980, 128),
     () => rhythm(3520, 3980, 128).map((x) => obj("pallet", x, 1470, 54, 40)),
   ),
-  obj("dumpster", 3480, 1560, 74, 42, { solid: true }),
-  obj("dumpster", 3480, 1610, 74, 42, { solid: true }),
-  obj("drum", 3570, 1564, 30, 30),
-  obj("drum", 3604, 1564, 30, 30),
-  obj("drum", 3570, 1600, 30, 30),
+  obj.authored("dumpster-3480-1560", "dumpster", 3480, 1560, 74, 42, { solid: true }),
+  obj.authored("dumpster-3480-1610", "dumpster", 3480, 1610, 74, 42, { solid: true }),
+  obj.authored("drum-3570-1564", "drum", 3570, 1564, 30, 30),
+  obj.authored("drum-3604-1564", "drum", 3604, 1564, 30, 30),
+  obj.authored("drum-3570-1600", "drum", 3570, 1600, 30, 30),
   // Clear of the COAL ROAD arrival point, 200 units west: a squad spreads 72 units east
   // and south of where it lands, so an insertion needs a genuinely empty 120 square.
-  obj("crateStack", 2700, 980, 46, 46),
-  obj("crateStack", 2752, 984, 42, 42),
-  obj("drum", 2700, 1044, 30, 30),
-  obj("drum", 2734, 1044, 30, 30),
+  obj.authored("crate-stack-2700-980", "crateStack", 2700, 980, 46, 46),
+  obj.authored("crate-stack-2752-984", "crateStack", 2752, 984, 42, 42),
+  obj.authored("drum-2700-1044", "drum", 2700, 1044, 30, 30),
+  obj.authored("drum-2734-1044", "drum", 2734, 1044, 30, 30),
   // South of the shed's outer arc. At y 1690 its east end was 7 units inside the
   // roundhouse's wall, which a bounding-box check reports as fine.
-  obj("log", 2620, 1724, 210, 46, { facing: "E" }),
+  obj.authored("log-2620-1724", "log", 2620, 1724, 210, 46, { facing: "E" }),
 
   /**
    * Roundhouse sign, beside the east bay rather than across it. Its radial position is
    * inside the table apron and outside the shed's inner arc, leaving the bay road clear.
    */
-  obj("sign", 3150, 1268, 44, 12),
+  obj.authored("sign-3150-1268", "sign", 3150, 1268, 44, 12),
   /**
    * Turntable extraction sign on the north-east shoulder. The lead is the table's only
    * route back to the yard and runs west of it, so the plate cannot narrow that passage.
    */
-  obj("sign", 3050, 1138, 44, 12),
+  obj.authored("sign-3050-1138", "sign", 3050, 1138, 44, 12),
 ];
 
 export const railYard: RegionParts = {

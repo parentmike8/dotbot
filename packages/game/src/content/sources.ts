@@ -1,5 +1,5 @@
 import type { SourceBuilding } from "../mapSource";
-import type { Rect } from "../types";
+import type { MapDocument, Rect } from "../types";
 import { BEACON_SOURCE } from "./beaconHouse";
 import { CIVIC_SOURCE } from "./civicTower";
 import { LOT6_SOURCE } from "./lot6Depot";
@@ -50,3 +50,27 @@ export const STUDIO_AREAS: StudioArea[] = [
   { id: "fair", name: "Pleasure Ground", bounds: { x: 0, y: 1574, w: 2400, h: 1826 } },
   { id: "temple", name: "Great Temple", bounds: { x: 2374, y: 1774, w: 1826, h: 1626 } },
 ];
+
+/** Production review frames wholly owned by this selected map sheet. */
+export function studioAreasForMap(map: MapDocument): StudioArea[] {
+  return STUDIO_AREAS.filter(({ bounds }) =>
+    bounds.x >= 0
+    && bounds.y >= 0
+    && bounds.x + bounds.w <= map.width
+    && bounds.y + bounds.h <= map.height);
+}
+
+export type StudioStart = {
+  context: "area" | "building";
+  building: string;
+  areaId: string;
+};
+
+/** Honest initial Studio context for a world sheet or a single-building fixture. */
+export function studioStartForMap(map: MapDocument): StudioStart {
+  const areas = studioAreasForMap(map);
+  const building = map.buildings.find((entry) => BUILDING_SOURCES[entry.id])?.id ?? "";
+  return areas.length > 0
+    ? { context: "area", building, areaId: areas[0].id }
+    : { context: "building", building, areaId: "" };
+}

@@ -438,14 +438,19 @@ export type OutdoorSource =
   | {
     kind: "authored";
     file: string;
-    /** Position among direct `obj(...)` calls, excluding calls inside a rule. */
-    ordinal: number;
+    /** Stable literal source key; inserting a neighbour cannot change it. */
+    key: string;
+    /** The kind is part of the locator so a stale key cannot patch another shape. */
+    objectKind: ObjectKind;
+    fingerprint: string;
     call: "obj";
   }
   | {
     kind: "derived";
     file: string;
     rule: OutdoorRule;
+    /** Stable member identity derived from rule semantics, never array order. */
+    memberKey: string;
   };
 
 /** Map objects are drawn from the same authored rectangle used by physics. */

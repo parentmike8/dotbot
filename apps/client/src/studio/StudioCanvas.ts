@@ -4,7 +4,9 @@ import { defaultGameConfig } from "@dotbot/game/config";
 import type { SourceBuilding, SourceWall } from "@dotbot/game/mapSource";
 import type { MapDocument, Rect, Solid, Vec2 } from "@dotbot/game/types";
 import { buildMapArt, type MapArt } from "../game/renderer/mapArt";
+import { parseObjectParallaxStrength } from "../game/renderer/model/modelParallax";
 import { handlesFor, outdoorHandles, pick, type Handle } from "./editing";
+import { StudioParallax } from "./parallax";
 import { screenToWorld, snapToGrid, wallNear } from "./viewport";
 
 /**
@@ -57,6 +59,10 @@ export class StudioCanvas {
   private handles: Handle[] = [];
   private scale = 1;
   private centre: Vec2 = { x: 0, y: 0 };
+  private readonly parallax = new StudioParallax();
+  private readonly parallaxStrength = typeof window === "undefined"
+    ? 1
+    : parseObjectParallaxStrength(window.location.search);
   /**
    * `from` is in **screen** space, not world.
    *
@@ -105,6 +111,8 @@ export class StudioCanvas {
      */
     this.observer = new ResizeObserver(() => {
       this.applyCamera();
+      this.parallax.invalidate();
+      this.updateParallax();
       this.paintOverlay();
       this.app.render();
     });
@@ -138,6 +146,26 @@ export class StudioCanvas {
     this.world.position.set(width / 2 - this.centre.x * this.scale, height / 2 - this.centre.y * this.scale);
   }
 
+  private visibleBounds(): Rect {
+    const { width, height } = this.app.screen;
+    return {
+      x: this.centre.x - width / 2 / this.scale,
+      y: this.centre.y - height / 2 / this.scale,
+      w: width / this.scale,
+      h: height / this.scale,
+    };
+  }
+
+  private updateParallax(): void {
+    if (!this.art) return;
+    this.parallax.update(
+      this.art,
+      this.centre,
+      this.visibleBounds(),
+      this.parallaxStrength,
+    );
+  }
+
   fit(bounds: Rect): void {
     if (!this.ready) {
       this.queued.fit = bounds;
@@ -149,6 +177,8 @@ export class StudioCanvas {
       Math.min((width - margin * 2) / bounds.w, (height - margin * 2) / bounds.h)));
     this.centre = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 };
     this.applyCamera();
+    this.parallax.invalidate();
+    this.updateParallax();
   }
 
   // -------------------------------------------------------------------------
@@ -170,7 +200,10 @@ export class StudioCanvas {
       // Keep the world point under the cursor pinned while zooming.
       this.centre = { x: this.centre.x + (before.x - after.x), y: this.centre.y + (before.y - after.y) };
       this.applyCamera();
+      this.parallax.invalidate();
+      this.updateParallax();
       this.paintOverlay();
+      this.app.render();
     }, { passive: false });
 
     canvas.addEventListener("pointerdown", (event) => {
@@ -220,6 +253,7 @@ export class StudioCanvas {
       if (this.drag.kind === "pan") {
         this.centre = { x: this.drag.origin.x - moved.x, y: this.drag.origin.y - moved.y };
         this.applyCamera();
+        this.updateParallax();
         this.paintOverlay();
         this.app.render();
         return;
@@ -278,6 +312,8 @@ export class StudioCanvas {
       this.art = buildMapArt(view.map);
       this.world.addChildAt(this.art.root, 0);
       this.showFloor(view);
+      this.parallax.invalidate();
+      this.updateParallax();
     }
     this.paintOverlay();
     this.app.render();

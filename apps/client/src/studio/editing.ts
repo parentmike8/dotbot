@@ -188,7 +188,7 @@ function mutateOutdoor(objects: MapDocument["outdoor"]["objects"], edit: Outdoor
   if (!object) throw new Error(`Outdoor object ${edit.id} is no longer in this map; reload Studio.`);
   if (object.source?.kind !== "authored"
     || object.source.file !== edit.source.file
-    || object.source.ordinal !== edit.source.ordinal) {
+    || object.source.fingerprint !== edit.source.fingerprint) {
     throw new Error(`${edit.id} source ownership changed; reload Studio before editing it.`);
   }
   if (edit.op === "moveOutdoorObject") {
@@ -406,6 +406,33 @@ export type Handle =
     movable: false;
     resizable: false;
   };
+
+/**
+ * Apply one keyboard nudge from the session's current object, not the handle
+ * captured when selection began. The selection rectangle is intentionally
+ * stable across React renders; edit state is the authority for accumulation.
+ */
+export function nudgeOutdoor(
+  session: StudioSession,
+  handle: Handle,
+  delta: Vec2,
+): void {
+  if (handle.kind !== "outdoorObject") {
+    throw new Error(`${handle.id} is not an outdoor object and cannot be nudged here.`);
+  }
+  if (handle.source?.kind !== "authored") {
+    throw new Error(`${handle.id} is placed by a rule and cannot be nudged.`);
+  }
+  const current = session.outdoorObjects.find((object) => object.id === handle.id);
+  if (!current) throw new Error(`Outdoor object ${handle.id} is no longer in this map; reload Studio.`);
+  commitOutdoor(session, {
+    op: "moveOutdoorObject",
+    id: handle.id,
+    source: handle.source,
+    x: current.x + delta.x,
+    y: current.y + delta.y,
+  });
+}
 
 const DOT_HANDLE = 18;
 
