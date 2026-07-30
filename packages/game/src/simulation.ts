@@ -996,7 +996,7 @@ export class DotBotSimulation {
         }
         // A downed bot may still mark. Watching a rival walk past while you wait for a
         // pickup is exactly when telling your squad where they are matters most.
-        if (input?.ping) this.pingFor(bot, input.ping.kind, input.ping.position);
+        if (input?.ping) this.pingFor(bot, input.ping.kind, input.ping.position, input.ping.floorId);
         if (input?.dash || input?.useBay !== undefined || input?.swapBay || input?.plea || input?.ping) {
           this.inputs.set(bot.id, { move: zeroVec(), dash: false, plea: false });
         }
@@ -1038,7 +1038,7 @@ export class DotBotSimulation {
         // A press is consumed on the tick it is considered, fired or not.
         // Pressing during cooldown must never bank a dash for later.
       }
-      if (input.ping) this.pingFor(bot, input.ping.kind, input.ping.position);
+      if (input.ping) this.pingFor(bot, input.ping.kind, input.ping.position, input.ping.floorId);
       if (input.dash || input.useBay !== undefined || input.swapBay || input.take || input.plea || input.ping) {
         this.inputs.set(bot.id, {
           ...input, dash: false, useBay: undefined, swapBay: undefined, take: undefined, plea: false, ping: undefined,
@@ -1677,9 +1677,14 @@ export class DotBotSimulation {
    * sight. Marking somewhere you cannot see is the point: round a corner, up a floor, where
    * they were last seen.
    */
-  private pingFor(bot: InternalBot, kind: PingKind, position: Vec2): void {
+  private pingFor(bot: InternalBot, kind: PingKind, position: Vec2, requestedFloorId?: string): void {
+    // The only floor a remote chart may name is the public exterior. An
+    // explicit interior id would let an untrusted client manufacture private
+    // floor knowledge, so reject it rather than silently coercing it.
+    if (requestedFloorId !== undefined && requestedFloorId !== OUTDOOR_FLOOR_ID) return;
     if (bot.pingCooldownMs > 0) return;
     bot.pingCooldownMs = this.config.pingCooldownMs;
+    const floorId = requestedFloorId ?? bot.floorId;
     /**
      * A mark makes a sound, which is a deliberate cost rather than only feedback.
      *
@@ -1709,7 +1714,7 @@ export class DotBotSimulation {
     this.squadMarks = this.squadMarks
       .filter((mark) => mark.squadId !== bot.squadId || this.timeMs - mark.atMs < PING_MEMORY_MS)
       .filter((mark) => !(mark.squadId === bot.squadId && mark.kind === kind))
-      .concat({ squadId: bot.squadId, kind, position: at, floorId: bot.floorId, atMs: this.timeMs });
+      .concat({ squadId: bot.squadId, kind, position: at, floorId, atMs: this.timeMs });
     this.events.push({
       type: "pinged",
       botId: bot.id,
@@ -1717,7 +1722,7 @@ export class DotBotSimulation {
       pingId: `ping-${bot.id}-${Math.round(this.timeMs)}`,
       kind,
       position: { ...at },
-      floorId: bot.floorId,
+      floorId,
     });
   }
 

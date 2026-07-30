@@ -50,6 +50,37 @@ describe("NetSession item edges", () => {
     expect(sent.at(-1)).toEqual({ type: "joinSquad", squadId: "bravo" });
   });
 
+  it("carries an exterior map ping floor reliably without inventing an interior floor", () => {
+    const sent: ClientMessage[] = [];
+    const deliveries: DeliveryClass[] = [];
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    Object.assign(session as unknown as object, {
+      transport: {
+        send: (message: ClientMessage, delivery: DeliveryClass) => {
+          sent.push(message);
+          deliveries.push(delivery);
+        },
+      },
+      mapValue: downtownMap,
+      configValue: defaultGameConfig,
+      tickHz: 60,
+      lastRenderTick: 120,
+      handshakeReady: true,
+    });
+
+    session.sendInput({
+      move: { x: 0, y: 0 },
+      dash: false,
+      ping: { kind: "here", position: { x: 640, y: 420 }, floorId: "outdoor" },
+    });
+    (session as unknown as { advancePrediction(ms: number): void }).advancePrediction(1000 / 60 + 1);
+
+    const input = sent.find((message): message is Extract<ClientMessage, { type: "input" }> => message.type === "input");
+    expect(input?.ping).toEqual({ kind: "here", position: [640, 420], floorId: "outdoor" });
+    expect(input?.frames?.[0].ping).toEqual({ kind: "here", position: [640, 420], floorId: "outdoor" });
+    expect(deliveries[0]).toBe("reliable");
+  });
+
   it("decodes contract payouts from the authoritative run manifest", () => {
     const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
     (session as unknown as { receive(message: unknown): void }).receive({
@@ -203,6 +234,9 @@ describe("NetSession item edges", () => {
       members: [{ playerId: "player-1", name: "Ada", squadId: "alpha" }],
       locked: true,
     });
+    // The public exterior chart is static match knowledge. Reconnecting does
+    // not need a per-player fog payload or a replacement map document.
+    expect(session.map).toBe(downtownMap);
     session.requestSquad("crew-3");
     expect(transports[1].sent.map(({ message }) => message.type)).toEqual(["hello", "joinSquad"]);
     session.dispose();

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CIVIC_SOURCE } from "@dotbot/game/content/civicTower";
-import { screenToWorld, snapToGrid, wallNear, WALL_PICK_RANGE } from "./viewport";
+import { screenToWorld, snapToGrid, wallNear, WALL_PICK_RANGE, worldToScreen } from "./viewport";
 
 /**
  * The seam between a mouse and an edit.
@@ -45,6 +45,12 @@ describe("screen to world", () => {
     // asymmetric in both the click and the box.
     const at = screenToWorld(100 + 600, 50 + 100, box, { x: 0, y: 0 }, 1);
     expect(at).toEqual({ x: 200, y: -200 });
+  });
+
+  it("round-trips the same world point used by the map camera", () => {
+    const world = { x: 1375, y: 822 };
+    const screen = worldToScreen(world, box, { x: 1200, y: 900 }, 0.75);
+    expect(screenToWorld(screen.x, screen.y, box, { x: 1200, y: 900 }, 0.75)).toEqual(world);
   });
 });
 

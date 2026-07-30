@@ -190,7 +190,7 @@ export type WireInputFrame = {
   downedVerb?: DownedVerb;
   take?: TakeCommand;
   plea?: boolean;
-  ping?: { kind: PingKind; position: [number, number] };
+  ping?: { kind: PingKind; position: [number, number]; floorId?: string };
 };
 
 /**
@@ -250,7 +250,7 @@ export type ClientMessage =
       downedVerb?: DownedVerb;
       take?: TakeCommand;
       plea?: boolean;
-      ping?: { kind: PingKind; position: [number, number] };
+      ping?: { kind: PingKind; position: [number, number]; floorId?: string };
       /** Tick-stamped frame batch (newest last), including redundant copies
        * of recent frames so a dropped packet cannot lose an input. When
        * present, the top-level fields mirror the newest frame and exist for

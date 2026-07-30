@@ -11,6 +11,7 @@ import {
 } from "../hud/Overlay";
 import { hudSkinClass } from "../hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "../hud/hud";
+import { WorldMapOverlay } from "../WorldMapOverlay";
 
 type NetGameViewProps = {
   session: NetSession;
@@ -36,6 +37,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
     selectDownedVerb, plea, useBay, swapBayItem, takeFromBody, setBodyAction,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker,
+    worldMapVisible, toggleWorldMap, closeWorldMap, markExterior, chooseExteriorMark, squadMarks,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ session, spectate: true });
   const [swapBay, setSwapBay] = useState<number | null>(null);
@@ -90,6 +92,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         rivals={rivalsAlive(snapshot?.bots, player?.squadId)}
         onSettings={toggleSettings}
       >
+        <button type="button" className="map-button" onClick={toggleWorldMap}>Map <kbd>M</kbd></button>
         <span className="room-chip">Room {roomCode}</span>
       </RunReadout>
 
@@ -128,7 +131,19 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         </SettingsPanel>
       ) : null}
 
-      {column ? <FloorRail column={column} /> : null}
+      {column && !worldMapVisible ? <FloorRail column={column} /> : null}
+
+      {worldMapVisible && snapshot ? (
+        <WorldMapOverlay
+          map={map}
+          snapshot={snapshot}
+          viewerId={session.playerId}
+          marks={squadMarks}
+          onPing={markExterior}
+          onChoosePing={chooseExteriorMark}
+          onClose={closeWorldMap}
+        />
+      ) : null}
 
       {/*
         The first few seconds of a match: where you came in, and how many neutral bots

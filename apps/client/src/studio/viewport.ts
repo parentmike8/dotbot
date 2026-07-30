@@ -34,6 +34,19 @@ export function screenToWorld(
   };
 }
 
+/** The exact inverse used to place fixed-size map markers over the shared art. */
+export function worldToScreen(
+  point: Vec2,
+  box: ViewBox,
+  centre: Vec2,
+  scale: number,
+): Vec2 {
+  return {
+    x: box.left + box.width / 2 + (point.x - centre.x) * scale,
+    y: box.top + box.height / 2 + (point.y - centre.y) * scale,
+  };
+}
+
 /** Nearest grid intersection; `grid` of 0 means the author turned snapping off. */
 export function snapToGrid(point: Vec2, grid: number): Vec2 {
   if (!grid) return point;

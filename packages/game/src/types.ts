@@ -877,8 +877,14 @@ export type InputCommand = {
   downedVerb?: DownedVerb;
   take?: TakeCommand;
   plea?: boolean;
-  /** Mark a world position for your squad. */
-  ping?: { kind: PingKind; position: Vec2 };
+  /**
+   * Mark a world position for your squad.
+   *
+   * `floorId` is absent for the live view, which marks the bot's own floor.
+   * The exterior world map may explicitly request only `outdoor`; the
+   * simulation rejects every explicit interior floor.
+   */
+  ping?: { kind: PingKind; position: Vec2; floorId?: string };
 };
 
 export type CoverageKind = "capture" | "loot" | "revive" | "extract" | "swap";

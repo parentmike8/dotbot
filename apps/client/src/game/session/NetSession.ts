@@ -607,7 +607,11 @@ export class NetSession implements GameSession {
       downedVerb: input.downedVerb,
       take: input.take,
       plea: input.plea,
-      ping: input.ping ? { kind: input.ping.kind, position: [input.ping.position.x, input.ping.position.y] as [number, number] } : undefined,
+      ping: input.ping ? {
+        kind: input.ping.kind,
+        position: [input.ping.position.x, input.ping.position.y] as [number, number],
+        floorId: input.ping.floorId,
+      } : undefined,
     }));
     const top = frames[frames.length - 1];
     const delivery: DeliveryClass = frames.some(carriesAction) ? "reliable" : "latest";

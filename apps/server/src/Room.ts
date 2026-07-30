@@ -466,7 +466,11 @@ export class Room {
       downedVerb: frame.downedVerb,
       take: frame.take,
       plea: frame.plea,
-      ping: frame.ping ? { kind: frame.ping.kind, position: { x: frame.ping.position[0], y: frame.ping.position[1] } } : undefined,
+      ping: frame.ping ? {
+        kind: frame.ping.kind,
+        position: { x: frame.ping.position[0], y: frame.ping.position[1] },
+        floorId: frame.ping.floorId,
+      } : undefined,
     };
     member.heldInput = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
     return input;

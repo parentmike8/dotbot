@@ -19,6 +19,7 @@ import type { GameSession } from "./session/GameSession";
 import type { BayIndex, DotBotEntity, DownedVerb, GameSnapshot, InputCommand, Item, MapDocument, PingKind, SimEvent, TakeCommand, Vec2 } from "@dotbot/game/types";
 import { CLICK_PING_KIND, collectPings, type LiveMark } from "./pings";
 import type { NetworkDebugStats } from "./session/netgraph";
+import { WORLD_MAP_PING_FLOOR } from "./worldMap/worldMap";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
 
@@ -89,7 +90,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
    */
   const pingQueuedRef = useRef<InputCommand["ping"]>(undefined);
   const marksRef = useRef<LiveMark[]>([]);
-  const [pingPicker, setPingPicker] = useState<{ screen: Vec2; world: Vec2 } | null>(null);
+  const [pingPicker, setPingPicker] = useState<{ screen: Vec2; world: Vec2; floorId?: string } | null>(null);
+  const worldMapOpenRef = useRef(false);
+  const [worldMapVisible, setWorldMapVisible] = useState(false);
   const spectateCycleQueuedRef = useRef(false);
   const spectatedBotIdRef = useRef<string | null>(null);
   const runEndedRef = useRef(false);
@@ -131,6 +134,21 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     keysRef.current.clear();
     resetJoystick();
   }, [resetJoystick]);
+
+  const setWorldMapOpen = useCallback((visible: boolean) => {
+    worldMapOpenRef.current = visible;
+    setWorldMapVisible(visible);
+    setPingPicker(null);
+    if (visible) {
+      clearMovementInput();
+      dashQueuedRef.current = false;
+      useBayQueuedRef.current = undefined;
+      swapQueuedRef.current = undefined;
+      takeQueuedRef.current = undefined;
+      pleaQueuedRef.current = false;
+      setSettingsVisible(false);
+    }
+  }, [clearMovementInput]);
 
   useEffect(() => {
     let disposed = false;
@@ -201,6 +219,14 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
         if (runEndedRef.current) {
           session.sendInput({ move: { x: 0, y: 0 }, dash: false });
+        } else if (worldMapOpenRef.current) {
+          // The match continues, but the map is a focus-taking surface. The
+          // only action it may emit is its deliberate exterior ping.
+          session.sendInput({
+            move: { x: 0, y: 0 },
+            dash: false,
+            ping: pingQueuedRef.current,
+          });
         } else {
           const keyboardMove = getKeyboardVector(keysRef.current);
           const joystickMove = joystickRef.current.move;
@@ -408,6 +434,18 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       if (isEditableTarget(event)) return;
       void feedback.unlock();
 
+      if (event.code === "KeyM") {
+        event.preventDefault();
+        if (!event.repeat) setWorldMapOpen(!worldMapOpenRef.current);
+        return;
+      }
+
+      if (worldMapOpenRef.current) {
+        event.preventDefault();
+        if (event.code === "Escape") setWorldMapOpen(false);
+        return;
+      }
+
       if (event.code === "F3") {
         event.preventDefault();
         setDebugVisible((visible) => !visible);
@@ -524,7 +562,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       feedbackRef.current = null;
       sessionRef.current = null;
     };
-  }, [clearMovementInput, providedSession, requestedMap, resetJoystick, spectateEnabled]);
+  }, [clearMovementInput, providedSession, requestedMap, resetJoystick, setWorldMapOpen, spectateEnabled]);
 
   const queueDash = useCallback(() => {
     void feedbackRef.current?.unlock();
@@ -703,6 +741,19 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     pingQueuedRef.current = { kind: CLICK_PING_KIND, position: world };
   }, []);
 
+  /** A chart click is always the public exterior, even while the bot is indoors. */
+  const markExterior = useCallback((world: Vec2) => {
+    pingQueuedRef.current = {
+      kind: CLICK_PING_KIND,
+      position: world,
+      floorId: WORLD_MAP_PING_FLOOR,
+    };
+  }, []);
+
+  const chooseExteriorMark = useCallback((world: Vec2, screen: Vec2) => {
+    setPingPicker({ world, screen, floorId: WORLD_MAP_PING_FLOOR });
+  }, []);
+
   /**
    * Left-click marks "here". Right-click opens the picker, and choosing fires that type
    * there without arming it for later — see `CLICK_PING_KIND` for why the sticky version was
@@ -766,7 +817,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const choosePingKind = useCallback((kind: PingKind) => {
     const picker = pingPicker;
     setPingPicker(null);
-    if (picker) pingQueuedRef.current = { kind, position: picker.world };
+    if (picker) pingQueuedRef.current = { kind, position: picker.world, floorId: picker.floorId };
   }, [pingPicker]);
 
   return {
@@ -776,6 +827,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     choosePingKind,
     clearPings,
     closePingPicker: useCallback(() => setPingPicker(null), []),
+    worldMapVisible,
+    toggleWorldMap: useCallback(() => setWorldMapOpen(!worldMapOpenRef.current), [setWorldMapOpen]),
+    closeWorldMap: useCallback(() => setWorldMapOpen(false), [setWorldMapOpen]),
+    markExterior,
+    chooseExteriorMark,
+    squadMarks: marksRef.current,
     snapshot,
     events,
     runResult,
