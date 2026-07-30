@@ -197,7 +197,22 @@ export function WorldLab() {
        */
       const showFloor = (floorId: string | null): void => {
         for (const building of art.buildings) {
-          for (const mass of building.roofMasses) mass.visible = floorId === null;
+          /**
+           * A building's OWN roof plan keeps its mass, because that mass is the plan.
+           *
+           * `roofMasses` is documented as "everything above ground level, which is everything
+           * that parallaxes" — for an authored ROOF plan that means the deck, the membrane, the
+           * bulkheads and every piece of equipment on it. Stripping it to see the floor
+           * underneath is right for the seven storeys below and exactly wrong for the roof
+           * itself: what is left behind in `view` is the cast shadow and the wall plate, so all
+           * three roof plans in the world rendered as a solid near-black rectangle. The
+           * membrane is 0xbcc0c4 and the shot sampled 20,23,26, which is the shadow.
+           *
+           * So the ROOF frames were unreviewable, silently, in the surface built for reviewing
+           * floors. `roofFloorId` already exists to answer this exact question.
+           */
+          const showingItsOwnRoof = floorId !== null && building.roofFloorId === floorId;
+          for (const mass of building.roofMasses) mass.visible = floorId === null || showingItsOwnRoof;
           building.roof.visible = floorId === null;
           for (const floor of building.floors) {
             floor.view.visible = floorId === null ? floor.floor.label === "GROUND" : floor.floor.id === floorId;
