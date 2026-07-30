@@ -34,6 +34,8 @@ import { SHADOW_ALPHA, withViewPull, type ShadowPad } from "./tone";
 
 export const DEFAULT_OBJECT_PARALLAX_STRENGTH = 1;
 export const MAX_OBJECT_PARALLAX_STRENGTH = 2;
+/** Shared live-game/Studio camera movement threshold for object redraws. */
+export const OBJECT_PARALLAX_REDRAW_STEP = 24;
 
 /** Parse the shared game/lab URL control without collapsing every useful value to one. */
 export function parseObjectParallaxStrength(search: string): number {

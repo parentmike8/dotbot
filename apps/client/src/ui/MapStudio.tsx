@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BUILDING_SOURCES } from "@dotbot/game/content/sources";
+import {
+  BUILDING_SOURCES,
+  studioAreasForMap,
+  studioStartForMap,
+} from "@dotbot/game/content/sources";
 import type { SourceWall } from "@dotbot/game/mapSource";
 import type { SourceEdit } from "@dotbot/game/mapSourcePatch";
 import type { ObjectKind, Vec2 } from "@dotbot/game/types";
@@ -8,17 +12,22 @@ import { StudioCanvas, type CanvasView } from "../studio/StudioCanvas";
 import {
   beginSession,
   commit,
+  commitOutdoor,
   DOT_TRAY,
-  editedBuildings,
+  editedSources,
   findDot,
   findObject,
   handlesFor,
+  outdoorHandles,
   KIND_SIZE,
+  loadSessionBaselines,
   nextId,
+  nudgeOutdoor,
   OBJECT_TRAY,
   OPENING_TRAY,
   pendingCount,
   rebuildMap,
+  reloadSession,
   saveSession,
   undo,
   undoTarget,
@@ -61,14 +70,18 @@ export function MapStudio() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<StudioCanvas | null>(null);
   const baseMap = useMemo(() => selectMapDocument(window.location.search), []);
+  const studioAreas = useMemo(() => studioAreasForMap(baseMap), [baseMap]);
+  const start = useMemo(() => studioStartForMap(baseMap), [baseMap]);
 
   const editable = useMemo(
     () => baseMap.buildings.filter((building) => BUILDING_SOURCES[building.id]).map((building) => building.id),
     [baseMap],
   );
-  const session = useMemo(() => beginSession(editable), [editable]);
+  const session = useMemo(() => beginSession(editable, baseMap), [editable, baseMap]);
 
-  const [building, setBuilding] = useState(editable[0] ?? "");
+  const [building, setBuilding] = useState(start.building || editable[0] || "");
+  const [context, setContext] = useState<"area" | "building">(start.context);
+  const [areaId, setAreaId] = useState(start.areaId);
   const [floor, setFloor] = useState("GROUND");
   const [tool, setTool] = useState<Tool>("select");
   const [grid, setGrid] = useState(4);
@@ -84,20 +97,34 @@ export function MapStudio() {
   const [revision, setRevision] = useState(0);
   const [query, setQuery] = useState("");
   const [recents, setRecents] = useState<string[]>(() => (editable[0] ? [editable[0]] : []));
+  const [showCollision, setShowCollision] = useState(false);
+  const [showClearance, setShowClearance] = useState(false);
+  const [baselinesReady, setBaselinesReady] = useState(false);
 
   const choices = useMemo(() => buildingChoices(baseMap, editable), [baseMap, editable]);
   const matches = useMemo(() => filterBuildings(choices, query), [choices, query]);
   const recent = useMemo(() => recentChoices(choices, recents), [choices, recents]);
 
+  useEffect(() => {
+    setBaselinesReady(false);
+    void loadSessionBaselines(session)
+      .then(() => setBaselinesReady(true))
+      .catch((error: unknown) => {
+        setStatus({ tone: "warn", text: `Source read error: ${(error as Error).message}` });
+      });
+  }, [session]);
+
   /** Open a building: remember it, and drop anything that pointed into the last one. */
   const openBuilding = useCallback((id: string) => {
+    setContext("building");
     setBuilding(id);
     setRecents((list) => remember(list, id));
     setSelection(null);
     setDraft([]);
   }, []);
 
-  const source = session.sources[building] ?? null;
+  const area = studioAreas.find((entry) => entry.id === areaId) ?? studioAreas[0];
+  const source = context === "building" ? session.sources[building] ?? null : null;
   const map = useMemo(() => rebuildMap(baseMap, session), [baseMap, session, revision]);
   const floors = useMemo(() => source?.floors.map((item) => item.label) ?? [], [source, revision]);
 
@@ -112,6 +139,17 @@ export function MapStudio() {
       setStatus({ tone: "warn", text: (error as Error).message });
     }
   }, [building, session]);
+
+  const recordOutdoor = useCallback((edit: Parameters<typeof commitOutdoor>[1]) => {
+    try {
+      commitOutdoor(session, edit);
+      setPending(pendingCount(session));
+      setRevision((value) => value + 1);
+      setStatus({ tone: "idle", text: `${edit.op} — unsaved` });
+    } catch (error) {
+      setStatus({ tone: "warn", text: (error as Error).message });
+    }
+  }, [session]);
 
   /**
    * Take back the last edit, wherever it was made.
@@ -154,9 +192,18 @@ export function MapStudio() {
   });
 
   live.current.move = (handle, position) => {
-    record(handle.kind === "object"
-      ? { op: "moveObject", floor: handle.floor, id: handle.id, x: position.x, y: position.y }
-      : {
+    if (handle.kind === "outdoorObject" && handle.source?.kind === "authored") {
+      recordOutdoor({
+        op: "moveOutdoorObject",
+        id: handle.id,
+        source: handle.source,
+        x: position.x,
+        y: position.y,
+      });
+    } else if (handle.kind === "object") {
+      record({ op: "moveObject", floor: handle.floor, id: handle.id, x: position.x, y: position.y });
+    } else if (handle.kind === "dot") {
+      record({
         op: "moveDot",
         floor: handle.floor,
         id: handle.id,
@@ -164,6 +211,7 @@ export function MapStudio() {
         x: position.x + handle.rect.w / 2,
         y: position.y + handle.rect.h / 2,
       });
+    }
   };
 
   live.current.place = (point) => {
@@ -196,6 +244,9 @@ export function MapStudio() {
       onPlace: (point) => live.current.place(point),
       onWallPoint: (point) => setDraft((points) => [...points, point]),
       onOpeningPoint: (wall, at) => live.current.opening(wall, at),
+    }).catch((error: unknown) => {
+      console.error("Map Studio canvas failed to mount", error);
+      setStatus({ tone: "warn", text: `Canvas error: ${(error as Error).message}` });
     });
     return () => {
       canvas.dispose();
@@ -204,19 +255,33 @@ export function MapStudio() {
   }, []);
 
   const view: CanvasView = useMemo(() => ({
-    map, building, floor, grid, tool, selection, draft, source,
-  }), [map, building, floor, grid, tool, selection, draft, source]);
+    map,
+    building: context === "building" ? building : null,
+    floor: context === "building" ? floor : null,
+    area: context === "area" ? area?.bounds ?? null : null,
+    grid,
+    tool: context === "area" ? "select" : tool,
+    selection,
+    draft,
+    source,
+    showCollision,
+    showClearance,
+  }), [map, context, building, floor, area, grid, tool, selection, draft, source, showCollision, showClearance]);
 
   useEffect(() => {
     canvasRef.current?.apply(view);
   }, [view]);
 
   useEffect(() => {
-    const target = map.buildings.find((item) => item.id === building);
-    if (target) canvasRef.current?.fit(target.footprint);
+    if (context === "area") {
+      if (area) canvasRef.current?.fit(area.bounds);
+    } else {
+      const target = map.buildings.find((item) => item.id === building);
+      if (target) canvasRef.current?.fit(target.footprint);
+    }
     // Fit on building change only; refitting on every edit would fight the author.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [building]);
+  }, [building, context, areaId]);
 
   // -------------------------------------------------------------------------
   // Keyboard
@@ -240,8 +305,10 @@ export function MapStudio() {
         setSelection(null);
         return;
       }
-      if (!selection || !source) return;
+      if (!selection) return;
       if (event.key === "Backspace" || event.key === "Delete") {
+        if (selection.kind !== "object" && selection.kind !== "dot") return;
+        if (!source) return;
         event.preventDefault();
         record(selection.kind === "object"
           ? { op: "deleteObject", floor: selection.floor, id: selection.id }
@@ -259,17 +326,26 @@ export function MapStudio() {
       const delta = nudge[event.key];
       if (!delta) return;
       event.preventDefault();
-      if (selection.kind === "object") {
+      if (selection.kind === "outdoorObject" && selection.source?.kind === "authored") {
+        try {
+          nudgeOutdoor(session, selection, delta);
+          setPending(pendingCount(session));
+          setRevision((value) => value + 1);
+          setStatus({ tone: "idle", text: "moveOutdoorObject — unsaved" });
+        } catch (error) {
+          setStatus({ tone: "warn", text: (error as Error).message });
+        }
+      } else if (selection.kind === "object" && source) {
         const object = findObject(source, selection.floor, selection.id);
         if (object) record({ op: "moveObject", floor: selection.floor, id: selection.id, x: object.x + delta.x, y: object.y + delta.y });
-      } else {
+      } else if (selection.kind === "dot" && source) {
         const dot = findDot(source, selection.floor, selection.id);
         if (dot) record({ op: "moveDot", floor: selection.floor, id: selection.id, x: dot.x + delta.x, y: dot.y + delta.y });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selection, grid, source, record, takeBack]);
+  }, [selection, grid, source, session, record, takeBack]);
 
   const finishWall = useCallback(() => {
     if (draft.length < 2 || !source) {
@@ -296,7 +372,12 @@ export function MapStudio() {
 
   const selectedObject = selection?.kind === "object" && source ? findObject(source, selection.floor, selection.id) : null;
   const selectedDot = selection?.kind === "dot" && source ? findDot(source, selection.floor, selection.id) : null;
-  const count = source ? handlesFor(source, floor).length : 0;
+  const selectedOutdoor = selection?.kind === "outdoorObject"
+    ? map.outdoor.objects.find((object) => object.id === selection.id) ?? null
+    : null;
+  const count = context === "area" && area
+    ? outdoorHandles(map, area.bounds).length
+    : source ? handlesFor(source, floor).length : 0;
 
   const setCoordinate = (axis: "x" | "y", value: number) => {
     if (!selection || Number.isNaN(value)) return;
@@ -304,6 +385,14 @@ export function MapStudio() {
       record({ op: "moveObject", floor: selection.floor, id: selection.id, x: axis === "x" ? value : selectedObject.x, y: axis === "y" ? value : selectedObject.y });
     } else if (selectedDot) {
       record({ op: "moveDot", floor: selection.floor, id: selection.id, x: axis === "x" ? value : selectedDot.x, y: axis === "y" ? value : selectedDot.y });
+    } else if (selectedOutdoor && selection.kind === "outdoorObject" && selection.source?.kind === "authored") {
+      recordOutdoor({
+        op: "moveOutdoorObject",
+        id: selection.id,
+        source: selection.source,
+        x: axis === "x" ? value : selectedOutdoor.x,
+        y: axis === "y" ? value : selectedOutdoor.y,
+      });
     }
   };
 
@@ -326,6 +415,18 @@ export function MapStudio() {
     });
   };
 
+  const setOutdoorSize = (axis: "w" | "h", value: number) => {
+    if (!selection || selection.kind !== "outdoorObject" || selection.source?.kind !== "authored"
+      || !selectedOutdoor || Number.isNaN(value) || value < 4) return;
+    recordOutdoor({
+      op: "resizeOutdoorObject",
+      id: selection.id,
+      source: selection.source,
+      w: axis === "w" ? value : selectedOutdoor.w,
+      h: axis === "h" ? value : selectedOutdoor.h,
+    });
+  };
+
   if (!editable.length) {
     return (
       <div className="studio studio--empty">
@@ -342,6 +443,36 @@ export function MapStudio() {
     <div className="studio">
       <aside className="studio__rail">
         <header className="studio__brand">MAP STUDIO</header>
+
+        {studioAreas.length > 0 && <section>
+          <h2>Outdoor context</h2>
+          <div className="studio__chips">
+            {studioAreas.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                className={context === "area" && entry.id === areaId ? "on" : ""}
+                onClick={() => {
+                  setContext("area");
+                  setAreaId(entry.id);
+                  setSelection(null);
+                  setDraft([]);
+                  setTool("select");
+                }}
+              >{entry.name}</button>
+            ))}
+          </div>
+          <p className="studio__hint">Production streets, ground, buildings, objects, pads and spawns.</p>
+          <h2>Overlays</h2>
+          <div className="studio__chips">
+            <button type="button" className={showCollision ? "on" : ""} onClick={() => setShowCollision((value) => !value)}>
+              collision
+            </button>
+            <button type="button" className={showClearance ? "on" : ""} onClick={() => setShowClearance((value) => !value)}>
+              bot clearance
+            </button>
+          </div>
+        </section>}
 
         <section>
           <h2>Building</h2>
@@ -382,20 +513,22 @@ export function MapStudio() {
             ))}
             {!matches.length && <p className="studio__hint">Nothing matches “{query}”.</p>}
           </div>
-          <h2>Floor</h2>
-          <div className="studio__chips">
-            {floors.map((label) => (
-              <button
-                key={label}
-                type="button"
-                className={label === floor ? "on" : ""}
-                onClick={() => { setFloor(label); setSelection(null); setDraft([]); }}
-              >{label}</button>
-            ))}
-          </div>
+          {context === "building" && <>
+            <h2>Floor</h2>
+            <div className="studio__chips">
+              {floors.map((label) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={label === floor ? "on" : ""}
+                  onClick={() => { setFloor(label); setSelection(null); setDraft([]); }}
+                >{label}</button>
+              ))}
+            </div>
+          </>}
         </section>
 
-        <section>
+        {context === "building" && <section>
           <h2>Tool</h2>
           <div className="studio__chips">
             {(["select", "object", "dot", "wall", "opening"] as Tool[]).map((item) => (
@@ -415,9 +548,9 @@ export function MapStudio() {
               </button>
             ))}
           </div>
-        </section>
+        </section>}
 
-        {tool === "object" && (
+        {context === "building" && tool === "object" && (
           <section className="studio__tray">
             <h2>Object</h2>
             {OBJECT_TRAY.map((group) => (
@@ -434,7 +567,7 @@ export function MapStudio() {
           </section>
         )}
 
-        {tool === "dot" && (
+        {context === "building" && tool === "dot" && (
           <section className="studio__tray">
             <h2>Dot</h2>
             <div className="studio__chips">
@@ -446,7 +579,7 @@ export function MapStudio() {
           </section>
         )}
 
-        {tool === "opening" && (
+        {context === "building" && tool === "opening" && (
           <section className="studio__tray">
             <h2>Opening</h2>
             <div className="studio__chips">
@@ -458,7 +591,7 @@ export function MapStudio() {
           </section>
         )}
 
-        {tool === "wall" && (
+        {context === "building" && tool === "wall" && (
           <section className="studio__tray">
             <h2>Wall</h2>
             <label>
@@ -481,14 +614,35 @@ export function MapStudio() {
         <section className="studio__save">
           <div className="studio__row">
             <button type="button" onClick={takeBack} disabled={!undoTarget(session)}>Undo</button>
-            <button type="button" className="primary" onClick={() => void save()} disabled={!pending}>
+            <button
+              type="button"
+              onClick={() => {
+                reloadSession(session, baseMap);
+                setSelection(null);
+                setDraft([]);
+                setPending(0);
+                setRevision((value) => value + 1);
+                setBaselinesReady(false);
+                setStatus({ tone: "idle", text: "Reloading production source; unsaved edits discarded." });
+                void loadSessionBaselines(session)
+                  .then(() => {
+                    setBaselinesReady(true);
+                    setStatus({ tone: "idle", text: "Reloaded production source; unsaved edits discarded." });
+                  })
+                  .catch((error: unknown) => {
+                    setStatus({ tone: "warn", text: `Source read error: ${(error as Error).message}` });
+                  });
+              }}
+              disabled={!pending}
+            >Reload</button>
+            <button type="button" className="primary" onClick={() => void save()} disabled={!pending || !baselinesReady}>
               Save{pending ? ` (${pending})` : ""}
             </button>
           </div>
           <p className={`studio__status studio__status--${status.tone}`}>{status.text}</p>
           {pending > 0 && (
             <p className="studio__hint">
-              Unsaved in {editedBuildings(session).join(", ")}. Saving patches the source file in place;
+              Unsaved in {editedSources(session).join(", ")}. Saving patches the source file in place;
               the dev server then reloads it.
             </p>
           )}
@@ -500,7 +654,11 @@ export function MapStudio() {
       <aside className="studio__rail studio__rail--right">
         <section>
           <h2>Selection</h2>
-          {!selection && <p className="studio__hint">Click something on the plan. {count} selectable on this floor.</p>}
+          {!selection && (
+            <p className="studio__hint">
+              Click something on the plan. {count} selectable on this {context === "area" ? "area" : "floor"}.
+            </p>
+          )}
           {selectedObject && (
             <dl className="studio__props">
               <dt>id</dt><dd className="studio__mono">{selectedObject.id}</dd>
@@ -521,7 +679,54 @@ export function MapStudio() {
               <dt>y</dt><dd><input type="number" value={selectedDot.y} onChange={(event) => setCoordinate("y", Number(event.target.value))} /></dd>
             </dl>
           )}
-          {selection && (
+          {selectedOutdoor && selection?.kind === "outdoorObject" && (
+            <>
+              <dl className="studio__props">
+                <dt>id</dt><dd className="studio__mono">{selectedOutdoor.id}</dd>
+                <dt>kind</dt><dd>{selectedOutdoor.kind}</dd>
+                <dt>source</dt><dd className="studio__mono">{selection.source?.file.split("/").pop() ?? "runtime/composed"}</dd>
+                {selection.source?.kind === "authored" ? <>
+                  <dt>placed</dt><dd>individually authored</dd>
+                  <dt>x</dt><dd><input type="number" value={selectedOutdoor.x} onChange={(event) => setCoordinate("x", Number(event.target.value))} /></dd>
+                  <dt>y</dt><dd><input type="number" value={selectedOutdoor.y} onChange={(event) => setCoordinate("y", Number(event.target.value))} /></dd>
+                  <dt>w</dt><dd><input type="number" min={4} step={2} value={selectedOutdoor.w} onChange={(event) => setOutdoorSize("w", Number(event.target.value))} /></dd>
+                  <dt>h</dt><dd><input type="number" min={4} step={2} value={selectedOutdoor.h} onChange={(event) => setOutdoorSize("h", Number(event.target.value))} /></dd>
+                </> : selection.source?.kind === "derived" ? <>
+                  <dt>placed by</dt><dd>{selection.source.rule.label}</dd>
+                  <dt>source rule</dt><dd className="studio__mono">{selection.source.rule.expression}</dd>
+                  <dt>axis</dt><dd>{selection.source.rule.axis}</dd>
+                  <dt>from</dt><dd>{selection.source.rule.from}</dd>
+                  <dt>to</dt><dd>{selection.source.rule.to}</dd>
+                  <dt>spacing</dt><dd>{selection.source.rule.spacing}</dd>
+                  <dt>gaps</dt><dd className="studio__mono">{JSON.stringify(selection.source.rule.gaps)}</dd>
+                </> : <>
+                  <dt>placed</dt><dd>composed/runtime</dd>
+                </>}
+                {selectedOutdoor.facing && <><dt>facing</dt><dd>{selectedOutdoor.facing}</dd></>}
+                {selectedOutdoor.angle !== undefined && <><dt>angle</dt><dd>{selectedOutdoor.angle}</dd></>}
+                {selectedOutdoor.collisionParts && <><dt>collision</dt><dd>{selectedOutdoor.collisionParts.length} authored part(s)</dd></>}
+              </dl>
+              {selection.source?.kind === "derived" && (
+                <p className="studio__hint">
+                  Inspection only. Change the named rhythm parameters in {selection.source.file}; dragging would unroll the rule into a lie.
+                </p>
+              )}
+            </>
+          )}
+          {selection && ["insertion", "extraction", "botSpawn"].includes(selection.kind) && (
+            <>
+              <dl className="studio__props">
+                <dt>id</dt><dd className="studio__mono">{selection.id}</dd>
+                <dt>kind</dt><dd>{selection.kind === "botSpawn" ? "bot spawn" : `${selection.kind} point`}</dd>
+                <dt>source</dt><dd className="studio__mono">{"source" in selection ? selection.source?.file.split("/").pop() ?? "composed" : "composed"}</dd>
+              </dl>
+              <p className="studio__hint">
+                Inspection only. This point is authored in source; Studio does not expose a semantic point patch yet.
+                {selection.kind !== "outdoorObject" && selection.source?.note ? ` ${selection.source.note}` : ""}
+              </p>
+            </>
+          )}
+          {selection && (selection.kind === "object" || selection.kind === "dot") && (
             <div className="studio__row">
               <button
                 type="button"
@@ -546,8 +751,13 @@ export function MapStudio() {
         <section>
           <h2>Keys</h2>
           <ul className="studio__keys">
-            <li><kbd>drag</kbd> move · <kbd>arrows</kbd> nudge · <kbd>shift</kbd> ×4</li>
-            <li><kbd>del</kbd> remove · <kbd>esc</kbd> cancel · <kbd>⌘Z</kbd> undo</li>
+            {context === "area" ? <>
+              <li><kbd>drag</kbd> move authored · <kbd>arrows</kbd> nudge · <kbd>shift</kbd> ×4</li>
+              <li>orange outlines inspect rules and semantic points only</li>
+            </> : <>
+              <li><kbd>drag</kbd> move · <kbd>arrows</kbd> nudge · <kbd>shift</kbd> ×4</li>
+              <li><kbd>del</kbd> remove · <kbd>esc</kbd> cancel · <kbd>⌘Z</kbd> undo</li>
+            </>}
             <li><kbd>wheel</kbd> zoom · <kbd>right-drag</kbd> pan</li>
           </ul>
         </section>

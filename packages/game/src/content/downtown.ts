@@ -4,7 +4,7 @@ import { beaconHouse } from "./beaconHouse";
 import { civicTower } from "./civicTower";
 import { lot6Depot } from "./lot6Depot";
 import { mercyClinic } from "./mercyClinic";
-import { patrol, type RegionParts } from "./regionKit";
+import { objects as sourceObjects, patrol, rhythmRule, type RegionParts } from "./regionKit";
 import type {
   BotSpawn,
   DotSpawn,
@@ -156,16 +156,7 @@ const { roads, surfaces } = compileCityPlan(cityPlan);
 // Outdoor authoring helpers
 // ---------------------------------------------------------------------------
 
-let objSeq = 0;
 let dotSeq = 0;
-
-function obj(kind: MapObject["kind"], x: number, y: number, w: number, h: number, extra: Partial<MapObject> = {}): MapObject {
-  return { id: `o${objSeq++}`, kind, x, y, w, h, ...extra };
-}
-
-function tree(cx: number, cy: number, r = 24): MapObject {
-  return obj("tree", cx - r, cy - r, r * 2, r * 2);
-}
 
 function dot(item: DotSpawn["item"], x: number, y: number): DotSpawn {
   return { id: `dot-${dotSeq++}`, item, position: { x, y } };
@@ -220,6 +211,25 @@ const MAIN_S_GAPS: Array<[number, number]> = [
 // ---------------------------------------------------------------------------
 
 function outdoorPlan(): OutdoorPlan {
+  const obj = sourceObjects("downtown", "packages/game/src/content/downtown.ts");
+  const tree = (cx: number, cy: number, r = 24): MapObject => {
+    const rule = {
+      id: `tree-helper-${cx}-${cy}`,
+      label: "tree centre/radius helper",
+      expression: `tree(${cx}, ${cy}, ${r})`,
+      axis: "x" as const,
+      from: cx,
+      to: cx,
+      spacing: 0,
+      gaps: [],
+      parameters: [
+        { name: "cx", source: String(cx), value: String(cx) },
+        { name: "cy", source: String(cy), value: String(cy) },
+        { name: "radius", source: String(r), value: String(r) },
+      ],
+    };
+    return obj.derived(rule, () => [obj("tree", cx - r, cy - r, r * 2, r * 2)])[0];
+  };
   const edgeWalls: WallSegment[] = [
     { id: "edge-n", x: 0, y: 0, w: MAP_W, h: EDGE },
     { id: "edge-s", x: 0, y: MAP_H - EDGE, w: MAP_W, h: EDGE },
@@ -240,7 +250,11 @@ function outdoorPlan(): OutdoorPlan {
      */
 
     // -- Main St, north footway --------------------------------------------
-    ...rhythm(180, MAP_W - 180, 200, MAIN_N_GAPS).map((x) => tree(x, MAIN_N_FURNITURE, STREET_TREE_R)),
+    ...obj.derived(
+      rhythmRule("downtown-main-n-trees", "north-side tree rhythm", "x", "rhythm(180, MAP_W - 180, 200, MAIN_N_GAPS)", 180, MAP_W - 180, 200, MAIN_N_GAPS),
+      () => rhythm(180, MAP_W - 180, 200, MAIN_N_GAPS)
+        .map((x) => obj("tree", x - STREET_TREE_R, MAIN_N_FURNITURE - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
     /**
      * Lamps on the half-beat, so the two rhythms interleave rather than stack.
      *
@@ -248,15 +262,25 @@ function outdoorPlan(): OutdoorPlan {
      * the carriageway — reported on sight when every post leaned the same way: "the ones on the
      * north side should face south and vice versa". These are on the north footway, so south.
      */
-    ...rhythm(280, MAP_W - 180, 200, MAIN_N_GAPS).map((x) => obj("lampPost", x - 9, MAIN_N_KERB - 22, 18, 18, { facing: "S" })),
-    obj("hydrant", 640, MAIN_N_KERB - 18, 14, 14),
-    obj("hydrant", 1960, MAIN_N_KERB - 18, 14, 14),
+    ...obj.derived(
+      rhythmRule("downtown-main-n-lamps", "north-side lamp rhythm", "x", "rhythm(280, MAP_W - 180, 200, MAIN_N_GAPS)", 280, MAP_W - 180, 200, MAIN_N_GAPS),
+      () => rhythm(280, MAP_W - 180, 200, MAIN_N_GAPS).map((x) => obj("lampPost", x - 9, MAIN_N_KERB - 22, 18, 18, { facing: "S" })),
+    ),
+    obj.authored("hydrant-640-main-n-kerb-18", "hydrant", 640, MAIN_N_KERB - 18, 14, 14),
+    obj.authored("hydrant-1960-main-n-kerb-18", "hydrant", 1960, MAIN_N_KERB - 18, 14, 14),
 
     // -- Main St, south footway --------------------------------------------
-    ...rhythm(200, MAP_W - 180, 200, MAIN_S_GAPS).map((x) => tree(x, MAIN_S_FURNITURE, STREET_TREE_R)),
+    ...obj.derived(
+      rhythmRule("downtown-main-s-trees", "south-side tree rhythm", "x", "rhythm(200, MAP_W - 180, 200, MAIN_S_GAPS)", 200, MAP_W - 180, 200, MAIN_S_GAPS),
+      () => rhythm(200, MAP_W - 180, 200, MAIN_S_GAPS)
+        .map((x) => obj("tree", x - STREET_TREE_R, MAIN_S_FURNITURE - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
     // South footway, so the arm reaches north over Main St.
-    ...rhythm(300, MAP_W - 180, 200, MAIN_S_GAPS).map((x) => obj("lampPost", x - 9, MAIN_S_KERB + 4, 18, 18, { facing: "N" })),
-    obj("hydrant", 900, MAIN_S_KERB + 4, 14, 14),
+    ...obj.derived(
+      rhythmRule("downtown-main-s-lamps", "south-side lamp rhythm", "x", "rhythm(300, MAP_W - 180, 200, MAIN_S_GAPS)", 300, MAP_W - 180, 200, MAIN_S_GAPS),
+      () => rhythm(300, MAP_W - 180, 200, MAIN_S_GAPS).map((x) => obj("lampPost", x - 9, MAIN_S_KERB + 4, 18, 18, { facing: "N" })),
+    ),
+    obj.authored("hydrant-900-main-s-kerb-4", "hydrant", 900, MAIN_S_KERB + 4, 14, 14),
 
     /**
      * One sign per building, standing on the footway outside its own face.
@@ -273,52 +297,64 @@ function outdoorPlan(): OutdoorPlan {
     // Against each building's own street face, not out on the carriageway: placed on
     // the kerb line the signs sat 160 units from anything and every one of them read
     // "DOWNTOWN", which is what the derived text does when it cannot find a building.
-    obj("sign", 276, 592, 44, 12),
+    obj.authored("sign-276-592", "sign", 276, 592, 44, 12),
     // Against Civic's south face, east of the main entrance furniture. The first
     // position at 1640,574 read correctly but sat in the bench's cast shadow.
-    obj("sign", 1886, 574, 44, 12),
-    obj("sign", 458, 968, 44, 12),
-    obj("sign", 1642, 986, 44, 12),
+    obj.authored("sign-1886-574", "sign", 1886, 574, 44, 12),
+    obj.authored("sign-458-968", "sign", 458, 968, 44, 12),
+    obj.authored("sign-1642-986", "sign", 1642, 986, 44, 12),
 
     // -- Third Ave ----------------------------------------------------------
-    ...rhythm(200, 600, 200).map((y) => tree(AVE_W_KERB - FURNITURE_OFFSET, y, STREET_TREE_R)),
-    ...rhythm(1020, 1420, 200).map((y) => tree(AVE_W_KERB - FURNITURE_OFFSET, y, STREET_TREE_R)),
-    ...rhythm(1080, 1400, 160).map((y) => tree(AVE_E_KERB + FURNITURE_OFFSET, y, STREET_TREE_R)),
+    ...obj.derived(
+      rhythmRule("downtown-ave-w-n-trees", "west-side north tree rhythm", "y", "rhythm(200, 600, 200)", 200, 600, 200),
+      () => rhythm(200, 600, 200)
+        .map((y) => obj("tree", AVE_W_KERB - FURNITURE_OFFSET - STREET_TREE_R, y - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
+    ...obj.derived(
+      rhythmRule("downtown-ave-w-s-trees", "west-side south tree rhythm", "y", "rhythm(1020, 1420, 200)", 1020, 1420, 200),
+      () => rhythm(1020, 1420, 200)
+        .map((y) => obj("tree", AVE_W_KERB - FURNITURE_OFFSET - STREET_TREE_R, y - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
+    ...obj.derived(
+      rhythmRule("downtown-ave-e-s-trees", "east-side south tree rhythm", "y", "rhythm(1080, 1400, 160)", 1080, 1400, 160),
+      () => rhythm(1080, 1400, 160)
+        .map((y) => obj("tree", AVE_E_KERB + FURNITURE_OFFSET - STREET_TREE_R, y - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
     // Third Ave runs north-south, so its arms reach east and west across it.
-    obj("lampPost", AVE_W_KERB - 27, 420, 18, 18, { facing: "E" }),
-    obj("lampPost", AVE_E_KERB + 9, 1180, 18, 18, { facing: "W" }),
+    obj.authored("lamp-post-ave-w-kerb-27-420", "lampPost", AVE_W_KERB - 27, 420, 18, 18, { facing: "E" }),
+    obj.authored("lamp-post-ave-e-kerb-9-1180", "lampPost", AVE_E_KERB + 9, 1180, 18, 18, { facing: "W" }),
 
     // -- Mercy Clinic: Main St entrance ------------------------------------
     // Benches face the street from the forecourt edge, flanking the walk.
-    obj("bench", 372, 596, 22, 76, { facing: "E" }),
-    obj("bench", 526, 596, 22, 76, { facing: "W" }),
-    obj("bikeRack", 596, 600, 20, 90, { scannable: true }),
-    obj("planter", 340, 592, 34, 34),
-    obj("planter", 546, 592, 34, 34),
+    obj.authored("bench-372-596", "bench", 372, 596, 22, 76, { facing: "E" }),
+    obj.authored("bench-526-596", "bench", 526, 596, 22, 76, { facing: "W" }),
+    obj.authored("bike-rack-596-600", "bikeRack", 596, 600, 20, 90, { scannable: true }),
+    obj.authored("planter-340-592", "planter", 340, 592, 34, 34),
+    obj.authored("planter-546-592", "planter", 546, 592, 34, 34),
 
     // -- Mercy Clinic: ambulance apron, west flank -------------------------
-    obj("parkingStall", 44, 232, 140, 76),
-    obj("car", 52, 246, 124, 48, { facing: "E" }),
-    obj("parkingStall", 44, 330, 140, 76),
-    obj("dumpster", 54, 452, 56, 30, { solid: true }),
-    obj("drum", 120, 456, 24, 24),
+    obj.authored("parking-stall-44-232", "parkingStall", 44, 232, 140, 76),
+    obj.authored("car-52-246", "car", 52, 246, 124, 48, { facing: "E" }),
+    obj.authored("parking-stall-44-330", "parkingStall", 44, 330, 140, 76),
+    obj.authored("dumpster-54-452", "dumpster", 54, 452, 56, 30, { solid: true }),
+    obj.authored("drum-120-456", "drum", 120, 456, 24, 24),
 
     // -- Mercy Clinic: service yard, east flank ----------------------------
     // Bins, drums and pallet read as one bank against the clinic's east flank,
     // clear of the staff door's walk at y 528.
-    obj("dumpster", 880, 480, 56, 30, { solid: true }),
-    obj("drum", 950, 484, 24, 24),
-    obj("drum", 982, 484, 24, 24),
-    obj("pallet", 880, 560, 48, 36),
-    obj("crateStack", 1000, 560, 34, 34),
-    obj("parkingStall", 940, 340, 110, 62),
-    obj("car", 946, 348, 100, 46, { facing: "E" }),
+    obj.authored("dumpster-880-480", "dumpster", 880, 480, 56, 30, { solid: true }),
+    obj.authored("drum-950-484", "drum", 950, 484, 24, 24),
+    obj.authored("drum-982-484", "drum", 982, 484, 24, 24),
+    obj.authored("pallet-880-560", "pallet", 880, 560, 48, 36),
+    obj.authored("crate-stack-1000-560", "crateStack", 1000, 560, 34, 34),
+    obj.authored("parking-stall-940-340", "parkingStall", 940, 340, 110, 62),
+    obj.authored("car-946-348", "car", 946, 348, 100, 46, { facing: "E" }),
 
     // -- North plaza --------------------------------------------------------
-    obj("bench", 856, 210, 100, 22, { facing: "S", scannable: true }),
-    obj("bench", 1000, 210, 100, 22, { facing: "S" }),
-    obj("planter", 848, 60, 40, 34),
-    obj("planter", 1010, 60, 40, 34),
+    obj.authored("bench-856-210", "bench", 856, 210, 100, 22, { facing: "S", scannable: true }),
+    obj.authored("bench-1000-210", "bench", 1000, 210, 100, 22, { facing: "S" }),
+    obj.authored("planter-848-60", "planter", 848, 60, 40, 34),
+    obj.authored("planter-1010-60", "planter", 1010, 60, 40, 34),
     tree(900, 132, 24),
     tree(1004, 132, 24),
 
@@ -332,27 +368,30 @@ function outdoorPlan(): OutdoorPlan {
      * into the planting either side of the forecourt where a rack and a bench
      * actually belong.
      */
-    obj("bikeRack", 1392, 100, 20, 90),
-    obj("bench", 1392, 480, 22, 90, { facing: "E" }),
-    obj("planter", 1394, 232, 34, 34),
+    obj.authored("bike-rack-1392-100", "bikeRack", 1392, 100, 20, 90),
+    obj.authored("bench-1392-480", "bench", 1392, 480, 22, 90, { facing: "E" }),
+    obj.authored("planter-1394-232", "planter", 1394, 232, 34, 34),
 
     // -- Civic Tower: Main St entrance -------------------------------------
-    obj("planter", 1712, 552, 34, 34),
-    obj("planter", 1834, 552, 34, 34),
+    obj.authored("planter-1712-552", "planter", 1712, 552, 34, 34),
+    obj.authored("planter-1834-552", "planter", 1834, 552, 34, 34),
     // In the planting west of the entrance walk, not across it: at 1756,596 this
     // sat squarely between Civic's south door and the footway.
-    obj("bench", 1560, 596, 100, 22, { facing: "N" }),
+    obj.authored("bench-1560-596", "bench", 1560, 596, 100, 22, { facing: "N" }),
 
     // -- Civic Tower: staff car park, east ---------------------------------
     // One bay row against the east edge off a generous drive, rather than two
     // cramped columns: a car park you cannot turn in reads as a texture.
-    ...rhythm(80, 500, 72).map((y) => obj("parkingStall", 2244, y, 130, 62)),
-    obj("car", 2252, 88, 114, 46, { facing: "W" }),
-    obj("car", 2252, 232, 114, 46, { facing: "W" }),
-    obj("car", 2252, 376, 114, 46, { facing: "W" }),
-    obj("car", 2252, 448, 114, 46, { facing: "W" }),
-    obj("planter", 2060, 100, 40, 200),
-    obj("lampPost", 2120, 340, 18, 18, { facing: "W" }),
+    ...obj.derived(
+      rhythmRule("downtown-civic-parking", "Civic parking bay rhythm", "y", "rhythm(80, 500, 72)", 80, 500, 72),
+      () => rhythm(80, 500, 72).map((y) => obj("parkingStall", 2244, y, 130, 62)),
+    ),
+    obj.authored("car-2252-88", "car", 2252, 88, 114, 46, { facing: "W" }),
+    obj.authored("car-2252-232", "car", 2252, 232, 114, 46, { facing: "W" }),
+    obj.authored("car-2252-376", "car", 2252, 376, 114, 46, { facing: "W" }),
+    obj.authored("car-2252-448", "car", 2252, 448, 114, 46, { facing: "W" }),
+    obj.authored("planter-2060-100", "planter", 2060, 100, 40, 200),
+    obj.authored("lamp-post-2120-340", "lampPost", 2120, 340, 18, 18, { facing: "W" }),
 
     // -- Lot 6 Depot: yard ---------------------------------------------------
     /**
@@ -364,36 +403,36 @@ function outdoorPlan(): OutdoorPlan {
      * pass put bins down both of them, which read as dressing and behaved as a
      * blockage — `validateInsertionMap` refused to place a squad in the alley.
      */
-    obj("dumpster", 880, 1060, 56, 30, { solid: true }),
-    obj("dumpster", 880, 1110, 56, 30, { solid: true }),
+    obj.authored("dumpster-880-1060", "dumpster", 880, 1060, 56, 30, { solid: true }),
+    obj.authored("dumpster-880-1110", "dumpster", 880, 1110, 56, 30, { solid: true }),
     // Tucked against the bins rather than mid-yard: at x 960..1016 they stood in
     // the walk north from the depot pad, which is the yard's one real route.
-    obj("drum", 880, 1030, 24, 24),
-    obj("drum", 908, 1030, 24, 24),
-    obj("pallet", 880, 1320, 48, 36),
-    obj("pallet", 936, 1320, 48, 36),
-    obj("lampPost", 1000, 1300, 18, 18, { facing: "N" }),
+    obj.authored("drum-880-1030", "drum", 880, 1030, 24, 24),
+    obj.authored("drum-908-1030", "drum", 908, 1030, 24, 24),
+    obj.authored("pallet-880-1320", "pallet", 880, 1320, 48, 36),
+    obj.authored("pallet-936-1320", "pallet", 936, 1320, 48, 36),
+    obj.authored("lamp-post-1000-1300", "lampPost", 1000, 1300, 18, 18, { facing: "N" }),
     // Staff parking along the back, out of the loading route.
-    obj("parkingStall", 200, 1490, 110, 46),
-    obj("parkingStall", 320, 1490, 110, 46),
-    obj("car", 208, 1494, 100, 40, { facing: "E" }),
-    obj("lampPost", 620, 1500, 18, 18, { facing: "N" }),
+    obj.authored("parking-stall-200-1490", "parkingStall", 200, 1490, 110, 46),
+    obj.authored("parking-stall-320-1490", "parkingStall", 320, 1490, 110, 46),
+    obj.authored("car-208-1494", "car", 208, 1494, 100, 40, { facing: "E" }),
+    obj.authored("lamp-post-620-1500", "lampPost", 620, 1500, 18, 18, { facing: "N" }),
 
     // -- Beacon House: Main St frontage ------------------------------------
-    obj("bench", 1716, 880, 100, 22, { facing: "N" }),
-    obj("planter", 1706, 968, 34, 34),
-    obj("planter", 1884, 968, 34, 34),
-    obj("bikeRack", 1936, 966, 90, 20),
+    obj.authored("bench-1716-880", "bench", 1716, 880, 100, 22, { facing: "N" }),
+    obj.authored("planter-1706-968", "planter", 1706, 968, 34, 34),
+    obj.authored("planter-1884-968", "planter", 1884, 968, 34, 34),
+    obj.authored("bike-rack-1936-966", "bikeRack", 1936, 966, 90, 20),
 
     // -- Beacon House: courtyard park --------------------------------------
     tree(2186, 1074, 24),
     tree(2308, 1108, 22),
     tree(2180, 1352, 24),
     tree(2306, 1380, 22),
-    obj("bench", 2168, 1152, 100, 22, { facing: "S", scannable: true }),
-    obj("bench", 2210, 1300, 100, 22, { facing: "N" }),
-    obj("planter", 2150, 1032, 40, 28),
-    obj("planter", 2320, 1032, 40, 28),
+    obj.authored("bench-2168-1152", "bench", 2168, 1152, 100, 22, { facing: "S", scannable: true }),
+    obj.authored("bench-2210-1300", "bench", 2210, 1300, 100, 22, { facing: "N" }),
+    obj.authored("planter-2150-1032", "planter", 2150, 1032, 40, 28),
+    obj.authored("planter-2320-1032", "planter", 2320, 1032, 40, 28),
     /**
      * THE COURTYARD LAMP POST IS GONE, and it is the second time it has done this.
      *
@@ -423,9 +462,9 @@ function outdoorPlan(): OutdoorPlan {
      *
      * As with every building sign above, their words are derived in `signs.ts`.
      */
-    obj("sign", 1060, 114, 44, 12),
-    obj("sign", 1038, 1194, 44, 12),
-    obj("sign", 2328, 1214, 44, 12),
+    obj.authored("sign-1060-114", "sign", 1060, 114, 44, 12),
+    obj.authored("sign-1038-1194", "sign", 1038, 1194, 44, 12),
+    obj.authored("sign-2328-1214", "sign", 2328, 1214, 44, 12),
   ];
 
   /**
@@ -584,6 +623,7 @@ export const downtownMap = addBlueprintSpawns(authoredDowntownMap, 24);
 export const downtownRegion: RegionParts = {
   id: "downtown",
   name: "Downtown",
+  sourceFile: "packages/game/src/content/downtown.ts",
   roads,
   surfaces,
   parks: [{ id: "beacon-courtyard", x: 2148, y: 1020, w: 212, h: 400 }],

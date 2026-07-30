@@ -396,8 +396,8 @@ describe("downtown map validation", () => {
    * rather than hidden behind a suppressed assertion. Lot 6 is at zero and any
    * new building starts at zero.
    *
-   * Budgets are counts per issue kind, not object ids: `objSeq` renumbers every
-   * downstream object whenever one is added, so id-based baselines rot instantly.
+   * Budgets are counts per issue kind, not object ids: the budget describes the
+   * class of authoring debt rather than coupling this gate to fixture identity.
    */
   const FLOOR_QUALITY_BUDGET: Record<string, Partial<Record<FloorQualityIssue["kind"], number>>> = {
     lot6: {},

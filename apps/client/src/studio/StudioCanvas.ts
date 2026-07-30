@@ -1,8 +1,16 @@
 import { Application, Container, Graphics } from "pixi.js";
+import { defaultGameConfig } from "@dotbot/game/config";
 import type { SourceBuilding, SourceWall } from "@dotbot/game/mapSource";
-import type { MapDocument, Rect, Vec2 } from "@dotbot/game/types";
+import type { MapDocument, Rect, Solid, Vec2 } from "@dotbot/game/types";
 import { buildMapArt, type MapArt } from "../game/renderer/mapArt";
-import { handlesFor, pick, type Handle } from "./editing";
+import { parseObjectParallaxStrength } from "../game/renderer/model/modelParallax";
+import { handlesFor, outdoorHandles, pick, type Handle } from "./editing";
+import { StudioParallax } from "./parallax";
+import {
+  destroyStudioMapArt,
+  replaceStudioMapArt,
+  studioOverlaySolids,
+} from "./presentation";
 import { screenToWorld, snapToGrid, wallNear } from "./viewport";
 
 /**
@@ -29,8 +37,9 @@ export type CanvasCallbacks = {
 
 export type CanvasView = {
   map: MapDocument;
-  building: string;
-  floor: string;
+  building: string | null;
+  floor: string | null;
+  area: Rect | null;
   /** GRID units; 0 turns snapping off. */
   grid: number;
   tool: "select" | "object" | "dot" | "wall" | "opening";
@@ -38,6 +47,8 @@ export type CanvasView = {
   /** Points clicked so far while drawing a wall. */
   draft: Vec2[];
   source: SourceBuilding | null;
+  showCollision?: boolean;
+  showClearance?: boolean;
 };
 
 const MIN_SCALE = 0.08;
@@ -52,6 +63,10 @@ export class StudioCanvas {
   private handles: Handle[] = [];
   private scale = 1;
   private centre: Vec2 = { x: 0, y: 0 };
+  private readonly parallax = new StudioParallax();
+  private readonly parallaxStrength = typeof window === "undefined"
+    ? 1
+    : parseObjectParallaxStrength(window.location.search);
   /**
    * `from` is in **screen** space, not world.
    *
@@ -100,6 +115,8 @@ export class StudioCanvas {
      */
     this.observer = new ResizeObserver(() => {
       this.applyCamera();
+      this.parallax.invalidate();
+      this.updateParallax();
       this.paintOverlay();
       this.app.render();
     });
@@ -112,6 +129,10 @@ export class StudioCanvas {
     this.disposed = true;
     this.observer?.disconnect();
     this.observer = null;
+    if (this.art) {
+      destroyStudioMapArt(this.world, this.art);
+      this.art = null;
+    }
     try {
       this.app.destroy(true);
     } catch {
@@ -133,6 +154,26 @@ export class StudioCanvas {
     this.world.position.set(width / 2 - this.centre.x * this.scale, height / 2 - this.centre.y * this.scale);
   }
 
+  private visibleBounds(): Rect {
+    const { width, height } = this.app.screen;
+    return {
+      x: this.centre.x - width / 2 / this.scale,
+      y: this.centre.y - height / 2 / this.scale,
+      w: width / this.scale,
+      h: height / this.scale,
+    };
+  }
+
+  private updateParallax(): void {
+    if (!this.art) return;
+    this.parallax.update(
+      this.art,
+      this.centre,
+      this.visibleBounds(),
+      this.parallaxStrength,
+    );
+  }
+
   fit(bounds: Rect): void {
     if (!this.ready) {
       this.queued.fit = bounds;
@@ -144,6 +185,8 @@ export class StudioCanvas {
       Math.min((width - margin * 2) / bounds.w, (height - margin * 2) / bounds.h)));
     this.centre = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 };
     this.applyCamera();
+    this.parallax.invalidate();
+    this.updateParallax();
   }
 
   // -------------------------------------------------------------------------
@@ -165,7 +208,10 @@ export class StudioCanvas {
       // Keep the world point under the cursor pinned while zooming.
       this.centre = { x: this.centre.x + (before.x - after.x), y: this.centre.y + (before.y - after.y) };
       this.applyCamera();
+      this.parallax.invalidate();
+      this.updateParallax();
       this.paintOverlay();
+      this.app.render();
     }, { passive: false });
 
     canvas.addEventListener("pointerdown", (event) => {
@@ -196,9 +242,9 @@ export class StudioCanvas {
 
       const handle = pick(this.handles, world);
       callbacks.onPick(handle);
-      this.drag = handle
+      this.drag = handle && handle.movable !== false
         ? { pointerId: event.pointerId, kind: "move", from: screen, handle, origin: { x: handle.rect.x, y: handle.rect.y } }
-        : { pointerId: event.pointerId, kind: "pan", from: screen, handle: null, origin: this.centre };
+        : null;
     });
 
     canvas.addEventListener("pointermove", (event) => {
@@ -215,6 +261,7 @@ export class StudioCanvas {
       if (this.drag.kind === "pan") {
         this.centre = { x: this.drag.origin.x - moved.x, y: this.drag.origin.y - moved.y };
         this.applyCamera();
+        this.updateParallax();
         this.paintOverlay();
         this.app.render();
         return;
@@ -261,16 +308,20 @@ export class StudioCanvas {
       || this.view?.floor !== view.floor
       || this.view?.building !== view.building;
     this.view = view;
-    this.handles = view.source ? handlesFor(view.source, view.floor) : [];
+    this.handles = view.source && view.floor
+      ? handlesFor(view.source, view.floor)
+      : view.area ? outdoorHandles(view.map, view.area) : [];
 
     if (rebuild) {
-      if (this.art) {
-        this.world.removeChild(this.art.root);
-        this.art.root.destroy({ children: true });
-      }
-      this.art = buildMapArt(view.map);
-      this.world.addChildAt(this.art.root, 0);
+      this.art = replaceStudioMapArt(
+        this.world,
+        this.overlay,
+        this.art,
+        buildMapArt(view.map),
+      );
       this.showFloor(view);
+      this.parallax.invalidate();
+      this.updateParallax();
     }
     this.paintOverlay();
     this.app.render();
@@ -297,6 +348,16 @@ export class StudioCanvas {
     g.clear();
     if (!view) return;
 
+    if (view.showCollision || view.showClearance) {
+      const overlays = studioOverlaySolids(view);
+      for (const solid of overlays.clearance) {
+        this.drawSolid(g, solid, defaultGameConfig.botRadius, 0xfbbf24, 0.12);
+      }
+      for (const solid of overlays.collision) {
+        this.drawSolid(g, solid, 0, 0xef4444, 0.2);
+      }
+    }
+
     if (view.grid > 0 && this.scale > 0.45) {
       const step = view.grid * (this.scale < 0.9 ? 8 : 4);
       const { width, height } = this.app.screen;
@@ -313,9 +374,13 @@ export class StudioCanvas {
 
     // Every handle, faintly, so an author can see what is selectable at all.
     for (const handle of this.handles) {
-      g.rect(handle.rect.x, handle.rect.y, handle.rect.w, handle.rect.h);
+      g.rect(handle.rect.x, handle.rect.y, handle.rect.w, handle.rect.h)
+        .stroke({
+          color: handle.movable === false ? 0xf59e0b : 0x38bdf8,
+          width: 1 / this.scale,
+          alpha: handle.movable === false ? 0.42 : 0.28,
+        });
     }
-    g.stroke({ color: 0x38bdf8, width: 1 / this.scale, alpha: 0.28 });
 
     const selected = view.selection
       ? this.handles.find((handle) => handle.kind === view.selection?.kind && handle.id === view.selection.id)
@@ -343,6 +408,35 @@ export class StudioCanvas {
       for (const point of view.draft) {
         g.circle(point.x, point.y, 4 / this.scale).fill({ color: 0xfbbf24 });
       }
+    }
+  }
+
+  private drawSolid(
+    g: Graphics,
+    solid: Solid,
+    clearance: number,
+    color: number,
+    alpha: number,
+  ): void {
+    if (solid.kind === "rect") {
+      g.rect(
+        solid.x - clearance,
+        solid.y - clearance,
+        solid.w + clearance * 2,
+        solid.h + clearance * 2,
+      ).fill({ color, alpha });
+      return;
+    }
+    if (solid.kind === "capsule") {
+      g.moveTo(solid.ax, solid.ay).lineTo(solid.bx, solid.by)
+        .stroke({ color, width: (solid.r + clearance) * 2, alpha });
+      return;
+    }
+    if (!solid.points.length) return;
+    g.poly(solid.points.flatMap((point) => [point.x, point.y])).fill({ color, alpha });
+    if (clearance) {
+      g.poly(solid.points.flatMap((point) => [point.x, point.y]))
+        .stroke({ color, width: clearance * 2, alpha: alpha * 0.8 });
     }
   }
 }

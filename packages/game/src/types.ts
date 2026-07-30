@@ -413,6 +413,46 @@ export type BaseLayout = Record<string, BaseObjectKind>;
 
 export type Facing = "N" | "S" | "E" | "W";
 
+export type OutdoorRuleParameter = {
+  name: string;
+  /** The exact token or named constant an author changes in the source file. */
+  source: string;
+  /** Its resolved value in this map build. */
+  value: string;
+};
+
+export type OutdoorRule = {
+  id: string;
+  label: string;
+  /** The source-form rhythm call, kept visible instead of unrolling its output. */
+  expression: string;
+  axis: "x" | "y";
+  from: number;
+  to: number;
+  spacing: number;
+  gaps: Array<[number, number]>;
+  parameters: OutdoorRuleParameter[];
+};
+
+export type OutdoorSource =
+  | {
+    kind: "authored";
+    file: string;
+    /** Stable literal source key; inserting a neighbour cannot change it. */
+    key: string;
+    /** The kind is part of the locator so a stale key cannot patch another shape. */
+    objectKind: ObjectKind;
+    fingerprint: string;
+    call: "obj";
+  }
+  | {
+    kind: "derived";
+    file: string;
+    rule: OutdoorRule;
+    /** Stable member identity derived from rule semantics, never array order. */
+    memberKey: string;
+  };
+
 /** Map objects are drawn from the same authored rectangle used by physics. */
 export type MapObject = {
   id: string;
@@ -456,6 +496,11 @@ export type MapObject = {
   scannable?: boolean;
   /** Persistent base placement slot that materialized this object. */
   slotId?: string;
+  /**
+   * Map Studio source ownership. Runtime systems ignore it; Studio uses it to
+   * distinguish one literal object from the output of a placing rule.
+   */
+  source?: OutdoorSource;
 };
 
 export type StairLink = {
@@ -663,6 +708,7 @@ export type ExtractionPoint = {
   id: string;
   name: string;
   rect: Rect;
+  source?: { kind: "authored" | "composed"; file: string; note?: string };
 };
 
 export type InsertionPoint = {
@@ -684,6 +730,7 @@ export type InsertionPoint = {
    * Absent on a single-region map, where there is nothing to group.
    */
   area?: string;
+  source?: { kind: "authored" | "composed"; file: string; note?: string };
 };
 
 export type OutdoorPlan = {
@@ -746,6 +793,7 @@ export type BotSpawn = {
   shields?: number;
   bays?: (Item | null)[];
   hold?: Item[];
+  source?: { kind: "authored" | "composed"; file: string; note?: string };
 };
 
 export type MapDocument = {

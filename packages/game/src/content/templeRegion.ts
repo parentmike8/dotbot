@@ -10,6 +10,7 @@ import {
   patrol,
   radial,
   rhythm,
+  rhythmRule,
   ribbonPoly,
   type RegionParts,
 } from "./regionKit";
@@ -56,7 +57,8 @@ import type { Barrier, MapObject } from "../types";
  * against a 130-unit climb overshot the summit and lay across the top of it.
  */
 
-const obj = objects("tmp");
+const SOURCE_FILE = "packages/game/src/content/templeRegion.ts";
+const obj = objects("tmp", SOURCE_FILE);
 const dot = dots("tmp");
 
 const W0 = 2374;
@@ -293,8 +295,8 @@ const templeObjects: MapObject[] = [
    */
   // On the plaza, not in the terrace wall. At the base edge minus 14 their heads were
   // inside the pyramid's own shell, which is a solid outside a solid.
-  obj("serpentHead", PYRAMID.x + PYRAMID.w / 2 - 156, PYRAMID.y + PYRAMID.h + 4, 76, 116, { facing: "S" }),
-  obj("serpentHead", PYRAMID.x + PYRAMID.w / 2 + 80, PYRAMID.y + PYRAMID.h + 4, 76, 116, { facing: "S" }),
+  obj.authored("serpent-head-pyramid-x-pyramid-w-2-156-pyramid-y-pyramid-h-4", "serpentHead", PYRAMID.x + PYRAMID.w / 2 - 156, PYRAMID.y + PYRAMID.h + 4, 76, 116, { facing: "S" }),
+  obj.authored("serpent-head-pyramid-x-pyramid-w-2-80-pyramid-y-pyramid-h-4", "serpentHead", PYRAMID.x + PYRAMID.w / 2 + 80, PYRAMID.y + PYRAMID.h + 4, 76, 116, { facing: "S" }),
 
   /**
    * The altar on the stair's axis, OUT IN THE PLAZA — and the second word is the fix.
@@ -316,7 +318,7 @@ const templeObjects: MapObject[] = [
    * At y 2700 there are 100 clear units between the heads and the altar, and the approach
    * to the arch is open across its full 160.
    */
-  obj("altar", PYRAMID.x + PYRAMID.w / 2 - 86, 2700, 172, 92),
+  obj.authored("altar-pyramid-x-pyramid-w-2-86-2700", "altar", PYRAMID.x + PYRAMID.w / 2 - 86, 2700, 172, 92),
   /**
    * The braziers flank the ARCHWAY now, not the altar.
    *
@@ -325,8 +327,8 @@ const templeObjects: MapObject[] = [
    * serpent heads, outside the forecourt's 160, and they mark the way in rather than the
    * thing in front of it.
    */
-  obj("brazier", 3096, 2500, 56, 56),
-  obj("brazier", 3468, 2500, 56, 56),
+  obj.authored("brazier-3096-2500", "brazier", 3096, 2500, 56, 56),
+  obj.authored("brazier-3468-2500", "brazier", 3468, 2500, 56, 56),
 
   /**
    * The stelae, on a rhythm along the plaza's south edge, all facing the pyramid.
@@ -337,8 +339,11 @@ const templeObjects: MapObject[] = [
    */
   // Two gaps: where the trail arrives, and ON THE PYRAMID'S AXIS. You do not stand a stele
   // across a ceremonial approach, and the extraction pad is on that axis too.
-  ...rhythm(2820, 3740, 152, [[3060, 3120], [3200, 3400]])
-    .map((x) => obj("stele", x, PLAZA.y + PLAZA.h - 116, 52, 104)),
+  ...obj.derived(
+    rhythmRule("temple-south-stelae", "south-plaza stele rhythm", "x", "rhythm(2820, 3740, 152, [[3060, 3120], [3200, 3400]])", 2820, 3740, 152, [[3060, 3120], [3200, 3400]]),
+    () => rhythm(2820, 3740, 152, [[3060, 3120], [3200, 3400]])
+      .map((x) => obj("stele", x, PLAZA.y + PLAZA.h - 116, 52, 104)),
+  ),
 
   /**
    * Ring stones in the court's END ZONES, not across its alley.
@@ -361,10 +366,10 @@ const templeObjects: MapObject[] = [
    * the benches span 2061..2319 and these are outside that — so the alley is open north and
    * south and a marker still reads as belonging to the end it marks.
    */
-  obj("altar", COURT.x - 90, COURT.y, 108, 54),
-  obj("altar", COURT.x + COURT.alley - 18, COURT.y + COURT.len - 54, 108, 54),
-  obj("brazier", COURT.x - 74, COURT.y + COURT.len / 2 - 26, 50, 50),
-  obj("brazier", COURT.x + COURT.alley + 24, COURT.y + COURT.len / 2 - 26, 50, 50),
+  obj.authored("altar-court-x-90-court-y", "altar", COURT.x - 90, COURT.y, 108, 54),
+  obj.authored("altar-court-x-court-alley-18-court-y-court-len-54", "altar", COURT.x + COURT.alley - 18, COURT.y + COURT.len - 54, 108, 54),
+  obj.authored("brazier-court-x-74-court-y-court-len-2-26", "brazier", COURT.x - 74, COURT.y + COURT.len / 2 - 26, 50, 50),
+  obj.authored("brazier-court-x-court-alley-24-court-y-court-len-2-26", "brazier", COURT.x + COURT.alley + 24, COURT.y + COURT.len / 2 - 26, 50, 50),
 
   /**
    * The forest, as a wall.
@@ -376,21 +381,33 @@ const templeObjects: MapObject[] = [
    */
   // The north line stops for the pyramid and its apron. Unclear on the rhythm alone,
   // four thickets were growing through the terrace wall.
-  ...rhythm(W0 + 60, W1 - 60, 172, [[2900, 3700], [3600, 4174]])
-    .map((x, i) => obj("thicket", x, N0 + 30 + (i % 2) * 66, 152, 136)),
-  ...rhythm(W0 + 60, W1 - 60, 172).map((x, i) => obj("thicket", x, S1 - 210 + (i % 3) * 62, 152, 136)),
+  ...obj.derived(
+    rhythmRule("temple-n-thickets", "north forest-front rhythm", "x", "rhythm(W0 + 60, W1 - 60, 172, [[2900, 3700], [3600, 4174]])", W0 + 60, W1 - 60, 172, [[2900, 3700], [3600, 4174]]),
+    () => rhythm(W0 + 60, W1 - 60, 172, [[2900, 3700], [3600, 4174]])
+      .map((x, i) => obj("thicket", x, N0 + 30 + (i % 2) * 66, 152, 136)),
+  ),
+  ...obj.derived(
+    rhythmRule("temple-s-thickets", "south forest-front rhythm", "x", "rhythm(W0 + 60, W1 - 60, 172)", W0 + 60, W1 - 60, 172),
+    () => rhythm(W0 + 60, W1 - 60, 172).map((x, i) => obj("thicket", x, S1 - 210 + (i % 3) * 62, 152, 136)),
+  ),
   /**
    * The west line stops where the ball court is, because the court IS the boundary
    * there — its bench walls are built against the forest edge, which is where you would
    * put a court. The first pass ran the thickets straight through it, sealed the alley
    * off at both ends and left the Dot in the middle of it somewhere no bot could reach.
    */
-  ...rhythm(N0 + 240, S1 - 260, 168, [[1960, 2440]])
-    .map((y, i) => obj("thicket", W0 + 30 + (i % 2) * 54, y, 146, 132)),
+  ...obj.derived(
+    rhythmRule("temple-w-thickets", "west forest-front rhythm", "y", "rhythm(N0 + 240, S1 - 260, 168, [[1960, 2440]])", N0 + 240, S1 - 260, 168, [[1960, 2440]]),
+    () => rhythm(N0 + 240, S1 - 260, 168, [[1960, 2440]])
+      .map((y, i) => obj("thicket", W0 + 30 + (i % 2) * 54, y, 146, 132)),
+  ),
   // The east line stops for the cenote: a thicket growing out of a flooded sinkhole is
   // the same defect as one growing through a terrace wall.
-  ...rhythm(N0 + 240, S1 - 260, 168, [[1900, 2300]])
-    .map((y, i) => obj("thicket", W1 - 190 + (i % 2) * 46, y, 146, 132)),
+  ...obj.derived(
+    rhythmRule("temple-e-thickets", "east forest-front rhythm", "y", "rhythm(N0 + 240, S1 - 260, 168, [[1900, 2300]])", N0 + 240, S1 - 260, 168, [[1900, 2300]]),
+    () => rhythm(N0 + 240, S1 - 260, 168, [[1900, 2300]])
+      .map((y, i) => obj("thicket", W1 - 190 + (i % 2) * 46, y, 146, 132)),
+  ),
 
   /**
    * The trees inside the precinct, standing ON the plaza where the flags have failed.
@@ -399,14 +416,14 @@ const templeObjects: MapObject[] = [
    * tree growing out of a ceremonial court is four hundred years of nobody sweeping it,
    * and it is also the only cover on the plaza.
    */
-  obj("tree", 3140, 2900, 104, 104),
-  obj("tree", 3640, 2960, 112, 112),
-  obj("tree", 2820, 2700, 96, 96),
-  obj("tree", 3980, 2500, 100, 100),
-  obj("tree", 2560, 2260, 96, 96),
-  obj("tree", 3020, 2540, 88, 88),
-  obj("tree", 3460, 3020, 92, 92),
-  obj("tree", 2900, 3040, 86, 86),
+  obj.authored("tree-3140-2900", "tree", 3140, 2900, 104, 104),
+  obj.authored("tree-3640-2960", "tree", 3640, 2960, 112, 112),
+  obj.authored("tree-2820-2700", "tree", 2820, 2700, 96, 96),
+  obj.authored("tree-3980-2500", "tree", 3980, 2500, 100, 100),
+  obj.authored("tree-2560-2260", "tree", 2560, 2260, 96, 96),
+  obj.authored("tree-3020-2540", "tree", 3020, 2540, 88, 88),
+  obj.authored("tree-3460-3020", "tree", 3460, 3020, 92, 92),
+  obj.authored("tree-2900-3040", "tree", 2900, 3040, 86, 86),
 
   /**
    * Fallen masonry: boulders that came off the terraces, on the pyramid's flanks.
@@ -416,9 +433,9 @@ const templeObjects: MapObject[] = [
    * numbers — one at 3560,2460 now four hundred units inside the terrace wall, and one at
    * the old east flank now standing in the cenote.
    */
-  obj("boulder", PYRAMID.x - 110, PYRAMID.y + 300, 92, 84),
-  obj("boulder", PYRAMID.x - 88, PYRAMID.y + 420, 68, 62),
-  obj("boulder", PYRAMID.x - 130, PYRAMID.y + 120, 74, 66),
+  obj.authored("boulder-pyramid-x-110-pyramid-y-300", "boulder", PYRAMID.x - 110, PYRAMID.y + 300, 92, 84),
+  obj.authored("boulder-pyramid-x-88-pyramid-y-420", "boulder", PYRAMID.x - 88, PYRAMID.y + 420, 68, 62),
+  obj.authored("boulder-pyramid-x-130-pyramid-y-120", "boulder", PYRAMID.x - 130, PYRAMID.y + 120, 74, 66),
   /**
    * The east flank gets ONE, and it is 520 down rather than 660.
    *
@@ -427,10 +444,10 @@ const templeObjects: MapObject[] = [
    * diameter of clear run either side of every entrance, and it also wedged a bot spawn
    * inside the same rock. Two failures from one boulder measured off the wrong corner.
    */
-  obj("boulder", PYRAMID.x + PYRAMID.w + 30, PYRAMID.y + 520, 86, 78),
-  obj("boulder", 2900, 3140, 96, 88),
-  obj("log", 3260, 3180, 250, 52, { facing: "E" }),
-  obj("log", 2680, 2860, 200, 46, { facing: "E" }),
+  obj.authored("boulder-pyramid-x-pyramid-w-30-pyramid-y-520", "boulder", PYRAMID.x + PYRAMID.w + 30, PYRAMID.y + 520, 86, 78),
+  obj.authored("boulder-2900-3140", "boulder", 2900, 3140, 96, 88),
+  obj.authored("log-3260-3180", "log", 3260, 3180, 250, 52, { facing: "E" }),
+  obj.authored("log-2680-2860", "log", 2680, 2860, 200, 46, { facing: "E" }),
 
   /**
    * The spur's last hundred units: a buffer stop where the company stopped, and the
@@ -445,8 +462,8 @@ const templeObjects: MapObject[] = [
    * then the wagon beside both — 24 units clear of the pyramid's north face, which is
    * every unit there is.
    */
-  obj("track", 3330, 1660, 60, 90),
-  obj("bufferStop", 3330, 1750, 84, 46, { facing: "S" }),
+  obj.authored("track-3330-1660", "track", 3330, 1660, 60, 90),
+  obj.authored("buffer-stop-3330-1750", "bufferStop", 3330, 1750, 84, 46, { facing: "S" }),
   /**
    * The wagon, east of the shed's outer arc.
    *
@@ -455,7 +472,7 @@ const templeObjects: MapObject[] = [
    * whole west end was — and in both cases the bounding box could not have told anyone,
    * because a fan of engine bays is a 922 x 406 box that the shed occupies a third of.
    */
-  obj("wagon", 3420, 1600, 74, 174, { facing: "N" }),
+  obj.authored("wagon-3420-1600", "wagon", 3420, 1600, 74, 174, { facing: "N" }),
 
   /**
    * Place names here are physical signs now, using the same plate as Downtown.
@@ -465,18 +482,19 @@ const templeObjects: MapObject[] = [
    * both the crown and serpent while remaining outside the central entrance route. The
    * observatory sign is east of its north door. Neither occupies the route it names.
    */
-  obj("sign", 3132, 2630, 44, 12),
-  obj("sign", 3810, 2570, 44, 12),
+  obj.authored("sign-3132-2630", "sign", 3132, 2630, 44, 12),
+  obj.authored("sign-3810-2570", "sign", 3810, 2570, 44, 12),
   /**
    * Plaza extraction sign east of the pad. The altar-to-pad axis and the west-side
    * arrival trail remain clear, preserving the square's useful approaches.
    */
-  obj("sign", 3384, 2952, 44, 12),
+  obj.authored("sign-3384-2952", "sign", 3384, 2952, 44, 12),
 ];
 
 export const templeRegion: RegionParts = {
   id: "tmp",
   name: "The Great Temple",
+  sourceFile: SOURCE_FILE,
   roads,
   surfaces,
   regions,

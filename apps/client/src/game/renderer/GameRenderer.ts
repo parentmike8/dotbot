@@ -48,6 +48,7 @@ import { DOT_COLOR, INK, RIVAL_RED, SQUAD_CYAN, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
 import { redrawFloorObjects } from "./model/modelFloor";
 import {
+  OBJECT_PARALLAX_REDRAW_STEP,
   parseObjectParallaxStrength,
   redrawOutdoorObjects,
 } from "./model/modelParallax";
@@ -76,8 +77,6 @@ const PEEK_RANGE = 200;
  * a time turns no object's pull by anything an eye can see, so this is what keeps the
  * rebuild off the frames that would gain nothing from it.
  */
-const PARALLAX_REDRAW_STEP = 24;
-
 /**
  * Shared production/lab strength. `0` is an exact off switch; the shipped value is 1;
  * the lab preserves 0.5 and 2 as genuinely different review points.
@@ -1169,7 +1168,7 @@ export class GameRenderer {
    * active floor because only one floor is drawn at a time. Only elevated object geometry
    * is rebuilt: slabs, walls, contact footprints, shadows and ambient occlusion stay put.
    *
-   * And only when the camera has actually gone somewhere. `PARALLAX_REDRAW_STEP` is the
+   * And only when the camera has actually gone somewhere. `OBJECT_PARALLAX_REDRAW_STEP` is the
    * throttle: a camera drifting a unit at a time turns no object's pull by anything an
    * eye could see, and rebuilding for it would spend the whole budget on nothing.
    *
@@ -1179,7 +1178,7 @@ export class GameRenderer {
   private updateObjectParallax(viewCenter: Vec2, activeFloorId: string | undefined): void {
     if (PARALLAX_STRENGTH <= 0) return;
     const moved = Math.hypot(viewCenter.x - this.lastParallaxCentre.x, viewCenter.y - this.lastParallaxCentre.y);
-    if (moved < PARALLAX_REDRAW_STEP && activeFloorId === this.lastParallaxFloorId) return;
+    if (moved < OBJECT_PARALLAX_REDRAW_STEP && activeFloorId === this.lastParallaxFloorId) return;
     this.lastParallaxCentre = { x: viewCenter.x, y: viewCenter.y };
     this.lastParallaxFloorId = activeFloorId;
 
@@ -1192,7 +1191,7 @@ export class GameRenderer {
     if (typeof window !== "undefined") {
       const stats = {
         strength: PARALLAX_STRENGTH,
-        cameraStep: PARALLAX_REDRAW_STEP,
+        cameraStep: OBJECT_PARALLAX_REDRAW_STEP,
         outdoor: outdoorStats,
       };
       (window as unknown as { objectParallaxStats?: unknown }).objectParallaxStats = stats;
