@@ -108,7 +108,7 @@ describe("impact feedback", () => {
     expect(statuses).toEqual(["off"]);
   });
 
-  it("renders a clash as a distinct double-strike parry cue", () => {
+  it("renders a clash as a distinct three-strike parry cue", () => {
     const clashAudio = fakeAudioContext("running");
     const clashFeedback = new ImpactFeedback(preferences, {
       createAudioContext: () => clashAudio.context as unknown as AudioContext,
@@ -117,10 +117,11 @@ describe("impact feedback", () => {
     clashFeedback.playDashContact("clash", "attacker", false);
 
     expect(clashAudio.oscillators).toHaveLength(3);
-    expect(clashAudio.oscillators[0].type).toBe("square");
-    expect(clashAudio.oscillators[0].frequency.setValueAtTime).toHaveBeenCalledWith(920, 0);
-    expect(clashAudio.oscillators[1].frequency.setValueAtTime).toHaveBeenCalledWith(1_380, 0.045);
-    expect(clashAudio.oscillators[1].start).toHaveBeenCalledWith(0.045);
+    expect(clashAudio.oscillators.every((oscillator) => oscillator.type === "triangle")).toBe(true);
+    expect(clashAudio.oscillators[0].frequency.setValueAtTime).toHaveBeenCalledWith(1_650, 0);
+    expect(clashAudio.oscillators[1].frequency.setValueAtTime).toHaveBeenCalledWith(880, 0.065);
+    expect(clashAudio.oscillators[2].frequency.setValueAtTime).toHaveBeenCalledWith(2_050, 0.13);
+    expect(clashAudio.bufferSources).toHaveLength(1);
 
     const bumpAudio = fakeAudioContext("running");
     const bumpFeedback = new ImpactFeedback(preferences, {
@@ -131,6 +132,28 @@ describe("impact feedback", () => {
     expect(bumpAudio.oscillators).toHaveLength(1);
     expect(bumpAudio.oscillators[0].type).toBe("sine");
     expect(bumpAudio.oscillators[0].frequency.setValueAtTime).toHaveBeenCalledWith(180, 0);
+    expect(bumpAudio.bufferSources).toHaveLength(0);
+  });
+
+  it("plays an unpredicted authoritative clash once and deduplicates its confirmation", () => {
+    const audio = fakeAudioContext("running");
+    let now = 1_000;
+    const feedback = new ImpactFeedback(preferences, {
+      createAudioContext: () => audio.context as unknown as AudioContext,
+      now: () => now,
+    });
+
+    // `alreadyPredicted` is renderer state, not proof that audio actually ran.
+    feedback.playDashContact("clash", "attacker", true);
+    expect(audio.oscillators).toHaveLength(3);
+
+    now += 100;
+    feedback.playDashContact("clash", "attacker", true);
+    expect(audio.oscillators).toHaveLength(3);
+
+    now += 800;
+    feedback.playDashContact("clash", "attacker", true);
+    expect(audio.oscillators).toHaveLength(6);
   });
 });
 
@@ -139,6 +162,7 @@ type FakeAudioState = AudioContextState | "interrupted";
 function fakeAudioContext(initialState: FakeAudioState = "suspended") {
   let state = initialState;
   const oscillators: Array<ReturnType<typeof fakeOscillator>> = [];
+  const bufferSources: Array<ReturnType<typeof fakeBufferSource>> = [];
   const context = {
     get state() { return state; },
     currentTime: 0,
@@ -170,12 +194,11 @@ function fakeAudioContext(initialState: FakeAudioState = "suspended") {
       oscillators.push(oscillator);
       return oscillator;
     }),
-    createBufferSource: vi.fn(() => ({
-      connect: vi.fn((destination: unknown) => destination),
-      buffer: null,
-      start: vi.fn(),
-      stop: vi.fn(),
-    })),
+    createBufferSource: vi.fn(() => {
+      const source = fakeBufferSource();
+      bufferSources.push(source);
+      return source;
+    }),
     createBiquadFilter: vi.fn(() => ({
       connect: vi.fn((destination: unknown) => destination),
       type: "bandpass",
@@ -187,9 +210,19 @@ function fakeAudioContext(initialState: FakeAudioState = "suspended") {
   return {
     context,
     oscillators,
+    bufferSources,
     setState(next: FakeAudioState) {
       state = next;
     },
+  };
+}
+
+function fakeBufferSource() {
+  return {
+    connect: vi.fn((destination: unknown) => destination),
+    buffer: null,
+    start: vi.fn(),
+    stop: vi.fn(),
   };
 }
 

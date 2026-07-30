@@ -33,6 +33,9 @@ type PendingAudioCue =
 
 const storageKey = "dotbot.feedback.v1";
 const pendingCueLifetimeMs = 220;
+/** Longer than a network confirmation, shorter than the minimum time between
+ * real clashes. Prediction and authority may both report the same parry. */
+const clashCueDedupeMs = 750;
 
 export function defaultFeedbackPreferences(): FeedbackPreferences {
   const reducedMotion = typeof window !== "undefined"
@@ -105,6 +108,7 @@ export class ImpactFeedback {
   private readonly onAudioStatusChange?: (status: AudioFeedbackStatus) => void;
   private readonly onAudioDiagnostic?: (message: string, error?: unknown) => void;
   private lastAudioDiagnostic: string | null = null;
+  private lastClashCueAt = Number.NEGATIVE_INFINITY;
   private disposed = false;
 
   constructor(preferences: FeedbackPreferences, options: ImpactFeedbackOptions = {}) {
@@ -238,14 +242,25 @@ export class ImpactFeedback {
   ): void {
     if (this.disposed) return;
     try {
-      if (!alreadyPredicted || perspective !== "attacker") {
+      const requestedAt = this.now();
+      const duplicateClash = result === "clash"
+        && requestedAt - this.lastClashCueAt < clashCueDedupeMs;
+      // A clash is important enough that authority may supply the cue even
+      // when rendering says it was predicted. Prediction can be absent,
+      // misclassify the contact as a hit, or happen before audio unlock. The
+      // time gate prevents an actual predicted parry from sounding twice.
+      const shouldCue = result === "clash"
+        ? !duplicateClash
+        : !alreadyPredicted || perspective !== "attacker";
+      if (shouldCue) {
+        if (result === "clash") this.lastClashCueAt = requestedAt;
         const intensity = (perspective === "observer" ? 0.55 : 0.9) * earshot;
         if (intensity > 0) {
-          this.requestAudio({ kind: "dashContact", result, pan, intensity, requestedAt: this.now() });
+          this.requestAudio({ kind: "dashContact", result, pan, intensity, requestedAt });
         }
       }
       if (
-        (!alreadyPredicted || perspective !== "attacker")
+        shouldCue
         && perspective !== "observer"
         && typeof navigator !== "undefined"
         && "vibrate" in navigator
@@ -392,8 +407,8 @@ export class ImpactFeedback {
   ): void {
     const now = context.currentTime;
     const output = context.createGain();
-    output.gain.setValueAtTime(Math.max(0.0001, (result === "clash" ? 0.28 : 0.2) * intensity), now);
-    output.gain.exponentialRampToValueAtTime(0.0001, now + (result === "clash" ? 0.24 : 0.08));
+    output.gain.setValueAtTime(Math.max(0.0001, (result === "clash" ? 0.38 : 0.2) * intensity), now);
+    output.gain.exponentialRampToValueAtTime(0.0001, now + (result === "clash" ? 0.34 : 0.08));
     const panner = typeof context.createStereoPanner === "function" ? context.createStereoPanner() : null;
     if (panner) {
       panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), now);
@@ -402,43 +417,58 @@ export class ImpactFeedback {
       output.connect(context.destination);
     }
 
-    const body = context.createOscillator();
-    const bodyGain = context.createGain();
-    body.type = result === "clash" ? "square" : "sine";
-    body.frequency.setValueAtTime(result === "clash" ? 920 : 180, now);
-    body.frequency.exponentialRampToValueAtTime(result === "clash" ? 640 : 85, now + 0.045);
-    bodyGain.gain.setValueAtTime(result === "clash" ? 0.68 : 0.55, now);
-    bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + (result === "clash" ? 0.065 : 0.09));
-    body.connect(bodyGain).connect(output);
-    body.start(now);
-    body.stop(now + (result === "clash" ? 0.07 : 0.1));
+    if (result === "bump") {
+      const body = context.createOscillator();
+      const bodyGain = context.createGain();
+      body.type = "sine";
+      body.frequency.setValueAtTime(180, now);
+      body.frequency.exponentialRampToValueAtTime(85, now + 0.07);
+      bodyGain.gain.setValueAtTime(0.55, now);
+      bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+      body.connect(bodyGain).connect(output);
+      body.start(now);
+      body.stop(now + 0.1);
+      return;
+    }
 
-    if (result === "clash") {
-      // A second, higher metal strike is the semantic cue: two armed dashes
-      // met and parried. The gap is long enough to read as "clang-clang" on a
-      // phone speaker, unlike the single low body thud used by a failed bump.
-      const counter = context.createOscillator();
-      const counterGain = context.createGain();
-      counter.type = "square";
-      counter.frequency.setValueAtTime(1_380, now + 0.045);
-      counter.frequency.exponentialRampToValueAtTime(980, now + 0.1);
-      counterGain.gain.setValueAtTime(0.0001, now);
-      counterGain.gain.setValueAtTime(0.58, now + 0.045);
-      counterGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.115);
-      counter.connect(counterGain).connect(output);
-      counter.start(now + 0.045);
-      counter.stop(now + 0.12);
+    // An unmistakable parry motif: high, low, HIGH. No hit, dash, bump, or
+    // ping uses this three-strike contour. Spacing the notes across 190ms makes
+    // it readable in the middle of several simultaneous impact transients.
+    const strikes = [
+      { offset: 0, startHz: 1_650, endHz: 1_260, gain: 0.72 },
+      { offset: 0.065, startHz: 880, endHz: 660, gain: 0.62 },
+      { offset: 0.13, startHz: 2_050, endHz: 1_480, gain: 0.78 },
+    ];
+    for (const strike of strikes) {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const at = now + strike.offset;
+      oscillator.type = "triangle";
+      oscillator.frequency.setValueAtTime(strike.startHz, at);
+      oscillator.frequency.exponentialRampToValueAtTime(strike.endHz, at + 0.055);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.setValueAtTime(strike.gain, at);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.075);
+      oscillator.connect(gain).connect(output);
+      oscillator.start(at);
+      oscillator.stop(at + 0.08);
+    }
 
-      const ring = context.createOscillator();
-      const ringGain = context.createGain();
-      ring.type = "sine";
-      ring.frequency.setValueAtTime(1_850, now);
-      ring.frequency.exponentialRampToValueAtTime(1_180, now + 0.2);
-      ringGain.gain.setValueAtTime(0.3, now);
-      ringGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-      ring.connect(ringGain).connect(output);
-      ring.start(now);
-      ring.stop(now + 0.23);
+    // A bright filtered crack supplies the metallic attack that pure tones
+    // lose on small phone speakers.
+    if (this.noiseBuffer) {
+      const crack = context.createBufferSource();
+      const filter = context.createBiquadFilter();
+      const crackGain = context.createGain();
+      crack.buffer = this.noiseBuffer;
+      filter.type = "bandpass";
+      filter.frequency.setValueAtTime(3_400, now);
+      filter.Q.setValueAtTime(1.6, now);
+      crackGain.gain.setValueAtTime(1, now);
+      crackGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.075);
+      crack.connect(filter).connect(crackGain).connect(output);
+      crack.start(now);
+      crack.stop(now + 0.08);
     }
   }
 
