@@ -139,6 +139,15 @@ const AI_STALL_PROGRESS_PX = 6;
 /** How long a stalled objective stays off this bot's list, doubled by its roll. */
 const AI_STALL_AVOID_MS = 1400;
 /**
+ * A parry has to reset an AI duel, not synchronize it.
+ *
+ * Without a brief target break, two identical hunters clash once, return to
+ * contact together, and then spend every ready dash on the same point-blank
+ * bump forever. Each bot rolls its own recovery so one re-engages first and
+ * the next exchange can deal damage.
+ */
+const AI_CLASH_DISENGAGE_MS = 700;
+/**
  * How much room past its own radius a wedged bot tries to win back.
  *
  * The navigator wants a full `botRadius` of clearance to plan from a point, so
@@ -2585,6 +2594,16 @@ export class DotBotSimulation {
     return axis;
   }
 
+  private disengageAiAfterClash(bot: InternalBot, opponent: InternalBot): void {
+    if (this.controllers.get(bot.id) !== "ai") return;
+    bot.aiAvoidTargets.set(
+      opponent.id,
+      AI_CLASH_DISENGAGE_MS + this.nextRandom() * AI_CLASH_DISENGAGE_MS,
+    );
+    bot.aiPath = [];
+    bot.aiRepathMs = 0;
+  }
+
   private emitDashContact(
     a: InternalBot,
     b: InternalBot,
@@ -2634,20 +2653,20 @@ export class DotBotSimulation {
           const aCanHit = aConnects && !aStartedTouching;
           const bCanHit = bConnects && !bStartedTouching;
 
-          // Both players spent the same attack verb from clear space. If each
+          // Both bots spent the same attack verb from clear space. If each
           // dash meets live plating, resolve the pair before either directed hit
           // mutates a plate: one unmistakable clash, no iteration-order winner.
           if (
             aCanHit
             && bCanHit
-            && !a.isAmbient
-            && !b.isAmbient
             && this.impactMeetsIntactPlate(a, b)
             && this.impactMeetsIntactPlate(b, a)
           ) {
             this.stopDashAtContact(a, b);
             this.stopDashAtContact(b, a);
             const direction = this.recoilDashContact(a, b);
+            this.disengageAiAfterClash(a, b);
+            this.disengageAiAfterClash(b, a);
             this.emitDashContact(a, b, "clash", direction);
             continue;
           }

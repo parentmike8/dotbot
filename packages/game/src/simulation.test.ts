@@ -1058,18 +1058,33 @@ describe("DotBotSimulation", () => {
     }
   });
 
-  it("clashes two plated dashes that both began with clear space", async () => {
-    const simulation = await makeSimulation([
-      playerSpawn({ position: { x: 100, y: 180 } }),
-      enemySpawn({
-        position: { x: 196, y: 180 },
+  it.each([
+    { name: "player against rival player", leftAmbient: false, rightAmbient: false },
+    { name: "player against ambient AI", leftAmbient: false, rightAmbient: true },
+    { name: "ambient AI against ambient AI", leftAmbient: true, rightAmbient: true },
+  ])("clashes plated dashes with clear space: $name", async ({ leftAmbient, rightAmbient }) => {
+    const leftId = leftAmbient ? "ambient-left" : "player";
+    const rightId = rightAmbient ? "ambient-right" : "enemy";
+    const left = leftAmbient
+      ? enemySpawn({
+        id: leftId,
+        squadId: "rival-left",
+        position: { x: 100, y: 180 },
         controller: "human",
-        isAmbient: false,
-      }),
-    ]);
+        isAmbient: true,
+      })
+      : playerSpawn({ position: { x: 100, y: 180 } });
+    const right = enemySpawn({
+      id: rightId,
+      squadId: "rival-right",
+      position: { x: 196, y: 180 },
+      controller: "human",
+      isAmbient: rightAmbient,
+    });
+    const simulation = await makeSimulation([left, right]);
 
-    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
-    simulation.applyInput("enemy", { move: { x: -1, y: 0 }, dash: true });
+    simulation.applyInput(leftId, { move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput(rightId, { move: { x: -1, y: 0 }, dash: true });
     let clash = false;
     for (let tick = 0; tick < 12 && !clash; tick += 1) {
       simulation.step();
@@ -1080,10 +1095,10 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(clash).toBe(true);
-    expect(snapshot.bots.find((bot) => bot.id === "player")!.shieldSegments).toEqual([1, 1, 1]);
-    expect(snapshot.bots.find((bot) => bot.id === "enemy")!.shieldSegments).toEqual([1, 1, 1]);
-    expect(snapshot.bots.find((bot) => bot.id === "player")!.dashActiveMs).toBe(0);
-    expect(snapshot.bots.find((bot) => bot.id === "enemy")!.dashActiveMs).toBe(0);
+    expect(snapshot.bots.find((bot) => bot.id === leftId)!.shieldSegments).toEqual([1, 1, 1]);
+    expect(snapshot.bots.find((bot) => bot.id === rightId)!.shieldSegments).toEqual([1, 1, 1]);
+    expect(snapshot.bots.find((bot) => bot.id === leftId)!.dashActiveMs).toBe(0);
+    expect(snapshot.bots.find((bot) => bot.id === rightId)!.dashActiveMs).toBe(0);
     simulation.dispose();
   });
 
@@ -1174,9 +1189,20 @@ describe("DotBotSimulation", () => {
       enemySpawn({ id: "ambient-b", squadId: "rival-b", position: { x: 220, y: 180 }, maxShields: 1, shields: 1 }),
     ]);
 
-    runTicks(simulation, 90);
+    const combatEvents = [];
+    for (let tick = 0; tick < 180; tick += 1) {
+      simulation.step();
+      combatEvents.push(...simulation.drainEvents().filter(
+        (event) => event.type === "hit" || event.type === "dashContact",
+      ));
+    }
 
     const bots = simulation.getSnapshot().bots;
+    expect(combatEvents).toContainEqual(expect.objectContaining({
+      type: "dashContact",
+      result: "clash",
+    }));
+    expect(combatEvents).toContainEqual(expect.objectContaining({ type: "hit" }));
     expect(bots.some((bot) => bot.state !== "alive" || bot.shields < 1)).toBe(true);
     simulation.dispose();
   });
