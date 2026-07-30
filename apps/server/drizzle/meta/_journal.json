@@ -57,6 +57,13 @@
       "when": 1784261866213,
       "tag": "0007_relay_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785440066658,
+      "tag": "0008_clean_blade",
+      "breakpoints": true
     }
   ]
 }

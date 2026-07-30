@@ -832,6 +832,13 @@ export class DotBotSimulation {
 
   private updateDoors(dtMs: number): void {
     for (const door of this.doors.values()) {
+      if (door.doorway.locked) {
+        door.phase = "closed";
+        door.openness = 0;
+        door.blocking = true;
+        door.holdRemainingMs = 0;
+        continue;
+      }
       const triggerRadius = door.doorway.triggerRadius ?? DEFAULT_DOOR_TRIGGER_RADIUS;
       const nearbyBot = [...this.bots.values()]
         .filter((bot) =>

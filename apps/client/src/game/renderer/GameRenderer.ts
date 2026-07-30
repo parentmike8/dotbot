@@ -11,12 +11,13 @@ import {
   resolvePlan,
 } from "@dotbot/game/mapModel";
 import { rectsOverlap } from "@dotbot/game/geometry";
+import { collectSolids } from "@dotbot/game/collision";
 import { buildingMouths } from "@dotbot/game/entrances";
 import {
   hasLineOfSight, outdoorVision, seesOutdoors, visibilityPolygon, visionContext,
 } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
-import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, Rect, SimEvent, Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, Rect, SimEvent, Solid, Vec2 } from "@dotbot/game/types";
 import type { KillCamClip, MatchIntel } from "@dotbot/protocol";
 import { CORE_REACH } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
@@ -90,6 +91,8 @@ const PARALLAX_STRENGTH = (() => {
   if (typeof window === "undefined") return 1;
   return parseObjectParallaxStrength(window.location.search);
 })();
+const SHOW_COLLISION = typeof window !== "undefined"
+  && new URLSearchParams(window.location.search).has("collision");
 
 export type InteractionChannelVisual = {
   position: Vec2;
@@ -180,6 +183,10 @@ export class GameRenderer {
   private readonly art: MapArt;
   /** Faint wash over everything outside the player's line of sight. */
   private readonly fogGfx = new Graphics();
+  /** Authoritative moving leaves. Drawn only while their collision is live. */
+  private readonly doorGfx = new Graphics();
+  /** Query-only review ink over the same solids used by production collision. */
+  private readonly collisionGfx = new Graphics();
   /** Matching wash clipped to tall foreground sprite pixels. */
   private readonly foregroundFogGfx = new Graphics();
   /** Entities subject to line-of-sight: enemies, dots, their rings. */
@@ -292,10 +299,12 @@ export class GameRenderer {
     this.worldLayer.addChild(
       this.art.root,
       this.fogGfx,
+      this.doorGfx,
       this.maskedLayer,
       this.dynamicGfx,
       this.dynamicBotsLayer,
       this.impactLayer,
+      this.collisionGfx,
       this.signLayer,
       // Above the bots: canopies, trunks, leaves. See `MapArt.overhead` — and note that
       // `art.foreground` below is the fog MASK, which pixi consumes rather than draws, so art
@@ -547,15 +556,19 @@ export class GameRenderer {
     this.updateSignReading(player ?? null);
 
     this.maskedGfx.clear();
+    this.doorGfx.clear();
+    this.collisionGfx.clear();
     this.dynamicGfx.clear();
     this.screenGfx.clear();
     this.impactLayer.visible = killCam === undefined;
     this.art.trails.view.visible = killCam === undefined;
     this.drawExtractionPulse(snapshot, player?.squadId);
+    this.drawDoors(snapshot, playerContext);
     this.drawDots(snapshot, player?.squadId, playerContext);
     this.drawMines(snapshot, playerContext);
     this.drawSignalIntel(snapshot, intel, playerContext);
     this.drawBots(snapshot, playerId, playerContext);
+    if (SHOW_COLLISION) this.drawCollisionOverlay(snapshot, player?.floorId ?? OUTDOOR_FLOOR_ID);
     if (killCam) this.drawKillCamImpact(killCam);
     // AFTER the bots, not with the other ambient passes above, and for one concrete reason:
     // `drawBots` is what advances each bot's smoothed display position, and a mark has to land
@@ -591,6 +604,66 @@ export class GameRenderer {
     const pulse = 1 + Math.sin(snapshot.timeMs / 180) * 0.12;
     this.dynamicGfx.moveTo(x - 9 * pulse, y).lineTo(x - 2, y + 7)
       .lineTo(x + 11 * pulse, y - 10).stroke({ color: DOT_COLOR.blueprint, width: 3 });
+  }
+
+  /**
+   * A closed leaf uses the exact collision rectangle. Automatic doors currently
+   * stop blocking at the simulation's passable threshold, so hiding the leaf at
+   * that same frame is more honest than drawing a fractional gap a full-size bot
+   * still cannot use.
+   */
+  private drawDoors(snapshot: GameSnapshot, playerContext: string): void {
+    for (const door of snapshot.doors ?? []) {
+      if (!door.blocking || this.contextKey(door.floorId, door.position) !== playerContext) continue;
+      const rect = doorEntityCollisionRect(door);
+      this.doorGfx
+        .rect(rect.x, rect.y, rect.w, rect.h)
+        .fill({ color: 0xd8d5ce })
+        .stroke({ color: INK.structure, width: 2 });
+      if (door.dir === "h") {
+        this.doorGfx
+          .moveTo(rect.x + rect.w / 2, rect.y)
+          .lineTo(rect.x + rect.w / 2, rect.y + rect.h)
+          .stroke({ color: INK.fixture, width: 1 });
+      } else {
+        this.doorGfx
+          .moveTo(rect.x, rect.y + rect.h / 2)
+          .lineTo(rect.x + rect.w, rect.y + rect.h / 2)
+          .stroke({ color: INK.fixture, width: 1 });
+      }
+    }
+  }
+
+  private drawCollisionOverlay(snapshot: GameSnapshot, floorId: string): void {
+    for (const solid of collectSolids(this.map, physicsFloorId(this.map, floorId))) {
+      this.drawCollisionSolid(solid);
+    }
+    for (const door of snapshot.doors ?? []) {
+      if (door.floorId !== physicsFloorId(this.map, floorId) || !door.blocking) continue;
+      this.drawCollisionSolid({ kind: "rect", ...doorEntityCollisionRect(door) });
+    }
+  }
+
+  private drawCollisionSolid(solid: Solid): void {
+    if (solid.kind === "rect") {
+      this.collisionGfx
+        .rect(solid.x, solid.y, solid.w, solid.h)
+        .fill({ color: 0xef4444, alpha: 0.2 })
+        .stroke({ color: 0xb91c1c, width: 1, alpha: 0.7 });
+      return;
+    }
+    if (solid.kind === "capsule") {
+      this.collisionGfx
+        .moveTo(solid.ax, solid.ay)
+        .lineTo(solid.bx, solid.by)
+        .stroke({ color: 0xef4444, width: solid.r * 2, alpha: 0.24 });
+      return;
+    }
+    if (solid.points.length === 0) return;
+    this.collisionGfx
+      .poly(solid.points.flatMap((point) => [point.x, point.y]))
+      .fill({ color: 0xef4444, alpha: 0.2 })
+      .stroke({ color: 0xb91c1c, width: 1, alpha: 0.7 });
   }
 
   private drawMineSignals(player: DotBotEntity): void {

@@ -1,6 +1,7 @@
 import type { WireItemCode } from "@dotbot/protocol";
 import type { BaseLayout, BaseObjectKind, BaseShellId, ContractDefinition, Item, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import type { Recipe } from "@dotbot/game/content/recipes";
+import type { BaseTutorialAction, BaseTutorialState } from "@dotbot/game/baseTutorial";
 
 export type PlayerIdentity = {
   playerId: string;
@@ -39,6 +40,7 @@ export type PlayerProfile = {
 };
 
 export type PlayerBase = {
+  tutorial: BaseTutorialState;
   shell: BaseShellId;
   upgrades: string[];
   layout: BaseLayout;
@@ -75,6 +77,8 @@ export interface Persistence {
   resolveOrRegisterPlayer(token: string, offeredName: string): Promise<PlayerIdentity>;
   getProfile(token: string): Promise<PlayerProfile | null>;
   getBase(token: string): Promise<PlayerBase | null>;
+  getBaseTutorialForPlayer(playerId: string): Promise<BaseTutorialState | null>;
+  advanceBaseTutorial(token: string, action: BaseTutorialAction, revision: number): Promise<PlayerBase | null>;
   saveBaseLayout(token: string, layout: BaseLayout): Promise<BaseLayout | null>;
   setBaseShell(token: string, shell: BaseShellId): Promise<PlayerBase | null>;
   setLoadout(token: string, loadout: WireItemCode[]): Promise<PlayerBase | null>;

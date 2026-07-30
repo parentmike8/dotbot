@@ -1,6 +1,7 @@
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { BaseLayout, BaseShellId, LoadoutPreset } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
+import type { BaseTutorialAction, BaseTutorialState } from "@dotbot/game/baseTutorial";
 import type {
   FabricationResult,
   Persistence,
@@ -31,6 +32,7 @@ export class RemotePersistence implements Persistence {
   helloPlayer(_token: string): Promise<PlayerIdentity | null> { return this.unsupported("helloPlayer"); }
   getProfile(_token: string): Promise<PlayerProfile | null> { return this.unsupported("getProfile"); }
   getBase(_token: string): Promise<PlayerBase | null> { return this.unsupported("getBase"); }
+  advanceBaseTutorial(_token: string, _action: BaseTutorialAction, _revision: number): Promise<PlayerBase | null> { return this.unsupported("advanceBaseTutorial"); }
   saveBaseLayout(_token: string, _layout: BaseLayout): Promise<BaseLayout | null> { return this.unsupported("saveBaseLayout"); }
   setBaseShell(_token: string, _shell: BaseShellId): Promise<PlayerBase | null> { return this.unsupported("setBaseShell"); }
   setLoadout(_token: string, _loadout: WireItemCode[]): Promise<PlayerBase | null> { return this.unsupported("setLoadout"); }
@@ -48,6 +50,10 @@ export class RemotePersistence implements Persistence {
 
   getInsertionPreference(playerId: string): Promise<string | null> {
     return this.invoke("getInsertionPreference", { playerId });
+  }
+
+  getBaseTutorialForPlayer(playerId: string): Promise<BaseTutorialState | null> {
+    return this.invoke("getBaseTutorialForPlayer", { playerId });
   }
 
   getMatchIntelObjects(playerId: string): ReturnType<Persistence["getMatchIntelObjects"]> {

@@ -15,6 +15,18 @@ import {
 import { RECIPES, SECOND_FLOOR_UPGRADE_ID, recipeById, type Recipe } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { contractDayStamp, contractObjectiveLabel, generateContractOffers } from "@dotbot/game/contracts";
+import {
+  BASE_TUTORIAL_ENTRY_Y,
+  BASE_TUTORIAL_FABRICATOR_ID,
+  BASE_TUTORIAL_TARGET_ID,
+  advanceBaseTutorial as advanceLocalBaseTutorial,
+  completedBaseTutorialState,
+  initialBaseTutorialState,
+  isBaseTutorialComplete,
+  isBaseTutorialPhase,
+  type BaseTutorialAction,
+  type BaseTutorialState,
+} from "@dotbot/game/baseTutorial";
 import type { BaseLayout, BaseObjectKind, BaseShellId, ContractDefinition, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { useDotBotGame } from "../../game/useDotBotGame";
@@ -27,11 +39,13 @@ import { advanceBaseChannel, findBaseTarget, hasMovedForBaseOnboarding, type Bas
 const localLayoutKey = "dotbot.baseLayout";
 const localShellKey = "dotbot.baseShell";
 const seedDraftedKey = "dotbot.baseSeedDrafted";
-const baseOnboardingKey = "dotbot.baseOnboarding.v1";
+const localTutorialKey = "dotbot.baseTutorial.v2";
+const legacyBaseOnboardingKey = "dotbot.baseOnboarding.v1";
 const channelDurationMs = 1000;
 
 export type BasePayload = {
   storageLinked: boolean;
+  tutorial: BaseTutorialState;
   shell: BaseShellId;
   upgrades: string[];
   layout: BaseLayout;
@@ -52,10 +66,9 @@ type Panel =
   | { type: "object"; slotId: string; kind: BaseObjectKind }
   | null;
 
-type BaseOnboardingStep = "move" | "station" | "done";
-
 const offlinePayload: BasePayload = {
   storageLinked: false,
+  tutorial: initialBaseTutorialState,
   shell: DEFAULT_BASE_SHELL,
   upgrades: [],
   layout: starterBaseLayout,
@@ -72,13 +85,19 @@ const offlinePayload: BasePayload = {
 export function BaseApp() {
   const [name, setName] = useState(() => localStorage.getItem(playerNameKey) ?? "");
   const [identityReady, setIdentityReady] = useState(() => Boolean(localStorage.getItem(playerNameKey)));
-  const [base, setBase] = useState<BasePayload>(() => ({ ...offlinePayload, layout: readLocalLayout(), shell: readLocalShell() }));
+  const [base, setBase] = useState<BasePayload>(() => ({
+    ...offlinePayload,
+    tutorial: readLocalTutorial(),
+    layout: readLocalLayout(),
+    shell: readLocalShell(),
+  }));
   const [panel, setPanel] = useState<Panel>(null);
   const [deployment, setDeployment] = useState(() => /^#\/r\/[A-Z2-9]{4}(?:\?squad=[a-z0-9-]+)?$/i.test(window.location.hash) || window.location.hash === "#/lobby");
   const [notice, setNotice] = useState("");
   const [draftObjectIds, setDraftObjectIds] = useState<string[]>(() => localStorage.getItem(seedDraftedKey)
     ? []
     : Object.keys(readLocalLayout()).map((slotId) => `base-object-${slotId}`));
+  const tutorialAdvanceInFlight = useRef(false);
 
   const refreshBase = useCallback(async () => {
     const token = localStorage.getItem(deviceTokenKey);
@@ -89,6 +108,7 @@ export function BaseApp() {
       const payload = await response.json() as BasePayload;
       const next = {
         ...payload,
+        tutorial: payload.storageLinked ? payload.tutorial : readLocalTutorial(),
         upgrades: Array.isArray(payload.upgrades) ? payload.upgrades : [],
         layout: payload.storageLinked ? { ...payload.layout } : readLocalLayout(),
         // Never trust the wire for the shell id — a bad value would sink the
@@ -96,6 +116,7 @@ export function BaseApp() {
         shell: payload.storageLinked && isBaseShellId(payload.shell) ? payload.shell : readLocalShell(),
       };
       setBase(next);
+      if (payload.storageLinked) writeLocalTutorial(payload.tutorial);
       localStorage.setItem(localLayoutKey, JSON.stringify(next.layout));
       localStorage.setItem(localShellKey, next.shell);
       setNotice("");
@@ -103,6 +124,42 @@ export function BaseApp() {
       setBase((current) => ({ ...current, storageLinked: false, layout: readLocalLayout(), shell: readLocalShell() }));
     }
   }, []);
+
+  const advanceTutorial = useCallback(async (action: BaseTutorialAction) => {
+    if (tutorialAdvanceInFlight.current) return;
+    tutorialAdvanceInFlight.current = true;
+    try {
+      if (!base.storageLinked) {
+        const advanced = advanceLocalBaseTutorial(base.tutorial, action);
+        if (advanced.changed) {
+          writeLocalTutorial(advanced.state);
+          setBase((current) => ({ ...current, tutorial: advanced.state }));
+        }
+        return;
+      }
+      const token = localStorage.getItem(deviceTokenKey);
+      if (!token) return;
+      const response = await fetch("/api/base/tutorial", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-device-token": token },
+        body: JSON.stringify({ action, revision: base.tutorial.revision }),
+      });
+      const body = await response.json() as BasePayload & { error?: string };
+      if (!response.ok) throw new Error(body.error ?? `Tutorial update failed (${response.status})`);
+      writeLocalTutorial(body.tutorial);
+      setBase((current) => ({
+        ...body,
+        layout: body.storageLinked ? { ...body.layout } : current.layout,
+        shell: body.storageLinked && isBaseShellId(body.shell) ? body.shell : current.shell,
+      }));
+      setNotice("");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message.toUpperCase() : "BASE INTRODUCTION NOT SAVED");
+      await refreshBase();
+    } finally {
+      tutorialAdvanceInFlight.current = false;
+    }
+  }, [base.storageLinked, base.tutorial, refreshBase]);
 
   useEffect(() => {
     if (!identityReady) return;
@@ -312,7 +369,7 @@ export function BaseApp() {
     }
   }, [base.storageLinked]);
 
-  if (deployment) {
+  if (deployment && isBaseTutorialComplete(base.tutorial)) {
     return <LobbyApp embedded onReturnToBase={() => {
       setDeployment(false);
       setPanel(null);
@@ -349,6 +406,7 @@ export function BaseApp() {
       applyPreset={applyPreset}
       updateInsertionPreference={updateInsertionPreference}
       updateContracts={updateContracts}
+      advanceTutorial={advanceTutorial}
     />
   );
 }
@@ -373,13 +431,19 @@ type BaseSessionProps = {
   applyPreset: (presetIndex: number) => Promise<void>;
   updateInsertionPreference: (insertionPointId: string | null) => Promise<void>;
   updateContracts: (action: "accept" | "reroll" | "abandon", contractId?: string) => Promise<void>;
+  advanceTutorial: (action: BaseTutorialAction) => Promise<void>;
 };
 
 function BaseSession(props: BaseSessionProps) {
-  const expanded = ownsSecondFloor(props.base);
+  const tutorialComplete = isBaseTutorialComplete(props.base.tutorial);
+  const expanded = tutorialComplete && ownsSecondFloor(props.base);
   const map = useMemo(
-    () => createBaseMap(props.base.layout, props.base.shell, { expanded }),
-    [expanded, props.base.layout, props.base.shell],
+    () => createBaseMap(
+      props.base.layout,
+      tutorialComplete ? props.base.shell : "workshop",
+      { expanded, tutorial: props.base.tutorial },
+    ),
+    [expanded, props.base.layout, props.base.shell, props.base.tutorial, tutorialComplete],
   );
   const session = useMemo(() => createSession("local", {
     map,
@@ -389,6 +453,7 @@ function BaseSession(props: BaseSessionProps) {
   const {
     hostRef,
     snapshot,
+    events,
     playerId,
     setInteractionChannel,
     draftObjects,
@@ -401,10 +466,9 @@ function BaseSession(props: BaseSessionProps) {
     ? 1 - Math.max(0, Math.min(1, player.dashCooldownMs / defaultGameConfig.dashCooldownMs))
     : 1;
   const channelRef = useRef<BaseChannelState | null>(null);
-  const onboardingOriginRef = useRef<{ x: number; y: number } | null>(null);
-  const [onboardingStep, setOnboardingStep] = useState<BaseOnboardingStep>(() =>
-    localStorage.getItem(baseOnboardingKey) === "complete" ? "done" : "move",
-  );
+  const tutorialOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const tutorialActionRef = useRef<BaseTutorialAction | null>(null);
+  const tutorialFabricatorDraftedRef = useRef(false);
 
   useEffect(() => {
     if (props.draftObjectIds.length === 0) return;
@@ -413,24 +477,50 @@ function BaseSession(props: BaseSessionProps) {
   }, [draftObjects, props]);
 
   useEffect(() => {
-    if (!props.identityReady || !player || onboardingStep !== "move") return;
-    const origin = onboardingOriginRef.current;
+    if (!props.identityReady || !player || props.base.tutorial.phase !== "movement") return;
+    const origin = tutorialOriginRef.current;
     if (!origin) {
-      onboardingOriginRef.current = { ...player.position };
+      tutorialOriginRef.current = { ...player.position };
       return;
     }
-    if (hasMovedForBaseOnboarding(origin, player.position)) {
-      setOnboardingStep("station");
-    }
-  }, [onboardingStep, player, props.identityReady]);
+    if (!hasMovedForBaseOnboarding(origin, player.position) || tutorialActionRef.current === "moved") return;
+    tutorialActionRef.current = "moved";
+    void props.advanceTutorial("moved").finally(() => {
+      tutorialActionRef.current = null;
+    });
+  }, [player, props]);
 
-  const completeOnboarding = useCallback(() => {
-    localStorage.setItem(baseOnboardingKey, "complete");
-    setOnboardingStep("done");
-  }, []);
+  useEffect(() => {
+    const phase = props.base.tutorial.phase;
+    if (phase !== "movement") tutorialOriginRef.current = null;
+    if (phase === "practice" && tutorialActionRef.current !== "practiceHit") {
+      const downed = events.some((event) =>
+        event.type === "downed"
+        && event.botId === BASE_TUTORIAL_TARGET_ID
+        && event.byBotId === playerId,
+      );
+      if (downed) {
+        tutorialActionRef.current = "practiceHit";
+        void props.advanceTutorial("practiceHit").finally(() => {
+          tutorialActionRef.current = null;
+        });
+      }
+    }
+    if (phase === "doorOpen") {
+      if (!tutorialFabricatorDraftedRef.current) {
+        tutorialFabricatorDraftedRef.current = true;
+        draftObjects([BASE_TUTORIAL_FABRICATOR_ID]);
+      }
+      if (player && player.position.y < BASE_TUTORIAL_ENTRY_Y && tutorialActionRef.current !== "enteredBase") {
+        tutorialActionRef.current = "enteredBase";
+        void props.advanceTutorial("enteredBase").finally(() => {
+          tutorialActionRef.current = null;
+        });
+      }
+    }
+  }, [draftObjects, events, player, playerId, props]);
 
   const openTarget = useCallback((target: BaseTarget) => {
-    completeOnboarding();
     if (target.type === "deployment") {
       props.openDeployment();
       return;
@@ -445,7 +535,7 @@ function BaseSession(props: BaseSessionProps) {
     } else if (target.object.slotId && isBaseObjectKind(kind)) {
       props.setPanel({ type: "object", slotId: target.object.slotId, kind });
     }
-  }, [completeOnboarding, props]);
+  }, [props]);
 
   useEffect(() => {
     if (!snapshot || !player || !props.identityReady || props.panel) {
@@ -468,6 +558,7 @@ function BaseSession(props: BaseSessionProps) {
       layout: props.base.layout,
       upgrades: props.base.upgrades,
       panel: props.panel?.type ?? null,
+      tutorial: props.base.tutorial,
       playerPosition: player?.position ?? null,
       playerFloorId: player?.floorId ?? null,
     };
@@ -482,7 +573,7 @@ function BaseSession(props: BaseSessionProps) {
       data-player-y={player ? Math.round(player.position.y) : undefined}
       data-player-floor={player?.floorId}
       data-panel={props.panel?.type ?? "none"}
-      data-onboarding={onboardingStep}
+      data-tutorial={props.base.tutorial.phase}
     >
       <div ref={hostRef} className="game-canvas" />
       <header className="base-title-block">
@@ -490,17 +581,19 @@ function BaseSession(props: BaseSessionProps) {
         <strong>{props.name || "UNCOMMISSIONED"}</strong>
         <small>{props.base.storageLinked ? "STORAGE LINK ACTIVE" : "OFFLINE — NO STORAGE LINK"}</small>
       </header>
-      {props.identityReady && !props.panel && onboardingStep !== "done" ? (
+      {props.identityReady && !props.panel && !tutorialComplete ? (
         <aside className="base-onboarding" role="status" aria-live="polite">
-          <span>{onboardingStep === "move" ? "FIRST STEP" : "NEXT STEP"}</span>
-          <strong>{onboardingStep === "move" ? "MOVE YOUR DOTBOT" : "VISIT A STATION"}</strong>
-          {onboardingStep === "move" ? <>
+          <span>{tutorialStepLabel(props.base.tutorial.phase)}</span>
+          <strong>{tutorialInstruction(props.base.tutorial.phase)}</strong>
+          {props.base.tutorial.phase === "movement" ? <>
             <p className="base-onboarding-keyboard">USE <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> OR THE ARROW KEYS</p>
             <p className="base-onboarding-touch">DRAG THE JOYSTICK</p>
-          </> : <p>FOLLOW A LABELED MARKER · STAND STILL ON IT</p>}
+          </> : props.base.tutorial.phase === "practice"
+            ? <p>DASH IS YOUR ATTACK · THE PRACTICE BOT CANNOT HURT YOU</p>
+            : <p>THE FABRICATOR BUILDS WHAT YOU EARN · WALK THROUGH THE OPEN DOOR</p>}
         </aside>
       ) : null}
-      {onboardingStep === "done" ? <div className="base-instruction">STAND STILL ON A LABELED MARKER TO INTERACT</div> : null}
+      {tutorialComplete ? <div className="base-instruction">STASH STORES · BAYS CARRY · BUILD AT FABRICATOR · DEPLOY AT DOOR</div> : null}
       {props.identityReady && !props.panel ? (
         <div className="touch-controls base-touch-controls" aria-label="Touch controls">
           <div
@@ -937,6 +1030,36 @@ function readLocalLayout(): BaseLayout {
 function readLocalShell(): BaseShellId {
   const value = localStorage.getItem(localShellKey);
   return isBaseShellId(value) ? value : DEFAULT_BASE_SHELL;
+}
+
+function readLocalTutorial(): BaseTutorialState {
+  try {
+    const value = JSON.parse(localStorage.getItem(localTutorialKey) ?? "null") as Partial<BaseTutorialState> | null;
+    if (value && isBaseTutorialPhase(value.phase) && Number.isInteger(value.revision) && (value.revision ?? -1) >= 0) {
+      return { phase: value.phase, revision: value.revision! };
+    }
+  } catch {
+    // A malformed device-local fallback restarts the short introduction.
+  }
+  return localStorage.getItem(legacyBaseOnboardingKey) === "complete"
+    ? { ...completedBaseTutorialState }
+    : { ...initialBaseTutorialState };
+}
+
+function writeLocalTutorial(tutorial: BaseTutorialState): void {
+  localStorage.setItem(localTutorialKey, JSON.stringify(tutorial));
+}
+
+function tutorialStepLabel(phase: BaseTutorialState["phase"]): string {
+  return phase === "movement" ? "FIRST STEP" : phase === "practice" ? "SAFE PRACTICE" : "YOUR BASE";
+}
+
+function tutorialInstruction(phase: BaseTutorialState["phase"]): string {
+  return phase === "movement"
+    ? "MOVE YOUR DOTBOT"
+    : phase === "practice"
+      ? "DASH INTO THE PRACTICE BOT"
+      : "ENTER YOUR BASE";
 }
 
 function wireItemGlyph(code: WireItemCode): string {

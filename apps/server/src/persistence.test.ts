@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import postgres, { type Sql } from "postgres";
+import type { FastifyInstance } from "fastify";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { createServer } from "./app";
 import { Room, type RoomPeer } from "./Room";
@@ -78,6 +79,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(registration.statusCode).toBe(200);
     const account = registration.json<{ playerId: string; token: string }>();
     expect(account.token).toMatch(/^[a-f0-9]{32}$/);
+    await completeIntroduction(app, account.token);
     // One prior shelf fragment makes the two live extractions below fragments
     // two and three, so the second run crosses the learning threshold.
     await sql!`insert into hold_items (player_id, item_type, qty) values (${account.playerId}, 'b:shelf', 1)`;
@@ -88,8 +90,14 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
       const welcome = await alice.waitFor("welcome");
       expect(welcome.playerId).toBe(account.playerId);
 
+      const partner = (await app.inject({
+        method: "POST",
+        url: "/api/auth/register",
+        payload: { name: `Partner ${run}` },
+      })).json<{ token: string }>();
+      await completeIntroduction(app, partner.token);
       const bob = await connect(wsUrl, clients);
-      bob.send({ type: "hello", token: `partner-${run}`, name: `Partner ${run}`, roomCode: welcome.roomCode });
+      bob.send({ type: "hello", token: partner.token, name: `Partner ${run}`, roomCode: welcome.roomCode });
       await bob.waitFor("welcome");
 
       alice.send({ type: "startMatch" });
@@ -184,6 +192,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     const registration = await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Base Pilot" } });
     const account = registration.json<{ playerId: string; token: string }>();
     const headers = { "x-device-token": account.token };
+    await completeIntroduction(app, account.token);
 
     const seeded = await sql!<Array<{ count: number }>>`select count(*)::int as count from base_layouts where player_id = ${account.playerId}`;
     expect(seeded[0].count).toBe(Object.keys(starterBaseLayout).length);
@@ -289,12 +298,103 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     await app.close();
   }, 20_000);
 
+  it("owns tutorial progress per player, resumes after reconnect, and gates base mutations against bypass", async () => {
+    await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
+    process.env.NODE_ENV = "test";
+    const { app } = await createServer({ databaseUrl });
+    const owner = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "New Pilot" } }))
+      .json<{ playerId: string; token: string }>();
+    const other = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Other Pilot" } }))
+      .json<{ playerId: string; token: string }>();
+    const ownerHeaders = { "x-device-token": owner.token };
+    const otherHeaders = { "x-device-token": other.token };
+
+    const initial = await app.inject({ method: "GET", url: "/api/base", headers: ownerHeaders });
+    expect(initial.json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "movement", revision: 0 });
+
+    const moved = await app.inject({
+      method: "POST",
+      url: "/api/base/tutorial",
+      headers: ownerHeaders,
+      payload: { action: "moved", revision: 0 },
+    });
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "practice", revision: 1 });
+    expect((await app.inject({ method: "GET", url: "/api/base", headers: ownerHeaders }))
+      .json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "practice", revision: 1 });
+
+    const skipped = await app.inject({
+      method: "POST",
+      url: "/api/base/tutorial",
+      headers: ownerHeaders,
+      payload: { action: "enteredBase", revision: 1 },
+    });
+    expect(skipped.statusCode).toBe(409);
+    expect(skipped.json<{ error: string }>().error).toMatch(/out of order/i);
+
+    const movedRetry = await app.inject({
+      method: "POST",
+      url: "/api/base/tutorial",
+      headers: ownerHeaders,
+      payload: { action: "moved", revision: 0 },
+    });
+    expect(movedRetry.statusCode).toBe(200);
+    expect(movedRetry.json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "practice", revision: 1 });
+
+    const movedLayout = { ...starterBaseLayout };
+    delete movedLayout["wall-nw"];
+    movedLayout["wall-west"] = "fabricator";
+    const blockedLayout = await app.inject({
+      method: "POST",
+      url: "/api/base/layout",
+      headers: ownerHeaders,
+      payload: { layout: movedLayout },
+    });
+    expect(blockedLayout.statusCode).toBe(409);
+    expect(blockedLayout.json<{ error: string }>().error).toMatch(/complete.*introduction/i);
+
+    // A body-supplied player id must never let one account advance another.
+    const otherMove = await app.inject({
+      method: "POST",
+      url: "/api/base/tutorial",
+      headers: otherHeaders,
+      payload: { action: "moved", revision: 0, playerId: owner.playerId },
+    });
+    expect(otherMove.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/base", headers: ownerHeaders }))
+      .json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "practice", revision: 1 });
+    expect((await app.inject({ method: "GET", url: "/api/base", headers: otherHeaders }))
+      .json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "practice", revision: 1 });
+
+    for (const [action, revision, phase] of [
+      ["practiceHit", 1, "doorOpen"],
+      ["enteredBase", 2, "complete"],
+    ] as const) {
+      const advanced = await app.inject({
+        method: "POST",
+        url: "/api/base/tutorial",
+        headers: ownerHeaders,
+        payload: { action, revision },
+      });
+      expect(advanced.statusCode).toBe(200);
+      expect(advanced.json<{ tutorial: { phase: string } }>().tutorial.phase).toBe(phase);
+    }
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/base/layout",
+      headers: ownerHeaders,
+      payload: { layout: movedLayout },
+    })).statusCode).toBe(200);
+    await app.close();
+  }, 20_000);
+
   it("fabricates powerups and blueprint furniture atomically", async () => {
     await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
     process.env.NODE_ENV = "test";
     const { app, persistence } = await createServer({ databaseUrl });
     const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Fabricator Pilot" } })).json<{ playerId: string; token: string }>();
     const headers = { "x-device-token": account.token };
+    await completeIntroduction(app, account.token);
 
     const unlearned = await app.inject({ method: "POST", url: "/api/base/fabricate", headers, payload: { recipeId: "furniture-shelf", slotId: "floor-nw" } });
     expect(unlearned.statusCode).toBe(409);
@@ -359,6 +459,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     const { app } = await createServer({ databaseUrl });
     const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Expansion Pilot" } })).json<{ playerId: string; token: string }>();
     const headers = { "x-device-token": account.token };
+    await completeIntroduction(app, account.token);
     const f1Layout = { ...starterBaseLayout, "up-wall-a": "locker" } satisfies BaseLayout;
 
     const unauthorized = await app.inject({ method: "POST", url: "/api/base/layout", headers, payload: { layout: f1Layout } });
@@ -387,6 +488,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(locker.json<{ stashCapacity: number }>().stashCapacity).toBe(60);
 
     const short = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Short Pilot" } })).json<{ playerId: string; token: string }>();
+    await completeIntroduction(app, short.token);
     await sql!`insert into hold_items(player_id, item_type, qty) values
       (${short.playerId}, 'h', 5), (${short.playerId}, 'r', 6), (${short.playerId}, 'd', 6), (${short.playerId}, 'i', 6)`;
     const before = await stashTotals(short.playerId);
@@ -403,6 +505,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     const { app, persistence } = await createServer({ databaseUrl });
     const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Contract Pilot" } })).json<{ playerId: string; token: string }>();
     const headers = { "x-device-token": account.token };
+    await completeIntroduction(app, account.token);
     const initial = (await app.inject({ method: "GET", url: "/api/base", headers })).json<{ contractOffers: ContractDefinition[]; activeContracts: ContractDefinition[] }>();
     expect(initial.contractOffers).toHaveLength(3);
     expect(initial.activeContracts).toEqual([]);
@@ -521,6 +624,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     const { app } = await createServer({ databaseUrl });
     const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Preset Pilot" } })).json<{ playerId: string; token: string }>();
     const headers = { "x-device-token": account.token };
+    await completeIntroduction(app, account.token);
     await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'h', 1), (${account.playerId}, 'r', 1)`;
     const presets = [{ name: "Scout", items: ["h", "r", "r", "i"] }];
     const saved = await app.inject({ method: "POST", url: "/api/base/presets", headers, payload: { presets } });
@@ -587,6 +691,19 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
 function collectingPeer(id: string): { peer: RoomPeer; messages: ServerMessage[] } {
   const messages: ServerMessage[] = [];
   return { peer: { id, send: (message) => messages.push(message) }, messages };
+}
+
+async function completeIntroduction(app: FastifyInstance, token: string): Promise<void> {
+  const headers = { "x-device-token": token };
+  for (const [action, revision] of [["moved", 0], ["practiceHit", 1], ["enteredBase", 2]] as const) {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/base/tutorial",
+      headers,
+      payload: { action, revision },
+    });
+    expect(response.statusCode).toBe(200);
+  }
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

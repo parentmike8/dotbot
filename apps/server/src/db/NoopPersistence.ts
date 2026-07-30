@@ -5,12 +5,20 @@ import type { BaseLayout, BaseObjectKind } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
 import { contractDayStamp, generateContractOffers } from "@dotbot/game/contracts";
 import { downtownMap } from "@dotbot/game/content/downtown";
+import {
+  advanceBaseTutorial as advanceTutorialState,
+  initialBaseTutorialState,
+  type BaseTutorialAction,
+  type BaseTutorialState,
+} from "@dotbot/game/baseTutorial";
 
 export class NoopPersistence implements Persistence {
   readonly live: boolean = false;
+  private readonly tutorials = new Map<string, BaseTutorialState>();
 
   async registerPlayer(name: string): Promise<RegisteredPlayer> {
     const token = randomBytes(16).toString("hex");
+    this.tutorials.set(token, { ...initialBaseTutorialState });
     return { ...fallbackIdentity(token, name), token };
   }
 
@@ -27,7 +35,22 @@ export class NoopPersistence implements Persistence {
   }
 
   async getBase(token: string) {
-    return { shell: DEFAULT_BASE_SHELL, upgrades: [], layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40, presets: [], insertionPreference: null, contractOffers: generateContractOffers(downtownMap, fallbackIdentity(token, "Player").playerId, contractDayStamp()), activeContracts: [] };
+    return { tutorial: { ...(this.tutorials.get(token) ?? initialBaseTutorialState) }, shell: DEFAULT_BASE_SHELL, upgrades: [], layout: { ...starterBaseLayout }, stash: [], learnedBlueprints: [], loadout: [], stashCapacity: 40, presets: [], insertionPreference: null, contractOffers: generateContractOffers(downtownMap, fallbackIdentity(token, "Player").playerId, contractDayStamp()), activeContracts: [] };
+  }
+
+  async getBaseTutorialForPlayer(playerId: string): Promise<BaseTutorialState | null> {
+    for (const [token, tutorial] of this.tutorials) {
+      if (fallbackIdentity(token, "Player").playerId === playerId) return { ...tutorial };
+    }
+    return null;
+  }
+
+  async advanceBaseTutorial(token: string, action: BaseTutorialAction, revision: number) {
+    const current = this.tutorials.get(token) ?? { ...initialBaseTutorialState };
+    const advanced = advanceTutorialState(current, action);
+    if (advanced.changed && revision !== current.revision) throw new Error("Tutorial revision is stale.");
+    this.tutorials.set(token, advanced.state);
+    return this.getBase(token);
   }
 
   async saveBaseLayout(_token: string, layout: BaseLayout): Promise<BaseLayout> { return layout; }

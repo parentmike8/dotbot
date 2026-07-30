@@ -1,4 +1,5 @@
 import type { GameConfig } from "@dotbot/game/types";
+import { isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence } from "./db";
 import { Room, type RoomBandwidthHealth, type RoomPeer } from "./Room";
@@ -103,6 +104,24 @@ export class RoomManager {
     if (expectedPlayerId && identity.playerId !== expectedPlayerId) {
       peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
       return false;
+    }
+    if (this.persistence.live) {
+      let tutorial;
+      try {
+        tutorial = await this.persistence.getBaseTutorialForPlayer(identity.playerId);
+      } catch (error) {
+        console.warn(`[persistence] tutorial lookup failed; rejecting admission. ${errorMessage(error)}`);
+        peer.send({ type: "err", code: "storage_unavailable", msg: "Base progress could not be verified. Try again." });
+        return false;
+      }
+      if (!tutorial || !isBaseTutorialComplete(tutorial)) {
+        peer.send({
+          type: "err",
+          code: "tutorial_required",
+          msg: "Complete the base introduction before deploying.",
+        });
+        return false;
+      }
     }
     const assignedCode = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : undefined;
     if (assignedCode && message.roomCode && message.roomCode.trim().toUpperCase() !== assignedCode) {

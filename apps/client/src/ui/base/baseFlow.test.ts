@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createBaseMap, starterBaseLayout } from "@dotbot/game/content/base";
+import type { BaseTutorialState } from "@dotbot/game/baseTutorial";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { interactionDotReach } from "@dotbot/game/interactions";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
@@ -7,6 +8,8 @@ import { selectClientSurface } from "../../routing";
 import { advanceBaseChannel, findBaseTarget, hasMovedForBaseOnboarding } from "./baseFlow";
 
 describe("base boot and deployment seams", () => {
+  const tutorial = (phase: BaseTutorialState["phase"], revision: number): BaseTutorialState => ({ phase, revision });
+
   it("advances first-entry guidance only after the player actually moves", () => {
     const origin = { x: 100, y: 100 };
     expect(hasMovedForBaseOnboarding(origin, { x: 127.9, y: 100 })).toBe(false);
@@ -21,7 +24,7 @@ describe("base boot and deployment seams", () => {
   });
 
   it("channels the deployment threshold for one stationary second and movement cancels", () => {
-    const map = createBaseMap(starterBaseLayout);
+    const map = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("complete", 3) });
     const position = map.interactionDots!.find((dot) => dot.kind === "deployment")!.position;
     const target = findBaseTarget(map, position);
     expect(target?.type).toBe("deployment");
@@ -39,6 +42,17 @@ describe("base boot and deployment seams", () => {
     const moved = advanceBaseChannel(entered.state, target, { x: position.x + 4, y: position.y }, 1100);
     expect(moved.progress).toBe(0);
     expect(moved.completed).toBeNull();
+  });
+
+  it("cannot resolve deployment or item stations from an incomplete tutorial map", () => {
+    const incomplete = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("doorOpen", 2) });
+    expect(incomplete.interactionDots).toEqual([]);
+
+    const complete = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("complete", 3) });
+    const deployment = complete.interactionDots!.find((dot) => dot.kind === "deployment")!;
+    const locker = complete.interactionDots!.find((dot) => dot.kind === "object")!;
+    expect(findBaseTarget(complete, deployment.position)?.type).toBe("deployment");
+    expect(findBaseTarget(complete, locker.position)?.type).toBe("object");
   });
 
   it("resolves objects and empty slots only from the bot's active base floor", () => {

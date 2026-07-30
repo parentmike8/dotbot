@@ -22,6 +22,21 @@ export { downtownMap } from "./content/downtown";
 export { auditPatrolRoutes } from "./patrol";
 export { botSpawnFaction, isAmbientBotSpawn } from "./faction";
 export {
+  BASE_TUTORIAL_ACTIONS,
+  BASE_TUTORIAL_DOOR_ID,
+  BASE_TUTORIAL_ENTRY_Y,
+  BASE_TUTORIAL_FABRICATOR_ID,
+  BASE_TUTORIAL_PHASES,
+  BASE_TUTORIAL_TARGET_ID,
+  advanceBaseTutorial,
+  completedBaseTutorialState,
+  initialBaseTutorialState,
+  isBaseTutorialAction,
+  isBaseTutorialComplete,
+  isBaseTutorialPhase,
+} from "./baseTutorial";
+export type { BaseTutorialAction, BaseTutorialPhase, BaseTutorialState } from "./baseTutorial";
+export {
   BASE_OBJECT_KINDS,
   BASE_KIND_ZONES,
   BASE_SHELL_IDS,

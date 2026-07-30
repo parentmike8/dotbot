@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -10,6 +10,7 @@ import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/gam
 import { recipeById } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import type { BaseLayout, Item, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
+import { isBaseTutorialAction, isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
 import { createPersistence, type Persistence } from "./db";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
 import { GameLiftSessionGate } from "./GameLiftSessionGate";
@@ -46,6 +47,18 @@ export async function createServer(options: CreateServerOptions = {}) {
       onRoomExpired: () => gameLift.endProcess(),
     } : {}),
   });
+  const requireCompletedIntroduction = async (token: string, reply: FastifyReply): Promise<boolean> => {
+    const base = await persistence.getBase(token);
+    if (!base) {
+      reply.code(404).send({ error: "Unknown device token." });
+      return false;
+    }
+    if (!isBaseTutorialComplete(base.tutorial)) {
+      reply.code(409).send({ error: "Complete the base introduction first." });
+      return false;
+    }
+    return true;
+  };
 
   app.get("/api/health", async (_request, reply) => {
     if (draining) return reply.code(503).send({ draining: true, rooms: rooms.rooms });
@@ -119,11 +132,32 @@ export async function createServer(options: CreateServerOptions = {}) {
     return { storageLinked: persistence.live, ...base };
   });
 
+  app.post<{
+    Headers: { "x-device-token"?: string; authorization?: string };
+    Body: { action?: unknown; revision?: unknown };
+  }>("/api/base/tutorial", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const action = request.body?.action;
+    const revision = request.body?.revision;
+    if (!isBaseTutorialAction(action) || !Number.isInteger(revision) || (revision as number) < 0) {
+      return reply.code(400).send({ error: "A known tutorial action and non-negative revision are required." });
+    }
+    try {
+      const base = await persistence.advanceBaseTutorial(token, action, revision as number);
+      if (!base) return reply.code(404).send({ error: "Unknown device token." });
+      return { storageLinked: persistence.live, ...base };
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
+  });
+
   app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { layout?: unknown } }>("/api/base/layout", async (request, reply) => {
     const token = authToken(request.headers);
     if (!token) return reply.code(400).send({ error: "A device token header is required." });
     const layout = parseBaseLayout(request.body?.layout);
     if (!layout) return reply.code(400).send({ error: "Layout contains an unknown slot, object kind, or zone mismatch." });
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
     try {
       const saved = await persistence.saveBaseLayout(token, layout);
@@ -139,6 +173,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     if (!token) return reply.code(400).send({ error: "A device token header is required." });
     const shell = request.body?.shell;
     if (!isBaseShellId(shell)) return reply.code(400).send({ error: "Unknown base shell." });
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
     try {
       const base = await persistence.setBaseShell(token, shell);
@@ -154,6 +189,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     if (!token) return reply.code(400).send({ error: "A device token header is required." });
     const loadout = parseLoadout(request.body?.loadout);
     if (!loadout) return reply.code(400).send({ error: "Loadout must contain at most four powerups; blueprint fragments are cargo." });
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
     try {
       const base = await persistence.setLoadout(token, loadout);
@@ -172,6 +208,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     if (!recipe) return reply.code(400).send({ error: "Unknown fabrication recipe." });
     const slotId = request.body?.slotId;
     if (slotId !== undefined && typeof slotId !== "string") return reply.code(400).send({ error: "slotId must be a string." });
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
     try {
       const result = await persistence.fabricate(token, recipeId, slotId);
@@ -187,6 +224,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     if (!token) return reply.code(400).send({ error: "A device token header is required." });
     const presets = parsePresets(request.body?.presets);
     if (!presets) return reply.code(400).send({ error: "Presets must be at most three named four-slot powerup templates." });
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
     const base = await persistence.savePresets(token, presets);
     if (!base) return reply.code(404).send({ error: "Unknown device token." });
@@ -200,6 +238,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     if (!Number.isInteger(presetIndex) || (presetIndex as number) < 0 || (presetIndex as number) > 2) {
       return reply.code(400).send({ error: "presetIndex must identify one of the three preset slots." });
     }
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
     try {
       const result = await persistence.applyPreset(token, presetIndex as number);
@@ -217,6 +256,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     if (insertionPointId !== null && (typeof insertionPointId !== "string" || !downtownMap.insertionPoints.some((point) => point.id === insertionPointId))) {
       return reply.code(400).send({ error: "Unknown insertion point." });
     }
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — NO STORAGE LINK" });
     try {
       const saved = await persistence.setInsertionPreference(token, insertionPointId as string | null);
@@ -231,6 +271,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     const contractId = request.body?.contractId;
     if (!token) return reply.code(400).send({ error: "A device token header is required." });
     if (typeof contractId !== "string" || !contractId) return reply.code(400).send({ error: "A contract id is required." });
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — CONTRACTS ARE READ-ONLY" });
     try {
       await persistence.acceptContract(token, contractId);
@@ -245,6 +286,7 @@ export async function createServer(options: CreateServerOptions = {}) {
   app.post<{ Headers: { "x-device-token"?: string; authorization?: string } }>("/api/base/contracts/reroll", async (request, reply) => {
     const token = authToken(request.headers);
     if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — CONTRACTS ARE READ-ONLY" });
     try {
       await persistence.rerollContracts(token);
@@ -261,6 +303,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     const contractId = request.body?.contractId;
     if (!token) return reply.code(400).send({ error: "A device token header is required." });
     if (typeof contractId !== "string" || !contractId) return reply.code(400).send({ error: "A contract id is required." });
+    if (!await requireCompletedIntroduction(token, reply)) return;
     if (!persistence.live) return reply.code(503).send({ error: "OFFLINE — CONTRACTS ARE READ-ONLY" });
     try {
       await persistence.abandonContract(token, contractId);
@@ -466,6 +509,9 @@ async function dispatchPersistenceRelay(persistence: Persistence, payload: unkno
     case "getInsertionPreference":
       if (!isUuid(value.playerId)) throw new RelayPayloadError("Invalid player id.");
       return persistence.getInsertionPreference(value.playerId);
+    case "getBaseTutorialForPlayer":
+      if (!isUuid(value.playerId)) throw new RelayPayloadError("Invalid player id.");
+      return persistence.getBaseTutorialForPlayer(value.playerId);
     case "getMatchIntelObjects":
       if (!isUuid(value.playerId)) throw new RelayPayloadError("Invalid player id.");
       return persistence.getMatchIntelObjects(value.playerId);

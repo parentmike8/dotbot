@@ -8,6 +8,12 @@ import { CONTRACT_ACTIVE_CAP, contractDayStamp, contractSatisfied, generateContr
 import type { BaseLayout, BaseShellId, ContractDefinition, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
+import {
+  advanceBaseTutorial as advanceTutorialState,
+  initialBaseTutorialState,
+  type BaseTutorialAction,
+  type BaseTutorialState,
+} from "@dotbot/game/baseTutorial";
 import type {
   Persistence,
   PlayerIdentity,
@@ -32,6 +38,8 @@ export class PostgresPersistence implements Persistence {
       const [created] = await tx.insert(players).values({
         displayName: name,
         deviceTokenHash: hashToken(token),
+        baseTutorialPhase: initialBaseTutorialState.phase,
+        baseTutorialRevision: initialBaseTutorialState.revision,
       }).returning({ id: players.id, name: players.displayName });
       await tx.insert(baseLayouts).values(layoutRows(created.id, starterBaseLayout));
       return created;
@@ -54,6 +62,8 @@ export class PostgresPersistence implements Persistence {
     const [player] = await this.db.insert(players).values({
       displayName: offeredName,
       deviceTokenHash: tokenHash,
+      baseTutorialPhase: initialBaseTutorialState.phase,
+      baseTutorialRevision: initialBaseTutorialState.revision,
     }).onConflictDoUpdate({
       target: players.deviceTokenHash,
       set: { displayName: offeredName, lastSeenAt: new Date() },
@@ -113,7 +123,16 @@ export class PostgresPersistence implements Persistence {
         .from(stashItems).where(eq(stashItems.playerId, identity.playerId)).groupBy(stashItems.itemType),
       this.db.select({ blueprintId: learnedBlueprints.blueprintId })
         .from(learnedBlueprints).where(eq(learnedBlueprints.playerId, identity.playerId)),
-      this.db.select({ id: players.id, loadout: players.loadout, baseShell: players.baseShell, presets: players.presets, insertionPreference: players.insertionPreference, contractReroll: players.contractReroll })
+      this.db.select({
+        id: players.id,
+        loadout: players.loadout,
+        baseShell: players.baseShell,
+        presets: players.presets,
+        insertionPreference: players.insertionPreference,
+        contractReroll: players.contractReroll,
+        baseTutorialPhase: players.baseTutorialPhase,
+        baseTutorialRevision: players.baseTutorialRevision,
+      })
         .from(players).where(eq(players.id, identity.playerId)).limit(1),
       this.db.select({ contract: contractRows.contract }).from(contractRows)
         .where(and(eq(contractRows.playerId, identity.playerId), eq(contractRows.status, "active")))
@@ -123,6 +142,10 @@ export class PostgresPersistence implements Persistence {
     const offers = generateContractOffers(downtownMap, identity.playerId, contractDayStamp(), player[0]?.contractReroll ?? 0)
       .filter((offer) => !active.some((contract) => contract.id === offer.id));
     return {
+      tutorial: {
+        phase: player[0]?.baseTutorialPhase ?? "complete",
+        revision: player[0]?.baseTutorialRevision ?? 3,
+      },
       shell: player[0]?.baseShell ?? DEFAULT_BASE_SHELL,
       upgrades: upgrades.map((row) => row.upgradeId),
       layout: Object.fromEntries(layout.map((row) => [row.slotId, row.objectKind])) as BaseLayout,
@@ -135,6 +158,38 @@ export class PostgresPersistence implements Persistence {
       contractOffers: offers,
       activeContracts: active,
     };
+  }
+
+  async getBaseTutorialForPlayer(playerId: string): Promise<BaseTutorialState | null> {
+    const [player] = await this.db.select({
+      phase: players.baseTutorialPhase,
+      revision: players.baseTutorialRevision,
+    }).from(players).where(eq(players.id, playerId)).limit(1);
+    return player ? { phase: player.phase, revision: player.revision } : null;
+  }
+
+  async advanceBaseTutorial(token: string, action: BaseTutorialAction, revision: number) {
+    const tokenHash = hashToken(token);
+    const result = await this.db.transaction(async (tx) => {
+      const [player] = await tx.select({
+        id: players.id,
+        phase: players.baseTutorialPhase,
+        revision: players.baseTutorialRevision,
+      }).from(players).where(eq(players.deviceTokenHash, tokenHash)).for("update");
+      if (!player) return null;
+      const current: BaseTutorialState = { phase: player.phase, revision: player.revision };
+      const advanced = advanceTutorialState(current, action);
+      if (advanced.changed && revision !== current.revision) throw new Error("Tutorial revision is stale.");
+      if (advanced.changed) {
+        await tx.update(players).set({
+          baseTutorialPhase: advanced.state.phase,
+          baseTutorialRevision: advanced.state.revision,
+        }).where(eq(players.id, player.id));
+      }
+      return player.id;
+    });
+    if (!result) return null;
+    return this.getBase(token);
   }
 
   async setBaseShell(token: string, shell: BaseShellId) {

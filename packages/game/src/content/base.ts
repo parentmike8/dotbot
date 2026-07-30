@@ -1,4 +1,12 @@
 import { defaultGameConfig } from "../config";
+import {
+  BASE_TUTORIAL_DOOR_ID,
+  BASE_TUTORIAL_FABRICATOR_ID,
+  BASE_TUTORIAL_TARGET_ID,
+  completedBaseTutorialState,
+  isBaseTutorialComplete,
+  type BaseTutorialState,
+} from "../baseTutorial";
 import { interactionDotReach } from "../interactions";
 import { objectCollisionRects, stairExitPoint } from "../mapModel";
 import { OUTDOOR_FLOOR_ID } from "../types";
@@ -497,8 +505,17 @@ export function validateBaseLayout(layout: BaseLayout, options: { expanded?: boo
  * documents. Shells differ ONLY in geometry: the slot roster, capacities, and
  * rules are identical across all of them.
  */
-export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT_BASE_SHELL, options: { expanded?: boolean } = {}): MapDocument {
+export function createBaseMap(
+  layout: BaseLayout,
+  shellId: BaseShellId = DEFAULT_BASE_SHELL,
+  options: { expanded?: boolean; tutorial?: BaseTutorialState } = {},
+): MapDocument {
   validateBaseLayout(layout, options);
+  const tutorial = options.tutorial ?? completedBaseTutorialState;
+  const tutorialActive = !isBaseTutorialComplete(tutorial);
+  if (tutorialActive && shellId !== "workshop") {
+    throw new Error("The introductory room belongs to the workshop shell.");
+  }
   const shell = baseShellDef(shellId);
   const groundObjects = shell.slots.flatMap((slot) => {
     const kind = layout[slot.id];
@@ -519,6 +536,32 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
     h: 12,
     facing: "N",
   };
+  const tutorialFabricator: MapObject = {
+    id: BASE_TUTORIAL_FABRICATOR_ID,
+    kind: "fabricator",
+    x: 414,
+    y: 548,
+    w: 58,
+    h: 76,
+    facing: "W",
+    solid: true,
+  };
+  const groundDoorways = tutorialActive
+    ? shell.doorways.map((doorway) => doorway.id === "ws-arch"
+      ? {
+          ...doorway,
+          id: BASE_TUTORIAL_DOOR_ID,
+          open: undefined,
+          opening: "door" as const,
+          mechanism: "automatic" as const,
+          locked: tutorial.phase !== "doorOpen",
+          openDurationMs: 650,
+          holdOpenMs: 30_000,
+          triggerRadius: 70,
+          noiseLoudness: 0.35,
+        }
+      : { ...doorway })
+    : shell.doorways.map((doorway) => ({ ...doorway }));
   const base: Building = {
     id: "player-base",
     kind: "warehouse",
@@ -528,9 +571,9 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
       id: "player-base:GROUND",
       label: "GROUND",
       walls: shell.walls.map((wall) => ({ ...wall })),
-      doorways: shell.doorways.map((doorway) => ({ ...doorway })),
+      doorways: groundDoorways,
       windows: shell.windows.map((window) => ({ ...window })),
-      objects: groundObjects,
+      objects: [...groundObjects, ...(tutorial.phase === "doorOpen" ? [tutorialFabricator] : [])],
       stairs: options.expanded ? [{ ...shell.upper.stairs.ground, rect: { ...shell.upper.stairs.ground.rect } }] : [],
       dotSpawns: [],
     }, ...(options.expanded ? [{
@@ -566,19 +609,33 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
       squadId: "base",
       controller: "human",
       color: "#ff3b6b",
-      position: { ...shell.spawn },
+      position: tutorialActive ? { x: 260, y: 640 } : { ...shell.spawn },
       floorId: OUTDOOR_FLOOR_ID,
       bays: Array.from({ length: defaultGameConfig.baySlots }, () => null),
       hold: [],
-    }],
-    placementSlots: [...shell.slots, ...(options.expanded ? shell.upper.slots : [])].map((slot) => ({
+    }, ...(tutorialActive ? [{
+      id: BASE_TUTORIAL_TARGET_ID,
+      name: "Practice",
+      squadId: "practice",
+      faction: "ambient" as const,
+      controller: "frozen" as const,
+      color: "#777777",
+      position: { x: 260, y: 536 },
+      floorId: OUTDOOR_FLOOR_ID,
+      state: tutorial.phase === "doorOpen" ? "downed" as const : "alive" as const,
+      maxShields: 0,
+      shields: 0,
+      bays: [],
+      hold: [],
+    }] : [])],
+    placementSlots: (tutorialActive ? [] : [...shell.slots, ...(options.expanded ? shell.upper.slots : [])]).map((slot) => ({
       id: slot.id,
       zone: SLOT_ZONES.get(slot.id)!,
       floor: SLOT_FLOORS.get(slot.id)!,
       rect: { ...slot.rect },
     })),
   };
-  map.interactionDots = deriveBaseInteractionDots(map);
+  map.interactionDots = tutorialActive ? [] : deriveBaseInteractionDots(map);
   return map;
 }
 

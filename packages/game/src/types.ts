@@ -261,6 +261,11 @@ export type Doorway = {
   open?: boolean;
   /** Omit for a permanent opening or a non-interactive plan annotation. */
   mechanism?: DoorMechanism;
+  /**
+   * Progression gate. A locked mechanism still produces the authoritative live
+   * door entity, drawing and collision; it simply cannot begin opening.
+   */
+  locked?: boolean;
   /** Defaults keep public doors quick without making them visually instant. */
   openDurationMs?: number;
   holdOpenMs?: number;
