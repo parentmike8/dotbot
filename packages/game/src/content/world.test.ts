@@ -137,6 +137,42 @@ describe("the world is one place", () => {
 });
 
 /**
+ * The yard's spur gate is a real local route, not merely a painted railway that the
+ * navigator can replace with the long way round through Downtown and the fair.
+ *
+ * The first authored gate overlapped the pyramid's north face: the fence ended at y 1800,
+ * the pyramid began at y 1820, and a 48-wide bot therefore had only 20 units between the
+ * two solids. The trail then cut diagonally through the pyramid's north-east corner.
+ * Region-to-region routing stayed green because the fair's east trail still joined the
+ * yard and temple through the rest of the world. These two short paths pin the route the
+ * scenery itself promises.
+ */
+describe("the abandoned spur is a traversable gate", () => {
+  it("crosses the yard fence locally", () => {
+    const path = findNavigationPath(
+      worldMap,
+      OUTDOOR_FLOOR_ID,
+      { x: 3720, y: 1680 },
+      { x: 3720, y: 1900 },
+      RADIUS,
+    );
+    expect(path.length).toBeGreaterThan(0);
+  });
+
+  it("continues from the yard to END OF LINE", () => {
+    const yard = worldMap.insertionPoints.find((point) => point.id === "yard-west")!.position;
+    const end = worldMap.insertionPoints.find((point) => point.id === "tmp-spur")!.position;
+    const path = findNavigationPath(worldMap, OUTDOOR_FLOOR_ID, yard, end, RADIUS);
+    expect(path.length).toBeGreaterThan(0);
+    const distance = path.slice(1).reduce(
+      (total, point, index) => total + Math.hypot(point.x - path[index].x, point.y - path[index].y),
+      0,
+    );
+    expect(distance).toBeLessThan(2_500);
+  });
+});
+
+/**
  * The roundhouse's roads point at the turntable.
  *
  * This is the one claim the building is making. A roundhouse is a fan of bays around a table

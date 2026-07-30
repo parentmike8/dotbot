@@ -206,8 +206,8 @@ const cityPlan: CityPlan = {
       id: "tmp-spur-trail",
       kind: "clearing",
       points: ribbonPoly([
-        { x: 3400, y: 1815 },
-        { x: 3660, y: 1870 },
+        { x: 3720, y: 1815 },
+        { x: 3700, y: 1870 },
         { x: 3700, y: 2350 },
         { x: 3820, y: PLAZA.y + 60 },
       ], (t) => 140 - t * 20),
