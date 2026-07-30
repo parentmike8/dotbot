@@ -253,7 +253,12 @@ export const SHADOW_ALPHA = [0.062, 0.05, 0.041, 0.033, 0.026, 0.02, 0.015, 0.01
 export const AO_ALPHA = [0.019, 0.016, 0.013, 0.011, 0.009, 0.007, 0.005] as const;
 
 /** Sun vector. Short, south-east, and never changed by a caller. */
-const SUN = { x: 0.3, y: 0.62 };
+/**
+ * The one light, as a ground offset. Exported because a glyph sometimes has to build its own
+ * shadow SHAPE rather than hand a rect to `contact` — a lamp post is identified from above by a
+ * long mast shadow with a head on the end, and that polygon has to be laid out along this.
+ */
+export const SUN = { x: 0.3, y: 0.62 };
 
 function pushShadow(g: Graphics, r: Rect, dx: number, dy: number, grow: number, radius: number): void {
   g.roundRect(r.x + dx - grow, r.y + dy - grow, r.w + grow * 2, r.h + grow * 2, radius + grow * 0.9)

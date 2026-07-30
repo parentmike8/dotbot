@@ -7,6 +7,7 @@ import { cappedLift } from "./prism";
 import {
   contact,
   contactRound,
+  contactShape,
   cylinder,
   inlay,
   jitter,
@@ -16,6 +17,7 @@ import {
   seam,
   shade,
   sit,
+  SUN,
   sitRound,
   V,
   volume,
@@ -1236,17 +1238,85 @@ function carGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   void top;
 }
 
+/**
+ * A street lamp, identified by its SHADOW rather than by its plan.
+ *
+ * Reported from play: "what are these things on either side of the road? They're strange and
+ * not clear at all what they are." They were an 18-unit dark disc with a pale pip on it, which
+ * is the honest plan of a pole and says nothing. `modelLandmarks` states the rule this fell
+ * foul of — A SUBJECT WHOSE PLAN IS NOT ITS IDENTITY CANNOT BE DRAWN HERE — and a lamp post
+ * from directly overhead is a dot. The old version had the right parts (flange, mast, head
+ * offset toward the light) at a scale where the whole assembly was 18 units across, so the
+ * offset was five units and invisible.
+ *
+ * The way you actually identify a lamp post from above is its shadow: a long thin mast lying
+ * across the pavement with a blob on the end. That is available here and was not being used —
+ * the light direction is global and known (`SUN`), so the shadow needs no per-object data, and
+ * `contactRound` was throwing a round smudge instead. A NO-LIGHT-POOL decision goes with it:
+ * this world is lit by daylight from the north-west, and a pool of lamplight on a daylit street
+ * is a night-time cue in a daytime scene.
+ *
+ * The head and its arm overhang the authored rect by a few units. That is the same licence the
+ * tree canopy takes and for the same reason: a luminaire is eight metres up, so nothing about
+ * it is solid at ground level, and the collider stays the pole's own footprint.
+ */
 function lampPostGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   const cx = o.x + o.w / 2;
   const cy = o.y + o.h / 2;
   const base = Math.min(o.w, o.h) / 2;
-  contactRound(pad, cx, cy, base * 0.6, LIFT.column + 6);
-  // Base flange, mast, then the luminaire head offset toward the light.
+
+  /**
+   * The mast shadow: a tapered bar from the foot of the pole, out along the light, with the
+   * luminaire's own shadow at the far end.
+   *
+   * Passed at a small lift on purpose. `contactShape` offsets whatever it is given by
+   * `SUN * lift`, so the length has to be built into the POLYGON — handing it a disc and a big
+   * lift is what produced a detached fuzzy blob and no mast at all. A small lift here buys the
+   * layered penumbra without moving the shape off the pole's foot.
+   */
+  const reach = base * 3.6;
+  const arm = { x: SUN.x * reach, y: SUN.y * reach };
+  const across = { x: -SUN.y, y: SUN.x };
+  const mastHalf = base * 0.28;
+  const headHalf = base * 0.72;
+  contactShape(pad, [
+    { x: cx + across.x * mastHalf, y: cy + across.y * mastHalf },
+    { x: cx + arm.x + across.x * headHalf, y: cy + arm.y + across.y * headHalf },
+    { x: cx + arm.x * 1.22, y: cy + arm.y * 1.22 },
+    { x: cx + arm.x - across.x * headHalf, y: cy + arm.y - across.y * headHalf },
+    { x: cx - across.x * mastHalf, y: cy - across.y * mastHalf },
+  ], 3);
+
+  // Base flange and mast, both dead centre on the collider.
   cylinder(g, cx, cy, base * 0.9, MAT.steelDeep, 3);
   cylinder(g, cx, cy, base * 0.42, MAT.steelDark, 4);
-  sitRound(g, cx - base * 0.5, cy - base * 0.6, base * 0.5, 5);
-  g.ellipse(cx - base * 0.5, cy - base * 0.6, base * 0.62, base * 0.44).fill({ color: MAT.steelLit.top });
-  g.ellipse(cx - base * 0.5, cy - base * 0.6, base * 0.62, base * 0.44).stroke({ color: MAT.steelDeep.top, width: 0.9 });
+
+  /**
+   * The arm and head, drawn OPPOSITE the shadow.
+   *
+   * Height is a north-west displacement in this language — a top-down camera sees the top of a
+   * tall thing offset toward the light — so the luminaire, being the highest part, sits furthest
+   * that way. Drawn as a visible arm rather than a floating pip: the bar is what makes the head
+   * read as attached to the pole instead of as a second small object beside it.
+   */
+  const hx = cx - arm.x * 0.62;
+  const hy = cy - arm.y * 0.62;
+  const armHalf = base * 0.26;
+  const bar = [
+    cx + across.x * armHalf, cy + across.y * armHalf,
+    hx + across.x * armHalf, hy + across.y * armHalf,
+    hx - across.x * armHalf, hy - across.y * armHalf,
+    cx - across.x * armHalf, cy - across.y * armHalf,
+  ];
+  g.poly(bar).fill({ color: MAT.steelDark.top });
+  // An edge on the arm. Two units of bare fill on a mid-grey pavement is a hairline; the
+  // outline is what makes it a member joining two things rather than a smudge between them.
+  g.poly(bar).stroke({ color: MAT.steelDeep.top, width: 0.8 });
+  g.ellipse(hx, hy, base * 0.78, base * 0.56).fill({ color: MAT.steelLit.top });
+  g.ellipse(hx, hy, base * 0.78, base * 0.56).stroke({ color: MAT.steelDeep.top, width: 0.9 });
+  // A catch light on the lens, so the head reads as glass rather than as a white blob.
+  g.ellipse(hx - base * 0.2, hy - base * 0.16, base * 0.3, base * 0.2)
+    .fill({ color: shade(MAT.steelLit.top, 1.1) });
 }
 
 function benchGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
