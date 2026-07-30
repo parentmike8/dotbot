@@ -11,6 +11,7 @@ import type {
 import { buildFloorModel, drawStair, drawStairHead } from "./model/modelFloor";
 import { buildOutdoorModel } from "./model/modelOutdoor";
 import { buildRoofModel } from "./model/modelRoof";
+import { type AmbientMover } from "./model/modelMotion";
 import { buildWaterSurfaces, type WaterSurface } from "./model/modelWater";
 import { SHADOW_ALPHA, V, type ShadowPad } from "./model/tone";
 import { drawDotDisc } from "./dotArt";
@@ -110,6 +111,13 @@ export type MapArt = {
   labels: Container;
   /** Every body of water's drifting surface. The renderer moves these each frame. */
   water: WaterSurface[];
+  /**
+   * Every ambient moving part in the world: turning rides, swaying canopies.
+   *
+   * One flat list rather than a tree, because the consumer is one call per frame that
+   * transforms all of them — `animateAmbient` in `modelMotion`. Nothing here is redrawn.
+   */
+  movers: AmbientMover[];
 };
 
 const LABEL_FONT = "system-ui, -apple-system, Segoe UI, sans-serif";
@@ -149,6 +157,7 @@ export function buildMapArt(map: MapDocument): MapArt {
   return {
     root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground,
     buildingsLayer, buildings, labels, water: water.surfaces,
+    movers: outdoors.movers,
   };
 }
 

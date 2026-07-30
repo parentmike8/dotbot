@@ -2,6 +2,7 @@ import { FillGradient, type Graphics } from "pixi.js";
 import type { MapObject, Vec2 } from "@dotbot/game/types";
 import { stadiumAxis } from "@dotbot/game/mapModel";
 import { GRD, fillPoly } from "./modelGround";
+import { movingPart } from "./modelMotion";
 import {
   contact,
   contactBlock,
@@ -445,6 +446,12 @@ const coalingTowerGlyph: LandmarkFn = (g, pad, o) => {
  * defect as the water tank's staves — so the panels are wide alternating wedges,
  * which reads as a striped tent, and a striped tent under a scalloped hem is a
  * carousel and nothing else.
+ *
+ * AND IT TURNS. Everything above the deck goes into one moving part (`modelMotion`),
+ * because on a carousel that is one rigid assembly: canopy, crown and horses all ride
+ * the same platform. The deck stays put, which costs nothing to look at — it is a plain
+ * cylinder, so it is rotationally symmetric, and all that shows of it is the ring at the
+ * hem. The cast shadow stays put for the same reason: it is a disc.
  */
 const carouselGlyph: LandmarkFn = (g, pad, o) => {
   const { x: cx, y: cy } = centre(o);
@@ -453,6 +460,8 @@ const carouselGlyph: LandmarkFn = (g, pad, o) => {
 
   // Deck first, showing at the hem, so the ride reads as a platform under a roof.
   cylinder(g, cx, cy, radius, MAT.woodDark, LIFT.mass);
+
+  const ride = movingPart(g, "spin", { x: cx, y: cy });
 
   const canopy = radius * 0.94;
   const panels = 12;
@@ -469,30 +478,34 @@ const carouselGlyph: LandmarkFn = (g, pad, o) => {
     const mid = (a0 + a1) / 2;
     const facing = (Math.cos(mid) * -0.33 + Math.sin(mid) * -0.94 + 1) / 2;
     const base = i % 2 === 0 ? MAT.canvas.top : shade(MAT.canvas.top, 0.78);
-    fillPoly(g, wedge, shade(base, 0.9 + facing * 0.22));
+    fillPoly(ride, wedge, shade(base, 0.9 + facing * 0.22));
   }
 
   // The scalloped hem: the fairground's own signature, and it breaks the disc.
   const scallops = panels * 2;
   for (let i = 0; i < scallops; i += 1) {
     const a = (i / scallops) * Math.PI * 2;
-    g.circle(cx + Math.cos(a) * canopy, cy + Math.sin(a) * canopy, radius * 0.075)
+    ride.circle(cx + Math.cos(a) * canopy, cy + Math.sin(a) * canopy, radius * 0.075)
       .fill({ color: shade(MAT.canvas.top, 0.84) });
   }
-  g.circle(cx, cy, canopy).stroke({ color: MAT.canvas.edge, width: 1.1 });
+  ride.circle(cx, cy, canopy).stroke({ color: MAT.canvas.edge, width: 1.1 });
 
   // The crown boss, then the horses on their ring — one gap, because an abandoned
   // carousel is missing a horse and that absence is worth more than the twelve.
-  g.circle(cx, cy, radius * 0.2).fill({ color: shade(MAT.canvas.top, 1.06) });
-  g.circle(cx, cy, radius * 0.2).stroke({ color: MAT.canvas.edge, width: 0.9 });
+  //
+  // The gap is also what makes the turn legible. A ring of twelve identical horses
+  // rotating is indistinguishable from a ring of twelve identical horses standing
+  // still; the missing one is the mark the eye tracks.
+  ride.circle(cx, cy, radius * 0.2).fill({ color: shade(MAT.canvas.top, 1.06) });
+  ride.circle(cx, cy, radius * 0.2).stroke({ color: MAT.canvas.edge, width: 0.9 });
   const ring = radius * 0.62;
   for (let i = 0; i < 10; i += 1) {
     if (i === 6) continue;
     const a = (i / 10) * Math.PI * 2 + 0.2;
     const px = cx + Math.cos(a) * ring;
     const py = cy + Math.sin(a) * ring;
-    g.circle(px, py, radius * 0.09).fill({ color: shade(MAT.painted.top, 0.94) });
-    g.circle(px, py, radius * 0.055).fill({ color: shade(MAT.painted.top, 1.16) });
+    ride.circle(px, py, radius * 0.09).fill({ color: shade(MAT.painted.top, 0.94) });
+    ride.circle(px, py, radius * 0.055).fill({ color: shade(MAT.painted.top, 1.16) });
   }
 };
 
@@ -674,6 +687,13 @@ const helterSkelterGlyph: LandmarkFn = (g, pad, o) => {
  * Dished, so it holds rainwater — which is the one detail that says *abandoned* about
  * a ride rather than about the ground it stands on. The water goes on after the rim,
  * never before: drawn first, the dish's own extrusion paints straight over it.
+ *
+ * AND IT TURNS — but only the CARS, where the carousel turns everything above its deck.
+ * Two reasons, and neither is a shortcut. The dish's lit inner wall is offset toward the
+ * light like every other recess in this language, so turning it would give the waltzer its
+ * own private sun going round; and the water is standing in the bottom of it, which a
+ * platform creeping round once every three minutes does not carry with it. What is left to
+ * turn is the ring of cars, which is the only part of a waltzer anybody watches anyway.
  */
 const waltzerGlyph: LandmarkFn = (g, pad, o) => {
   const { x: cx, y: cy } = centre(o);
@@ -692,6 +712,7 @@ const waltzerGlyph: LandmarkFn = (g, pad, o) => {
     .fill({ color: shade(GRD.shallow, 1.3), alpha: 0.3 });
 
   // Cars round the inside of the rim, tipped where they came to rest.
+  const cars = movingPart(g, "spin", { x: cx, y: cy });
   for (let i = 0; i < 7; i += 1) {
     const a = (i / 7) * Math.PI * 2 + 0.4;
     const d = radius * 0.79;
@@ -700,9 +721,13 @@ const waltzerGlyph: LandmarkFn = (g, pad, o) => {
     const py = cy + Math.sin(a) * d;
     // A car, not a washer: a mass with its own catch light on the lit side, rather than
     // a disc with a darker disc inside it, which is a ring however the values run.
-    g.circle(px, py, size).fill({ color: shade(MAT.canvas.top, 0.68) });
-    g.circle(px - size * 0.16, py - size * 0.2, size * 0.72).fill({ color: MAT.canvas.top });
-    g.circle(px, py, size).stroke({ color: MAT.canvas.edge, width: 0.9 });
+    //
+    // The catch light is offset the same way on every car, so it goes round with them
+    // rather than staying north-west. On seven small discs at this speed that is under a
+    // pixel of error and it buys the cars a top, which is worth more.
+    cars.circle(px, py, size).fill({ color: shade(MAT.canvas.top, 0.68) });
+    cars.circle(px - size * 0.16, py - size * 0.2, size * 0.72).fill({ color: MAT.canvas.top });
+    cars.circle(px, py, size).stroke({ color: MAT.canvas.edge, width: 0.9 });
   }
 };
 

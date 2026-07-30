@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
 import type { MapDocument, Rect } from "@dotbot/game/types";
 import { buildMapArt } from "../game/renderer/mapArt";
+import { animateAmbient } from "../game/renderer/model/modelMotion";
 import { selectMapDocument } from "../mapSelection";
 
 /**
@@ -49,6 +50,10 @@ const FRAMES: Array<{ id: string; title: string; rect: Rect; floorId?: string }>
    */
   { id: "rides-west", title: "Helter-skelter and carousel", rect: { x: 300, y: 1900, w: 1200, h: 750 } },
   { id: "rides-east", title: "The big top, at the end of the midway", rect: { x: 1700, y: 2400, w: 800, h: 700 } },
+  // The waltzer had no close crop of its own — it fell between `rides-west`, which stops
+  // 90 units above it, and the region frame, where a 300-unit ride is a smudge. It is one
+  // of the two things in the world that MOVES, so it needs a frame that can be watched.
+  { id: "rides-south", title: "The waltzer, off the midway", rect: { x: 790, y: 2420, w: 680, h: 580 } },
   /**
    * The temple's four levels, one frame each.
    *
@@ -171,6 +176,25 @@ export function WorldLab() {
       const allFrames = [...FRAMES, ...floorFrames(map)];
 
       /**
+       * THE CLOCK, so ambient motion can be reviewed at all.
+       *
+       * `?t=<ms>` puts the world's moving parts where they would be that many milliseconds
+       * into a match, then renders one still. Without it this surface can only ever see the
+       * resting pose, which is the one pose that proves nothing: a ride that does not turn
+       * and a ride whose canopy is parked both look identical at t=0.
+       *
+       * Two shots at different `t` values is the whole verification — the same crop, the
+       * same geometry, one number changed. Default 0, which keeps every existing shot in the
+       * sheet byte-identical to what it was.
+       *
+       * NOT `at`. That name is taken, by `selectMapDocument` → `spawnAt`, where it names an
+       * arrival point to start the player at — so `?at=30000` would have quietly asked for
+       * an insertion point called "30000" as well as setting the clock.
+       */
+      const clockMs = Math.max(0, Number(params.get("t") ?? 0)) || 0;
+      animateAmbient(art.movers, clockMs, false);
+
+      /**
        * Every roof at rest.
        *
        * `buildRoofModel` hands back a `mass` container the game slides each frame to fake
@@ -253,7 +277,9 @@ export function WorldLab() {
           const response = await fetch("/__lab/shot", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: `map-${shot.id}`, png }),
+            // Stamped with the clock when the clock is set, so a motion review writes its
+            // own files instead of overwriting the review sheet with one moment of it.
+            body: JSON.stringify({ name: `map-${shot.id}${clockMs ? `-t${clockMs}` : ""}`, png }),
           });
           const body = await response.json() as { ok?: boolean; error?: string };
           results.push(`${shot.id}: ${body.ok ? "ok" : `FAILED ${body.error ?? ""}`}`);
@@ -271,16 +297,43 @@ export function WorldLab() {
       };
       draw();
 
+      /**
+       * `?play=1` — the world running, with nothing else running.
+       *
+       * The only surface in the project where ambient motion can actually be WATCHED. The
+       * production loop cannot be driven from a review tool: it wants a socket, a snapshot
+       * stream and real input. This wants none of them, because ambient motion is a pure
+       * function of the clock — so a bare `requestAnimationFrame` calling the same
+       * `animateAmbient` the renderer calls is not a simulation of the effect, it IS the
+       * effect, on the same code path.
+       *
+       * Off by default. A still frame has to stay a still frame or two screenshots of the
+       * same crop stop being comparable, which is this surface's whole job.
+       */
+      let frameHandle = 0;
+      if (params.get("play") === "1") {
+        const started = performance.now();
+        const step = (): void => {
+          animateAmbient(art.movers, clockMs + performance.now() - started, false);
+          created.render();
+          frameHandle = requestAnimationFrame(step);
+        };
+        frameHandle = requestAnimationFrame(step);
+      }
+
       const observer = new ResizeObserver(draw);
       observer.observe(host);
-      (created as unknown as { __observer?: ResizeObserver }).__observer = observer;
+      const held = created as unknown as { __observer?: ResizeObserver; __frame?: number };
+      held.__observer = observer;
+      held.__frame = frameHandle;
       void Graphics;
     })();
 
     return () => {
       disposed = true;
-      const held = app as unknown as { __observer?: ResizeObserver } | null;
+      const held = app as unknown as { __observer?: ResizeObserver; __frame?: number } | null;
       held?.__observer?.disconnect();
+      if (held?.__frame) cancelAnimationFrame(held.__frame);
       app?.destroy(true, { children: true });
     };
   }, []);

@@ -47,6 +47,7 @@ import {
 import { DOT_COLOR, INK, RIVAL_RED, SQUAD_CYAN, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
 import { redrawFloorObjects } from "./model/modelFloor";
+import { animateAmbient } from "./model/modelMotion";
 import { driftWater } from "./model/modelWater";
 import { GRD } from "./model/modelGround";
 import { isInWater } from "@dotbot/game/water";
@@ -478,6 +479,9 @@ export class GameRenderer {
     // Ambient, cosmetic, off the client clock: see `modelWater`. One transform per layer
     // per body, nothing redrawn — the same shape as the parallax passes above it.
     driftWater(this.art.water, nowMs, this.reducedMotion);
+    // The rest of the world's ambient motion — turning rides, swaying canopies — on the
+    // same clock and the same contract: one transform per part, nothing redrawn.
+    animateAmbient(this.art.movers, nowMs, this.reducedMotion);
     this.updateWading(player ?? null, nowMs);
 
     const playerContext = player ? this.contextKey(player.floorId, player.position) : "outdoor:street";

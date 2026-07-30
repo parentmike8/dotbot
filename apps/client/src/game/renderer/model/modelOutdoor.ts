@@ -6,6 +6,7 @@ import { capsuleRuns } from "./modelWalls";
 import { drawRegions } from "./modelGround";
 import { isAcross, outwardBand, perimeterEntrances } from "./entrances";
 import { drawModelObject } from "./modelGlyphs";
+import { collectMovers, type AmbientMover } from "./modelMotion";
 import {
   AO_ALPHA,
   contact,
@@ -45,6 +46,11 @@ export type OutdoorModel = {
   detail: Container;
   /** Solid outdoor fixtures. */
   objects: Container;
+  /**
+   * Every ambient moving part any outdoor glyph tagged. The renderer transforms these
+   * once per frame and redraws none of them — see `modelMotion`.
+   */
+  movers: AmbientMover[];
 };
 
 /** Sidewalks sit this far above the carriageway. */
@@ -604,9 +610,13 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   const markings: Graphics[] = [];
   const solid: Graphics[] = [];
   const passable: Graphics[] = [];
+  const movers: AmbientMover[] = [];
   for (const object of [...map.outdoor.objects].sort((a, b) => a.y + a.h - (b.y + b.h))) {
     const g = new Graphics();
     drawModelObject(g, pad, object);
+    // Asked of every object, and answered by the glyph rather than by a list of kinds
+    // here: a builder should not have to know that a carousel turns and a bench does not.
+    movers.push(...collectMovers(g, object));
     if (!isSolidObject(object) && !SURFACE_KINDS.has(object.kind)) {
       markPassable(g, { x: object.x, y: object.y, w: object.w, h: object.h });
     }
@@ -623,7 +633,7 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   // passable dressing or no solid fixtures outdoors.
   if (passable.length) detail.addChild(...passable);
   if (solid.length) objects.addChild(...solid);
-  return { ground, detail, objects };
+  return { ground, detail, objects, movers };
 }
 
 /** Kerb rise, exported so building entrances can meet the sidewalk correctly. */
