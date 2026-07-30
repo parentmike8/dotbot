@@ -17,31 +17,69 @@ type SnapshotIndexes = {
   doors: ReadonlyMap<string, NonNullable<GameSnapshot["doors"]>[number]>;
 };
 
+type ArrayIndex<T> = {
+  refs: readonly T[];
+  keys: readonly string[];
+  byKey: ReadonlyMap<string, T>;
+};
+
 /**
- * Buffered network snapshots are immutable after decoding and are sampled on
- * several display frames before the next 20 Hz snapshot arrives. Keep their
- * lookup tables with the snapshot instead of rebuilding six Maps at 60 Hz.
+ * Keep a guarded lookup index with each entity array instead of rebuilding six
+ * Maps at 60 Hz. GameSnapshot is intentionally mutable today, including entity
+ * replacement/addition/removal in tests and downstream consumers, so a WeakMap
+ * hit alone is not proof that an index is current.
  *
- * Weak ownership is important: when NetSession drops an old buffered snapshot,
- * these indexes become collectible with it. No lifecycle or eviction timer is
- * needed, and interpolation output remains freshly materialized exactly as
- * before.
+ * The validation walk catches:
+ * - a replacement or reorder by reference,
+ * - an addition/removal by length,
+ * - an in-place id/key mutation by recomputing the key.
+ *
+ * Other in-place field mutations are already visible through the Map's live
+ * entity reference. A changed array gets a new WeakMap key. Rebuilding an array
+ * in place overwrites its one cache entry, releasing the old refs. Once an array
+ * leaves the snapshot/history buffer, both it and its index remain collectible.
  */
-const snapshotIndexes = new WeakMap<GameSnapshot, SnapshotIndexes>();
+function guardedIndex<T>(keyFor: (value: T) => string): (values: readonly T[]) => ReadonlyMap<string, T> {
+  const indexes = new WeakMap<readonly T[], ArrayIndex<T>>();
+  return (values) => {
+    const cached = indexes.get(values);
+    if (cached && cached.refs.length === values.length) {
+      let valid = true;
+      for (let index = 0; index < values.length; index += 1) {
+        if (cached.refs[index] !== values[index] || cached.keys[index] !== keyFor(values[index])) {
+          valid = false;
+          break;
+        }
+      }
+      if (valid) return cached.byKey;
+    }
+
+    const refs = [...values];
+    const keys = refs.map(keyFor);
+    const byKey = new Map<string, T>();
+    for (let index = 0; index < refs.length; index += 1) byKey.set(keys[index], refs[index]);
+    indexes.set(values, { refs, keys, byKey });
+    return byKey;
+  };
+}
+
+const botIndex = guardedIndex<DotBotEntity>((bot) => bot.id);
+const dotIndex = guardedIndex<GameSnapshot["dots"][number]>((dot) => dot.id);
+const mineIndex = guardedIndex<MineEntity>((mine) => mine.id);
+const coverageIndex = guardedIndex<GameSnapshot["coverages"][number]>(coverageKey);
+const noiseIndex = guardedIndex<NoiseEvent>((noise) => noise.id);
+const doorIndex = guardedIndex<NonNullable<GameSnapshot["doors"]>[number]>((door) => door.id);
+const noDoors = Object.freeze([]) as readonly NonNullable<GameSnapshot["doors"]>[number][];
 
 function indexesFor(snapshot: GameSnapshot): SnapshotIndexes {
-  const existing = snapshotIndexes.get(snapshot);
-  if (existing) return existing;
-  const indexes: SnapshotIndexes = {
-    bots: new Map(snapshot.bots.map((bot) => [bot.id, bot])),
-    dots: new Map(snapshot.dots.map((dot) => [dot.id, dot])),
-    mines: new Map(snapshot.mines.map((mine) => [mine.id, mine])),
-    coverages: new Map(snapshot.coverages.map((coverage) => [coverageKey(coverage), coverage])),
-    noises: new Map(snapshot.noises.map((noise) => [noise.id, noise])),
-    doors: new Map((snapshot.doors ?? []).map((door) => [door.id, door])),
+  return {
+    bots: botIndex(snapshot.bots),
+    dots: dotIndex(snapshot.dots),
+    mines: mineIndex(snapshot.mines),
+    coverages: coverageIndex(snapshot.coverages),
+    noises: noiseIndex(snapshot.noises),
+    doors: doorIndex(snapshot.doors ?? noDoors),
   };
-  snapshotIndexes.set(snapshot, indexes);
-  return indexes;
 }
 
 export function sampleTimeline(
@@ -119,7 +157,7 @@ export function capRemoteRecovery(
  * a dash stops on the enemy NOW, so their arc must break NOW.
  */
 export function fastForwardCombatState(sampled: GameSnapshot, freshest: GameSnapshot, ownBotId: string): GameSnapshot {
-  const freshBots = indexesFor(freshest).bots;
+  const freshBots = botIndex(freshest.bots);
   return {
     ...sampled,
     bots: sampled.bots.map((bot) => {
