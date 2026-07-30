@@ -138,7 +138,7 @@ describe("DotBotSimulation", () => {
   it("keeps the player inside map bounds", async () => {
     const simulation = await makeSimulation([playerSpawn({ position: { x: 70, y: 180 } })]);
 
-    simulation.applyInput("player", { move: { x: -1, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 140);
 
     const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
@@ -426,11 +426,17 @@ describe("DotBotSimulation", () => {
      */
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 200, y: 180 }, maxShields: 3, shields: 3 }),
-      enemySpawn({ position: { x: 232, y: 180 }, maxShields: 3, shields: 0, isAmbient: false }),
+      enemySpawn({
+        position: { x: 232, y: 180 },
+        maxShields: 3,
+        shields: 0,
+        isAmbient: false,
+        controller: "frozen",
+      }),
     ]);
     // Walk into them and hold, so separation has something to resolve every tick.
     for (let tick = 0; tick < 90; tick += 1) {
-      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
       simulation.step();
     }
     const bots = simulation.getSnapshot().bots;
@@ -595,7 +601,7 @@ describe("DotBotSimulation", () => {
       const simulation = await DotBotSimulation.create({
         map: makeMap([
           playerSpawn({ position: { x: 160, y: 180 } }),
-          enemySpawn({ position: { x: 260, y: 180 }, maxShields: 3, shields }),
+          enemySpawn({ position: { x: 260, y: 180 }, maxShields: 3, shields, controller: "frozen" }),
         ]),
         config: testConfig,
       });
@@ -916,7 +922,7 @@ describe("DotBotSimulation", () => {
 
     simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
     simulation.step();
-    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false });
     runTicks(simulation, 18);
 
     const stripped = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy");
@@ -932,10 +938,107 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("turns a dash started at contact into a no-damage bump", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ position: { x: 148, y: 180 }, controller: "frozen" }),
+    ]);
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.step();
+
+    const snapshot = simulation.getSnapshot();
+    const player = snapshot.bots.find((bot) => bot.id === "player")!;
+    const enemy = snapshot.bots.find((bot) => bot.id === "enemy")!;
+    expect(enemy.shieldSegments).toEqual([1, 1, 1]);
+    expect(player.dashActiveMs).toBe(0);
+    expect(player.dashCooldownMs).toBeGreaterThan(0);
+    expect(simulation.drainEvents()).toContainEqual(expect.objectContaining({
+      type: "dashContact",
+      result: "bump",
+      botId: "enemy",
+      byBotId: "player",
+    }));
+    simulation.dispose();
+  });
+
+  it("lets a bot dash away from contact without creating a bump", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ position: { x: 148, y: 180 }, controller: "frozen" }),
+    ]);
+
+    simulation.applyInput("player", { move: { x: -1, y: 0 }, dash: true });
+    simulation.step();
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "player")!.position.x).toBeLessThan(100);
+    expect(snapshot.bots.find((bot) => bot.id === "player")!.dashActiveMs).toBeGreaterThan(0);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")!.shieldSegments).toEqual([1, 1, 1]);
+    expect(simulation.drainEvents().some((event) => event.type === "dashContact")).toBe(false);
+    simulation.dispose();
+  });
+
+  it("clashes two plated dashes that both began with clear space", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({
+        position: { x: 196, y: 180 },
+        controller: "human",
+        isAmbient: false,
+      }),
+    ]);
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("enemy", { move: { x: -1, y: 0 }, dash: true });
+    let clash = false;
+    for (let tick = 0; tick < 12 && !clash; tick += 1) {
+      simulation.step();
+      clash = simulation.drainEvents().some(
+        (event) => event.type === "dashContact" && event.result === "clash",
+      );
+    }
+
+    const snapshot = simulation.getSnapshot();
+    expect(clash).toBe(true);
+    expect(snapshot.bots.find((bot) => bot.id === "player")!.shieldSegments).toEqual([1, 1, 1]);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")!.shieldSegments).toEqual([1, 1, 1]);
+    expect(snapshot.bots.find((bot) => bot.id === "player")!.dashActiveMs).toBe(0);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")!.dashActiveMs).toBe(0);
+    simulation.dispose();
+  });
+
+  it("does not let a dash clash rescue an exposed core", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({
+        position: { x: 196, y: 180 },
+        controller: "human",
+        isAmbient: false,
+        shields: 0,
+      }),
+    ]);
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("enemy", { move: { x: -1, y: 0 }, dash: true });
+    for (let tick = 0; tick < 12; tick += 1) simulation.step();
+
+    const events = simulation.drainEvents();
+    expect(events.some((event) => event.type === "dashContact" && event.result === "clash")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "hit",
+      botId: "enemy",
+      byBotId: "player",
+      result: "downed",
+    }));
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")!.state).toBe("downed");
+    simulation.dispose();
+  });
+
   it("resolves dash damage through directional plates in half-shield steps", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
-      enemySpawn({ position: { x: 156, y: 180 } }),
+      enemySpawn({ position: { x: 156, y: 180 }, controller: "frozen" }),
     ]);
 
     simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
@@ -1726,6 +1829,8 @@ describe("DotBotSimulation", () => {
         if (simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state === "downed") break;
       }
       if (simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state === "downed") break;
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+      runTicks(simulation, 18);
     }
     simulation.removeBot("enemy");
     simulation.setController("player", "frozen");

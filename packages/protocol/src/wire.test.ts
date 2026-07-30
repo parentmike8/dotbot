@@ -207,6 +207,19 @@ describe("event wire mapping", () => {
     } as const;
     expect(fromWireEvent(toWireEvent(hit))).toEqual(hit);
   });
+
+  it("round-trips a dash clash without pretending it was a hit", () => {
+    const clash = {
+      type: "dashContact",
+      botId: "right",
+      byBotId: "left",
+      result: "clash",
+      position: { x: 120, y: 180 },
+      direction: { x: 1, y: 0 },
+      tick: 84,
+    } as const;
+    expect(fromWireEvent(toWireEvent(clash))).toEqual(clash);
+  });
 });
 
 function exhaustClient(message: ClientMessage): string {

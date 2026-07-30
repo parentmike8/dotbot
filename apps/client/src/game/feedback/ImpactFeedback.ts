@@ -1,4 +1,4 @@
-import type { HitResult, PingKind } from "@dotbot/game/types";
+import type { DashContactResult, HitResult, PingKind } from "@dotbot/game/types";
 
 export type FeedbackPreferences = {
   sound: boolean;
@@ -27,6 +27,7 @@ type ImpactFeedbackOptions = {
 
 type PendingAudioCue =
   | { kind: "impact"; result: HitResult; pan: number; intensity: number; requestedAt: number }
+  | { kind: "dashContact"; result: DashContactResult; pan: number; intensity: number; requestedAt: number }
   | { kind: "dash"; requestedAt: number }
   | { kind: "ping"; ping: PingKind; pan: number; requestedAt: number };
 
@@ -228,6 +229,34 @@ export class ImpactFeedback {
     }
   }
 
+  playDashContact(
+    result: DashContactResult,
+    perspective: ImpactPerspective,
+    alreadyPredicted: boolean,
+    pan = 0,
+    earshot = 1,
+  ): void {
+    if (this.disposed) return;
+    try {
+      if (!alreadyPredicted || perspective !== "attacker") {
+        const intensity = (perspective === "observer" ? 0.55 : 0.9) * earshot;
+        if (intensity > 0) {
+          this.requestAudio({ kind: "dashContact", result, pan, intensity, requestedAt: this.now() });
+        }
+      }
+      if (
+        (!alreadyPredicted || perspective !== "attacker")
+        && perspective !== "observer"
+        && typeof navigator !== "undefined"
+        && "vibrate" in navigator
+      ) {
+        navigator.vibrate(result === "clash" ? 24 : 10);
+      }
+    } catch {
+      // Contact feedback is optional; combat authority never depends on it.
+    }
+  }
+
   /**
    * `earshot` scales the sound by how far away the contact was — see `earshot.ts`.
    * It multiplies the SOUND only: haptics still fire, because a hit that reaches your
@@ -347,7 +376,54 @@ export class ImpactFeedback {
       return;
     }
 
+    if (cue.kind === "dashContact") {
+      this.renderDashContactAudio(context, cue.result, cue.pan, cue.intensity);
+      return;
+    }
+
     this.renderImpactAudio(context, cue.result, cue.pan, cue.intensity);
+  }
+
+  private renderDashContactAudio(
+    context: AudioContext,
+    result: DashContactResult,
+    pan: number,
+    intensity: number,
+  ): void {
+    const now = context.currentTime;
+    const output = context.createGain();
+    output.gain.setValueAtTime(Math.max(0.0001, 0.2 * intensity), now);
+    output.gain.exponentialRampToValueAtTime(0.0001, now + (result === "clash" ? 0.14 : 0.08));
+    const panner = typeof context.createStereoPanner === "function" ? context.createStereoPanner() : null;
+    if (panner) {
+      panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), now);
+      output.connect(panner).connect(context.destination);
+    } else {
+      output.connect(context.destination);
+    }
+
+    const body = context.createOscillator();
+    const bodyGain = context.createGain();
+    body.type = result === "clash" ? "triangle" : "sine";
+    body.frequency.setValueAtTime(result === "clash" ? 520 : 180, now);
+    body.frequency.exponentialRampToValueAtTime(result === "clash" ? 190 : 85, now + 0.07);
+    bodyGain.gain.setValueAtTime(result === "clash" ? 0.75 : 0.55, now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+    body.connect(bodyGain).connect(output);
+    body.start(now);
+    body.stop(now + 0.1);
+
+    if (result === "clash") {
+      const ring = context.createOscillator();
+      const ringGain = context.createGain();
+      ring.type = "sine";
+      ring.frequency.setValueAtTime(1_250, now);
+      ringGain.gain.setValueAtTime(0.38, now);
+      ringGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+      ring.connect(ringGain).connect(output);
+      ring.start(now);
+      ring.stop(now + 0.14);
+    }
   }
 
   /**

@@ -12,7 +12,7 @@ import {
 } from "@dotbot/game/kinematics";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { MOVING_SPEED } from "@dotbot/game/config";
-import { contactReach } from "@dotbot/game/shields";
+import { contactReach, coveringPlate } from "@dotbot/game/shields";
 import { buildContactShape, contactDistance, makeContactShape } from "@dotbot/game/bodyContact";
 import type { DoorEntity, DotBotEntity, GameConfig, InputCommand, MapDocument, Solid, Vec2 } from "@dotbot/game";
 
@@ -24,6 +24,7 @@ export type PredictedOwnBot = Pick<
 export type PredictedDashContact = {
   position: Vec2;
   targetId: string;
+  kind: "hit" | "bump" | "clash";
 };
 
 /** Another bot the predicted bot must shoulder past, from the latest
@@ -41,6 +42,10 @@ export type PredictionObstacle = {
   facing: number;
   shieldSegments: number[];
   hostile: boolean;
+  /** Present-time combat state used only to classify a possible clash. */
+  dashActiveMs?: number;
+  /** Invulnerable hostiles still bump at point blank, but an armed dash passes. */
+  damageable?: boolean;
   /**
    * Was this body moving on the tick it was snapshotted?
    *
@@ -113,6 +118,8 @@ export class LitePredictor {
    * it, otherwise inferred from the previous snapshot's position. */
   private readonly obstacleMoving = new Map<string, boolean>();
   private readonly lastObstaclePositions = new Map<string, Vec2>();
+  /** Target-specific run-up state for the current local dash. */
+  private readonly dashBlockedTargets = new Set<string>();
   private channelFrozen = false;
   /** Contact point of the most recent predicted dash stop; a side channel
    * (survives replay resets) so the session can flash impact FX instantly. */
@@ -140,6 +147,7 @@ export class LitePredictor {
 
   reset(bot: PredictedOwnBot): void {
     this.state = cloneState(bot);
+    if (bot.dashActiveMs <= 0) this.dashBlockedTargets.clear();
   }
 
   /** Latest known other bots (alive, same floor); refreshed per snapshot. */
@@ -214,6 +222,15 @@ export class LitePredictor {
     if (consumeDash && input.dash && state.dashCooldownMs <= 0 && state.dashActiveMs <= 0) {
       state.dashActiveMs = this.config.dashDurationMs;
       state.dashCooldownMs = this.config.dashCooldownMs;
+      this.dashBlockedTargets.clear();
+      for (const obstacle of this.obstacles) {
+        if (!obstacle.hostile) continue;
+        const gap = Math.hypot(
+          obstacle.position.x - state.position.x,
+          obstacle.position.y - state.position.y,
+        ) - contactGap(state, obstacle, state.position);
+        if (gap <= 4) this.dashBlockedTargets.add(obstacle.id);
+      }
     }
 
     // Mirror the server: a dash rides the LAST aim, so releasing the keys
@@ -252,6 +269,12 @@ export class LitePredictor {
         if (!obstacle.hostile) continue;
         const sweep = pointSegmentDistance(obstacle.position, previous, position);
         if (sweep - contactGap(state, obstacle, position) > 4) continue;
+        const startedTouching = this.dashBlockedTargets.has(obstacle.id);
+        const closing = (position.x - previous.x) * (obstacle.position.x - previous.x)
+          + (position.y - previous.y) * (obstacle.position.y - previous.y) > 0;
+        if (startedTouching && !closing) continue;
+        const blocked = startedTouching;
+        if (!blocked && obstacle.damageable === false) continue;
         state.dashActiveMs = 0;
         const dx = position.x - obstacle.position.x;
         const dy = position.y - obstacle.position.y;
@@ -268,6 +291,11 @@ export class LitePredictor {
         }
         this.dashContact = {
           targetId: obstacle.id,
+          kind: blocked
+            ? "bump"
+            : (obstacle.dashActiveMs ?? 0) > 0 && platesMeet(state, obstacle, position)
+              ? "clash"
+              : "hit",
           position: {
             x: (position.x + obstacle.position.x) / 2,
             y: (position.y + obstacle.position.y) / 2,
@@ -325,4 +353,27 @@ export class LitePredictor {
     };
     return state;
   }
+}
+
+function platesMeet(
+  state: PredictedOwnBot,
+  obstacle: PredictionObstacle,
+  ownPosition: Vec2,
+): boolean {
+  if (state.shieldSegments.length === 0 || obstacle.shieldSegments.length === 0) return false;
+  const towardObstacle = Math.atan2(
+    obstacle.position.y - ownPosition.y,
+    obstacle.position.x - ownPosition.x,
+  );
+  const towardOwn = Math.atan2(
+    ownPosition.y - obstacle.position.y,
+    ownPosition.x - obstacle.position.x,
+  );
+  const ownPlate = coveringPlate(state.facing, state.shieldSegments.length, towardObstacle);
+  const obstaclePlate = coveringPlate(
+    obstacle.facing,
+    obstacle.shieldSegments.length,
+    towardOwn,
+  );
+  return state.shieldSegments[ownPlate] > 0 && obstacle.shieldSegments[obstaclePlate] > 0;
 }

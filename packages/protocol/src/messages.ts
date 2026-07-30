@@ -143,6 +143,15 @@ export type WireSimEvent =
       direction?: { x: number; y: number };
       tick?: number;
     }
+  | {
+      type: "dashContact";
+      botId: string;
+      byBotId: string;
+      result: import("@dotbot/game/types").DashContactResult;
+      position: { x: number; y: number };
+      direction: { x: number; y: number };
+      tick: number;
+    }
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "searched"; botId: string; byBotId: string }
   | { type: "looted"; botId: string; byBotId: string; items: WireItemCode[] }

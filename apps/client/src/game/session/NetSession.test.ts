@@ -70,9 +70,10 @@ describe("NetSession item edges", () => {
     let nowMs = 100;
     vi.stubGlobal("performance", { now: () => nowMs });
     const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
-    let contact: { targetId: string; position: { x: number; y: number } } | null = {
+    let contact: { targetId: string; position: { x: number; y: number }; kind: "hit" } | null = {
       targetId: "target",
       position: { x: 10, y: 20 },
+      kind: "hit",
     };
     Object.assign(session as unknown as object, {
       playerIdValue: "player",
@@ -90,6 +91,7 @@ describe("NetSession item edges", () => {
       sourceId: "player",
       predictionId: "player-1",
       predictedAtMs: 100,
+      kind: "hit",
       x: 10,
       y: 20,
     }]);
