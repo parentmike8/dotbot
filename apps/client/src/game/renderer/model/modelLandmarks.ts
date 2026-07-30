@@ -142,36 +142,65 @@ const boulderGlyph: LandmarkFn = (g, pad, o) => {
 /**
  * Impenetrable vegetation, and the one place a region says *go round*.
  *
- * Drawn as merged lobes with a deliberately frayed rim, at values that top out AT
- * `MAT.foliage.top` rather than below it. Two earlier attempts bracket the answer: a
- * ramp topping out four steps DARK of the ground made a thicket read as a boulder,
- * and a ramp pushed 1.14 above it made popcorn. What actually separates leaves from
+ * Drawn as merged lobes with a deliberately frayed rim. Two earlier attempts bracket the
+ * value answer: a ramp topping out four steps DARK of the ground made a thicket read as a
+ * boulder, and a ramp pushed 1.14 above it made popcorn. What actually separates leaves from
  * stone is the broken outline.
+ *
+ * ## IT MUST NOT LOOK LIKE A TREE, and for a while it did
+ *
+ * Reported from play: "there are a bunch of trees on the map that aren't built like this, so
+ * it's weird having some that I can go under and others I can't." Those are these — fifty-six
+ * of them against fifty trees, and BIGGER than most trees at 104–140 units. They were reading
+ * as trees because after the canopy rebuild the two glyphs used literally the same value ramp
+ * (0.62 / 0.84 / `MAT.foliage.top`), so the only thing telling them apart was a trunk parting
+ * a player would have to go looking for.
+ *
+ * That is a affordance bug, not a decoration one. The two are opposite promises: a tree's
+ * collider is its trunk, so you walk UNDER it and its canopy is drawn above you; a thicket
+ * collides across its whole footprint, so you walk AROUND it and it never covers you. A player
+ * has to be able to tell which is which before committing to a route in a fight.
+ *
+ * So the thicket is now the DARK DENSE one and the tree is the light open one:
+ *
+ * - the ramp tops out well below `MAT.foliage.top` instead of at it — dark reads as dense,
+ *   which is the same reasoning the slab uses to make lit things able to look lit;
+ * - no bright lobes at all. A tree gets a lit crown; a thicket is undergrowth in its own shade;
+ * - more, tighter lobes, so there is no gap in it to read as a way through;
+ * - a low contact shadow. A thicket is chest height, and shadow length is height here.
+ *
+ * The frayed rim stays exactly as it was: it is what keeps this vegetation rather than rock,
+ * and darkening the mass is precisely the change that would resurrect the boulder reading if
+ * the rim ever went.
  */
 const thicketGlyph: LandmarkFn = (g, pad, o) => {
   const { x: cx, y: cy } = centre(o);
   const rx = o.w / 2;
   const ry = o.h / 2;
   const size = Math.min(rx, ry);
-  contactRound(pad, cx, cy, size * 0.82, LIFT.mass);
+  // Low, not landmark-scale: a thicket is something you push against, not something you
+  // stand under. A tree's shadow now scales up to `LIFT.tower`; this stays near a bench.
+  contactRound(pad, cx, cy, size * 0.82, LIFT.bench + 3);
 
-  const under = shade(MAT.foliage.top, 0.62);
-  const body = shade(MAT.foliage.top, 0.84);
-  const lit = MAT.foliage.top;
+  const under = shade(MAT.foliage.top, 0.44);
+  const body = shade(MAT.foliage.top, 0.6);
+  const crest = shade(MAT.foliage.top, 0.74);
 
   fillPoly(g, blob(cx, cy, rx, ry, `${o.id}u`, 0.24, 17), under);
 
-  const lobes = Math.max(5, Math.round(Math.max(rx, ry) / 26));
+  // Denser than it was — a thicket with visible gaps between its lobes reads as a stand of
+  // bushes you could slip between, which is the opposite of what it does.
+  const lobes = Math.max(7, Math.round(Math.max(rx, ry) / 17));
   for (let i = 0; i < lobes; i += 1) {
     const a = (i / lobes) * Math.PI * 2 + jitter(o.id, i) * 0.7;
-    const d = 0.34 + jitter(o.id, i + 20) * 0.34;
+    const d = 0.3 + jitter(o.id, i + 20) * 0.38;
     const px = cx + Math.cos(a) * rx * d;
     const py = cy + Math.sin(a) * ry * d;
-    // Lit by the same north-slightly-west light as everything else: a lobe facing
-    // that way is bright, one facing away stays in the mass.
+    // Still lit by the same north-slightly-west light as everything else — but the bright end
+    // of this ramp is the tree's MID tone, so a thicket never has a highlight on it.
     const facing = (Math.cos(a) * -0.33 + Math.sin(a) * -0.94 + 1) / 2;
-    const r = size * (0.42 + jitter(o.id, i + 40) * 0.2);
-    g.circle(px, py, r).fill({ color: facing > 0.62 ? lit : body });
+    const r = size * (0.4 + jitter(o.id, i + 40) * 0.2);
+    g.circle(px, py, r).fill({ color: facing > 0.62 ? crest : body });
   }
 
   // The frayed rim. This, not the value ramp, is what makes it vegetation.

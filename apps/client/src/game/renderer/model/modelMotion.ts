@@ -372,8 +372,16 @@ export type LeafFall = {
 const LEAF_COUNT = 48;
 /** How long one leaf's fall lasts, and the stagger between them. */
 const LEAF_LIFE_MS = 5_200;
-/** How far the wind carries a leaf over its life, as a share of its tree's radius. */
-const LEAF_CARRY = 2.1;
+/**
+ * How far a leaf drifts over its life, as a share of its own tree's radius.
+ *
+ * A THIRD, where it used to be 2.1 — reported as "they shouldn't move too horizontally far
+ * from the tree itself", and right: at 2.1 radii a leaf crossed the next tree along, which
+ * reads as debris blowing through rather than as a tree shedding.
+ */
+const LEAF_CARRY = 0.34;
+/** The wind's remaining say, on top of the radial drift. Small: a bias, not the motion. */
+const LEAF_WIND = 0.16;
 
 export function buildLeafFall(): LeafFall {
   const view = new Container();
@@ -496,19 +504,42 @@ export function driftLeaves(
     const gust = wind(nowMs - (tree.about.x * front.x + tree.about.y * front.y) / GUST_SPEED);
 
     /**
-     * Carried downwind and fluttering across it.
+     * IT DROPS. It does not get blown across the screen.
      *
-     * The flutter is perpendicular to the wind, not along it, because a leaf that only
-     * accelerates downwind reads as a thrown object. Crossing its own path is what says
-     * "this thing has no weight".
+     * Reported: "the leaves look like they're moving sideways instead of down ... away from the
+     * tree, though that probably varies by tree ... they should get smaller as they move down
+     * and they shouldn't move too horizontally far from the tree itself."
+     *
+     * Three corrections, and the first is the one that was actually wrong. Travel was along the
+     * GLOBAL wind vector, so every leaf on screen slid the same way at once — which is what a
+     * gust does to litter and not what a tree does to its own leaves. It is now RADIAL, outward
+     * from the canopy the leaf came off, so each tree sheds in its own directions and the whole
+     * screen stops moving as one.
+     *
+     * Second, the distance. `LEAF_CARRY` was 2.1 canopy radii, which took a leaf clear across
+     * the next tree. A leaf falls close to the thing it fell off.
+     *
+     * Third, and it is the cue that makes the whole thing read: IT SHRINKS. From directly
+     * above, a leaf leaving the canopy and reaching the ground is moving AWAY from the camera,
+     * so the honest depth cue is scale. That is what says "down" in a projection with no down —
+     * the same reason height is drawn as a shadow length here rather than as a vertical offset.
+     *
+     * The wind keeps a small say — a slight bias on top of the radial drift, so a stand of
+     * trees still sheds a little downwind — but it no longer owns the motion.
      */
-    const carried = tree.reach * LEAF_CARRY * age * gust.strength;
-    const flutter = Math.sin(age * 11 + jitter(seed, 3) * 6.3) * tree.reach * 0.1;
+    const drift = tree.reach * LEAF_CARRY * age;
+    const bias = tree.reach * LEAF_WIND * age * gust.strength;
+    // The flutter crosses the leaf's own path rather than following it: a mark that only
+    // accelerates in one direction reads as a thrown object, not as something weightless.
+    const flutter = Math.sin(age * 11 + jitter(seed, 3) * 6.3) * tree.reach * 0.07;
     leaf.position.set(
-      tree.about.x + Math.cos(angle) * out + gust.x * carried - gust.y * flutter,
-      tree.about.y + Math.sin(angle) * out + gust.y * carried + gust.x * flutter,
+      tree.about.x + Math.cos(angle) * (out + drift) - Math.sin(angle) * flutter + gust.x * bias,
+      tree.about.y + Math.sin(angle) * (out + drift) + Math.cos(angle) * flutter + gust.y * bias,
     );
     leaf.rotation = angle + age * 9 * (jitter(seed, 4) > 0.5 ? 1 : -1);
+    // Falling away from the camera. Never to nothing: a leaf that shrinks to a point vanishes
+    // by scale and by alpha at once, which reads as a glitch rather than as a landing.
+    leaf.scale.set(1 - age * 0.55);
     /**
      * In and out, never popping.
      *
