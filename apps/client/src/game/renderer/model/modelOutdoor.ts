@@ -37,6 +37,31 @@ import {
  * north or west are lit, faces pointing south or east are in shade. That rule
  * alone gives a street its rhythm — a dark line down one kerb, a bright line
  * down the other.
+ *
+ * THE SCOPE OF THAT, because it has already been quoted past it. The paragraph
+ * above is a finding about a KERB: a hard, machined, raised step that genuinely
+ * has a top face and a riser to draw. Two things it is not.
+ *
+ * It is not a rule against line work. This language draws lane paint, bay ticks,
+ * crossing ladders and an edge on every solid — rule 2 in `tone.ts` *requires*
+ * that last one. Lines are fine. What the kerb finding rejects is narrower: using
+ * a mark that merely STANDS FOR a level change when the thing you are drawing IS
+ * one, because a bare line cannot say which way the step goes and every kerb on
+ * the block then looks identical.
+ *
+ * And it is not a template. "Lit top, shaded riser, shadow to the south-east" is
+ * the arrangement for a step UP, and copying it onto anything else gets the
+ * pixels backwards. A HOLLOW IS LIT THE OTHER WAY ROUND: under the same one
+ * light, a depression is lit on its SOUTH-EAST inner wall, shaded on its
+ * north-west lip, and casts nothing at all. The trail divots in `modelMotion.ts`
+ * are the recorded case — this note was quoted at them, and had it been followed
+ * literally the trail would have read as a row of pebbles laid on the grass
+ * rather than as a rut pressed into it.
+ *
+ * So the part that transfers is only this: TONE STATES A LEVEL CHANGE, AND WHICH
+ * WAY THE CHANGE GOES DECIDES WHICH SIDE IS LIT. Work that out from the thing in
+ * front of you, not from this comment — and if looking at the result disagrees
+ * with the comment, the result wins.
  */
 
 export type OutdoorModel = {
