@@ -2906,6 +2906,17 @@ export class DotBotSimulation {
     const armourHit = applyArmourHit(target.facing, target.shieldSegments, impactAngle);
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
+    /**
+     * This charge is spent, so it is no longer party to a parry.
+     *
+     * The grace exists for a charge that has not resolved yet — still in flight, or
+     * run out without reaching anything — so a slightly later charge still meets it
+     * head on. A charge that has already broken a plate HAS resolved, and leaving it
+     * committed let the victim's answering dash come back as a clash a beat after the
+     * damage. From the chair that is a parry you still lost a shield to, which is the
+     * one thing a parry must never be.
+     */
+    source.dashParryGraceMs = 0;
     this.emitNoise("impact", target.position, target.floorId, NOISE_LOUDNESS.impact);
     const away = { x: -Math.cos(impactAngle), y: -Math.sin(impactAngle) };
     const result = armourHit.core ? "downed" : "plateBreak";

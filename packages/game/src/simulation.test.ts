@@ -1277,6 +1277,47 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  /**
+   * A parry means nobody was hurt, so an exchange that already drew blood cannot
+   * become one.
+   *
+   * The grace that lets staggered charges meet also let a charge that had ALREADY
+   * landed stay "committed" while the victim swung back — so the pair recoiled with a
+   * parry cue a beat after a plate had broken. Reported from play as parrying and
+   * still losing a shield. A dash that resolved into damage is spent.
+   */
+  it("does not parry an exchange that has already landed a hit", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({
+        id: "enemy",
+        squadId: "rival-1",
+        position: { x: 200, y: 180 },
+        controller: "human",
+        isAmbient: false,
+      }),
+    ]);
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    const events = [];
+    for (let tick = 0; tick < 6; tick += 1) {
+      simulation.step();
+      events.push(...simulation.drainEvents());
+    }
+    expect(events.some((event) => event.type === "hit")).toBe(true);
+
+    // The victim answers well inside the parry grace.
+    simulation.applyInput("enemy", { move: { x: -1, y: 0 }, dash: true });
+    for (let tick = 0; tick < 8; tick += 1) {
+      simulation.step();
+      events.push(...simulation.drainEvents());
+    }
+
+    expect(events.some((event) => event.type === "dashContact" && event.result === "clash"))
+      .toBe(false);
+    simulation.dispose();
+  });
+
   it("clashes opposing active dashes when only the first lag-compensated sweep connects", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
