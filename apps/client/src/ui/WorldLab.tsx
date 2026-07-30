@@ -75,6 +75,15 @@ const FRAMES: Array<{ id: string; title: string; rect: Rect; floorId?: string }>
    * motion has to be watched in a run. `modelWater.test.ts` covers the drift itself.
    */
   { id: "cenote", title: "The cenote", rect: { x: 3560, y: 1800, w: 700, h: 640 } },
+  /**
+   * The forest, close in, at roughly play zoom.
+   *
+   * `docs/world-motion.md` calls it "the largest sway surface in the world" and it had no
+   * frame of its own: the region crop puts a 100-unit tree inside four pixels, which is
+   * exactly the zoom at which a canopy leaning four units is invisible. Sway can only be
+   * judged where a tree is bigger than a thumbnail.
+   */
+  { id: "temple-forest", title: "The forest, at play zoom", rect: { x: 3060, y: 2820, w: 768, h: 480 } },
 ];
 
 /**
@@ -264,7 +273,16 @@ export function WorldLab() {
          * composition and value, and both survive a downscale.
          */
         const results: string[] = [];
-        for (const shot of allFrames) {
+        /**
+         * `&pick=` narrows the sheet to one frame.
+         *
+         * The whole sheet is 43 renders, and a review that wants ONE frame at two clock
+         * values had no way to ask for it — which pushed motion review onto browser-pane
+         * screenshots, at half the canvas resolution and cropped by the pane. A named frame
+         * writes a full-resolution PNG that can be opened and compared properly.
+         */
+        const wanted = pick ? allFrames.filter((frame) => frame.id === pick) : allFrames;
+        for (const shot of wanted) {
           showFloor(shot.floorId ?? null);
           const long = Math.max(shot.rect.w, shot.rect.h);
           const scale = Math.min(1, 2200 / long);

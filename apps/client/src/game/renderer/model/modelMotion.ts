@@ -64,6 +64,41 @@ const LABEL: Record<AmbientKind, string> = {
  * parent; there is no local space to think about.
  */
 export function movingPart(g: Graphics, kind: AmbientKind, about: Vec2): Graphics {
+  /**
+   * A DRAWING SINK THAT IS NOT A DISPLAY LIST GETS THE MARKS DIRECTLY.
+   *
+   * Several tests — `passable.test.ts`, `modelStairs.test.ts` — hand the glyphs a recorder
+   * that implements the drawing calls and nothing else, which is a good property worth
+   * keeping: it is how a glyph's marks get measured without a GPU. Such a sink has no
+   * `addChild` and no frames, so there is nothing to animate and nothing to parent to, and
+   * the right answer is to draw the part where it belongs and hand the sink back. The marks
+   * are in world coordinates either way, so the recorder sees exactly what the screen would.
+   *
+   * This is a widened contract, not a silent fallback: `collectMovers` finds no tagged child
+   * and reports no mover, which is the truthful answer for a sink that cannot move.
+   */
+  if (typeof (g as { addChild?: unknown }).addChild !== "function") return g;
+
+  /**
+   * IDEMPOTENT, and that is not tidiness — it is the difference between working and
+   * leaking.
+   *
+   * `redrawFloorObjects` re-runs the glyph on the SAME `Graphics` every time object
+   * parallax steps, and `Graphics.clear()` empties the geometry while leaving the children
+   * in place. A fresh child per call would therefore add one canopy per camera step,
+   * unbounded, with every mover but the first pointing at a view nobody animates. The
+   * Studio's fabrication hook redraws the same way.
+   *
+   * So an existing part is reused and only its geometry cleared. Its transform survives on
+   * purpose: a canopy mid-lean must not snap back to centre because the camera moved.
+   */
+  const existing = g.children.find((child) => child.label === LABEL[kind]);
+  if (existing instanceof Graphics) {
+    existing.clear();
+    existing.pivot.set(about.x, about.y);
+    return existing;
+  }
+
   const part = new Graphics();
   part.label = LABEL[kind];
   part.pivot.set(about.x, about.y);
@@ -155,24 +190,61 @@ const SPIN_WAVER = { amount: 0.13, periodMs: 7_300 } as const;
  */
 function wind(atMs: number): { x: number; y: number; strength: number } {
   const heading = atMs / 41_000;
-  // Never zero and never one: a lull is quiet, not a freeze, and vegetation at a dead
-  // stop next to a turning ride is the one thing that would look like a bug.
-  const strength = 0.45 + Math.sin(atMs / 5_900) * 0.33 + Math.sin(atMs / 2_450) * 0.22;
+  /**
+   * Two beats against each other, held in 0.10..1.00 — never zero and never negative.
+   *
+   * The first version centred on 0.45 with amplitudes summing to 0.55, so it crossed zero
+   * and spent most of its time near it. Measured on a real tree, that put the temple's
+   * 104-unit canopies about ONE world unit off centre most of the time, which is nothing at
+   * play zoom: the ceiling was fine and the average was the problem. A lull should be quiet,
+   * not a freeze — vegetation at a dead stop next to a turning ride reads as a bug.
+   */
+  const strength = 0.55 + Math.sin(atMs / 5_900) * 0.30 + Math.sin(atMs / 2_450) * 0.15;
   return { x: Math.cos(heading), y: Math.sin(heading), strength };
 }
 
-/** How late the far side of a stand feels a gust. One tree-phase apart, in ms. */
-const GUST_LAG_MS = 1_900;
+/**
+ * How fast a gust front crosses the world, in world units per millisecond.
+ *
+ * THE LAG IS POSITIONAL, and getting there was the second thing a failing test found. It
+ * was a per-tree hash — `jitter(id, 3)` — which gave eight distinct canopy positions across
+ * twenty-five trees, because downtown's object ids are `o0`, `o1`, `o11` and a hash of a
+ * two-character string does not spread. The fix could have been a better hash. It is instead
+ * the thing that was actually wanted: a tree feels a gust late in proportion to HOW FAR
+ * ALONG THE WIND IT STANDS, so a gust is a wave crossing the map rather than a hundred
+ * canopies agreeing to move at slightly different times.
+ *
+ * 0.35 units/ms crosses the 4,200-unit world in about twelve seconds, which at the wind's
+ * own 5.9 s and 2.45 s beats puts two or three fronts on the sheet at once. Cheap: the
+ * heading is computed once per frame and each mover costs one dot product.
+ */
+const GUST_SPEED = 0.35;
+/** A small per-piece desync on top of the front, so neighbours are never exactly together. */
+const GUST_JITTER_MS = 700;
 
 /**
- * How far a canopy leans, as a fraction of its own radius.
+ * How far a canopy leans: a fixed base plus a fraction of its own radius.
  *
- * Set by eye against the game's own zoom rather than by physics: a 96-unit tree has a
- * 48-unit canopy, and 0.07 of that is about 3.4 world units of lean — a few pixels on
- * screen, which is what a tree in a breeze actually does. Larger and street trees look
- * like they are being blown over; smaller and nothing on screen appears to move.
+ * THE BASE IS NOT A FUDGE, and it was put there by a failing test. A pure fraction of the
+ * radius made the world's small trees effectively static: downtown's street trees are 44
+ * units across, so at 0.07 of a 22-unit radius their crowns moved 1.5 world units — about a
+ * pixel and a half at play zoom, which is nothing. The test that caught it was looking for
+ * variety between neighbours and found six distinct positions among twenty-five trees,
+ * because the whole range had collapsed into the rounding.
+ *
+ * It is also the more truthful of the two. Displacement does not scale with crown size: a
+ * sapling's thin branches whip in a breeze that a mature canopy barely registers, so a floor
+ * belongs there and the radius term is the smaller half.
+ *
+ * Both numbers are set at play zoom against the wind's own average rather than its peak,
+ * which is the mistake worth not repeating: a 44-unit street tree now sits about 2.0 units
+ * off centre typically and 3.6 at the peak, and a 112-unit jungle tree 3.0 and 5.5. Larger
+ * and the small ones look blown over. Real crown displacement is a few percent of canopy
+ * width, so this is subtle BY NATURE — what makes it read is a hundred trees moving as one
+ * wave, and a canopy with a broken enough silhouette to show the change.
  */
-const LEAN = 0.07;
+const BASE_LEAN = 2.4;
+const LEAN = 0.055;
 /** A twist on top of the lean, radians. The crown turns as well as shifts. */
 const TWIST = 0.03;
 /** The silhouette breathes: leaves moving change the outline, they do not only slide. */
@@ -192,6 +264,10 @@ export function animateAmbient(
   nowMs: number,
   reducedMotion: boolean,
 ): void {
+  // The direction the gust front is travelling, this frame, for every mover. One
+  // trig pair for the whole world rather than one per tree.
+  const front = wind(nowMs);
+
   for (const mover of movers) {
     const { view, about } = mover;
     if (reducedMotion) {
@@ -207,10 +283,17 @@ export function animateAmbient(
       continue;
     }
 
-    // Sway. One wind, sampled late in proportion to this piece's phase, so a gust is
-    // visibly a wave crossing the stand rather than every canopy twitching at once.
-    const gust = wind(nowMs - mover.phase * GUST_LAG_MS);
-    const lean = mover.reach * LEAN * gust.strength;
+    /**
+     * Sway. One wind, sampled late in proportion to how far along it this tree stands, so a
+     * gust is visibly a wave crossing the stand rather than every canopy twitching at once.
+     *
+     * The dot product can be negative — a tree upwind of the origin feels the front EARLY —
+     * so the sampled time runs both sides of now. That is correct and needs no clamping:
+     * `wind` is a pure function of its argument and perfectly happy in the past or future.
+     */
+    const along = mover.about.x * front.x + mover.about.y * front.y;
+    const gust = wind(nowMs - along / GUST_SPEED - mover.phase * GUST_JITTER_MS);
+    const lean = (BASE_LEAN + mover.reach * LEAN) * gust.strength;
     view.position.set(about.x + gust.x * lean, about.y + gust.y * lean * 0.6);
     view.rotation = gust.strength * TWIST * gust.x;
     view.scale.set(1 + gust.strength * BREATHE * gust.y);

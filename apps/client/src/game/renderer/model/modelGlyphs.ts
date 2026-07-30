@@ -2,6 +2,7 @@ import type { Graphics } from "pixi.js";
 import type { Facing, MapObject, Vec2 } from "@dotbot/game/types";
 import { treeTrunkRadius } from "@dotbot/game/mapModel";
 import { landmarkGlyphs } from "./modelLandmarks";
+import { movingPart } from "./modelMotion";
 import {
   contact,
   contactRound,
@@ -957,6 +958,17 @@ function ventGlyph(g: Graphics, _pad: ShadowPad, o: MapObject): void {
  * A street tree. The canopy is built outer-dark to inner-light with a value ramp
  * driven by each lobe's height, so the mass has a top instead of reading as a
  * ring of bubbles — and it is the only soft silhouette on a street full of boxes.
+ *
+ * AND IT SWAYS. The canopy goes into its own moving part (`modelMotion`), leaning with
+ * the world's wind while the trunk stays exactly where it is.
+ *
+ * WHICH IS WHY A TREE MAY MOVE AND A THICKET MAY NOT, and the line is about colliders
+ * rather than about taste. On a tree the drawn canopy is NOT the collider — the trunk is,
+ * at `treeTrunkRadius` — so the canopy is already the part you walk under, and moving it
+ * says nothing untrue about where you can go. A thicket's silhouette IS its collider: it is
+ * the one piece of vegetation that means *go round*, and sliding its outline a few units
+ * would be a lie about cover in the region where cover matters most. So thickets stay
+ * still, deliberately, and it is not an oversight to be tidied up later.
  */
 function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   const cx = o.x + o.w / 2;
@@ -977,7 +989,16 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
    */
   cylinder(g, cx, cy + radius * 0.06, treeTrunkRadius(o), MAT.woodDark, 3);
 
-  foliageMass(g, cx, cy, radius * 0.96, o.id);
+  /**
+   * The canopy leans about the trunk it grows out of, not about the object's centre.
+   *
+   * The trunk is drawn a touch below centre (`inscribedSolid` applies the same offset), and
+   * the pivot has to follow it: leaning a canopy about a point the trunk is not at makes the
+   * trunk appear to slide out from under the crown, which is the one thing here that would
+   * contradict the collider.
+   */
+  const crown = movingPart(g, "sway", { x: cx, y: cy + radius * 0.06 });
+  foliageMass(crown, cx, cy, radius * 0.96, o.id);
 }
 
 /**

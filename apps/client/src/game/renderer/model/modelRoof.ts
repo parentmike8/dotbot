@@ -4,6 +4,7 @@ import { insetPolygon } from "@dotbot/game/geometry";
 import type { Building, Rect, Vec2 } from "@dotbot/game/types";
 import { inwardBand, isAcross, outwardBand, perimeterEntrances, type PerimeterEntrance } from "./entrances";
 import { drawModelObject } from "./modelGlyphs";
+import { collectMovers, type AmbientMover } from "./modelMotion";
 import { drawBarrier, drawWallRects, ROOF_BULKHEAD } from "./modelWalls";
 import {
   AO_ALPHA,
@@ -75,6 +76,14 @@ export type RoofModel = {
   architecture: Container;
   furniture: Container;
   objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
+  /**
+   * Ambient moving parts on an authored roof deck — see `modelMotion`.
+   *
+   * Empty today, and a roof is the one place where that is worth collecting anyway rather
+   * than assuming: the planters and trees on a roof garden are exactly the subject that
+   * sways, and a deck is authored the same way a floor is.
+   */
+  movers: AmbientMover[];
 };
 
 const ROOF = {
@@ -454,6 +463,7 @@ export function buildRoofModel(building: Building): RoofModel {
   // Any authored ROOF plan's own objects still draw; otherwise derive a small
   // plant run along the service edge so the roof belongs to the building below.
   const objectViews = new Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>();
+  const movers: AmbientMover[] = [];
   const authored = building.floors.find((floor) => floor.label === "ROOF");
   if (authored) {
     /**
@@ -484,6 +494,7 @@ export function buildRoofModel(building: Building): RoofModel {
       drawModelObject(g, pad, object);
       equipment.addChild(g);
       objectViews.set(object.id, { object, view: g });
+      movers.push(...collectMovers(g, object));
     }
   } else if (!masonry && building.kind === "retail") {
     /**
@@ -710,7 +721,7 @@ export function buildRoofModel(building: Building): RoofModel {
   mass.addChild(architecture, equipment);
   mass.mask = clip;
   view.addChild(blockShadow, plate, mass, clip, entrances);
-  return { view, mass, architecture, furniture: equipment, objectViews };
+  return { view, mass, architecture, furniture: equipment, objectViews, movers };
 }
 
 /**

@@ -10,6 +10,7 @@ import {
 import { pathOutline } from "@dotbot/game/geometry";
 import type { Building, Doorway, FloorPlan, MapObject, StairLink, Vec2, WallSegment, WindowBand } from "@dotbot/game/types";
 import { drawModelObject } from "./modelGlyphs";
+import { collectMovers, type AmbientMover } from "./modelMotion";
 import { findRooms, type Room, type RoomKind } from "./rooms";
 import {
   AO_ALPHA,
@@ -60,6 +61,15 @@ export type FloorModel = {
   /** The object art alone, inside `furniture`. */
   objects: Container;
   objectViews: Map<string, { object: MapObject; view: Graphics }>;
+  /**
+   * Ambient moving parts this floor's glyphs tagged — see `modelMotion`.
+   *
+   * Empty on every floor in the world today, because nothing indoors sways or turns yet.
+   * Collected anyway: a glyph tags its own moving part, so the day a tree is authored in an
+   * atrium the part exists whether or not anybody remembered to animate it, and a part
+   * built and never driven is a silently frozen one.
+   */
+  movers: AmbientMover[];
   stairs: Container;
   stairViews: Map<string, { stair: StairLink; view: Container }>;
   annotation: Container;
@@ -701,6 +711,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   const annotation = new Container();
   const annotationGfx = new Graphics();
   const objectViews = new Map<string, { object: MapObject; view: Graphics }>();
+  const movers: AmbientMover[] = [];
   const stairViews = new Map<string, { stair: StairLink; view: Container }>();
 
   const slab = new Graphics();
@@ -850,6 +861,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
     }
     objects.addChild(g);
     objectViews.set(object.id, { object, view: g });
+    movers.push(...collectMovers(g, object));
   }
 
   const groundStack = new Container();
@@ -892,6 +904,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
     furniture,
     objects,
     objectViews,
+    movers,
     stairs,
     stairViews,
     annotation,

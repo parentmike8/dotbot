@@ -55,6 +55,8 @@ export type FloorArt = {
   objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
   /** Addressable stair fixtures reuse the fabrication draw-on hook when an expansion commissions. */
   stairViews: Map<string, { stair: StairLink; view: Container }>;
+  /** Ambient moving parts on this floor. See `modelMotion`; empty on every floor today. */
+  movers: AmbientMover[];
   /**
    * Set only on an authored ROOF plan: the part of it that stands above ground.
    *
@@ -151,13 +153,23 @@ export function buildMapArt(map: MapDocument): MapArt {
   const buildings = map.buildings.map((building) => buildBuildingArt(
     building, buildingsLayer, labels, map.placementSlots, map.interactionDots, foreground,
   ));
+  /**
+   * Outdoor movers plus every floor's, in one list.
+   *
+   * Interior floors contribute nothing today — nothing indoors sways or turns — but they
+   * are collected rather than assumed empty, because a glyph tags its own moving part and a
+   * part nobody animates is a frozen one.
+   */
+  const movers = [
+    ...outdoors.movers,
+    ...buildings.flatMap((art) => art.floors.flatMap((floor) => floor.movers)),
+  ];
   drawExtractionLabels(labels, map);
   root.addChild(ground, outdoorDetail, outdoorObjects, buildingsLayer, labels);
 
   return {
     root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground,
-    buildingsLayer, buildings, labels, water: water.surfaces,
-    movers: outdoors.movers,
+    buildingsLayer, buildings, labels, water: water.surfaces, movers,
   };
 }
 
@@ -325,6 +337,7 @@ function buildFloorArt(
     view: model.view,
     architecture: model.architecture,
     furniture: model.furniture,
+    movers: model.movers,
     // No perspective pixels in a plan language, so nothing needs a walk-behind
     // pass; the container exists to satisfy the shared fog mask.
     foreground: new Container(),
@@ -450,6 +463,7 @@ function buildRoofArt(building: Building, floor: FloorPlan): FloorArt {
     stairWell: well,
     architecture: model.architecture,
     furniture: model.furniture,
+    movers: model.movers,
     foreground: new Container(),
     objectViews: model.objectViews,
     stairViews,

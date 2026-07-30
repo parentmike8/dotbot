@@ -103,8 +103,105 @@ describe("ambient motion", () => {
     }
   });
 
+  const swayed = () => downtownMap.outdoor.objects
+    .filter((o) => o.kind === "tree")
+    .flatMap((o) => drawn(o).movers);
+
+  it("gives every street tree a swaying canopy and nothing else", () => {
+    const trees = downtownMap.outdoor.objects.filter((o) => o.kind === "tree");
+    expect(trees.length).toBeGreaterThan(20);
+    const movers = swayed();
+    expect(movers).toHaveLength(trees.length);
+    for (const mover of movers) expect(mover.kind).toBe("sway");
+    // A bench, a car and a thicket do not. A thicket especially: its silhouette IS its
+    // collider, so sliding it would be a lie about cover.
+    for (const kind of ["bench", "car", "thicket", "planter", "lampPost"] as const) {
+      const other = downtownMap.outdoor.objects.find((o) => o.kind === kind)
+        ?? worldMap.outdoor.objects.find((o) => o.kind === kind);
+      if (other) expect(drawn(other).movers, kind).toHaveLength(0);
+    }
+  });
+
+  it("leans a canopy about its trunk, not about the object's centre", () => {
+    // The trunk is drawn a touch below centre and `inscribedSolid` applies the same offset,
+    // so a canopy pivoted on the rect's centre would slide off the thing it grows out of.
+    const tree = downtownMap.outdoor.objects.find((o) => o.kind === "tree")!;
+    const [mover] = drawn(tree).movers;
+    const radius = Math.min(tree.w, tree.h) / 2;
+    expect(mover.about.x).toBeCloseTo(tree.x + tree.w / 2, 5);
+    expect(mover.about.y).toBeCloseTo(tree.y + tree.h / 2 + radius * 0.06, 5);
+  });
+
+  it("sways the canopies out of step with each other", () => {
+    const movers = swayed();
+    animateAmbient(movers, 9_000, false);
+    const offsets = new Set(movers.map((mover) => {
+      const { x, y } = mover.view.position;
+      return `${Math.round((x - mover.about.x) * 10)},${Math.round((y - mover.about.y) * 10)}`;
+    }));
+    /**
+     * Most canopies somewhere different at the same instant.
+     *
+     * Not ALL of them: the offset is `wind × reach`, and two trees of the same size at the
+     * same phase legitimately land on the same place. What this rules out is the opposite
+     * failure — one animation played on every copy, which reads as a shimmer rather than as
+     * a gust crossing a street.
+     */
+    expect(offsets.size).toBeGreaterThan(movers.length / 3);
+  });
+
+  it("keeps a canopy's lean small enough to stay on its own trunk", () => {
+    const movers = swayed();
+    for (let ms = 0; ms < 120_000; ms += 719) {
+      animateAmbient(movers, ms, false);
+      for (const mover of movers) {
+        const drift = Math.hypot(
+          mover.view.position.x - mover.about.x,
+          mover.view.position.y - mover.about.y,
+        );
+        /**
+         * Two bounds, because one number cannot say this for both a street tree and a
+         * jungle tree. In absolute terms nothing may travel further than a bot's radius —
+         * beyond that a canopy is not swaying, it is somewhere else. In relative terms
+         * nothing may leave a fifth of its own radius, which keeps every crown sitting over
+         * the trunk that is the only part of a tree actually stopping anybody.
+         */
+        expect(drift).toBeLessThan(6);
+        expect(drift).toBeLessThan(mover.reach * 0.2);
+      }
+    }
+  });
+
+  /**
+   * The hazard that makes `movingPart` idempotent, pinned.
+   *
+   * `redrawFloorObjects` re-runs the glyph on the SAME `Graphics` on every object-parallax
+   * step, and `Graphics.clear()` empties geometry while leaving children in place. A fresh
+   * child per call would add one canopy per camera step, unbounded, with every mover but the
+   * first pointing at a view nobody animates. Costs nothing to check and would be very hard
+   * to notice: the symptom is a slow leak and a tree that gradually stops moving.
+   */
+  it("survives being redrawn without growing a second canopy", () => {
+    const tree = downtownMap.outdoor.objects.find((o) => o.kind === "tree")!;
+    const { view, movers } = drawn(tree);
+    const [mover] = movers;
+    animateAmbient(movers, 12_000, false);
+    const leaning = { x: mover.view.position.x, y: mover.view.position.y };
+
+    for (let step = 0; step < 5; step += 1) {
+      view.clear();
+      drawModelObject(view, pad(), tree);
+    }
+    expect(view.children).toHaveLength(1);
+    expect(collectMovers(view, tree)[0].view).toBe(mover.view);
+    // And it did not snap back to centre mid-lean because the camera moved.
+    expect({ x: mover.view.position.x, y: mover.view.position.y }).toEqual(leaning);
+    // The geometry is back, not lost to the clear.
+    expect((mover.view as Graphics).context.instructions.length).toBeGreaterThan(0);
+  });
+
   it("parks every part exactly at its resting pose for reduced motion", () => {
-    const movers = rides.flatMap((ride) => drawn(ride).movers);
+    const movers = [...rides.flatMap((ride) => drawn(ride).movers), ...swayed()];
     expect(movers.length).toBeGreaterThan(0);
     // Run it forward first, so this is a restore rather than a no-op that never moved.
     animateAmbient(movers, 47_000, false);
