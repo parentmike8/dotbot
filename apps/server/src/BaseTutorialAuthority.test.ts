@@ -194,6 +194,11 @@ describe("BaseTutorialAuthority", () => {
     expect(await persistence.getBaseTutorialForPlayer(account.playerId))
       .toEqual({ phase: "complete", revision: 4 });
     authority.disconnect("peer-owner");
+    await expect(authority.connect("peer-after-completion", account.token))
+      .rejects.toThrow(/complete|finished/i);
+    await expect(authority.handleInput("peer-owner", { seq: seq++, input: idle, interact: false }))
+      .rejects.toThrow(/session/i);
+    authority.close();
   });
 
   it("rejects forged peers, replayed frames, and out-of-order frames", async () => {

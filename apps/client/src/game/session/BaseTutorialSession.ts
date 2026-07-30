@@ -1,5 +1,6 @@
 import {
   BASE_TUTORIAL_FABRICATOR_ID,
+  isBaseTutorialComplete,
 } from "@dotbot/game/baseTutorial";
 import type {
   GameSnapshot,
@@ -72,6 +73,7 @@ export class BaseTutorialSession implements GameSession {
           .find((object) => object.id === BASE_TUTORIAL_FABRICATOR_ID);
         if (fabricator) fabricator.enabled = state.fabricatorEnabled;
         this.options.onState(state);
+        if (isBaseTutorialComplete(state.tutorial)) this.retireAuthority();
       },
       onConnectionState: (status) => {
         this.connected = status === "connected";
@@ -107,8 +109,14 @@ export class BaseTutorialSession implements GameSession {
 
   dispose(): void {
     this.connected = false;
-    this.connection?.dispose();
+    this.retireAuthority();
+  }
+
+  private retireAuthority(): void {
+    this.connected = false;
+    const connection = this.connection;
     this.connection = null;
+    connection?.dispose();
   }
 }
 

@@ -106,6 +106,46 @@ describe("BaseTutorialSession authority", () => {
     expect(session.update(16)?.bots.find((bot) => bot.id === BASE_TUTORIAL_TARGET_ID)?.state).toBe("downed");
     expect(session.update(16)?.doors?.find((door) => door.doorwayId === "base-intro-door")?.blocking).toBe(false);
   });
+
+  it("retires its grace-period connection exactly once after durable completion", async () => {
+    const map = createBaseMap(starterBaseLayout, "workshop", {
+      tutorial: { phase: "doorOpen", revision: 3 },
+    });
+    let callbacks!: Parameters<BaseTutorialConnectionFactory>[1];
+    let disposals = 0;
+    const session = new BaseTutorialSession({
+      map,
+      token: "owner-token",
+      interactionIntent: () => false,
+      onState() {},
+      onConnectionState() {},
+      onError() {},
+      createConnection: (_token, next) => {
+        callbacks = next;
+        return {
+          start() {},
+          sendInput() {},
+          dispose() { disposals += 1; },
+        };
+      },
+    });
+    await session.start();
+    callbacks.onConnectionState("connected");
+    callbacks.onState({
+      tutorial: { phase: "complete", revision: 4 },
+      playerPosition: { x: 302, y: 487 },
+      inputAck: 61,
+      fabricatorEnabled: false,
+      snapshot: snapshot(9_000, { x: 302, y: 487 }, "downed", false),
+    });
+
+    expect(session.update(16)?.bots.find((bot) => bot.id === "player")?.position)
+      .toEqual({ x: 302, y: 487 });
+    expect(disposals).toBe(1);
+    session.sendInput({ move: { x: 1, y: 0 }, dash: true });
+    session.dispose();
+    expect(disposals).toBe(1);
+  });
 });
 
 function snapshot(

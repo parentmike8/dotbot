@@ -5,6 +5,7 @@ import {
   BASE_TUTORIAL_FABRICATOR_ID,
   BASE_TUTORIAL_TARGET_ID,
   advanceBaseTutorial,
+  isBaseTutorialComplete,
   type BaseTutorialAction,
   type BaseTutorialState,
 } from "@dotbot/game/baseTutorial";
@@ -77,6 +78,9 @@ export class BaseTutorialAuthority {
     }
     const existing = this.sessionsByToken.get(token);
     if (existing) {
+      if (isBaseTutorialComplete(existing.tutorial)) {
+        throw new Error("This base introduction is already complete.");
+      }
       if (existing.peerId) throw new Error("This base introduction is already connected.");
       if (existing.removalTimer) clearTimeout(existing.removalTimer);
       existing.removalTimer = null;
@@ -102,6 +106,9 @@ export class BaseTutorialAuthority {
       const base = await this.persistence.getBase(token);
       this.assertReservation(reservation);
       if (!identity || !base) throw new Error("Unknown device token.");
+      if (isBaseTutorialComplete(base.tutorial)) {
+        throw new Error("This base introduction is already complete.");
+      }
 
       const map = createBaseMap(base.layout, "workshop", { tutorial: base.tutorial });
       simulation = await DotBotSimulation.create({
@@ -195,7 +202,7 @@ export class BaseTutorialAuthority {
       }
       session.removalTimer = null;
     };
-    if (immediate) {
+    if (immediate || isBaseTutorialComplete(session.tutorial)) {
       remove();
       return;
     }

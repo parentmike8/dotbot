@@ -80,7 +80,10 @@ export type FloorObjectView = {
   object: MapObject;
   /** The object's production ink. */
   view: Graphics;
-  /** Its object-local contact shadow and ambient occlusion, when the surface has them. */
+  /**
+   * Object-local effects only for fixtures whose authored `enabled` state can
+   * change at runtime. Ordinary objects use the floor's shared effect pads.
+   */
   effects?: Graphics[];
 };
 
@@ -89,7 +92,8 @@ export type FloorObjectView = {
  * Returns whether any authored or rendered state actually changed.
  */
 export function setFloorObjectViewEnabled(handle: FloorObjectView, enabled: boolean): boolean {
-  const effects = handle.effects ?? [];
+  const effects = handle.effects;
+  if (!effects) return false;
   const changed = handle.object.enabled !== enabled
     || handle.view.visible !== enabled
     || effects.some((effect) => effect.visible !== enabled);
@@ -748,7 +752,9 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
 
   const structurePad = makePad(SHADOW_ALPHA);
   const structureAo = makePad(AO_ALPHA);
-  const objectEffects: Graphics[] = [];
+  const objectPad = makePad(SHADOW_ALPHA);
+  const objectAo = makePad(AO_ALPHA);
+  const dynamicObjectEffects: Graphics[] = [];
 
   const rooms = findRooms(fp, floor);
   drawSlab(slab, fp, plan);
@@ -846,11 +852,14 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   const flat = floor.objects.filter((object) => FLAT_KINDS.has(object.kind)).sort(byDepth);
   const standing = floor.objects.filter((object) => !FLAT_KINDS.has(object.kind)).sort(byDepth);
   for (const object of [...flat, ...standing]) {
-    const objectPad = makePad(SHADOW_ALPHA);
-    const objectAo = makePad(AO_ALPHA);
-    occlude(objectAo, object, 7);
+    // Only authored runtime-visibility fixtures need independently hideable
+    // effects. Every ordinary object stays on the bounded per-floor pads.
+    const dynamic = object.enabled !== undefined;
+    const effectPad = dynamic ? makePad(SHADOW_ALPHA) : objectPad;
+    const effectAo = dynamic ? makePad(AO_ALPHA) : objectAo;
+    occlude(effectAo, object, 7);
     const g = new Graphics();
-    drawModelObject(g, objectPad, object);
+    drawModelObject(g, effectPad, object);
     // Derived from the collider, not from a kind list — that disagreement is the bug
     // this fixes. A surface is exempt because paint cannot be mistaken for cover.
     if (!isSolidObject(object) && !SURFACE_KINDS.has(object.kind)) {
@@ -881,12 +890,12 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
       g.position.set(cx, cy);
       g.rotation = object.angle;
     }
-    const effects = [...objectAo, ...objectPad];
-    objectEffects.push(...effects);
     objects.addChild(g);
+    const effects = dynamic ? [...effectAo, ...effectPad] : undefined;
+    if (effects) dynamicObjectEffects.push(...effects);
     const handle: FloorObjectView = { object, view: g, effects };
     objectViews.set(object.id, handle);
-    setFloorObjectViewEnabled(handle, object.enabled !== false);
+    if (dynamic) setFloorObjectViewEnabled(handle, object.enabled !== false);
     movers.push(...collectMovers(g, object));
   }
 
@@ -920,7 +929,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
     // rather than under it. Same z-intent as `structure` and `glazing`, one node each.
     ...turned,
   );
-  furniture.addChild(...objectEffects, objects);
+  furniture.addChild(...objectAo, ...objectPad, ...dynamicObjectEffects, objects);
   annotation.addChild(annotationGfx);
 
   view.addChild(architecture, furniture, annotation);

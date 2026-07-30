@@ -5,7 +5,6 @@ import {
   BASE_SLOT_DEFS,
   DEFAULT_BASE_SHELL,
   baseShellDef,
-  createBaseMap,
   isBaseObjectKind,
   isBaseShellId,
   isObjectAllowedInSlot,
@@ -35,6 +34,10 @@ import type {
   BaseTutorialConnectionState,
   BaseTutorialConnectionStatus,
 } from "./BaseTutorialConnection";
+import {
+  BaseSessionLifecycle,
+  type BaseSessionWorld,
+} from "./baseSessionLifecycle";
 
 const localLayoutKey = "dotbot.baseLayout";
 const localShellKey = "dotbot.baseShell";
@@ -445,32 +448,53 @@ type BaseSessionProps = {
 function BaseSession(props: BaseSessionProps) {
   const tutorialComplete = isBaseTutorialComplete(props.base.tutorial);
   const initialTutorialRef = useRef(props.base.tutorial);
-  const sessionShellRef = useRef(isBaseTutorialComplete(initialTutorialRef.current) ? props.base.shell : "workshop");
-  const sessionExpandedRef = useRef(
-    isBaseTutorialComplete(initialTutorialRef.current) && ownsSecondFloor(props.base),
-  );
-  const authoritativeTutorialRef = useRef(
-    props.identityReady && props.base.storageLinked && !tutorialComplete,
-  );
+  const lifecycleRef = useRef<BaseSessionLifecycle | null>(null);
+  if (!lifecycleRef.current) {
+    lifecycleRef.current = new BaseSessionLifecycle({
+      layout: props.base.layout,
+      shell: tutorialComplete ? props.base.shell : "workshop",
+      expanded: tutorialComplete && ownsSecondFloor(props.base),
+      tutorial: props.base.tutorial,
+    }, props.identityReady && props.base.storageLinked && !tutorialComplete);
+  }
+  const lifecycle = lifecycleRef.current;
+  const [, setLifecycleRevision] = useState(0);
   const tutorialTokenRef = useRef(localStorage.getItem(deviceTokenKey) ?? "");
   const tutorialInteractRef = useRef(false);
   const [authorityStatus, setAuthorityStatus] = useState<BaseTutorialConnectionStatus>(
-    authoritativeTutorialRef.current ? "connecting" : "connected",
+    lifecycle.authoritative ? "connecting" : "connected",
   );
-  const map = useMemo(
-    () => createBaseMap(
-      props.base.layout,
-      sessionShellRef.current,
-      { expanded: sessionExpandedRef.current, tutorial: initialTutorialRef.current },
-    ),
-    [props.base.layout],
-  );
-  const session = useMemo(() => authoritativeTutorialRef.current
+  const currentWorld: BaseSessionWorld = {
+    layout: props.base.layout,
+    shell: props.base.shell,
+    expanded: ownsSecondFloor(props.base),
+    tutorial: props.base.tutorial,
+  };
+  const resolvedWorld = lifecycle.world(currentWorld);
+  // The carried transform seeds a rebuild but must not cause one: local movement
+  // updates it every HUD frame. Layout/shell/expansion/terminal authority are the
+  // only world-identity changes that replace both renderer and collision state.
+  const map = useMemo(() => lifecycle.createMap(currentWorld), [
+    lifecycle,
+    resolvedWorld.authoritative,
+    resolvedWorld.expanded,
+    resolvedWorld.layout,
+    resolvedWorld.shell,
+    resolvedWorld.tutorial.phase,
+    resolvedWorld.tutorial.revision,
+  ]);
+  const session = useMemo(() => resolvedWorld.authoritative
     ? new BaseTutorialSession({
         map,
         token: tutorialTokenRef.current,
         interactionIntent: () => tutorialInteractRef.current,
-        onState: props.acceptTutorialState,
+        onState: (state) => {
+          props.acceptTutorialState(state);
+          if (lifecycle.acceptAuthoritative(state)) {
+            setAuthorityStatus("connected");
+            setLifecycleRevision((revision) => revision + 1);
+          }
+        },
         onConnectionState: (status) => {
           setAuthorityStatus(status);
           if (status === "connecting") props.reportTutorialError("BASE LINK CONNECTING · MOVEMENT PAUSED");
@@ -502,6 +526,7 @@ function BaseSession(props: BaseSessionProps) {
     queueDash,
   } = useDotBotGame({ session });
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
+  lifecycle.rememberLocalSnapshot(snapshot);
   const dashProgress = player
     ? 1 - Math.max(0, Math.min(1, player.dashCooldownMs / defaultGameConfig.dashCooldownMs))
     : 1;
@@ -611,7 +636,7 @@ function BaseSession(props: BaseSessionProps) {
       data-panel={props.panel?.type ?? "none"}
       data-tutorial={props.base.tutorial.phase}
       data-session-stable="true"
-      data-authority={authoritativeTutorialRef.current ? "server" : "local"}
+      data-authority={resolvedWorld.authoritative ? "server" : "local"}
       data-authority-status={authorityStatus}
     >
       <div ref={hostRef} className="game-canvas" />
@@ -641,7 +666,7 @@ function BaseSession(props: BaseSessionProps) {
             className={`joystick ${joystick.active ? "active" : ""}`}
             role="application"
             aria-label="Movement joystick"
-            aria-disabled={authoritativeTutorialRef.current && authorityStatus !== "connected"}
+            aria-disabled={resolvedWorld.authoritative && authorityStatus !== "connected"}
             {...joystickHandlers}
           >
             <span
@@ -660,7 +685,7 @@ function BaseSession(props: BaseSessionProps) {
             disabled={
               !player
               || player.state !== "alive"
-              || (authoritativeTutorialRef.current && authorityStatus !== "connected")
+              || (resolvedWorld.authoritative && authorityStatus !== "connected")
               || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)
             }
             aria-label="Dash"
