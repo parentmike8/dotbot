@@ -1,8 +1,11 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
-import type { MapDocument, Rect } from "@dotbot/game/types";
-import { buildMapArt } from "../game/renderer/mapArt";
-import { animateAmbient, driftLeaves } from "../game/renderer/model/modelMotion";
+import type { MapDocument, Rect, Vec2 } from "@dotbot/game/types";
+import { groundAt, isSoftGround } from "@dotbot/game/ground";
+import { buildMapArt, type MapArt } from "../game/renderer/mapArt";
+import {
+  animateAmbient, driftLeaves, fadeTrail, stampTrail, trailStep,
+} from "../game/renderer/model/modelMotion";
 import { selectMapDocument } from "../mapSelection";
 
 /**
@@ -144,6 +147,75 @@ function floorFrames(map: MapDocument): Array<{ id: string; title: string; rect:
   return frames;
 }
 
+/**
+ * Walk a DotBot across the crop so the trail it leaves can be looked at.
+ *
+ * The one piece of ambient motion this surface could not otherwise show. Rides and canopies
+ * are a function of the clock, so `?t=` is enough; a trail is a function of where somebody
+ * WENT, and with no bots on a still there is nothing to have gone anywhere.
+ *
+ * It drives the production pool through the production pacing — `trailStep` decides where each
+ * mark lands and `fadeTrail` decides how strong it is — so what comes back is what a player
+ * sees, not a drawing of what a player might see. The route is sampled finely and stepped
+ * exactly as `updateTrails` steps it.
+ *
+ * The stamps are backdated by the real cadence (a stride at walking speed is 80 ms) so the tail
+ * fades along its length instead of the whole trail sharing one age. That gradient is most of
+ * what there is to judge: a trail that reads at the head and dies too fast behind it is the
+ * defect this frame exists to catch.
+ */
+function walkTheCrop(art: MapArt, map: MapDocument, rect: Rect, clockMs: number): number {
+  /**
+   * A ROUTE WITH A HAIRPIN IN IT, and that is the point of it.
+   *
+   * The first version was a gentle sine wave, which is the one shape that cannot show the defect
+   * this frame exists to catch. Suggested while reviewing it: "you should add a more harsh turn
+   * in it so you can see the lines I'm talking about too" — and right, because every artefact
+   * reported about a trail so far has been about the JOINS between marks, and a wave barely
+   * bends them. A hairpin puts two consecutive marks nearly 90° apart.
+   *
+   * Waypoints in fractions of the crop, so the same route works on any frame: a slow bend, a
+   * hard V, then a long easy run out. Walked as a polyline, so the corners are genuinely sharp
+   * rather than smoothed by the sampler.
+   */
+  const waypoints: Vec2[] = [
+    { x: 0.08, y: 0.66 }, { x: 0.28, y: 0.80 }, { x: 0.40, y: 0.62 },
+    { x: 0.46, y: 0.94 }, { x: 0.68, y: 0.74 }, { x: 0.94, y: 0.82 },
+  ];
+  const route = (t: number): Vec2 => {
+    const span = (waypoints.length - 1) * Math.min(0.999999, Math.max(0, t));
+    const leg = Math.floor(span);
+    const into = span - leg;
+    const from = waypoints[leg];
+    const to = waypoints[leg + 1];
+    return {
+      x: rect.x + rect.w * (from.x + (to.x - from.x) * into),
+      y: rect.y + rect.h * (from.y + (to.y - from.y) * into),
+    };
+  };
+
+  const laid: Array<{ from: Vec2; at: Vec2; heading: number }> = [];
+  let anchor: Vec2 | undefined;
+  const samples = 600;
+  for (let i = 0; i <= samples; i += 1) {
+    const at = route(i / samples);
+    const step = trailStep(anchor, at);
+    anchor = step.anchor;
+    // The same gate the renderer applies, so a crop over paving correctly shows nothing.
+    if (step.crossed && isSoftGround(groundAt(map, at))) {
+      laid.push({ from: step.from, at, heading: step.heading });
+    }
+  }
+
+  const cadenceMs = 80;
+  for (let i = 0; i < laid.length; i += 1) {
+    const age = (laid.length - 1 - i) * cadenceMs;
+    stampTrail(art.trails, laid[i].from, laid[i].at, laid[i].heading, clockMs - age);
+  }
+  fadeTrail(art.trails, clockMs);
+  return laid.length;
+}
+
 export function WorldLab() {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
@@ -153,6 +225,8 @@ export function WorldLab() {
     const params = new URLSearchParams(window.location.search);
     const pick = params.get("pick");
     const shots = params.get("shots") === "1";
+    /** `&walk=1` lays a DotBot's trail across the crop. See `walkTheCrop`. */
+    const walk = params.get("walk") === "1";
     let app: Application | null = null;
     let disposed = false;
 
@@ -303,6 +377,7 @@ export function WorldLab() {
           // The frame's own rect stands in for the camera's visible bounds: a still has no
           // camera, and leaves that spawned off the whole sheet would put none in the crop.
           driftLeaves(art.leaves, art.movers, clockMs, shot.rect, false);
+          if (walk) walkTheCrop(art, map, shot.rect, clockMs);
           const long = Math.max(shot.rect.w, shot.rect.h);
           const scale = Math.min(1, 2200 / long);
           const width = Math.round(shot.rect.w * scale);
@@ -328,6 +403,7 @@ export function WorldLab() {
       const chosen = allFrames.find((candidate) => candidate.id === pick) ?? allFrames[0];
       showFloor(chosen.floorId ?? null);
       driftLeaves(art.leaves, art.movers, clockMs, chosen.rect, false);
+      if (walk) walkTheCrop(art, map, chosen.rect, clockMs);
       const draw = (): void => {
         created.renderer.resize(host.clientWidth, host.clientHeight);
         frame(chosen.rect, created.renderer.width, created.renderer.height);
@@ -355,6 +431,10 @@ export function WorldLab() {
           const at = clockMs + performance.now() - started;
           animateAmbient(art.movers, at, false);
           driftLeaves(art.leaves, art.movers, at, chosen.rect, false);
+          // Re-laid every frame rather than aged out. Honest about what it is: a trail is
+          // history, and there is nobody walking here, so keeping one alive means restamping
+          // it. What this shows is the mark and the fade gradient, not a bot's route.
+          if (walk) walkTheCrop(art, map, chosen.rect, at);
           created.render();
           frameHandle = requestAnimationFrame(step);
         };

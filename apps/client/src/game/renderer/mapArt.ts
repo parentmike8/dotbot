@@ -11,7 +11,9 @@ import type {
 import { buildFloorModel, drawStair, drawStairHead } from "./model/modelFloor";
 import { buildOutdoorModel } from "./model/modelOutdoor";
 import { buildRoofModel } from "./model/modelRoof";
-import { buildLeafFall, type AmbientMover, type LeafFall } from "./model/modelMotion";
+import {
+  buildLeafFall, buildTrailMarks, type AmbientMover, type LeafFall, type TrailMarks,
+} from "./model/modelMotion";
 import { buildWaterSurfaces, type WaterSurface } from "./model/modelWater";
 import { SHADOW_ALPHA, V, type ShadowPad } from "./model/tone";
 import { drawDotDisc } from "./dotArt";
@@ -142,6 +144,8 @@ export type MapArt = {
   movers: AmbientMover[];
   /** The leaf pool, drifting off whichever canopies are on screen. */
   leaves: LeafFall;
+  /** Scuff marks under moving DotBots, on ground soft enough to keep one. */
+  trails: TrailMarks;
 };
 
 const LABEL_FONT = "system-ui, -apple-system, Segoe UI, sans-serif";
@@ -170,7 +174,18 @@ export function buildMapArt(map: MapDocument): MapArt {
   const water = buildWaterSurfaces(map);
   ground.addChild(outdoors.ground, water.view);
   const leaves = buildLeafFall();
-  outdoorDetail.addChild(outdoors.detail);
+  /**
+   * Trails go on the DRESSING layer, above it, and under everything else.
+   *
+   * `outdoorDetail` is documented as the non-solid dressing a bot walks over, which is exactly
+   * what a scuff is — and above `outdoors.detail` rather than below, because a bot crossing a
+   * verge flattens the tufts drawn into it. Under `outdoorObjects` and under the bots for the
+   * same one reason: a mark on the ground is on the ground. This also gets fog for free —
+   * `fogGfx` draws over `root` — so a trail in ground you have not explored is not visible,
+   * which is the opposite end of the same problem the leaves had.
+   */
+  const trails = buildTrailMarks();
+  outdoorDetail.addChild(outdoors.detail, trails.view);
   outdoorObjects.addChild(outdoors.objects);
 
   const buildings = map.buildings.map((building) => buildBuildingArt(
@@ -206,7 +221,7 @@ export function buildMapArt(map: MapDocument): MapArt {
 
   return {
     root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground, overhead,
-    buildingsLayer, buildings, water: water.surfaces, movers, leaves,
+    buildingsLayer, buildings, water: water.surfaces, movers, leaves, trails,
   };
 }
 

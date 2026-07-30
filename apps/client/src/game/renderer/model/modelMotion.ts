@@ -1,6 +1,6 @@
 import { Container, Graphics } from "pixi.js";
 import type { MapObject, Vec2 } from "@dotbot/game/types";
-import { jitter, MAT, shade } from "./tone";
+import { jitter, MAT, shade, SUN } from "./tone";
 
 /**
  * AMBIENT MOTION — the world's cosmetic movement, and who is allowed to own it.
@@ -549,4 +549,357 @@ export function driftLeaves(
      */
     leaf.alpha = Math.min(1, Math.min(age, 1 - age) * 10) * 0.85;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Trails
+// ---------------------------------------------------------------------------
+
+/**
+ * THE MARK A DOTBOT LEAVES ON GROUND SOFT ENOUGH TO TAKE ONE.
+ *
+ * The third and last of the ambient set, and the only one that is NOT a pure function of the
+ * clock: a leaf's whole life is `age`, but a trail is where somebody went, so it has history.
+ * That is a real difference from the rest of this module and worth naming — it is still
+ * cosmetic and still never replicated, but the pool holds state, and the state is stamps.
+ *
+ * WHICH GROUND, and it is not a renderer opinion. `@dotbot/game/ground` names every piece of
+ * ground by its use and answers whether that use keeps an impression; the caller asks. Growth
+ * to flatten, earth to scuff, ballast to turn over — a footway keeps nothing, so nothing is
+ * drawn on one.
+ *
+ * IT IS A DIVOT, AND A DIVOT IS THE INVERSE OF A LUMP. Reported on sight of the first version:
+ * "I don't like how it's just circles, should instead be sort of a divot in the ground." The
+ * first pass was a flat dark ellipse with a darker core, which is a STAIN — paint on the
+ * ground rather than ground that has been pressed — and a row of them beaded into a string of
+ * circles because each one had its own visible outline.
+ *
+ * There is one light, from the north-west. Everything raised in this world is lit on its
+ * north-west face, shaded on its south-east face, and throws a shadow south-east. A HOLLOW
+ * READS BY DOING EXACTLY THE OPPOSITE: its inner wall on the south-east side turns back into
+ * the light and is LIT, its north-west lip faces away and is SHADED, and it casts nothing at
+ * all. That inversion is the entire cue — get it backwards and the trail reads as a row of
+ * pebbles laid on the grass.
+ *
+ * AND IT IS WHAT KILLS THE BEADING. The lips run ALONG the channel, so consecutive marks merge
+ * into two continuous lines — a shaded edge and a lit edge with disturbed ground between them,
+ * which is what a rut looks like from above. One mark on its own is a divot; twenty in a row
+ * are a track. Both readings come out of the same geometry.
+ *
+ * SO A MARK IS DRAWN AT STAMP TIME, in world coordinates, which is the one place this module
+ * breaks its own build-once rule — and deliberately. The shading is fixed to the world's light
+ * while the shape turns with travel, so the two cannot both live in one pre-built local
+ * drawing: rotating the shape would rotate the sun with it. A stamp is an EVENT, not a frame —
+ * about twelve a second per bot against 108 movers transformed sixty times a second — so
+ * rebuilding one small ellipse there is nothing, and it is the only way the light stays put.
+ *
+ * A DUST PUFF IS A DIFFERENT FEATURE. Something airborne kicked up off dry ground is not a
+ * ground mark, it is a particle, and it would want the leaf pool's machinery rather than this.
+ */
+export type TrailMarks = {
+  /** The pool's own container; parented once, into the outdoor detail layer. */
+  view: Container;
+  marks: Graphics[];
+  born: number[];
+  /** Ring cursor. The pool recycles oldest-first because the oldest is the faintest. */
+  next: number;
+};
+
+/**
+ * How far a DotBot travels between marks, in world units.
+ *
+ * Exported because the MARK IS SIZED AGAINST IT: at 44 units long and stamped every 24, each
+ * mark overlaps its neighbour by nearly half, which is what turns a row of stamps into one
+ * band with a soft edge instead of a dotted line. Change one and the other has to move.
+ */
+export const TRAIL_STRIDE = 24;
+/**
+ * Pool size, and it is a budget rather than a guess.
+ *
+ * A bot walks at 300 units/s (`MOVING_SPEED` 5 at 60 Hz), so it lays about 12 marks a second
+ * and roughly 30 over one mark's life. 120 covers four bots crossing soft ground at once,
+ * which is a squad; beyond that the oldest tail truncates, and the oldest tail is the part
+ * already nearly transparent.
+ */
+const TRAIL_COUNT = 120;
+/**
+ * How long a mark lasts.
+ *
+ * SHORT ON PURPOSE, and this is a game-design line rather than an art one. At a couple of
+ * seconds a trail says "the ground here has just been crossed", which is ambient. At ten it
+ * becomes TRACKING — a way to follow a player who is long out of sight — and that is a
+ * mechanic with balance consequences, not a piece of dressing. The machinery is the same
+ * either way, so promoting it later is one constant; doing it silently inside a motion pass
+ * would be shipping a feature nobody asked for.
+ */
+const TRAIL_LIFE_MS = 2_600;
+
+/**
+ * Half-width of the channel, across travel.
+ *
+ * 32 across against a 48-unit body: inside the silhouette, because the rim of a disc bears less
+ * than its middle and a channel the full width of the bot reads as a painted stripe rather than
+ * as ground giving way under it.
+ *
+ * THERE IS NO HALF-LENGTH ANY MORE, and that was the actual bug behind three rounds of
+ * "straight lines jut out on turns". A mark used to be a fixed 48-unit shape centred on its
+ * stamp point while the stride was 24 — so every mark overhung the midpoint between stamps by
+ * 12 units at BOTH ends. On a gentle curve that is invisible. On a hairpin the overhang of the
+ * mark before the corner still points the old way while the mark after it points the new way,
+ * and the two run straight through each other: a starburst of slivers at every sharp turn.
+ *
+ * A mark is now the SEGMENT BETWEEN TWO CONSECUTIVE STAMP POINTS. It cannot overhang, because it
+ * has no length of its own — it is exactly as long as the ground the bot covered.
+ */
+const TRAIL_HALF_WIDE = 16;
+/**
+ * How far each segment runs past its own endpoints, in world units. ZERO, and that is a fix.
+ *
+ * It was 2, to close any notch on the outside of a bend, and it cost more than it bought: two
+ * units of overlap means each segment double-covers its neighbour across the full width of the
+ * channel, so every join became a four-unit cross-band at twice the alpha. Along a straight run
+ * that is a LADDER — a rung every stride — which is a far louder artefact than the notch it was
+ * insuring against.
+ *
+ * At zero the two butt edges coincide exactly on a straight run and the join is invisible. On a
+ * bend a small wedge doubles up on the inside of the turn and a small one is missed on the
+ * outside, both a fraction of the channel's width, and the inside one reads as the inside of a
+ * corner being more worn — which is true of a real path.
+ */
+const SEGMENT_OVERLAP = 0;
+
+/**
+ * How far the channel is pushed apart along the light, in world units.
+ *
+ * THE LIPS ARE ON THE SUN'S AXIS, NOT ON TRAVEL'S, and getting that wrong is what took three
+ * rounds. They were two narrow bands down the LEFT and RIGHT sides of the channel — and left and
+ * right swap when a bot turns through more than a right angle, so at every sharp corner the two
+ * lips ran straight through each other. Magnified, a hairpin came out as an X of crossed lines.
+ *
+ * A hollow does not have a left lip and a right lip. It has an UP-LIGHT lip, which faces away
+ * from the sun and is shaded, and a DOWN-LIGHT lip, whose inner wall turns back into the sun and
+ * is lit. That axis is fixed to the world, so consecutive marks always offset the same way, and a
+ * reversal has nothing to cross.
+ *
+ * Drawn as two whole copies of the channel offset along that axis — the same trick `volumeShape`
+ * uses for height, run the other way. Where they overlap they very nearly cancel and the ground
+ * shows through; what is left is a shaded crescent on one rim and a lit one on the other.
+ */
+const LIP_OFFSET = 5;
+/**
+ * The two tones. Alphas of the same order as `SHADOW_ALPHA`'s first steps, because a lip is the
+ * same phenomenon: a surface turned away from the one light.
+ *
+ * They are also chosen to CANCEL over the overlap. Black at 0.055 then white at 0.075 leaves
+ * mid-grey ground within a level of where it started, so the middle of the channel is untouched
+ * and only the two rims carry the mark — which is what keeps it subtle: "it should be subtle,
+ * not a complete distortion of the path that's been navigated."
+ */
+const LIP_SHADE = 0.055;
+const LIP_LIT = 0.075;
+/**
+ * THERE IS NO FLOOR FILL, and that is the second thing removed rather than tuned.
+ *
+ * Reported: "in the path I'm seeing little circles, which I shouldn't see." A faint ellipse
+ * filling the hollow is the ORIGINAL bead-chain defect at a lower alpha — consecutive marks
+ * overlap by half, so the fills stack into a scalloped row of rounder, darker blobs and the eye
+ * finds the circles immediately however faint each one is.
+ *
+ * A shallow dent barely darkens its own floor anyway. What you actually see of one is the rim
+ * lighting, so the two lips are the whole mark and the ground between them is left alone. Fewer
+ * marks, subtler, and nothing that can bead.
+ */
+/**
+ * The strongest ink any one mark lays down.
+ *
+ * Exported so SUBTLE can be asserted rather than asserted about. Reported alongside the divot
+ * note: "it should be subtle, not a complete distortion of the path that's been navigated" —
+ * and 59% of the world is soft ground, so this is on screen almost the whole time. A scuff may
+ * never be heavier than the shadow a solid object casts.
+ */
+export const TRAIL_MARK_MAX_ALPHA = Math.max(LIP_LIT, LIP_SHADE);
+
+/** A DotBot's body is 48 across; the channel it presses is narrower than that. */
+export const TRAIL_CHANNEL_WIDTH = TRAIL_HALF_WIDE * 2;
+
+export function buildTrailMarks(): TrailMarks {
+  const view = new Container();
+  const marks: Graphics[] = [];
+  for (let i = 0; i < TRAIL_COUNT; i += 1) {
+    // Geometry arrives at stamp time — see the note on this section. Empty and hidden until
+    // something walks over the ground this mark will land on.
+    const mark = new Graphics();
+    mark.visible = false;
+    view.addChild(mark);
+    marks.push(mark);
+  }
+  return { view, marks, born: new Array(TRAIL_COUNT).fill(-Infinity), next: 0 };
+}
+
+/**
+ * One length of hollow, in world coordinates, running from `from` to `to`.
+ *
+ * TWO LIPS AND NOTHING ELSE, each a plain quad down one side of the channel. Which one is lit is
+ * decided by the SUN alone, so a bot walking north and a bot walking south leave marks shaded on
+ * the same side of the world — the property a pre-rotated sprite cannot have, and the reason
+ * this is drawn per stamp rather than built once.
+ *
+ * Quads rather than the tapered eight-point bands they replaced. The taper existed to blend
+ * marks that overlapped by half, and segments do not overlap: each one starts where the last
+ * ended, so consecutive lips are collinear along a straight run and meet at a shallow mitre on a
+ * bend. Nothing to blend, and nothing to stick out.
+ */
+/**
+ * The two quads a divot is made of, as geometry, with no drawing.
+ *
+ * Split out from `divot` so the lighting rule can be MEASURED rather than looked at. The bug it
+ * exists to prevent cost three rounds of review: lips offset across travel instead of along the
+ * light, which swap sides whenever a bot turns past a right angle and cross each other at a
+ * hairpin. A test can now assert that the lit quad sits down-light of the shaded one for every
+ * heading on the compass, which is the whole rule in one line.
+ */
+export function divotQuads(
+  from: Vec2,
+  to: Vec2,
+  heading: number,
+): { shade: Vec2[]; lit: Vec2[] } {
+  const along = { x: Math.cos(heading), y: Math.sin(heading) };
+  const across = { x: -along.y, y: along.x };
+  const b = TRAIL_HALF_WIDE;
+  const lit = litSide();
+
+  const channel = (shift: number): Vec2[] => {
+    const sx = lit.x * shift;
+    const sy = lit.y * shift;
+    // Run a hair past both ends, so a bend does not open a notch on its outside.
+    const ax = from.x - along.x * SEGMENT_OVERLAP + sx;
+    const ay = from.y - along.y * SEGMENT_OVERLAP + sy;
+    const bx = to.x + along.x * SEGMENT_OVERLAP + sx;
+    const by = to.y + along.y * SEGMENT_OVERLAP + sy;
+    const wx = across.x * b;
+    const wy = across.y * b;
+    return [
+      { x: ax - wx, y: ay - wy }, { x: bx - wx, y: by - wy },
+      { x: bx + wx, y: by + wy }, { x: ax + wx, y: ay + wy },
+    ];
+  };
+
+  return { shade: channel(-LIP_OFFSET), lit: channel(LIP_OFFSET) };
+}
+
+function divot(g: Graphics, from: Vec2, to: Vec2, heading: number): void {
+  const { shade, lit } = divotQuads(from, to, heading);
+  // Up-light first: the rim that faces away from the sun. Then down-light, whose inner wall
+  // turns back into it. Their overlap is the channel's floor and comes out very near untouched.
+  g.poly(shade).fill({ color: 0x000000, alpha: LIP_SHADE });
+  g.poly(lit).fill({ color: 0xffffff, alpha: LIP_LIT });
+}
+
+/**
+ * Which side of a mark the light reaches, as a world vector.
+ *
+ * THE INVERSION LIVES HERE, on its own, because it is the one thing about a trail that is a
+ * rule rather than a taste. A hollow's down-light inner wall turns back into the sun and is
+ * LIT; its up-light lip faces away and is shaded — the exact opposite of every raised thing in
+ * the world, all of which are lit on the north-west and shaded on the south-east.
+ *
+ * Get the sign backwards and the whole trail reads as a row of pebbles laid on the grass: a
+ * picture that looks fine until you notice it is lit inside out. Exported so it can be checked
+ * against `SUN` directly instead of eyeballed at one heading.
+ */
+export function litSide(): Vec2 {
+  const sun = Math.hypot(SUN.x, SUN.y);
+  return { x: SUN.x / sun, y: SUN.y / sun };
+}
+
+/**
+ * Scuff the ground between two consecutive stamp points.
+ *
+ * Both ends, not a centre and a direction: a segment cannot overhang the path it was walked on,
+ * which is what three rounds of "straight lines jut out on turns" turned out to be about.
+ */
+export function stampTrail(
+  trail: TrailMarks,
+  from: Vec2,
+  to: Vec2,
+  heading: number,
+  nowMs: number,
+): void {
+  const i = trail.next;
+  trail.next = (i + 1) % trail.marks.length;
+  const mark = trail.marks[i];
+  mark.clear();
+  divot(mark, from, to, heading);
+  trail.born[i] = nowMs;
+}
+
+/**
+ * Age every mark down for this frame.
+ *
+ * `reducedMotion` is NOT honoured here, for the reason `updateWading` gives: nothing in this
+ * pool moves. A mark is stamped where a body already visibly is and then sits still while its
+ * alpha falls. Parking it would mean either freezing marks on the ground forever or drawing
+ * none at all, and neither is what that setting asks for.
+ */
+export function fadeTrail(trail: TrailMarks, nowMs: number): void {
+  for (let i = 0; i < trail.marks.length; i += 1) {
+    const age = (nowMs - trail.born[i]) / TRAIL_LIFE_MS;
+    const mark = trail.marks[i];
+    if (age >= 1 || age < 0) {
+      mark.visible = false;
+      continue;
+    }
+    mark.visible = true;
+    /**
+     * Full for the first third, then out.
+     *
+     * A mark does not fade IN: the ground is disturbed the instant the body crosses it, and a
+     * ramp up would put the strongest part of the trail behind where the bot actually is.
+     */
+    mark.alpha = Math.min(1, (1 - age) * 1.5);
+  }
+}
+
+/**
+ * Longer than any single frame of walking, shorter than any teleport.
+ *
+ * A bot covers 5 units per tick, so even a badly stalled frame is tens of units, not hundreds.
+ */
+const TRAIL_TELEPORT = 200;
+
+/**
+ * Whether this frame's position crosses the stride, where the anchor goes next, and the
+ * heading a mark would lie along.
+ *
+ * PACING ONLY. Whether the ground takes a mark, and whether the player is allowed to see one,
+ * is `GameRenderer`'s half — and the split is not only tidiness. Those are the expensive tests
+ * (a walk of every road, region and surface; a line-of-sight trace), and gating them behind
+ * this one means they run about twelve times a second per bot instead of sixty.
+ *
+ * THE ANCHOR ADVANCES ON EVERY CROSSING, whatever the caller then decides, which is the part
+ * worth pinning. A bot that was ineligible for a while — indoors, out of sight, on paving — has
+ * travelled a long way from its anchor, and an anchor that only moved on a successful stamp
+ * would hand back one enormous step the moment it became eligible again. Advancing always means
+ * the trail simply resumes from where the bot is.
+ */
+export function trailStep(
+  anchor: Vec2 | undefined,
+  at: Vec2,
+): { crossed: boolean; from: Vec2; anchor: Vec2; heading: number } {
+  const here = { x: at.x, y: at.y };
+  if (!anchor) return { crossed: false, from: here, anchor: here, heading: 0 };
+  const dx = at.x - anchor.x;
+  const dy = at.y - anchor.y;
+  const step = Math.hypot(dx, dy);
+  if (step < TRAIL_STRIDE) return { crossed: false, from: anchor, anchor, heading: 0 };
+  return {
+    // A respawn or a floor change is not a walk. Nothing covers that much ground in one
+    // frame, so a step this long is a jump and the only right answer is to leave no mark.
+    crossed: step <= TRAIL_TELEPORT,
+    // The segment this step closed. The caller is about to lose the old anchor, and a mark is
+    // the ground BETWEEN two stamp points rather than a shape centred on one.
+    from: anchor,
+    anchor: here,
+    heading: Math.atan2(dy, dx),
+  };
 }

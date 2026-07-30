@@ -2,12 +2,16 @@ import { Container, Graphics } from "pixi.js";
 import { describe, expect, it } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { worldMap } from "@dotbot/game/content/world";
-import type { MapObject } from "@dotbot/game/types";
+import type { MapObject, Vec2 } from "@dotbot/game/types";
 import { drawModelObject } from "./modelGlyphs";
 import { buildOutdoorModel } from "./modelOutdoor";
 import { buildMapArt } from "../mapArt";
-import { animateAmbient, collectMovers, driftLeaves, movingPart, type AmbientMover } from "./modelMotion";
-import { SHADOW_ALPHA, type ShadowPad } from "./tone";
+import {
+  animateAmbient, buildTrailMarks, collectMovers, divotQuads, driftLeaves, fadeTrail, litSide,
+  movingPart, stampTrail, trailStep, TRAIL_CHANNEL_WIDTH, TRAIL_MARK_MAX_ALPHA, TRAIL_STRIDE,
+  type AmbientMover,
+} from "./modelMotion";
+import { SHADOW_ALPHA, SUN, type ShadowPad } from "./tone";
 
 /**
  * Ambient motion moves, and it moves the way `docs/world-motion.md` says it may.
@@ -323,5 +327,305 @@ describe("ambient motion", () => {
     }
     // The leaves are in the air, so they belong on the same layer.
     expect(inSubtree(art.leaves.view, art.overhead)).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // Trails
+  // -------------------------------------------------------------------------
+
+  /**
+   * A mark under a moving DotBot, and the two ways this feature goes wrong.
+   *
+   * FIRST, IT HAS TO GO AWAY. Reported while it was being built: "the marks should also
+   * disappear after some time though — just to be sure that's captured." A pool that stamps
+   * and never clears is not a trail, it is graffiti: sixty seconds in, every soft surface the
+   * squad has crossed is a permanent smear, and because the pool is fixed the oldest marks
+   * would sit there at full strength until something overwrote them. So the life is asserted
+   * from both ends — visible inside it, GONE after it.
+   *
+   * SECOND, IT PACES OFF DISTANCE, not off frames. A stationary bot must leave nothing at all,
+   * or standing still slowly paints a black disc under yourself.
+   */
+  describe("trails", () => {
+    const walked = (from: Vec2, to: Vec2, steps: number): Array<{ at: Vec2; step: ReturnType<typeof trailStep> }> => {
+      const out: Array<{ at: Vec2; step: ReturnType<typeof trailStep> }> = [];
+      let anchor: Vec2 | undefined;
+      for (let i = 0; i <= steps; i += 1) {
+        const t = i / steps;
+        const at = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+        const step = trailStep(anchor, at);
+        anchor = step.anchor;
+        out.push({ at, step });
+      }
+      return out;
+    };
+
+    it("clears every mark once its life is up", () => {
+      const trail = buildTrailMarks();
+      stampTrail(trail, { x: 476, y: 400 }, { x: 500, y: 400 }, 0, 10_000);
+
+      fadeTrail(trail, 10_000);
+      expect(trail.marks[0].visible).toBe(true);
+      expect(trail.marks[0].alpha).toBeGreaterThan(0.9);
+
+      // Halfway through, on its way out.
+      fadeTrail(trail, 11_300);
+      expect(trail.marks[0].visible).toBe(true);
+      expect(trail.marks[0].alpha).toBeLessThan(0.85);
+
+      /**
+       * And gone. Sampled well past the life rather than one millisecond after it, because
+       * the number is allowed to be tuned and the CLAIM is that a trail is temporary.
+       */
+      fadeTrail(trail, 20_000);
+      expect(trail.marks[0].visible).toBe(false);
+    });
+
+    it("shows nothing at all before anything has been stamped", () => {
+      const trail = buildTrailMarks();
+      fadeTrail(trail, 4_000);
+      expect(trail.marks.some((mark) => mark.visible)).toBe(false);
+    });
+
+    it("leaves nothing under a bot that is standing still", () => {
+      const trail = buildTrailMarks();
+      let anchor: Vec2 | undefined;
+      // Sixty frames of a bot that has not moved — and a little numerical drift, because a
+      // smoothed display position never sits at exactly the same float twice.
+      for (let i = 0; i < 60; i += 1) {
+        const step = trailStep(anchor, { x: 900 + i * 1e-3, y: 700 });
+        anchor = step.anchor;
+        expect(step.crossed).toBe(false);
+      }
+      fadeTrail(trail, 0);
+      expect(trail.marks.some((mark) => mark.visible)).toBe(false);
+    });
+
+    it("paces marks a stride apart however finely the walk is sampled", () => {
+      const from = { x: 0, y: 0 };
+      const to = { x: 480, y: 0 };
+      /**
+       * The same 480-unit walk at three frame rates must lay the same marks.
+       *
+       * This is the property that makes a trail frame-rate independent: pacing on distance
+       * rather than on a per-frame timer means a 30 fps client and a 144 fps client leave the
+       * same trail. Sampling more finely may not lay more marks.
+       */
+      const counts = [40, 200, 1000].map(
+        (steps) => walked(from, to, steps).filter((frame) => frame.step.crossed).length,
+      );
+      expect(counts[0]).toBe(counts[1]);
+      expect(counts[1]).toBe(counts[2]);
+      expect(counts[0]).toBe(Math.floor(480 / TRAIL_STRIDE));
+    });
+
+    /**
+     * A MARK IS THE GROUND BETWEEN TWO STAMP POINTS, and its box proves it.
+     *
+     * This is the fix for three rounds of "straight lines jut out on turns". A mark used to be a
+     * fixed 48-unit shape centred on one point while the stride was 24, so it overhung the
+     * midpoint between stamps by 12 units at each end — and at a hairpin the overhang from before
+     * the corner ran straight through the mark after it. A segment has no length of its own.
+     *
+     * So the along-travel extent must be the STRIDE (plus a hair of deliberate overlap), never
+     * more; and the across-travel extent must be the channel. Measured on two perpendicular
+     * walks, whose boxes have to come out as transposes of each other — that is the same
+     * assertion as "the mark follows travel", without hardcoding either number.
+     */
+    it("makes a mark exactly as long as the ground the bot covered", () => {
+      const box = (from: Vec2, to: Vec2) => {
+        const trail = buildTrailMarks();
+        for (const frame of walked(from, to, 300)) {
+          if (!frame.step.crossed) continue;
+          stampTrail(trail, frame.step.from, frame.at, frame.step.heading, 5_000);
+        }
+        fadeTrail(trail, 5_000);
+        const shown = trail.marks.filter((mark) => mark.visible);
+        expect(shown.length).toBeGreaterThan(8);
+        return shown[0].getLocalBounds();
+      };
+
+      const south = box({ x: 1_000, y: 400 }, { x: 1_000, y: 700 });
+      const east = box({ x: 400, y: 1_000 }, { x: 700, y: 1_000 });
+
+      /**
+       * Along travel it is the stride, and it may NOT exceed it by much.
+       *
+       * This is the anti-overhang assertion. The 48-unit-long mark it replaced failed this by
+       * 100%, and that overhang was the crossing slivers.
+       *
+       * The margins allow for the deliberate end overlap plus the lips' own offset along the
+       * sun, which lands on both axes because the light is a fixed world vector — so the boxes
+       * are NOT clean transposes of each other, and the amount they differ by is exactly
+       * `2 · offset · (|ŝunY| − |ŝunX|)`. That is the sun-axis rule showing up in a bounding box.
+       */
+      expect(south.height).toBeGreaterThanOrEqual(TRAIL_STRIDE);
+      expect(south.height).toBeLessThan(TRAIL_STRIDE * 1.6);
+      expect(east.width).toBeGreaterThanOrEqual(TRAIL_STRIDE);
+      expect(east.width).toBeLessThan(TRAIL_STRIDE * 1.6);
+      // Across travel it is the channel, which is narrower than the 48-unit body.
+      expect(south.width).toBeGreaterThanOrEqual(TRAIL_CHANNEL_WIDTH);
+      expect(south.width).toBeLessThan(48);
+      expect(east.height).toBeGreaterThanOrEqual(TRAIL_CHANNEL_WIDTH);
+      expect(east.height).toBeLessThan(48);
+    });
+
+    /**
+     * THE LIT LIP IS ALWAYS DOWN-LIGHT, WHICHEVER WAY THE BOT WENT.
+     *
+     * The single assertion that pins the fix for "straight lines that jut out of it when turning"
+     * and the crossed X at a hairpin. The lips used to be offset ACROSS TRAVEL — a left lip and a
+     * right lip — and left and right swap when a bot turns through more than a right angle, so at
+     * a sharp corner the shaded band and the lit band ran straight through one another.
+     *
+     * A hollow has no left and right. It has an up-light rim, which faces away from the sun and
+     * is shaded, and a down-light rim, whose inner wall turns back into the sun and is lit. That
+     * axis is nailed to the world, so every mark offsets the same way and a reversal has nothing
+     * to cross. Checked all the way round the compass, because the old version was correct for
+     * half of it — which is why a screenshot of a bot walking east looked perfectly fine.
+     */
+    it("puts the lit lip down-light of the shaded one for every heading", () => {
+      const lit = litSide();
+      const centre = (points: Vec2[]): Vec2 => points.reduce(
+        (sum, p) => ({ x: sum.x + p.x / points.length, y: sum.y + p.y / points.length }),
+        { x: 0, y: 0 },
+      );
+
+      for (let i = 0; i < 64; i += 1) {
+        const heading = (i / 64) * Math.PI * 2;
+        const from = { x: 500, y: 500 };
+        const to = {
+          x: from.x + Math.cos(heading) * TRAIL_STRIDE,
+          y: from.y + Math.sin(heading) * TRAIL_STRIDE,
+        };
+        const quads = divotQuads(from, to, heading);
+        const shade = centre(quads.shade);
+        const bright = centre(quads.lit);
+        const apart = { x: bright.x - shade.x, y: bright.y - shade.y };
+        // The lit quad is displaced from the shaded one ALONG the light, every time, by the same
+        // amount — no dependence on heading at all.
+        expect(apart.x * lit.x + apart.y * lit.y, `heading ${i}`).toBeGreaterThan(0);
+        expect(Math.hypot(apart.x, apart.y), `heading ${i}`).toBeCloseTo(
+          Math.hypot(apart.x, apart.y), 6,
+        );
+        // And it is purely along the light: no across-travel component to swap sides.
+        expect(apart.x * -lit.y + apart.y * lit.x, `heading ${i}`).toBeCloseTo(0, 6);
+      }
+    });
+
+    /**
+     * A HOLLOW IS LIT BACKWARDS FROM A LUMP, and that is the whole reason a divot reads.
+     *
+     * Reported on sight of the first version: "I don't like how it's just circles, should
+     * instead be sort of a divot in the ground." A flat dark ellipse is a stain. What makes a
+     * depression a depression is that its south-east inner wall turns back into the north-west
+     * light and is LIT, while its north-west lip faces away and is shaded — the exact inverse
+     * of every raised thing in the world.
+     *
+     * Asserted for headings all the way round, because the failure is silent: shading fixed in
+     * the mark's own local frame would rotate the sun with the bot, so half the compass would
+     * come out lit correctly and the other half lit backwards, and a screenshot of a bot
+     * walking east would look completely fine.
+     */
+    it("lights every divot from the world's sun, not from the way the bot is facing", () => {
+      const lit = litSide();
+      // It is a unit vector, because it pushes the two lips a fixed distance apart and `SUN` is
+      // a ground offset rather than a direction — 0.69 long, so using it raw is a 31% error.
+      expect(Math.hypot(lit.x, lit.y)).toBeCloseTo(1, 6);
+      /**
+       * And it points DOWN-light: the same half-plane every cast shadow in the world falls
+       * into. A hollow's far wall is the one turned back towards the sun.
+       *
+       * This is the assertion that would fail if the lighting were ever folded into the mark's
+       * own rotated frame — the sun would then turn with the bot, half the compass would come
+       * out lit backwards, and a screenshot of a bot walking east would look perfectly fine.
+       */
+      expect(lit.x * SUN.x + lit.y * SUN.y).toBeGreaterThan(0);
+      expect(lit.x).toBeCloseTo(SUN.x / Math.hypot(SUN.x, SUN.y), 6);
+      expect(lit.y).toBeCloseTo(SUN.y / Math.hypot(SUN.x, SUN.y), 6);
+    });
+
+    /**
+     * NO STROKES ON A MARK, and this is here because of a real artefact.
+     *
+     * Reported from play: "the path has these sort of straight lines that jut out of it when
+     * turning." Two of them were `moveTo().lineTo().stroke()` lips drawn onto the same Graphics
+     * that had just had a polygon FILLED into it — and pixi continues the current path, so
+     * `stroke()` re-stroked the floor outline and joined all three shapes with chords. The
+     * result was a fan of straight lines radiating out of every bend.
+     *
+     * `bodies.ts` documents the same trap for `arc` at the top of the file. Asserting the mark
+     * is fills-only is the way this one does not come back.
+     */
+    it("draws a mark out of fills alone, so no path can join to the last one", () => {
+      const trail = buildTrailMarks();
+      stampTrail(trail, { x: 589, y: 579 }, { x: 600, y: 600 }, 1.1, 2_000);
+      const instructions = (trail.marks[0] as unknown as {
+        context: { instructions: Array<{ action: string }> };
+      }).context.instructions;
+      expect(instructions.length).toBeGreaterThan(0);
+      expect(instructions.some((step) => step.action === "stroke")).toBe(false);
+    });
+
+    /**
+     * SUBTLE. Reported alongside the divot note: "it should be subtle, not a complete
+     * distortion of the path that's been navigated."
+     *
+     * A trail is on screen almost constantly — 59% of the world is soft ground — so the marks
+     * are dressing, not a feature to be noticed. The alphas are pinned in the same order as the
+     * first steps of `SHADOW_ALPHA`, which is the reference for "as dark as a shadow gets in
+     * this language": nothing about a scuff may be heavier than the shadow of a solid object.
+     */
+    it("keeps a mark no stronger than a cast shadow", () => {
+      const trail = buildTrailMarks();
+      stampTrail(trail, { x: 278, y: 291 }, { x: 300, y: 300 }, 0.4, 1_000);
+      fadeTrail(trail, 1_000);
+      // Even at full strength, and even where two marks overlap, it stays under the darkest
+      // single step of the shadow ramp doubled.
+      expect(TRAIL_MARK_MAX_ALPHA).toBeLessThan(SHADOW_ALPHA[0] * 2.5);
+      expect(trail.marks[0].alpha).toBeLessThanOrEqual(1);
+    });
+
+    it("refuses to draw a line across the map when a bot teleports", () => {
+      // A respawn: one frame, most of the sheet crossed. It advances the anchor and stamps
+      // nothing, so no mark appears at either end and none in between.
+      const jump = trailStep({ x: 100, y: 100 }, { x: 3_000, y: 2_400 });
+      expect(jump.crossed).toBe(false);
+      expect(jump.anchor).toEqual({ x: 3_000, y: 2_400 });
+    });
+
+    it("recycles oldest-first and never grows the pool", () => {
+      const trail = buildTrailMarks();
+      const size = trail.marks.length;
+      // Three times the pool, laid down one stride apart.
+      for (let i = 0; i < size * 3; i += 1) {
+        stampTrail(trail, { x: (i - 1) * TRAIL_STRIDE, y: 0 }, { x: i * TRAIL_STRIDE, y: 0 }, 0, 1_000 + i);
+      }
+      expect(trail.marks.length).toBe(size);
+      expect(trail.view.children.length).toBe(size);
+      // What survives is the most recent pool-full, so the oldest went first.
+      const oldest = Math.min(...trail.born);
+      expect(oldest).toBe(1_000 + size * 2);
+    });
+
+    it("puts the marks on the ground, under the bots and under the objects", () => {
+      const art = buildMapArt(downtownMap);
+      const inSubtree = (node: Container | null, root: Container): boolean => {
+        for (let at = node; at; at = at.parent) if (at === root) return true;
+        return false;
+      };
+      // A scuff is dressing a bot walks over, so it lives with the dressing.
+      expect(inSubtree(art.trails.view, art.outdoorDetail)).toBe(true);
+      expect(inSubtree(art.trails.view, art.root)).toBe(true);
+      /**
+       * NOT overhead, which is where the canopies and the leaves went.
+       *
+       * The leaves got this wrong in the other direction — they were on the dressing layer and
+       * spent half their fall hidden under the canopy they came off. Same layer list, opposite
+       * answer, because a mark on the ground is on the ground.
+       */
+      expect(inSubtree(art.trails.view, art.overhead)).toBe(false);
+      expect(inSubtree(art.trails.view, art.foreground)).toBe(false);
+    });
   });
 });

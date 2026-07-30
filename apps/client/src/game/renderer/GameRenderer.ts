@@ -47,10 +47,11 @@ import {
 import { DOT_COLOR, INK, RIVAL_RED, SQUAD_CYAN, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
 import { redrawFloorObjects } from "./model/modelFloor";
-import { animateAmbient, driftLeaves } from "./model/modelMotion";
+import { animateAmbient, driftLeaves, fadeTrail, stampTrail, trailStep } from "./model/modelMotion";
 import { driftWater } from "./model/modelWater";
 import { GRD } from "./model/modelGround";
 import { isInWater } from "@dotbot/game/water";
+import { groundAt, isSoftGround } from "@dotbot/game/ground";
 
 const AMBIENT_GREY = 0x868e96;
 
@@ -246,6 +247,8 @@ export class GameRenderer {
   private readonly mineSignals = new Map<string, { event: Extract<SimEvent, { type: "mineSensor" }>; startedAt: number }>();
   private readonly impactFlashes: QueuedPredictedImpact[] = [];
   private readonly botViews = new Map<string, BotView>();
+  /** Where each bot last put a trail mark down. See `trailStep`. */
+  private readonly trailAnchors = new Map<string, Vec2>();
   private readonly impactViews = new Map<string, ImpactView>();
   private readonly draftAnimations = new Map<string, DraftAnimation>();
 
@@ -545,6 +548,10 @@ export class GameRenderer {
     this.drawMines(snapshot, playerContext);
     this.drawSignalIntel(snapshot, intel, playerContext);
     this.drawBots(snapshot, playerId, playerContext);
+    // AFTER the bots, not with the other ambient passes above, and for one concrete reason:
+    // `drawBots` is what advances each bot's smoothed display position, and a mark has to land
+    // under the body where it is actually drawn rather than a frame behind it.
+    this.updateTrails(snapshot, player ?? null, playerContext, nowMs);
     if (interactionChannel) {
       this.drawProgressRing(this.dynamicGfx, interactionChannel.position, interactionChannel.radius, interactionChannel.progress, INK.opening, 3);
     }
@@ -1476,6 +1483,58 @@ export class GameRenderer {
       if (presentIds.has(botId)) continue;
       view.root.destroy({ children: true });
       this.botViews.delete(botId);
+      this.trailAnchors.delete(botId);
+    }
+  }
+
+  /**
+   * Scuff the ground a moving DotBot crosses, where the ground will take it.
+   *
+   * WHICH GROUND IS THE MAP'S ANSWER, not this function's — reported while it was being built,
+   * "movement trails should only appear on surfaces where it makes sense," and the map already
+   * names every piece of ground by its use. `isSoftGround` is the whole test: growth to
+   * flatten, earth to scuff, ballast to turn over. A footway keeps nothing.
+   *
+   * IT CANNOT SHOW YOU AN ENEMY THROUGH A WALL, and that gate is the reason this is not just
+   * three lines in `drawBots`. A short-lived smudge moving along behind a bot you cannot see is
+   * still a position readout, so a mark is only ever stamped for a bot that is genuinely
+   * visible right now — the same arena and the same line-of-sight test the enemy branch of
+   * `drawBots` uses, with the player themselves exempt because you can always see yourself.
+   * Marks already down stay down, which is right: you saw that crossing happen.
+   */
+  private updateTrails(
+    snapshot: GameSnapshot,
+    player: DotBotEntity | null,
+    playerContext: string,
+    nowMs: number,
+  ): void {
+    fadeTrail(this.art.trails, nowMs);
+    if (!player) {
+      this.trailAnchors.clear();
+      return;
+    }
+
+    // Built at most once a frame, and only if some bot actually crossed a stride: it
+    // allocates a rect per open door and most frames stamp nothing at all.
+    let occluders: Rect[] | null = null;
+
+    for (const bot of snapshot.bots) {
+      // The smoothed position `drawBots` just settled on, so the mark lands under the body.
+      const at = this.botViews.get(bot.id)?.displayPosition ?? bot.position;
+      const step = trailStep(this.trailAnchors.get(bot.id), at);
+      this.trailAnchors.set(bot.id, step.anchor);
+      if (!step.crossed) continue;
+
+      if (physicsFloorId(this.map, bot.floorId) !== OUTDOOR_FLOOR_ID) continue;
+      if (!isSoftGround(groundAt(this.map, at))) continue;
+      if (bot.id !== player.id) {
+        if (this.contextKey(bot.floorId, bot.position) !== playerContext) continue;
+        occluders ??= this.doorOccluders(snapshot, player.floorId);
+        if (!hasLineOfSight(
+          this.map, playerContext, player.position, bot.position, occluders,
+        )) continue;
+      }
+      stampTrail(this.art.trails, step.from, at, step.heading, nowMs);
     }
   }
 
