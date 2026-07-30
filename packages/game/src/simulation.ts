@@ -52,7 +52,7 @@ import {
   restoreShieldPlate,
 } from "./shields";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import { hasLineOfSight, seesOutdoors } from "./visibility";
+import { canopyAllowsNewTarget, hasLineOfSight, seesOutdoors } from "./visibility";
 import type {
   BayIndex,
   BotSpawn,
@@ -255,6 +255,14 @@ type InternalBot = DotBotEntity & {
   dashBlockedTargets: Set<string>;
   aiWanderTarget: Vec2;
   aiRetargetMs: number;
+  /**
+   * The hostile this AI pursued on its previous decision.
+   *
+   * Canopy cover gates only a NEW acquisition. Remembering the chosen hunt here
+   * lets an existing pursuit survive entry under a crown, while any ordinary
+   * non-hunt decision clears the memory and makes a later lock new again.
+   */
+  aiHuntTargetId: string | null;
   aiPath: Vec2[];
   /** Where the current leg started, so a waypoint can be retired on progress
    * along the leg rather than on proximity alone. See `waypointRetired`. */
@@ -535,6 +543,7 @@ export class DotBotSimulation {
       dashBlockedTargets: new Set(),
       aiWanderTarget: { ...spawn.position },
       aiRetargetMs: 0,
+      aiHuntTargetId: null,
       aiPath: [],
       aiPathLegStart: { ...spawn.position },
       aiPathTarget: { ...spawn.position },
@@ -1096,6 +1105,7 @@ export class DotBotSimulation {
     target.shields = 0;
     target.state = "downed";
     target.dashActiveMs = 0;
+    target.aiHuntTargetId = null;
     target.velocity = zeroVec();
     target.knockbackMs = 0;
     this.events.push({ type: "downed", botId: target.id, byBotId });
@@ -1172,12 +1182,14 @@ export class DotBotSimulation {
         // Blacklisted this tick: the objective it has been leaning on is gone, so
         // re-decide rather than spend one more tick walking into the same body.
         const replacement = this.pickBotTarget(bot);
+        this.rememberAiObjective(bot, replacement);
         const routed = this.routeAiTarget(bot, replacement);
         bot.desiredMove = this.steerBotAlongPath(bot, routed);
         if (length(bot.desiredMove) > 0.05) bot.lastAim = bot.desiredMove;
         this.tryAiDash(bot, replacement);
         continue;
       }
+      this.rememberAiObjective(bot, objective);
       const routedTarget = this.routeAiTarget(bot, objective);
       const desired = this.steerBotAlongPath(bot, routedTarget);
       bot.desiredMove = desired;
@@ -1192,6 +1204,30 @@ export class DotBotSimulation {
 
   private sameArena(bot: InternalBot, floorId: string, position: Vec2): boolean {
     return contextKey(this.map, bot.floorId, bot.position) === contextKey(this.map, floorId, position);
+  }
+
+  /**
+   * Keep only the pursuit that actually survived this tick's ordinary priorities.
+   *
+   * This deliberately runs after selection rather than inside `huntTarget`: the
+   * first objective may be rejected as stalled and replaced in the same tick.
+   * Remembering that rejected hunt would turn a later encounter into retention.
+   */
+  private rememberAiObjective(bot: InternalBot, objective: AiTarget): void {
+    bot.aiHuntTargetId = objective.intent === "hunt" && objective.targetId
+      ? objective.targetId
+      : null;
+  }
+
+  /** Canopy applies only when this hostile is not the pursuit already remembered. */
+  private canAcquireHuntTarget(bot: InternalBot, target: InternalBot): boolean {
+    return bot.aiHuntTargetId === target.id || canopyAllowsNewTarget(
+      this.map,
+      bot.floorId,
+      bot.position,
+      target.floorId,
+      target.position,
+    );
   }
 
   /**
@@ -1566,7 +1602,10 @@ export class DotBotSimulation {
     const enemyMark = this.markFor(bot, "enemy");
     if (enemyMark) {
       const rival = [...this.bots.values()]
-        .filter((target) => target.state === "alive" && !areFriendly(bot, target))
+        .filter((target) =>
+          target.state === "alive"
+          && !areFriendly(bot, target)
+          && this.canAcquireHuntTarget(bot, target))
         .filter((target) => distance(target.position, enemyMark.position) < PING_PULL)
         .sort((a, b) => distance(a.position, enemyMark.position) - distance(b.position, enemyMark.position))[0];
       if (rival) return this.huntTarget(bot, rival);
@@ -1681,6 +1720,7 @@ export class DotBotSimulation {
           !areFriendly(bot, target) &&
           available(target) &&
           distance(bot.position, target.position) < 540 &&
+          this.canAcquireHuntTarget(bot, target) &&
           this.canSee(bot, target.floorId, target.position),
       ),
     );
@@ -1710,7 +1750,13 @@ export class DotBotSimulation {
 
     const strategicHostile = rank(
       [...this.bots.values()].filter(
-        (target) => target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && localOrVertical(target) && available(target),
+        (target) =>
+          target.id !== bot.id
+          && target.state === "alive"
+          && !areFriendly(bot, target)
+          && localOrVertical(target)
+          && available(target)
+          && this.canAcquireHuntTarget(bot, target),
       ),
     );
 
@@ -1758,6 +1804,7 @@ export class DotBotSimulation {
       .filter((target) =>
         target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && available(target) &&
         distance(bot.position, target.position) < 540 &&
+        this.canAcquireHuntTarget(bot, target) &&
         this.canSee(bot, target.floorId, target.position))
       .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
     if (hostile) {
@@ -1769,7 +1816,12 @@ export class DotBotSimulation {
     if (heard) return makeAiTarget(heard.position, heard.floorId, 34, bot.radius * 5, "investigate", heard.id);
 
     const strategic = [...this.bots.values()]
-      .filter((target) => target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && available(target))
+      .filter((target) =>
+        target.id !== bot.id
+        && target.state === "alive"
+        && !areFriendly(bot, target)
+        && available(target)
+        && this.canAcquireHuntTarget(bot, target))
       .sort((a, b) => this.strategicDistance(bot, a) - this.strategicDistance(bot, b))[0];
     if (strategic && this.strategicDistance(bot, strategic) < 900) {
       return this.huntTarget(bot, strategic);
@@ -3233,6 +3285,7 @@ export class DotBotSimulation {
       target.squadId = reviver.squadId;
       // Their objective was chosen as a rival's. It is not one any more.
       target.aiPath = [];
+      target.aiHuntTargetId = null;
       target.aiAvoidTargets.clear();
       this.events.push({ type: "recruited", botId: target.id, byBotId: reviver.id, fromSquadId: from, squadId: reviver.squadId });
     }

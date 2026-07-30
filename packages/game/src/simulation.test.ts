@@ -2066,6 +2066,170 @@ describe("DotBotSimulation", () => {
     expect(hasLineOfSight(map, "outdoor:street", { x: 100, y: 180 }, { x: 100, y: 320 })).toBe(true);
   });
 
+  describe("AI canopy acquisition", () => {
+    type CanopyBot = {
+      id: string;
+      position: Vec2;
+      state: string;
+      aiHuntTargetId?: string | null;
+    };
+    type CanopyInternals = {
+      bots: Map<string, CanopyBot>;
+      pickBotTarget: (bot: CanopyBot) => { intent: string; targetId?: string };
+      squadMarks: Array<{
+        squadId: string;
+        kind: "enemy";
+        position: Vec2;
+        floorId: string;
+        atMs: number;
+      }>;
+    };
+    const tree = (id: string, x: number, y: number, size = 100) => ({
+      id,
+      kind: "tree" as const,
+      x,
+      y,
+      w: size,
+      h: size,
+    });
+    const makeCanopySimulation = async (
+      playerAt: Vec2,
+      watcherAt: Vec2,
+      trees = [tree("canopy", 100, 130)],
+      watcherAmbient = false,
+    ) => {
+      const smallMap = makeMap([
+        playerSpawn({ position: playerAt }),
+        enemySpawn({ id: "watcher", isAmbient: watcherAmbient, position: watcherAt }),
+      ]);
+      const baseMap = {
+        ...smallMap,
+        width: 1600,
+        outdoor: { ...smallMap.outdoor, walls: bounds(1600, smallMap.height) },
+      };
+      return DotBotSimulation.create({
+        map: {
+          ...baseMap,
+          outdoor: { ...baseMap.outdoor, objects: trees },
+        },
+        config: testConfig,
+      });
+    };
+    const internals = (simulation: DotBotSimulation) => simulation as unknown as CanopyInternals;
+    const objective = (simulation: DotBotSimulation) => {
+      const sim = internals(simulation);
+      const watcher = sim.bots.get("watcher")!;
+      return sim.pickBotTarget.call(sim, watcher);
+    };
+
+    it("blocks a new target whose center is under an authored canopy", async () => {
+      const strategic = await makeCanopySimulation({ x: 150, y: 180 }, { x: 320, y: 180 });
+      const ambient = await makeCanopySimulation(
+        { x: 150, y: 180 },
+        { x: 320, y: 180 },
+        [tree("canopy", 100, 130)],
+        true,
+      );
+
+      expect(objective(strategic)).not.toMatchObject({ intent: "hunt", targetId: "player" });
+      expect(objective(ambient)).not.toMatchObject({ intent: "hunt", targetId: "player" });
+      strategic.dispose();
+      ambient.dispose();
+    });
+
+    it("does not let an enemy mark bypass canopy acquisition", async () => {
+      const simulation = await makeCanopySimulation({ x: 150, y: 180 }, { x: 320, y: 180 });
+      internals(simulation).squadMarks = [{
+        squadId: "rival-1",
+        kind: "enemy",
+        position: { x: 150, y: 180 },
+        floorId: "outdoor",
+        atMs: 0,
+      }];
+
+      expect(objective(simulation)).not.toMatchObject({ intent: "hunt", targetId: "player" });
+      simulation.dispose();
+    });
+
+    it("retains a target acquired before it entered the canopy", async () => {
+      const simulation = await makeCanopySimulation({ x: 150, y: 280 }, { x: 320, y: 180 });
+      simulation.step();
+      expect(internals(simulation).bots.get("watcher")?.aiHuntTargetId).toBe("player");
+
+      internals(simulation).bots.get("player")!.position = { x: 150, y: 180 };
+
+      expect(objective(simulation)).toMatchObject({ intent: "hunt", targetId: "player" });
+      simulation.dispose();
+    });
+
+    it("distinguishes otherwise identical new acquisition from retained pursuit", async () => {
+      const retained = await makeCanopySimulation({ x: 150, y: 280 }, { x: 320, y: 180 });
+      retained.step();
+      internals(retained).bots.get("player")!.position = { x: 150, y: 180 };
+
+      const fresh = await makeCanopySimulation({ x: 150, y: 180 }, { x: 320, y: 180 });
+
+      expect(objective(retained)).toMatchObject({ intent: "hunt", targetId: "player" });
+      expect(objective(fresh)).not.toMatchObject({ intent: "hunt", targetId: "player" });
+      retained.dispose();
+      fresh.dispose();
+    });
+
+    it("allows acquisition when the observer shares the target canopy or the target is outside", async () => {
+      const shared = await makeCanopySimulation({ x: 150, y: 180 }, { x: 175, y: 180 });
+      const outside = await makeCanopySimulation({ x: 150, y: 280 }, { x: 320, y: 180 });
+
+      expect(objective(shared)).toMatchObject({ intent: "hunt", targetId: "player" });
+      expect(objective(outside)).toMatchObject({ intent: "hunt", targetId: "player" });
+      shared.dispose();
+      outside.dispose();
+    });
+
+    it("counts the authored boundary as cover and allows a shared overlapping canopy", async () => {
+      const boundary = await makeCanopySimulation({ x: 200, y: 180 }, { x: 320, y: 180 });
+      const beyond = await makeCanopySimulation({ x: 200.01, y: 180 }, { x: 320, y: 180 });
+      const overlapTrees = [tree("west", 100, 130), tree("east", 170, 130)];
+      const sharedOverlap = await makeCanopySimulation({ x: 190, y: 180 }, { x: 150, y: 180 }, overlapTrees);
+      const outsideOverlap = await makeCanopySimulation({ x: 190, y: 180 }, { x: 320, y: 180 }, overlapTrees);
+
+      expect(objective(boundary)).not.toMatchObject({ intent: "hunt", targetId: "player" });
+      expect(objective(beyond)).toMatchObject({ intent: "hunt", targetId: "player" });
+      expect(objective(sharedOverlap)).toMatchObject({ intent: "hunt", targetId: "player" });
+      expect(objective(outsideOverlap)).not.toMatchObject({ intent: "hunt", targetId: "player" });
+      boundary.dispose();
+      beyond.dispose();
+      sharedOverlap.dispose();
+      outsideOverlap.dispose();
+    });
+
+    it("clears retention when ordinary target-validity or range rules end pursuit", async () => {
+      const invalid = await makeCanopySimulation({ x: 150, y: 280 }, { x: 320, y: 180 });
+      invalid.step();
+      const invalidPlayer = internals(invalid).bots.get("player")!;
+      expect(internals(invalid).bots.get("watcher")?.aiHuntTargetId).toBe("player");
+
+      invalidPlayer.state = "downed";
+      invalid.step();
+      expect(internals(invalid).bots.get("watcher")?.aiHuntTargetId).toBeNull();
+
+      invalidPlayer.state = "alive";
+      invalidPlayer.position = { x: 150, y: 180 };
+      expect(objective(invalid)).not.toMatchObject({ intent: "hunt", targetId: "player" });
+
+      const distant = await makeCanopySimulation({ x: 150, y: 280 }, { x: 320, y: 180 });
+      distant.step();
+      const distantPlayer = internals(distant).bots.get("player")!;
+      distantPlayer.position = { x: 1400, y: 180 };
+      distant.step();
+      expect(internals(distant).bots.get("watcher")?.aiHuntTargetId).toBeNull();
+
+      distantPlayer.position = { x: 150, y: 180 };
+      expect(objective(distant)).not.toMatchObject({ intent: "hunt", targetId: "player" });
+      invalid.dispose();
+      distant.dispose();
+    });
+  });
+
   it("classifies noise audibility across rooms and floors", () => {
     const street = { x: 1000, y: 660 };
     const clinicLobby = { x: 500, y: 500 };
