@@ -9,6 +9,7 @@ import {
   objects,
   radial,
   rhythm,
+  rhythmRule,
   ribbonPoly,
   type RegionParts,
 } from "./regionKit";
@@ -55,7 +56,8 @@ import type { Barrier, MapObject } from "../types";
  * against a 130-unit climb overshot the summit and lay across the top of it.
  */
 
-const obj = objects("tmp");
+const SOURCE_FILE = "packages/game/src/content/templeRegion.ts";
+const obj = objects("tmp", SOURCE_FILE);
 const dot = dots("tmp");
 
 const W0 = 2374;
@@ -336,8 +338,11 @@ const templeObjects: MapObject[] = [
    */
   // Two gaps: where the trail arrives, and ON THE PYRAMID'S AXIS. You do not stand a stele
   // across a ceremonial approach, and the extraction pad is on that axis too.
-  ...rhythm(2820, 3740, 152, [[3060, 3120], [3200, 3400]])
-    .map((x) => obj("stele", x, PLAZA.y + PLAZA.h - 116, 52, 104)),
+  ...obj.derived(
+    rhythmRule("temple-south-stelae", "south-plaza stele rhythm", "x", "rhythm(2820, 3740, 152, [[3060, 3120], [3200, 3400]])", 2820, 3740, 152, [[3060, 3120], [3200, 3400]]),
+    () => rhythm(2820, 3740, 152, [[3060, 3120], [3200, 3400]])
+      .map((x) => obj("stele", x, PLAZA.y + PLAZA.h - 116, 52, 104)),
+  ),
 
   /**
    * Ring stones in the court's END ZONES, not across its alley.
@@ -375,21 +380,33 @@ const templeObjects: MapObject[] = [
    */
   // The north line stops for the pyramid and its apron. Unclear on the rhythm alone,
   // four thickets were growing through the terrace wall.
-  ...rhythm(W0 + 60, W1 - 60, 172, [[2900, 3700], [3600, 4174]])
-    .map((x, i) => obj("thicket", x, N0 + 30 + (i % 2) * 66, 152, 136)),
-  ...rhythm(W0 + 60, W1 - 60, 172).map((x, i) => obj("thicket", x, S1 - 210 + (i % 3) * 62, 152, 136)),
+  ...obj.derived(
+    rhythmRule("temple-n-thickets", "north forest-front rhythm", "x", "rhythm(W0 + 60, W1 - 60, 172, [[2900, 3700], [3600, 4174]])", W0 + 60, W1 - 60, 172, [[2900, 3700], [3600, 4174]]),
+    () => rhythm(W0 + 60, W1 - 60, 172, [[2900, 3700], [3600, 4174]])
+      .map((x, i) => obj("thicket", x, N0 + 30 + (i % 2) * 66, 152, 136)),
+  ),
+  ...obj.derived(
+    rhythmRule("temple-s-thickets", "south forest-front rhythm", "x", "rhythm(W0 + 60, W1 - 60, 172)", W0 + 60, W1 - 60, 172),
+    () => rhythm(W0 + 60, W1 - 60, 172).map((x, i) => obj("thicket", x, S1 - 210 + (i % 3) * 62, 152, 136)),
+  ),
   /**
    * The west line stops where the ball court is, because the court IS the boundary
    * there — its bench walls are built against the forest edge, which is where you would
    * put a court. The first pass ran the thickets straight through it, sealed the alley
    * off at both ends and left the Dot in the middle of it somewhere no bot could reach.
    */
-  ...rhythm(N0 + 240, S1 - 260, 168, [[1960, 2440]])
-    .map((y, i) => obj("thicket", W0 + 30 + (i % 2) * 54, y, 146, 132)),
+  ...obj.derived(
+    rhythmRule("temple-w-thickets", "west forest-front rhythm", "y", "rhythm(N0 + 240, S1 - 260, 168, [[1960, 2440]])", N0 + 240, S1 - 260, 168, [[1960, 2440]]),
+    () => rhythm(N0 + 240, S1 - 260, 168, [[1960, 2440]])
+      .map((y, i) => obj("thicket", W0 + 30 + (i % 2) * 54, y, 146, 132)),
+  ),
   // The east line stops for the cenote: a thicket growing out of a flooded sinkhole is
   // the same defect as one growing through a terrace wall.
-  ...rhythm(N0 + 240, S1 - 260, 168, [[1900, 2300]])
-    .map((y, i) => obj("thicket", W1 - 190 + (i % 2) * 46, y, 146, 132)),
+  ...obj.derived(
+    rhythmRule("temple-e-thickets", "east forest-front rhythm", "y", "rhythm(N0 + 240, S1 - 260, 168, [[1900, 2300]])", N0 + 240, S1 - 260, 168, [[1900, 2300]]),
+    () => rhythm(N0 + 240, S1 - 260, 168, [[1900, 2300]])
+      .map((y, i) => obj("thicket", W1 - 190 + (i % 2) * 46, y, 146, 132)),
+  ),
 
   /**
    * The trees inside the precinct, standing ON the plaza where the flags have failed.
@@ -476,6 +493,7 @@ const templeObjects: MapObject[] = [
 export const templeRegion: RegionParts = {
   id: "tmp",
   name: "The Great Temple",
+  sourceFile: SOURCE_FILE,
   roads,
   surfaces,
   regions,

@@ -1,4 +1,5 @@
 import type { SourceBuilding } from "../mapSource";
+import type { Rect } from "../types";
 import { BEACON_SOURCE } from "./beaconHouse";
 import { CIVIC_SOURCE } from "./civicTower";
 import { LOT6_SOURCE } from "./lot6Depot";
@@ -32,3 +33,20 @@ export const BUILDING_SOURCES: Record<string, BuildingSource> = {
 export function buildingSource(id: string): BuildingSource | null {
   return BUILDING_SOURCES[id] ?? null;
 }
+
+export type StudioArea = {
+  id: string;
+  name: string;
+  bounds: Rect;
+};
+
+/**
+ * Review frames over the production world sheet. These choose a camera extent;
+ * the canvas still draws `buildMapArt(worldMap)` verbatim.
+ */
+export const STUDIO_AREAS: StudioArea[] = [
+  { id: "downtown", name: "Downtown", bounds: { x: 0, y: 0, w: 2400, h: 1600 } },
+  { id: "yard", name: "Fenchurch Yard", bounds: { x: 2374, y: 0, w: 1826, h: 1800 } },
+  { id: "fair", name: "Pleasure Ground", bounds: { x: 0, y: 1574, w: 2400, h: 1826 } },
+  { id: "temple", name: "Great Temple", bounds: { x: 2374, y: 1774, w: 1826, h: 1626 } },
+];

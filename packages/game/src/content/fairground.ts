@@ -1,6 +1,6 @@
 import { compileCityPlan, type CityPlan } from "../cityPlan";
 import { HALL, pavilion } from "./pavilion";
-import { blobPoly, boxPoly, dots, objects, rhythm, ribbonPoly, type RegionParts } from "./regionKit";
+import { blobPoly, boxPoly, dots, objects, rhythm, rhythmRule, ribbonPoly, type RegionParts } from "./regionKit";
 import type { MapObject } from "../types";
 
 /**
@@ -44,7 +44,8 @@ import type { MapObject } from "../types";
  * fails it because a vertical wheel from above is a line however fast it spins.
  */
 
-const obj = objects("fair");
+const SOURCE_FILE = "packages/game/src/content/fairground.ts";
+const obj = objects("fair", SOURCE_FILE);
 const dot = dots("fair");
 
 const W0 = 26;
@@ -263,16 +264,28 @@ const fairObjects: MapObject[] = [
   obj("bigTop", 1900, 2590, 460, 320, { facing: "N" }),
 
   // -- The midway's furniture, on a rhythm with the rides punched out -----
-  ...rhythm(240, 2280, 152, KIOSK_GAPS).map((x) => obj("kiosk", x, 2166, 78, 54)),
-  ...rhythm(320, 2280, 152, KIOSK_GAPS).map((x) => obj("bench", x, 2494, 96, 24, { facing: "N" })),
+  ...obj.derived(
+    rhythmRule("fair-midway-kiosks", "midway kiosk rhythm", "x", "rhythm(240, 2280, 152, KIOSK_GAPS)", 240, 2280, 152, KIOSK_GAPS),
+    () => rhythm(240, 2280, 152, KIOSK_GAPS).map((x) => obj("kiosk", x, 2166, 78, 54)),
+  ),
+  ...obj.derived(
+    rhythmRule("fair-midway-benches", "midway bench rhythm", "x", "rhythm(320, 2280, 152, KIOSK_GAPS)", 320, 2280, 152, KIOSK_GAPS),
+    () => rhythm(320, 2280, 152, KIOSK_GAPS).map((x) => obj("bench", x, 2494, 96, 24, { facing: "N" })),
+  ),
   // Festoon poles down both edges, on the half beat so the two rhythms interleave.
   // The north festoon line breaks for the pavilion: on the plain rhythm a lamp post stood
   // 15 units in front of the hall's south archway, which is the single most common way an
   // otherwise fine street ruins a building. The south line has no building to dodge.
   // `facing` is the direction the mast arm reaches, and it always reaches over the way it
   // lights — so the north line points south down the midway and the south line points north.
-  ...rhythm(240, 2300, 190, [[1620, 1900]]).map((x) => obj("lampPost", x, 2244, 18, 18, { facing: "S" })),
-  ...rhythm(340, 2300, 190).map((x) => obj("lampPost", x, 2452, 18, 18, { facing: "N" })),
+  ...obj.derived(
+    rhythmRule("fair-midway-n-lamps", "north midway lamp rhythm", "x", "rhythm(240, 2300, 190, [[1620, 1900]])", 240, 2300, 190, [[1620, 1900]]),
+    () => rhythm(240, 2300, 190, [[1620, 1900]]).map((x) => obj("lampPost", x, 2244, 18, 18, { facing: "S" })),
+  ),
+  ...obj.derived(
+    rhythmRule("fair-midway-s-lamps", "south midway lamp rhythm", "x", "rhythm(340, 2300, 190)", 340, 2300, 190),
+    () => rhythm(340, 2300, 190).map((x) => obj("lampPost", x, 2452, 18, 18, { facing: "N" })),
+  ),
   /**
    * One sign on the queueing ground outside the pavilion's north arch, BESIDE the
    * arch rather than in front of it or under the nearby tree line.
@@ -287,13 +300,22 @@ const fairObjects: MapObject[] = [
   // -- The gate and the car park ------------------------------------------
   obj("bollard", DRIVE_W_KERB - 24, 1980, 18, 18),
   obj("bollard", DRIVE_E_KERB + 6, 1980, 18, 18),
-  ...rhythm(120, 900, 130).map((x) => obj("parkingStall", x, 1660, 116, 54)),
-  ...rhythm(120, 900, 130).map((x) => obj("parkingStall", x, 1780, 116, 54)),
+  ...obj.derived(
+    rhythmRule("fair-parking-n", "north car-park bay rhythm", "x", "rhythm(120, 900, 130)", 120, 900, 130),
+    () => rhythm(120, 900, 130).map((x) => obj("parkingStall", x, 1660, 116, 54)),
+  ),
+  ...obj.derived(
+    rhythmRule("fair-parking-s", "south car-park bay rhythm", "x", "rhythm(120, 900, 130)", 120, 900, 130),
+    () => rhythm(120, 900, 130).map((x) => obj("parkingStall", x, 1780, 116, 54)),
+  ),
   obj("car", 258, 1668, 104, 42, { facing: "E" }),
   obj("car", 518, 1790, 104, 42, { facing: "E" }),
   obj("dumpster", 960, 1832, 70, 40, { solid: true }),
   obj("drum", 1040, 1836, 28, 28),
-  ...rhythm(1450, 2280, 208).map((x) => obj("tree", x, 1650, 46, 46)),
+  ...obj.derived(
+    rhythmRule("fair-drive-trees", "drive tree rhythm", "x", "rhythm(1450, 2280, 208)", 1450, 2280, 208),
+    () => rhythm(1450, 2280, 208).map((x) => obj("tree", x, 1650, 46, 46)),
+  ),
 
   // -- The reclaimed south -------------------------------------------------
   /**
@@ -301,16 +323,28 @@ const fairObjects: MapObject[] = [
    * as a front rather than in patches. They are solid, so together they are the wall
    * that says the site ends here — which is what a wall of vegetation actually does.
    */
-  ...rhythm(120, 2280, 176).map((x, i) => obj("thicket", x, 3080 + (i % 3) * 74, 148, 132)),
-  ...rhythm(2660, 3200, 168).map((y) => obj("thicket", 90, y, 140, 128)),
+  ...obj.derived(
+    rhythmRule("fair-south-thickets", "south thicket rhythm", "x", "rhythm(120, 2280, 176)", 120, 2280, 176),
+    () => rhythm(120, 2280, 176).map((x, i) => obj("thicket", x, 3080 + (i % 3) * 74, 148, 132)),
+  ),
+  ...obj.derived(
+    rhythmRule("fair-west-thickets", "west thicket rhythm", "y", "rhythm(2660, 3200, 168)", 2660, 3200, 168),
+    () => rhythm(2660, 3200, 168).map((y) => obj("thicket", 90, y, 140, 128)),
+  ),
   // The gap is the big top. The rhythm ran 1500 → 2340 and put three thickets inside the
   // tent, which is the same defect as the four that were growing through the temple's
   // terrace wall: a rule-placed line has to stop for a building.
-  ...rhythm(1500, 2300, 210, [[1840, 2374]]).map((x) => obj("thicket", x, 2740, 132, 118)),
+  ...obj.derived(
+    rhythmRule("fair-east-thickets", "east thicket rhythm", "x", "rhythm(1500, 2300, 210, [[1840, 2374]])", 1500, 2300, 210, [[1840, 2374]]),
+    () => rhythm(1500, 2300, 210, [[1840, 2374]]).map((x) => obj("thicket", x, 2740, 132, 118)),
+  ),
 
   // The skeletons of stalls the growth took first: a line of them off the midway's
   // south side, still on the rhythm they were pitched to.
-  ...rhythm(500, 1000, 170).map((x) => obj("kiosk", x, 2720, 70, 50)),
+  ...obj.derived(
+    rhythmRule("fair-south-kiosks", "south kiosk rhythm", "x", "rhythm(500, 1000, 170)", 500, 1000, 170),
+    () => rhythm(500, 1000, 170).map((x) => obj("kiosk", x, 2720, 70, 50)),
+  ),
   obj("log", 1300, 2800, 230, 48, { facing: "E" }),
   obj("log", 700, 3000, 200, 44, { facing: "E" }),
   obj("thicket", 1720, 2960, 160, 140),
@@ -331,13 +365,22 @@ const fairObjects: MapObject[] = [
   obj("dumpster", 1420, 2716, 74, 42, { solid: true }),
   obj("kiosk", 1620, 2700, 78, 54),
   obj("kiosk", 1760, 2760, 78, 54),
-  ...rhythm(1180, 1560, 190).map((x) => obj("tree", x, 3000, 96, 96)),
+  ...obj.derived(
+    rhythmRule("fair-south-trees", "south tree rhythm", "x", "rhythm(1180, 1560, 190)", 1180, 1560, 190),
+    () => rhythm(1180, 1560, 190).map((x) => obj("tree", x, 3000, 96, 96)),
+  ),
 
   // Trees along the midway's west end, where the avenue is turning back into wood.
   // Jungle scale, not street scale. At 54 units these read as boulders on the floor; a
   // tree that has been growing since the fair closed is twice that.
-  ...rhythm(200, 820, 210).map((x) => obj("tree", x, 2620, 104, 104)),
-  ...rhythm(300, 760, 230).map((x) => obj("tree", x, 2870, 92, 92)),
+  ...obj.derived(
+    rhythmRule("fair-west-trees-n", "north-west tree rhythm", "x", "rhythm(200, 820, 210)", 200, 820, 210),
+    () => rhythm(200, 820, 210).map((x) => obj("tree", x, 2620, 104, 104)),
+  ),
+  ...obj.derived(
+    rhythmRule("fair-west-trees-s", "south-west tree rhythm", "x", "rhythm(300, 760, 230)", 300, 760, 230),
+    () => rhythm(300, 760, 230).map((x) => obj("tree", x, 2870, 92, 92)),
+  ),
   obj("tree", 360, 2180, 76, 76),
 
   /**
@@ -348,8 +391,14 @@ const fairObjects: MapObject[] = [
    * fingers, so the middle gets thickets on a coarser interval than the front, with trees
    * between them: the front says the site ends, and these say it is being taken.
    */
-  ...rhythm(240, 900, 208).map((x, i) => obj("thicket", x, 2760 + (i % 2) * 96, 142, 128)),
-  ...rhythm(300, 860, 224).map((x) => obj("tree", x, 2960, 98, 98)),
+  ...obj.derived(
+    rhythmRule("fair-trail-thickets", "trail thicket rhythm", "x", "rhythm(240, 900, 208)", 240, 900, 208),
+    () => rhythm(240, 900, 208).map((x, i) => obj("thicket", x, 2760 + (i % 2) * 96, 142, 128)),
+  ),
+  ...obj.derived(
+    rhythmRule("fair-trail-trees", "trail tree rhythm", "x", "rhythm(300, 860, 224)", 300, 860, 224),
+    () => rhythm(300, 860, 224).map((x) => obj("tree", x, 2960, 98, 98)),
+  ),
   obj("log", 420, 2680, 190, 44, { facing: "E" }),
   obj("thicket", 1000, 2900, 150, 132),
 
@@ -363,6 +412,7 @@ const fairObjects: MapObject[] = [
 export const fairground: RegionParts = {
   id: "fair",
   name: "The Pleasure Ground",
+  sourceFile: SOURCE_FILE,
   roads,
   surfaces,
   regions,

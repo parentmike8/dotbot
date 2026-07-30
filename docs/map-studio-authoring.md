@@ -25,8 +25,11 @@ Two decisions keep it small:
 1. Start the client with `pnpm dev`.
 2. Open `http://localhost:5173/?studio` (use the printed port if Vite chose
    another one). `?map=quayside` opens the non-rectangular reference building.
-3. Pick a building and floor, pick a tool, make the edit.
-4. Press **Save**. Each edited building's source file is patched in place.
+3. Pick an outdoor context or a building and floor. Outdoor contexts use the
+   production streets, surfaces, buildings and code-drawn object renderer, not a
+   schematic copy.
+4. Pick a tool and make the edit.
+5. Press **Save**. Each edited source file is patched in place.
 
 Saving is **read-patch-write**: the file is fetched at save time and sent back as
 the base, so a file an LLM changed while Studio was open is *refused* rather than
@@ -37,6 +40,31 @@ the rest render but do not accept edits.
 endpoints served by `apps/client/mapSourcePlugin.ts`. They are not part of the
 shipped game server.
 
+## Outdoor source ownership
+
+Outdoor objects carry their source owner into the compiled map:
+
+- An individually authored `obj(...)` call is selectable, movable and resizable.
+  Studio patches only that call's four geometry arguments. The ID expression,
+  object kind, comments, options, rotation, facing, collision shape and other
+  metadata remain untouched.
+- A rhythm or other placing rule is wrapped in `obj.derived(...)`. Its emitted
+  objects remain selectable for inspection, but cannot be dragged or resized.
+  The inspector names the rule, source file, source expression, axis, bounds,
+  spacing and gap list that an author must change. Studio never turns a rhythm
+  into a literal object table.
+- Insertion points, extraction pads and bot spawns expose their owning source and
+  composition note for inspection. They are read-only because their runtime
+  positions are presently assembled from semantic region fields rather than one
+  safe literal patch target.
+
+Direct outdoor patch locations use the ordinal of authored `obj(...)` calls in a
+source file. Calls inside `obj.derived(...)` do not count, so changing the number
+of items emitted by a rhythm cannot renumber the patch target below it. A direct
+call whose ID is computed is refused unless its authored source locator is
+present. As with buildings, Studio refuses a save if the file changed on disk
+after the session loaded it.
+
 ## Tools
 
 | Tool | What it does |
@@ -46,6 +74,10 @@ shipped game server.
 | `dot` | Place a Dot spawn of the chosen item. |
 | `wall` | Draw a wall path — click each vertex, it compiles to a thickened run. |
 | `opening` | Place a door, roll-up, archway or window by anchor on the nearest wall. |
+
+Outdoor context currently supports `select` only. That is intentional: it is a
+precision tool for existing individually authored objects, not a second outdoor
+layout language.
 
 Grid snapping is 0, 2, 4, 8 or 16 world units. Openings snap to the wall the
 anchor lands nearest, matching `compileBuilding`'s `near` semantics — Studio never

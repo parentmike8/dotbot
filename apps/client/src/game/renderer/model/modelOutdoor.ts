@@ -84,6 +84,8 @@ export type OutdoorModel = {
    * it, and only `MapArt.foreground` draws after the bots.
    */
   overhead: Container;
+  /** Production glyphs addressable by authored id for Studio parity checks. */
+  objectViews: Map<string, { object: MapDocument["outdoor"]["objects"][number]; view: Graphics }>;
 };
 
 /** Sidewalks sit this far above the carriageway. */
@@ -645,9 +647,11 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   const passable: Graphics[] = [];
   const movers: AmbientMover[] = [];
   const overhead = new Container();
+  const objectViews = new Map<string, { object: MapDocument["outdoor"]["objects"][number]; view: Graphics }>();
   for (const object of [...map.outdoor.objects].sort((a, b) => a.y + a.h - (b.y + b.h))) {
     const g = new Graphics();
     drawModelObject(g, pad, object);
+    objectViews.set(object.id, { object, view: g });
     // Asked of every object, and answered by the glyph rather than by a list of kinds
     // here: a builder should not have to know that a carousel turns and a bench does not.
     movers.push(...collectMovers(g, object));
@@ -677,7 +681,7 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   // passable dressing or no solid fixtures outdoors.
   if (passable.length) detail.addChild(...passable);
   if (solid.length) objects.addChild(...solid);
-  return { ground, detail, objects, movers, overhead };
+  return { ground, detail, objects, movers, overhead, objectViews };
 }
 
 /** Kerb rise, exported so building entrances can meet the sidewalk correctly. */

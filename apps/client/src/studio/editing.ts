@@ -1,7 +1,18 @@
 import { compileBuilding, type SourceBuilding, type SourceDot, type SourceObject, type SourceOpening, type SourceWall } from "@dotbot/game/mapSource";
 import { applyEdits, type SourceEdit } from "@dotbot/game/mapSourcePatch";
+import {
+  applyOutdoorEdits,
+  type OutdoorSourceEdit,
+} from "@dotbot/game/outdoorSource";
 import { BUILDING_SOURCES } from "@dotbot/game/content/sources";
-import type { Building, MapDocument, ObjectKind, Rect, Vec2 } from "@dotbot/game/types";
+import type {
+  Building,
+  MapDocument,
+  ObjectKind,
+  OutdoorSource,
+  Rect,
+  Vec2,
+} from "@dotbot/game/types";
 
 /**
  * Map Studio's editing model.
@@ -34,24 +45,48 @@ export type StudioSession = {
    * did I just do" once you have touched two buildings. This can, so undo means the last
    * thing you actually did rather than the last thing you did *here*.
    */
-  order: string[];
+  order: Array<{ kind: "building"; key: string } | { kind: "outdoor"; key: string }>;
+  /** Pristine production outdoor objects; replay is the undo/reload mechanism. */
+  outdoorBase: MapDocument["outdoor"]["objects"];
+  outdoorObjects: MapDocument["outdoor"]["objects"];
+  outdoorEdits: Record<string, OutdoorSourceEdit[]>;
+  /** Exact source text loaded when Studio opened; dirty files are refused. */
+  fileBases: Record<string, string>;
 };
 
-export function beginSession(buildingIds: readonly string[]): StudioSession {
+export function beginSession(buildingIds: readonly string[], baseMap?: MapDocument): StudioSession {
   const sources: Record<string, SourceBuilding> = {};
   for (const id of buildingIds) {
     const entry = BUILDING_SOURCES[id];
     if (entry) sources[id] = structuredClone(entry.source);
   }
-  return { sources, edits: {}, order: [] };
+  const outdoorBase = structuredClone(baseMap?.outdoor.objects ?? []);
+  return {
+    sources,
+    edits: {},
+    order: [],
+    outdoorBase,
+    outdoorObjects: structuredClone(outdoorBase),
+    outdoorEdits: {},
+    fileBases: {},
+  };
 }
 
 export function pendingCount(session: StudioSession): number {
-  return Object.values(session.edits).reduce((total, list) => total + list.length, 0);
+  return Object.values(session.edits).reduce((total, list) => total + list.length, 0)
+    + Object.values(session.outdoorEdits).reduce((total, list) => total + list.length, 0);
 }
 
 export function editedBuildings(session: StudioSession): string[] {
   return Object.entries(session.edits).filter(([, list]) => list.length > 0).map(([id]) => id);
+}
+
+export function editedSources(session: StudioSession): string[] {
+  const buildings = editedBuildings(session);
+  const outdoorFiles = Object.entries(session.outdoorEdits)
+    .filter(([, list]) => list.length > 0)
+    .map(([file]) => file.split("/").at(-1) ?? file);
+  return [...buildings, ...outdoorFiles];
 }
 
 // ---------------------------------------------------------------------------
@@ -140,13 +175,40 @@ export function commit(session: StudioSession, building: string, edit: SourceEdi
   if (!source) throw new Error(`${building} is not an editable source building`);
   mutate(source, edit);
   session.edits[building] = [...(session.edits[building] ?? []), edit];
-  session.order = [...session.order, building];
+  session.order = [...session.order, { kind: "building", key: building }];
   return compileBuilding(source);
+}
+
+function mutateOutdoor(objects: MapDocument["outdoor"]["objects"], edit: OutdoorSourceEdit): void {
+  if (edit.source?.kind !== "authored") {
+    throw new Error(`${edit.id} is placed by a rule and cannot be dragged; change the placing rule.`);
+  }
+  const object = objects.find((candidate) => candidate.id === edit.id);
+  if (!object) throw new Error(`Outdoor object ${edit.id} is no longer in this map; reload Studio.`);
+  if (object.source?.kind !== "authored"
+    || object.source.file !== edit.source.file
+    || object.source.ordinal !== edit.source.ordinal) {
+    throw new Error(`${edit.id} source ownership changed; reload Studio before editing it.`);
+  }
+  if (edit.op === "moveOutdoorObject") {
+    object.x = edit.x;
+    object.y = edit.y;
+  } else {
+    object.w = edit.w;
+    object.h = edit.h;
+  }
+}
+
+export function commitOutdoor(session: StudioSession, edit: OutdoorSourceEdit): void {
+  mutateOutdoor(session.outdoorObjects, edit);
+  const file = edit.source.file;
+  session.outdoorEdits[file] = [...(session.outdoorEdits[file] ?? []), edit];
+  session.order = [...session.order, { kind: "outdoor", key: file }];
 }
 
 /** Which building the next undo would touch, or null when there is nothing to undo. */
 export function undoTarget(session: StudioSession): string | null {
-  return session.order[session.order.length - 1] ?? null;
+  return session.order[session.order.length - 1]?.key ?? null;
 }
 
 /**
@@ -172,9 +234,20 @@ export function undoTarget(session: StudioSession): string | null {
  * already happens on every single edit, so an undo costs about what one edit costs.
  */
 export function undo(session: StudioSession): { building: string; rebuilt: Building } | null {
-  const building = undoTarget(session);
-  if (!building) return null;
+  const target = session.order[session.order.length - 1];
+  if (!target) return null;
 
+  if (target.kind === "outdoor") {
+    session.outdoorEdits[target.key] = (session.outdoorEdits[target.key] ?? []).slice(0, -1);
+    session.order = session.order.slice(0, -1);
+    session.outdoorObjects = structuredClone(session.outdoorBase);
+    for (const edits of Object.values(session.outdoorEdits)) {
+      for (const edit of edits) mutateOutdoor(session.outdoorObjects, edit);
+    }
+    return { building: "outdoor", rebuilt: null as never };
+  }
+
+  const building = target.key;
   const remaining = (session.edits[building] ?? []).slice(0, -1);
   const entry = BUILDING_SOURCES[building];
   if (!entry) throw new Error(`${building} is not an editable source building`);
@@ -192,9 +265,40 @@ export function undo(session: StudioSession): { building: string; rebuilt: Build
 export function rebuildMap(base: MapDocument, session: StudioSession): MapDocument {
   return {
     ...base,
+    outdoor: {
+      ...base.outdoor,
+      objects: session.outdoorBase.length ? session.outdoorObjects : base.outdoor.objects,
+    },
     buildings: base.buildings.map((building) =>
       session.sources[building.id] ? compileBuilding(session.sources[building.id]) : building),
   };
+}
+
+/** Discard every unsaved edit and rebuild from the production module snapshot. */
+export function reloadSession(session: StudioSession, baseMap?: MapDocument): void {
+  for (const id of Object.keys(session.sources)) {
+    const entry = BUILDING_SOURCES[id];
+    if (entry) session.sources[id] = structuredClone(entry.source);
+  }
+  session.edits = {};
+  session.order = [];
+  if (baseMap) session.outdoorBase = structuredClone(baseMap.outdoor.objects);
+  session.outdoorObjects = structuredClone(session.outdoorBase);
+  session.outdoorEdits = {};
+}
+
+/** Capture the disk revisions this Studio session is editing. */
+export async function loadSessionBaselines(session: StudioSession): Promise<void> {
+  const files = new Set<string>([
+    ...Object.keys(session.sources).map((id) => BUILDING_SOURCES[id]?.file).filter((file): file is string => Boolean(file)),
+    ...session.outdoorBase.map((object) => object.source?.file).filter((file): file is string => Boolean(file)),
+  ]);
+  for (const file of files) {
+    const read = await fetch(`/__studio/read?file=${encodeURIComponent(file)}`, { cache: "no-store" });
+    const body = (await read.json()) as { ok: boolean; text?: string; error?: string };
+    if (!body.ok || body.text === undefined) throw new Error(body.error ?? `Could not read ${file}`);
+    session.fileBases[file] = body.text;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +324,12 @@ export async function saveSession(session: StudioSession): Promise<SaveOutcome[]
       const read = await fetch(`/__studio/read?file=${encodeURIComponent(file)}`, { cache: "no-store" });
       const readBody = (await read.json()) as { ok: boolean; text?: string; error?: string };
       if (!readBody.ok || readBody.text === undefined) throw new Error(readBody.error ?? "could not read the file");
+      if (session.fileBases[file] === undefined) {
+        throw new Error(`${file} has no loaded source baseline. Reload before saving.`);
+      }
+      if (session.fileBases[file] !== readBody.text) {
+        throw new Error(`${file} changed on disk since Studio loaded it. Reload before saving.`);
+      }
 
       const next = applyEdits(readBody.text, session.edits[building]);
       const write = await fetch("/__studio/write", {
@@ -231,9 +341,38 @@ export async function saveSession(session: StudioSession): Promise<SaveOutcome[]
       if (!writeBody.ok) throw new Error(writeBody.error ?? "could not write the file");
 
       results.push({ building, file, ok: true, detail: `${session.edits[building].length} edit(s) written` });
+      session.fileBases[file] = next;
       session.edits[building] = [];
+      session.order = session.order.filter((entry) => !(entry.kind === "building" && entry.key === building));
     } catch (error) {
       results.push({ building, file, ok: false, detail: (error as Error).message });
+    }
+  }
+  for (const [file, edits] of Object.entries(session.outdoorEdits).filter(([, list]) => list.length)) {
+    try {
+      const read = await fetch(`/__studio/read?file=${encodeURIComponent(file)}`, { cache: "no-store" });
+      const readBody = (await read.json()) as { ok: boolean; text?: string; error?: string };
+      if (!readBody.ok || readBody.text === undefined) throw new Error(readBody.error ?? "could not read the file");
+      if (session.fileBases[file] === undefined) {
+        throw new Error(`${file} has no loaded source baseline. Reload before saving.`);
+      }
+      if (session.fileBases[file] !== readBody.text) {
+        throw new Error(`${file} changed on disk since Studio loaded it. Reload before saving.`);
+      }
+      const next = applyOutdoorEdits(readBody.text, edits);
+      const write = await fetch("/__studio/write", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ file, text: next, base: readBody.text }),
+      });
+      const writeBody = (await write.json()) as { ok: boolean; error?: string };
+      if (!writeBody.ok) throw new Error(writeBody.error ?? "could not write the file");
+      results.push({ building: "outdoor", file, ok: true, detail: `${edits.length} edit(s) written` });
+      session.fileBases[file] = next;
+      session.outdoorEdits[file] = [];
+      session.order = session.order.filter((entry) => !(entry.kind === "outdoor" && entry.key === file));
+    } catch (error) {
+      results.push({ building: "outdoor", file, ok: false, detail: (error as Error).message });
     }
   }
   return results;
@@ -244,8 +383,28 @@ export async function saveSession(session: StudioSession): Promise<SaveOutcome[]
 // ---------------------------------------------------------------------------
 
 export type Handle =
-  | { kind: "object"; building: string; floor: string; id: string; rect: Rect }
-  | { kind: "dot"; building: string; floor: string; id: string; rect: Rect };
+  | { kind: "object"; building: string; floor: string; id: string; rect: Rect; source?: null; movable?: true; resizable?: true }
+  | { kind: "dot"; building: string; floor: string; id: string; rect: Rect; source?: null; movable?: true; resizable?: false }
+  | {
+    kind: "outdoorObject";
+    building: "outdoor";
+    floor: "outdoor";
+    id: string;
+    rect: Rect;
+    source: OutdoorSource | null;
+    movable: boolean;
+    resizable: boolean;
+  }
+  | {
+    kind: "insertion" | "extraction" | "botSpawn";
+    building: "outdoor";
+    floor: "outdoor";
+    id: string;
+    rect: Rect;
+    source: { kind: "authored" | "composed"; file: string; note?: string } | null;
+    movable: false;
+    resizable: false;
+  };
 
 const DOT_HANDLE = 18;
 
@@ -268,6 +427,75 @@ export function handlesFor(source: SourceBuilding, floorLabel: string): Handle[]
       id: dot.id,
       rect: { x: dot.x - DOT_HANDLE, y: dot.y - DOT_HANDLE, w: DOT_HANDLE * 2, h: DOT_HANDLE * 2 },
     })),
+  ];
+}
+
+function intersects(left: Rect, right: Rect): boolean {
+  return left.x <= right.x + right.w && left.x + left.w >= right.x
+    && left.y <= right.y + right.h && left.y + left.h >= right.y;
+}
+
+const POINT_HANDLE = 24;
+
+/** Outdoor production entities in one review area, authored and derived alike. */
+export function outdoorHandles(map: MapDocument, area: Rect): Handle[] {
+  const objects: Handle[] = map.outdoor.objects
+    .filter((object) => intersects(object, area))
+    .map((object) => {
+      const source = object.source ?? null;
+      const editable = source?.kind === "authored";
+      return {
+        kind: "outdoorObject" as const,
+        building: "outdoor" as const,
+        floor: "outdoor" as const,
+        id: object.id,
+        rect: { x: object.x, y: object.y, w: object.w, h: object.h },
+        source,
+        movable: editable,
+        resizable: editable,
+      };
+    });
+  const point = (
+    kind: "insertion" | "botSpawn",
+    id: string,
+    position: Vec2,
+    source: { kind: "authored" | "composed"; file: string; note?: string } | undefined,
+  ): Handle => ({
+    kind,
+    building: "outdoor",
+    floor: "outdoor",
+    id,
+    rect: {
+      x: position.x - POINT_HANDLE,
+      y: position.y - POINT_HANDLE,
+      w: POINT_HANDLE * 2,
+      h: POINT_HANDLE * 2,
+    },
+    source: source ?? null,
+    movable: false,
+    resizable: false,
+  });
+  return [
+    ...objects,
+    ...map.extractionPoints
+      .filter((entry) => intersects(entry.rect, area))
+      .map((entry): Handle => ({
+        kind: "extraction",
+        building: "outdoor",
+        floor: "outdoor",
+        id: entry.id,
+        rect: entry.rect,
+        source: entry.source ?? null,
+        movable: false,
+        resizable: false,
+      })),
+    ...map.insertionPoints
+      .filter((entry) => intersects({ x: entry.position.x, y: entry.position.y, w: 0, h: 0 }, area))
+      .map((entry) => point("insertion", entry.id, entry.position, entry.source)),
+    ...map.botSpawns
+      .filter((entry) => (entry.floorId ?? "outdoor") === "outdoor"
+        && intersects({ x: entry.position.x, y: entry.position.y, w: 0, h: 0 }, area))
+      .map((entry) => point("botSpawn", entry.id, entry.position, entry.source)),
   ];
 }
 

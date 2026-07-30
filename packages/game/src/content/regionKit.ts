@@ -1,4 +1,5 @@
 import { arcPoints } from "../geometry";
+export { objects, rhythmRule } from "../outdoorSource";
 import type {
   Barrier,
   BotSpawn,
@@ -8,7 +9,6 @@ import type {
   GroundRegion,
   InsertionPoint,
   MapObject,
-  ObjectKind,
   ParkArea,
   PowerupType,
   Road,
@@ -34,6 +34,8 @@ import type {
 export type RegionParts = {
   id: string;
   name: string;
+  /** Repo-relative owner for outdoor objects, points, pads and spawns. */
+  sourceFile: string;
   roads?: Road[];
   surfaces?: Surface[];
   regions?: GroundRegion[];
@@ -47,27 +49,6 @@ export type RegionParts = {
   insertionPoints?: InsertionPoint[];
   botSpawns?: BotSpawn[];
 };
-
-/**
- * An object factory scoped to one region.
- *
- * Ids carry the region's prefix and a running count, so two regions can never
- * collide and an id says where the thing is without looking it up. Downtown uses a
- * bare `o0`, `o1` sequence, which was fine while there was one place.
- */
-export function objects(prefix: string) {
-  let seq = 0;
-  return function obj(
-    kind: ObjectKind,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    extra: Partial<MapObject> = {},
-  ): MapObject {
-    return { id: `${prefix}-o${seq++}`, kind, x, y, w, h, ...extra };
-  };
-}
 
 /** A Dot factory scoped to one region. */
 export function dots(prefix: string) {

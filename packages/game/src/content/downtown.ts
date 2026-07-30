@@ -4,7 +4,7 @@ import { beaconHouse } from "./beaconHouse";
 import { civicTower } from "./civicTower";
 import { lot6Depot } from "./lot6Depot";
 import { mercyClinic } from "./mercyClinic";
-import type { RegionParts } from "./regionKit";
+import { objects as sourceObjects, rhythmRule, type RegionParts } from "./regionKit";
 import type {
   BotSpawn,
   DotSpawn,
@@ -159,14 +159,6 @@ const { roads, surfaces } = compileCityPlan(cityPlan);
 let objSeq = 0;
 let dotSeq = 0;
 
-function obj(kind: MapObject["kind"], x: number, y: number, w: number, h: number, extra: Partial<MapObject> = {}): MapObject {
-  return { id: `o${objSeq++}`, kind, x, y, w, h, ...extra };
-}
-
-function tree(cx: number, cy: number, r = 24): MapObject {
-  return obj("tree", cx - r, cy - r, r * 2, r * 2);
-}
-
 function dot(item: DotSpawn["item"], x: number, y: number): DotSpawn {
   return { id: `dot-${dotSeq++}`, item, position: { x, y } };
 }
@@ -220,6 +212,29 @@ const MAIN_S_GAPS: Array<[number, number]> = [
 // ---------------------------------------------------------------------------
 
 function outdoorPlan(): OutdoorPlan {
+  /**
+   * A fresh source-ordinal counter for each compile, while the historic public
+   * ids keep their existing process-wide sequence.
+   */
+  const obj = sourceObjects(() => `o${objSeq++}`, "packages/game/src/content/downtown.ts");
+  const tree = (cx: number, cy: number, r = 24): MapObject => {
+    const rule = {
+      id: `tree-helper-${cx}-${cy}`,
+      label: "tree centre/radius helper",
+      expression: `tree(${cx}, ${cy}, ${r})`,
+      axis: "x" as const,
+      from: cx,
+      to: cx,
+      spacing: 0,
+      gaps: [],
+      parameters: [
+        { name: "cx", source: String(cx), value: String(cx) },
+        { name: "cy", source: String(cy), value: String(cy) },
+        { name: "radius", source: String(r), value: String(r) },
+      ],
+    };
+    return obj.derived(rule, () => [obj("tree", cx - r, cy - r, r * 2, r * 2)])[0];
+  };
   const edgeWalls: WallSegment[] = [
     { id: "edge-n", x: 0, y: 0, w: MAP_W, h: EDGE },
     { id: "edge-s", x: 0, y: MAP_H - EDGE, w: MAP_W, h: EDGE },
@@ -240,7 +255,11 @@ function outdoorPlan(): OutdoorPlan {
      */
 
     // -- Main St, north footway --------------------------------------------
-    ...rhythm(180, MAP_W - 180, 200, MAIN_N_GAPS).map((x) => tree(x, MAIN_N_FURNITURE, STREET_TREE_R)),
+    ...obj.derived(
+      rhythmRule("downtown-main-n-trees", "north-side tree rhythm", "x", "rhythm(180, MAP_W - 180, 200, MAIN_N_GAPS)", 180, MAP_W - 180, 200, MAIN_N_GAPS),
+      () => rhythm(180, MAP_W - 180, 200, MAIN_N_GAPS)
+        .map((x) => obj("tree", x - STREET_TREE_R, MAIN_N_FURNITURE - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
     /**
      * Lamps on the half-beat, so the two rhythms interleave rather than stack.
      *
@@ -248,14 +267,24 @@ function outdoorPlan(): OutdoorPlan {
      * the carriageway — reported on sight when every post leaned the same way: "the ones on the
      * north side should face south and vice versa". These are on the north footway, so south.
      */
-    ...rhythm(280, MAP_W - 180, 200, MAIN_N_GAPS).map((x) => obj("lampPost", x - 9, MAIN_N_KERB - 22, 18, 18, { facing: "S" })),
+    ...obj.derived(
+      rhythmRule("downtown-main-n-lamps", "north-side lamp rhythm", "x", "rhythm(280, MAP_W - 180, 200, MAIN_N_GAPS)", 280, MAP_W - 180, 200, MAIN_N_GAPS),
+      () => rhythm(280, MAP_W - 180, 200, MAIN_N_GAPS).map((x) => obj("lampPost", x - 9, MAIN_N_KERB - 22, 18, 18, { facing: "S" })),
+    ),
     obj("hydrant", 640, MAIN_N_KERB - 18, 14, 14),
     obj("hydrant", 1960, MAIN_N_KERB - 18, 14, 14),
 
     // -- Main St, south footway --------------------------------------------
-    ...rhythm(200, MAP_W - 180, 200, MAIN_S_GAPS).map((x) => tree(x, MAIN_S_FURNITURE, STREET_TREE_R)),
+    ...obj.derived(
+      rhythmRule("downtown-main-s-trees", "south-side tree rhythm", "x", "rhythm(200, MAP_W - 180, 200, MAIN_S_GAPS)", 200, MAP_W - 180, 200, MAIN_S_GAPS),
+      () => rhythm(200, MAP_W - 180, 200, MAIN_S_GAPS)
+        .map((x) => obj("tree", x - STREET_TREE_R, MAIN_S_FURNITURE - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
     // South footway, so the arm reaches north over Main St.
-    ...rhythm(300, MAP_W - 180, 200, MAIN_S_GAPS).map((x) => obj("lampPost", x - 9, MAIN_S_KERB + 4, 18, 18, { facing: "N" })),
+    ...obj.derived(
+      rhythmRule("downtown-main-s-lamps", "south-side lamp rhythm", "x", "rhythm(300, MAP_W - 180, 200, MAIN_S_GAPS)", 300, MAP_W - 180, 200, MAIN_S_GAPS),
+      () => rhythm(300, MAP_W - 180, 200, MAIN_S_GAPS).map((x) => obj("lampPost", x - 9, MAIN_S_KERB + 4, 18, 18, { facing: "N" })),
+    ),
     obj("hydrant", 900, MAIN_S_KERB + 4, 14, 14),
 
     /**
@@ -281,9 +310,21 @@ function outdoorPlan(): OutdoorPlan {
     obj("sign", 1642, 986, 44, 12),
 
     // -- Third Ave ----------------------------------------------------------
-    ...rhythm(200, 600, 200).map((y) => tree(AVE_W_KERB - FURNITURE_OFFSET, y, STREET_TREE_R)),
-    ...rhythm(1020, 1420, 200).map((y) => tree(AVE_W_KERB - FURNITURE_OFFSET, y, STREET_TREE_R)),
-    ...rhythm(1080, 1400, 160).map((y) => tree(AVE_E_KERB + FURNITURE_OFFSET, y, STREET_TREE_R)),
+    ...obj.derived(
+      rhythmRule("downtown-ave-w-n-trees", "west-side north tree rhythm", "y", "rhythm(200, 600, 200)", 200, 600, 200),
+      () => rhythm(200, 600, 200)
+        .map((y) => obj("tree", AVE_W_KERB - FURNITURE_OFFSET - STREET_TREE_R, y - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
+    ...obj.derived(
+      rhythmRule("downtown-ave-w-s-trees", "west-side south tree rhythm", "y", "rhythm(1020, 1420, 200)", 1020, 1420, 200),
+      () => rhythm(1020, 1420, 200)
+        .map((y) => obj("tree", AVE_W_KERB - FURNITURE_OFFSET - STREET_TREE_R, y - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
+    ...obj.derived(
+      rhythmRule("downtown-ave-e-s-trees", "east-side south tree rhythm", "y", "rhythm(1080, 1400, 160)", 1080, 1400, 160),
+      () => rhythm(1080, 1400, 160)
+        .map((y) => obj("tree", AVE_E_KERB + FURNITURE_OFFSET - STREET_TREE_R, y - STREET_TREE_R, STREET_TREE_R * 2, STREET_TREE_R * 2)),
+    ),
     // Third Ave runs north-south, so its arms reach east and west across it.
     obj("lampPost", AVE_W_KERB - 27, 420, 18, 18, { facing: "E" }),
     obj("lampPost", AVE_E_KERB + 9, 1180, 18, 18, { facing: "W" }),
@@ -346,7 +387,10 @@ function outdoorPlan(): OutdoorPlan {
     // -- Civic Tower: staff car park, east ---------------------------------
     // One bay row against the east edge off a generous drive, rather than two
     // cramped columns: a car park you cannot turn in reads as a texture.
-    ...rhythm(80, 500, 72).map((y) => obj("parkingStall", 2244, y, 130, 62)),
+    ...obj.derived(
+      rhythmRule("downtown-civic-parking", "Civic parking bay rhythm", "y", "rhythm(80, 500, 72)", 80, 500, 72),
+      () => rhythm(80, 500, 72).map((y) => obj("parkingStall", 2244, y, 130, 62)),
+    ),
     obj("car", 2252, 88, 114, 46, { facing: "W" }),
     obj("car", 2252, 232, 114, 46, { facing: "W" }),
     obj("car", 2252, 376, 114, 46, { facing: "W" }),
@@ -534,6 +578,7 @@ export const downtownMap = addBlueprintSpawns(authoredDowntownMap, 24);
 export const downtownRegion: RegionParts = {
   id: "downtown",
   name: "Downtown",
+  sourceFile: "packages/game/src/content/downtown.ts",
   roads,
   surfaces,
   parks: [{ id: "beacon-courtyard", x: 2148, y: 1020, w: 212, h: 400 }],

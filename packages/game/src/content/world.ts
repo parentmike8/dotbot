@@ -111,7 +111,11 @@ const authoredWorld: MapDocument = {
   height: HEIGHT,
   outdoor: outdoor(),
   buildings: collect((region) => region.buildings),
-  extractionPoints: collect((region) => region.extractionPoints),
+  extractionPoints: REGIONS.flatMap((region) =>
+    (region.extractionPoints ?? []).map((point) => ({
+      ...point,
+      source: { kind: "authored" as const, file: region.sourceFile },
+    }))),
   /**
    * Arrival points, each stamped with the name of the region it belongs to.
    *
@@ -122,8 +126,20 @@ const authoredWorld: MapDocument = {
    * correctly the moment it is added, with no edit to the UI and none to its own file.
    */
   insertionPoints: REGIONS.flatMap((region) =>
-    (region.insertionPoints ?? []).map((point) => ({ ...point, area: region.name }))),
-  botSpawns: collect((region) => region.botSpawns),
+    (region.insertionPoints ?? []).map((point) => ({
+      ...point,
+      area: region.name,
+      source: {
+        kind: "authored" as const,
+        file: region.sourceFile,
+        note: `Position is authored here; area "${region.name}" is composed by world.ts.`,
+      },
+    }))),
+  botSpawns: REGIONS.flatMap((region) =>
+    (region.botSpawns ?? []).map((spawn) => ({
+      ...spawn,
+      source: { kind: "authored" as const, file: region.sourceFile },
+    }))),
 };
 
 /**

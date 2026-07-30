@@ -74,7 +74,9 @@ export function mapSourcePlugin(): Plugin {
           try {
             const { file = "", text = "", base } = await readBody(req);
             if (!ALLOWED.test(file)) throw new Error(`Refusing to write ${file}`);
-            if (!text.includes("SourceBuilding")) {
+            if (!text.includes("SourceBuilding")
+              && !text.includes("RegionParts")
+              && !text.includes("OutdoorPlan")) {
               throw new Error("That does not look like a map-source file; refusing to overwrite it.");
             }
             const path = resolve(repo, file);

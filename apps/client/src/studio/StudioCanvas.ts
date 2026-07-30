@@ -1,8 +1,10 @@
 import { Application, Container, Graphics } from "pixi.js";
+import { collectSolids } from "@dotbot/game/collision";
+import { defaultGameConfig } from "@dotbot/game/config";
 import type { SourceBuilding, SourceWall } from "@dotbot/game/mapSource";
-import type { MapDocument, Rect, Vec2 } from "@dotbot/game/types";
+import type { MapDocument, Rect, Solid, Vec2 } from "@dotbot/game/types";
 import { buildMapArt, type MapArt } from "../game/renderer/mapArt";
-import { handlesFor, pick, type Handle } from "./editing";
+import { handlesFor, outdoorHandles, pick, type Handle } from "./editing";
 import { screenToWorld, snapToGrid, wallNear } from "./viewport";
 
 /**
@@ -29,8 +31,9 @@ export type CanvasCallbacks = {
 
 export type CanvasView = {
   map: MapDocument;
-  building: string;
-  floor: string;
+  building: string | null;
+  floor: string | null;
+  area: Rect | null;
   /** GRID units; 0 turns snapping off. */
   grid: number;
   tool: "select" | "object" | "dot" | "wall" | "opening";
@@ -38,6 +41,8 @@ export type CanvasView = {
   /** Points clicked so far while drawing a wall. */
   draft: Vec2[];
   source: SourceBuilding | null;
+  showCollision?: boolean;
+  showClearance?: boolean;
 };
 
 const MIN_SCALE = 0.08;
@@ -196,9 +201,9 @@ export class StudioCanvas {
 
       const handle = pick(this.handles, world);
       callbacks.onPick(handle);
-      this.drag = handle
+      this.drag = handle && handle.movable !== false
         ? { pointerId: event.pointerId, kind: "move", from: screen, handle, origin: { x: handle.rect.x, y: handle.rect.y } }
-        : { pointerId: event.pointerId, kind: "pan", from: screen, handle: null, origin: this.centre };
+        : null;
     });
 
     canvas.addEventListener("pointermove", (event) => {
@@ -261,7 +266,9 @@ export class StudioCanvas {
       || this.view?.floor !== view.floor
       || this.view?.building !== view.building;
     this.view = view;
-    this.handles = view.source ? handlesFor(view.source, view.floor) : [];
+    this.handles = view.source && view.floor
+      ? handlesFor(view.source, view.floor)
+      : view.area ? outdoorHandles(view.map, view.area) : [];
 
     if (rebuild) {
       if (this.art) {
@@ -297,6 +304,16 @@ export class StudioCanvas {
     g.clear();
     if (!view) return;
 
+    if (view.showCollision || view.showClearance) {
+      const solids = collectSolids(view.map, view.floor ?? "outdoor");
+      if (view.showClearance) {
+        for (const solid of solids) this.drawSolid(g, solid, defaultGameConfig.botRadius, 0xfbbf24, 0.12);
+      }
+      if (view.showCollision) {
+        for (const solid of solids) this.drawSolid(g, solid, 0, 0xef4444, 0.2);
+      }
+    }
+
     if (view.grid > 0 && this.scale > 0.45) {
       const step = view.grid * (this.scale < 0.9 ? 8 : 4);
       const { width, height } = this.app.screen;
@@ -313,9 +330,13 @@ export class StudioCanvas {
 
     // Every handle, faintly, so an author can see what is selectable at all.
     for (const handle of this.handles) {
-      g.rect(handle.rect.x, handle.rect.y, handle.rect.w, handle.rect.h);
+      g.rect(handle.rect.x, handle.rect.y, handle.rect.w, handle.rect.h)
+        .stroke({
+          color: handle.movable === false ? 0xf59e0b : 0x38bdf8,
+          width: 1 / this.scale,
+          alpha: handle.movable === false ? 0.42 : 0.28,
+        });
     }
-    g.stroke({ color: 0x38bdf8, width: 1 / this.scale, alpha: 0.28 });
 
     const selected = view.selection
       ? this.handles.find((handle) => handle.kind === view.selection?.kind && handle.id === view.selection.id)
@@ -343,6 +364,35 @@ export class StudioCanvas {
       for (const point of view.draft) {
         g.circle(point.x, point.y, 4 / this.scale).fill({ color: 0xfbbf24 });
       }
+    }
+  }
+
+  private drawSolid(
+    g: Graphics,
+    solid: Solid,
+    clearance: number,
+    color: number,
+    alpha: number,
+  ): void {
+    if (solid.kind === "rect") {
+      g.rect(
+        solid.x - clearance,
+        solid.y - clearance,
+        solid.w + clearance * 2,
+        solid.h + clearance * 2,
+      ).fill({ color, alpha });
+      return;
+    }
+    if (solid.kind === "capsule") {
+      g.moveTo(solid.ax, solid.ay).lineTo(solid.bx, solid.by)
+        .stroke({ color, width: (solid.r + clearance) * 2, alpha });
+      return;
+    }
+    if (!solid.points.length) return;
+    g.poly(solid.points.flatMap((point) => [point.x, point.y])).fill({ color, alpha });
+    if (clearance) {
+      g.poly(solid.points.flatMap((point) => [point.x, point.y]))
+        .stroke({ color, width: clearance * 2, alpha: alpha * 0.8 });
     }
   }
 }
