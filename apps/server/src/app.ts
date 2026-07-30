@@ -321,8 +321,12 @@ export async function createServer(options: CreateServerOptions = {}) {
     let acceptedPlayerSessionId: string | null = null;
     const peer = {
       id: randomUUID(),
-      send(message: ServerMessage, _delivery?: import("@dotbot/protocol").DeliveryClass) {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
+      send(
+        message: ServerMessage,
+        _delivery?: import("@dotbot/protocol").DeliveryClass,
+        encoded?: string,
+      ) {
+        if (ws.readyState === ws.OPEN) ws.send(encoded ?? JSON.stringify(message));
       },
     };
     const processMessage = async (data: RawData) => {
