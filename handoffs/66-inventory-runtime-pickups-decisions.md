@@ -35,9 +35,10 @@ reconnect, and persistence code before implementation.
 
 ## Authority, races, IDs, and inventory safety
 
-- A drop request names only an inventory location (`bay` or `hold`) and an index.
-  The server ignores any extra client fields and derives the item, provenance,
-  position, floor, radius, and ID from authoritative state.
+- A drop request names an inventory location (`bay` or `hold`), index, the
+  inventory revision the client observed, and the expected item/provenance at
+  that slot. The server rejects stale or shifted requests, then derives the
+  pickup position, floor, radius, and ID from authoritative state.
 - Invalid indices, empty slots, non-integer indices, ambient actors, and missing
   bots are no-ops. One valid request removes exactly one item and creates exactly
   one pickup in the same simulation operation.
