@@ -58,6 +58,39 @@ describe("floor authoring quality audit", () => {
     expect(issues.map((issue) => issue.kind)).toContain("wedged-fixture");
   });
 
+  /**
+   * The wall exemption, asserted from both ends so it cannot quietly swallow the rule above.
+   *
+   * Mercy's clinical band is four rooms off one corridor. Exam 1's stool sits flush against
+   * its east wall and exam 2's bed flush against its west wall: 12 units apart, an 8-unit
+   * partition between them, and the audit reported the stool as "parked off the face of" a
+   * bed in another room. Satisfying it would have meant 64 units of dead floor either side
+   * of every partition in the world.
+   *
+   * So the pair below is the Lot 6 shape — a small fixture 12 units off a long run — twice.
+   * Once with a wall through the gap, where there is no face to be parked against, and once
+   * without, where there is. Same geometry, opposite verdicts, and the second case is the
+   * proof that the exemption is a fix and not a mute button.
+   */
+  it("does not call two fixtures in different rooms a wedged pair", () => {
+    const divided = testMap([
+      { id: "rack", kind: "shelf", x: 120, y: 60, w: 26, h: 220 },
+      { id: "crate", kind: "crateStack", x: 158, y: 92, w: 34, h: 34 },
+    ]);
+    // A partition down the gap, spanning the whole band the two fixtures share.
+    divided.buildings[0].floors[0].walls = [{ id: "divider", x: 148, y: 40, w: 8, h: 260 }];
+    expect(auditBuildingFloorQuality(divided, "test-building").map((issue) => issue.kind))
+      .not.toContain("wedged-fixture");
+
+    // Identical fixtures, no wall: still the Lot 6 defect, still reported.
+    const open = testMap([
+      { id: "rack", kind: "shelf", x: 120, y: 60, w: 26, h: 220 },
+      { id: "crate", kind: "crateStack", x: 158, y: 92, w: 34, h: 34 },
+    ]);
+    expect(auditBuildingFloorQuality(open, "test-building").map((issue) => issue.kind))
+      .toContain("wedged-fixture");
+  });
+
   it("accepts a fixture whose end stops short of another bank", () => {
     // A bench extending a perimeter run into a locker block: the gap meets the
     // bench's end, which is exactly the attached seam the contract allows.

@@ -466,27 +466,43 @@ export function auditBuildingFloorQuality(
          * pairs. A wall has to cross the whole shared band to count, so a fixture in a
          * doorway still cannot hide behind the jamb beside it.
          */
-        const wallCrossesGap = (solids as { ownerKind: string; ownerId: string; rect: Rect }[]).some((middle) => {
-          if (middle.ownerKind !== "wall") return false;
-          if (middle.ownerId === left.ownerId || middle.ownerId === right.ownerId) return false;
-          if (horizontalFalseAisle) {
-            const start = Math.min(left.rect.x + left.rect.w, right.rect.x + right.rect.w);
-            const end = Math.max(left.rect.x, right.rect.x);
-            const inGap = middle.rect.x < end && middle.rect.x + middle.rect.w > start;
-            const spansBand = middle.rect.y <= Math.max(left.rect.y, right.rect.y)
-              && middle.rect.y + middle.rect.h >= Math.min(left.rect.y + left.rect.h, right.rect.y + right.rect.h);
-            return inGap && spansBand;
-          }
-          if (verticalFalseAisle) {
+        /**
+         * Now asked per axis, so the WEDGED rule can ask it too.
+         *
+         * It used to be computed only for whichever false-aisle case had fired, and returned
+         * false for everything else — which meant `wedged-fixture` had no wall awareness at
+         * all. Mercy's clinical band is where that showed: a stool flush against exam 1's
+         * east wall and the bed flush against exam 2's west wall are 12 units apart with an
+         * 8-unit partition between them, in different rooms, and the audit called the stool
+         * "parked off the face of" the bed. There is no face and no gap; there is a wall.
+         *
+         * The alternative was to keep 64 units of dead floor either side of every partition,
+         * which is the unfurnishable-strip failure the false-aisle exemption was added to
+         * end. Same reasoning, same test: a wall has to cross the whole shared band, so a
+         * fixture in a doorway still cannot hide behind the jamb beside it.
+         */
+        const wallBetween = (axis: "x" | "y"): boolean =>
+          (solids as { ownerKind: string; ownerId: string; rect: Rect }[]).some((middle) => {
+            if (middle.ownerKind !== "wall") return false;
+            if (middle.ownerId === left.ownerId || middle.ownerId === right.ownerId) return false;
+            if (axis === "x") {
+              const start = Math.min(left.rect.x + left.rect.w, right.rect.x + right.rect.w);
+              const end = Math.max(left.rect.x, right.rect.x);
+              const inGap = middle.rect.x < end && middle.rect.x + middle.rect.w > start;
+              const spansBand = middle.rect.y <= Math.max(left.rect.y, right.rect.y)
+                && middle.rect.y + middle.rect.h >= Math.min(left.rect.y + left.rect.h, right.rect.y + right.rect.h);
+              return inGap && spansBand;
+            }
             const start = Math.min(left.rect.y + left.rect.h, right.rect.y + right.rect.h);
             const end = Math.max(left.rect.y, right.rect.y);
             const inGap = middle.rect.y < end && middle.rect.y + middle.rect.h > start;
             const spansBand = middle.rect.x <= Math.max(left.rect.x, right.rect.x)
               && middle.rect.x + middle.rect.w >= Math.min(left.rect.x + left.rect.w, right.rect.x + right.rect.w);
             return inGap && spansBand;
-          }
-          return false;
-        });
+          });
+        const wallCrossesGap = horizontalFalseAisle ? wallBetween("x")
+          : verticalFalseAisle ? wallBetween("y")
+          : false;
 
         // A small seam can join modules end-to-end, but it cannot justify two
         // long fixture faces compressed front-to-back. That creates repeated
@@ -533,6 +549,8 @@ export function auditBuildingFloorQuality(
             if (gap <= 0 || gap > MAX_ATTACHED_SEAM) return false;
             if ((axis === "x" ? gapY : gapX) !== 0) return false;
             if (runsAlong(left.rect, axis) || runsAlong(right.rect, axis)) return false;
+            // Two fixtures in two different rooms are not parked beside each other.
+            if (wallBetween(axis)) return false;
 
             const cross = axis === "x" ? "h" : "w";
             const start = axis === "x" ? "y" : "x";
