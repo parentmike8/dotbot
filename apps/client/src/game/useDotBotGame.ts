@@ -9,6 +9,7 @@ import {
   killCamCameraTarget,
   killCamDoorCatalog,
   killCamSnapshot,
+  liveStateEndsKillCam,
 } from "./killCam";
 import {
   ImpactFeedback,
@@ -89,6 +90,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const sessionRef = useRef<GameSession | null>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
   const killCamPlaybackRef = useRef<KillCamPlayback | null>(null);
+  const killCamObservedDownedRef = useRef(false);
   const killCamDoorsRef = useRef<ReturnType<typeof killCamDoorCatalog>>([]);
   const feedbackRef = useRef<ImpactFeedback | null>(null);
   const keysRef = useRef(new Set<string>());
@@ -294,6 +296,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         for (const clip of session.drainKillCams?.() ?? []) {
           if (clip.victimId !== session.playerId) continue;
           killCamPlaybackRef.current = new KillCamPlayback(clip);
+          killCamObservedDownedRef.current = false;
+          // Replay owns every focus-taking HUD surface, including inventory.
+          // Plea and Leave are separate downed controls and stay mounted.
           dropQueuedRef.current = undefined;
           applyHudOverlayEvent("startReplay");
           session.setReplayActive?.(true);
@@ -421,9 +426,18 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         }
 
         const currentPlayer = nextSnapshot.bots.find((bot) => bot.id === session.playerId);
-        if (currentPlayer?.state === "alive" && killCamPlaybackRef.current) {
+        if (currentPlayer?.state === "downed") killCamObservedDownedRef.current = true;
+        const authorityRevived = frameEvents.some((event) =>
+          (event.type === "revived" || event.type === "recruited")
+          && event.botId === session.playerId);
+        if (killCamPlaybackRef.current && liveStateEndsKillCam(
+          killCamObservedDownedRef.current,
+          currentPlayer?.state,
+          authorityRevived,
+        )) {
           killCamPlaybackRef.current.skip();
           killCamPlaybackRef.current = null;
+          killCamObservedDownedRef.current = false;
           session.setReplayActive?.(false);
           applyHudOverlayEvent("endReplay");
           setKillCam(null);
@@ -472,6 +486,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           playback.advance(elapsedMs);
           if (playback.finished) {
             killCamPlaybackRef.current = null;
+            killCamObservedDownedRef.current = false;
             session.setReplayActive?.(false);
             applyHudOverlayEvent("endReplay");
             setKillCam(null);
@@ -618,6 +633,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         if (killCamPlaybackRef.current) {
           killCamPlaybackRef.current.skip();
           killCamPlaybackRef.current = null;
+          killCamObservedDownedRef.current = false;
           sessionRef.current?.setReplayActive?.(false);
           applyHudOverlayEvent("endReplay");
           setKillCam(null);
@@ -695,6 +711,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       feedbackRef.current?.destroy();
       sessionRef.current?.dispose();
       killCamPlaybackRef.current = null;
+      killCamObservedDownedRef.current = false;
       killCamDoorsRef.current = [];
       sessionRef.current?.setReplayActive?.(false);
       rendererRef.current = null;
@@ -750,6 +767,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const leaveRun = useCallback(() => {
     killCamPlaybackRef.current?.skip();
     killCamPlaybackRef.current = null;
+    killCamObservedDownedRef.current = false;
     sessionRef.current?.setReplayActive?.(false);
     applyHudOverlayEvent("endReplay");
     setKillCam(null);
@@ -759,6 +777,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const skipKillCam = useCallback(() => {
     killCamPlaybackRef.current?.skip();
     killCamPlaybackRef.current = null;
+    killCamObservedDownedRef.current = false;
     sessionRef.current?.setReplayActive?.(false);
     applyHudOverlayEvent("endReplay");
     setKillCam(null);

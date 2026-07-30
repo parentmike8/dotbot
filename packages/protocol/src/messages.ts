@@ -318,6 +318,8 @@ export type ClientMessage =
   | { type: "joinSquad"; squadId: LobbySquadId }
   | { type: "startMatch" }
   | { type: "leaveRun" }
+  /** Victim finished or skipped this exact replay; releases the server input gate. */
+  | { type: "killCamDone"; clipId: string }
   | {
       type: "input";
       seq: number;

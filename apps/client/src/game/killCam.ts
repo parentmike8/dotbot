@@ -144,19 +144,45 @@ export function killCamDoorCatalog(map: MapDocument): DoorEntity[] {
 
 export function killCamCameraTarget(frame: KillCamFrame, clip: KillCamClip): { x: number; y: number } {
   if (frame.source) {
-    return {
+    const firstVisibleTick = clip.frames.find((candidate) => candidate.source)?.tick ?? frame.tick;
+    const blendTicks = Math.max(1, clip.tickHz * 0.5);
+    const sourceWeight = Math.max(0, Math.min(1, (frame.tick - firstVisibleTick) / blendTicks));
+    const midpoint = {
       x: (frame.victim.position.x + frame.source.position.x) / 2,
       y: (frame.victim.position.y + frame.source.position.y) / 2,
     };
-  }
-  const nearingImpact = frame.tick >= clip.deathTick - clip.tickHz * 0.5;
-  if (nearingImpact) {
     return {
+      x: frame.victim.position.x + (midpoint.x - frame.victim.position.x) * sourceWeight,
+      y: frame.victim.position.y + (midpoint.y - frame.victim.position.y) * sourceWeight,
+    };
+  }
+  const impactBlendStart = clip.deathTick - clip.tickHz * 0.5;
+  if (frame.tick >= impactBlendStart) {
+    const impactWeight = Math.max(0, Math.min(1, (frame.tick - impactBlendStart) / Math.max(1, clip.tickHz * 0.5)));
+    const midpoint = {
       x: (frame.victim.position.x + clip.cause.position.x) / 2,
       y: (frame.victim.position.y + clip.cause.position.y) / 2,
     };
+    return {
+      x: frame.victim.position.x + (midpoint.x - frame.victim.position.x) * impactWeight,
+      y: frame.victim.position.y + (midpoint.y - frame.victim.position.y) * impactWeight,
+    };
   }
   return frame.victim.position;
+}
+
+/**
+ * Interpolation may still present the victim as alive briefly after the
+ * server delivers the death clip. An alive snapshot can end replay only after
+ * this client has first observed the downed state; an explicit authoritative
+ * revive/recruit event can end it immediately.
+ */
+export function liveStateEndsKillCam(
+  observedDowned: boolean,
+  victimState: KillCamActor["state"] | undefined,
+  authorityRevived: boolean,
+): boolean {
+  return authorityRevived || (observedDowned && victimState === "alive");
 }
 
 function sampleClip(frames: readonly KillCamFrame[], tick: number): KillCamFrame {
