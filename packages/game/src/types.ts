@@ -130,6 +130,7 @@ export type MineEntity = GameEntity & {
  * decided anything. Nothing produces it now.
  */
 export type HitResult = "plateBreak" | "downed";
+export type DashContactResult = "bump" | "clash";
 
 export type SimEvent =
   | {
@@ -141,6 +142,17 @@ export type SimEvent =
       result: HitResult;
       /** Contact point and away-from-attacker direction in world space. */
       position: Vec2;
+      direction: Vec2;
+      tick: number;
+    }
+  | {
+      type: "dashContact";
+      botId: string;
+      byBotId: string;
+      /** A point-blank, unarmed dash bumped, or two armed dashes clashed. */
+      result: DashContactResult;
+      position: Vec2;
+      /** Points from `byBotId` toward `botId`. */
       direction: Vec2;
       tick: number;
     }

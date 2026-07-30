@@ -11,6 +11,7 @@ export type PredictedImpact = Vec2 & {
   sourceId: string;
   predictionId: string;
   predictedAtMs: number;
+  kind: "hit" | "bump" | "clash";
 };
 
 export interface GameSession {

@@ -38,6 +38,7 @@ import { carriedCount, carriedItems, hasRoom, insertItem, removeCarriedAt } from
 import {
   applyArmourHit,
   contactReach,
+  coveringPlate,
   normalizeAngle,
   plateSum,
   platesForCount,
@@ -88,16 +89,6 @@ const DEFAULT_DOOR_NOISE = 0.42;
 const MAX_REWIND_TICKS = 18;
 
 /**
- * How far outside contact a hunter is told to hold station.
- *
- * Zero would put the steer's "arrived" exactly on the separation solver's
- * "apart", where a pixel of float noise flips between commanding forward and
- * being shoved back. Two pixels sits inside the attack test's own four-pixel
- * forgiveness ring (`attackConnects`), so a hunter parked here is still close
- * enough that the dash it is waiting to throw connects on the tick it starts.
- */
-const AI_CONTACT_MARGIN = 2;
-/**
  * How far past touching still counts as a hit, and how far inside touching still
  * counts as worth swinging at.
  *
@@ -107,6 +98,12 @@ const AI_CONTACT_MARGIN = 2;
  * contactGap` and the separation pass rested pairs at exactly `contactGap`.
  */
 const CONTACT_FORGIVENESS_PX = 4;
+/**
+ * Hunters need visible daylight before committing a damaging dash. This sits
+ * outside the contact test's forgiveness ring: parking inside that ring would
+ * make every AI dash a point-blank bump under the run-up rule.
+ */
+const AI_DASH_RUN_UP_PX = CONTACT_FORGIVENESS_PX + 8;
 
 /**
  * Where a bot is told to stand to work on a downed body, as a share of its
@@ -219,6 +216,12 @@ type InternalBot = DotBotEntity & {
   positionHistory: Array<{ position: Vec2; floorId: string }>;
   /** How many ticks in the past this bot perceives the world (render delay). */
   viewDelayTicks: number;
+  /**
+   * Hostiles already touching when this dash began. A dash needs a run-up
+   * against each target; the set lasts for the dash so float jitter cannot turn
+   * a point-blank bump into damage halfway through the same lunge.
+   */
+  dashBlockedTargets: Set<string>;
   aiWanderTarget: Vec2;
   aiRetargetMs: number;
   aiPath: Vec2[];
@@ -496,6 +499,7 @@ export class DotBotSimulation {
       prevPosition: { ...spawn.position },
       positionHistory: [],
       viewDelayTicks: 0,
+      dashBlockedTargets: new Set(),
       aiWanderTarget: { ...spawn.position },
       aiRetargetMs: 0,
       aiPath: [],
@@ -896,6 +900,7 @@ export class DotBotSimulation {
           bot.dashActiveMs = this.config.dashDurationMs;
           if (overcharged) bot.dashOverchargeCharges -= 1;
           else bot.dashCooldownMs = this.config.dashCooldownMs;
+          this.recordDashStartContacts(bot);
           this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
         }
 
@@ -2108,28 +2113,24 @@ export class DotBotSimulation {
     }
 
     const targetDistance = distance(bot.position, hostile.position);
-    /**
-     * Don't spend a dash from inside contact — there is nothing left to close.
-     *
-     * This was a flat `radius * 1.9` = 45.6, which outranged contact against
-     * anything but a fully plated target: a hunter holding station 35.6 from a
-     * stripped core (contact 33.6) was permanently below the gate and never threw
-     * the dash its whole plan was built around. So the gate was moved onto the same
-     * geometry as the stop distance, and that was worse in a way that took a
-     * playtest to find — bare `< contactGap` is the SAME NUMBER the separation pass
-     * rests the pair at, and separation converges on it from below. Measured on the
-     * real map: two hostiles at rest 48.0 apart with a contact gap of 48.0, and
-     * `d - gap` of -7.105e-15. The gate fired on a rounding error, forever, on
-     * every pair that ever reached contact — and because the steer had also
-     * arrived, thrust was zero too. Two bots nose to nose, dash ready, doing
-     * nothing, which is exactly what play reported.
-     *
-     * So it reads the hit test's own forgiveness instead. The AI now throws the
-     * dash on precisely the poses `attackConnects` would call contact, and no
-     * epsilon sits between the two.
-     */
+    const contact = this.contactGap(bot, hostile, hostile.position);
+    const insideContact = targetDistance - contact <= CONTACT_FORGIVENESS_PX;
+
+    // A player can clinch a hunter too. Spend a ready dash on retreat rather
+    // than throwing a harmless point-blank bump forever; the ordinary cooldown
+    // then creates a readable disengage/re-entry cycle.
+    if (insideContact) {
+      const away = normalize(subtract(bot.position, hostile.position));
+      if (length(away) < 0.5) return;
+      bot.lastAim = away;
+      bot.dashActiveMs = this.config.dashDurationMs;
+      bot.dashCooldownMs = this.config.dashCooldownMs;
+      this.recordDashStartContacts(bot);
+      this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
+      return;
+    }
+
     if (
-      targetDistance < this.contactGap(bot, hostile, hostile.position) - CONTACT_FORGIVENESS_PX ||
       targetDistance > 290 ||
       !hasLineOfSight(
         this.map,
@@ -2149,6 +2150,7 @@ export class DotBotSimulation {
     bot.lastAim = toHostile;
     bot.dashActiveMs = this.config.dashDurationMs;
     bot.dashCooldownMs = this.config.dashCooldownMs + 250 + this.nextRandom() * 450;
+    this.recordDashStartContacts(bot);
     this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
   }
 
@@ -2419,6 +2421,29 @@ export class DotBotSimulation {
     return sweep - this.contactGap(attacker, victim, perceived.position) <= CONTACT_FORGIVENESS_PX;
   }
 
+  /** Record target-specific point-blank contacts on the dash input edge. */
+  private recordDashStartContacts(attacker: InternalBot): void {
+    attacker.dashBlockedTargets.clear();
+    for (const victim of this.bots.values()) {
+      if (victim.id === attacker.id || victim.state !== "alive" || areFriendly(attacker, victim)) continue;
+      const perceived = this.perceivedTarget(attacker, victim);
+      if (perceived.floorId !== attacker.floorId) continue;
+      const gap = distance(attacker.position, perceived.position)
+        - this.contactGap(attacker, victim, perceived.position);
+      if (gap <= CONTACT_FORGIVENESS_PX) attacker.dashBlockedTargets.add(victim.id);
+    }
+  }
+
+  private impactMeetsIntactPlate(target: InternalBot, source: InternalBot): boolean {
+    if (target.shieldSegments.length === 0) return false;
+    const impactAngle = Math.atan2(
+      source.position.y - target.position.y,
+      source.position.x - target.position.x,
+    );
+    const plate = coveringPlate(target.facing, target.shieldSegments.length, impactAngle);
+    return target.shieldSegments[plate] > 0;
+  }
+
   /**
    * How close two bots have to be to touch, given which way each is facing and
    * which plates each still has.
@@ -2442,22 +2467,23 @@ export class DotBotSimulation {
    * 5 px/s moving threshold, so a hunter parked on a target read as MOVING, yielded
    * 1.0 to every other body, and could never become an anchor.
    *
-   * The steer's "arrived" and the solver's "apart" have to be the same number.
-   * This is that number, plus a margin so float noise cannot flip the comparison.
+   * The run-up rule changes that contract: arriving at contact produces a bump,
+   * not damage. Hold station just outside the shared contact-forgiveness ring so
+   * a hunter visibly closes distance when it attacks.
    */
   private huntStopDistance(bot: InternalBot, target: InternalBot): number {
-    return this.contactGap(bot, target, target.position) + AI_CONTACT_MARGIN;
+    return this.contactGap(bot, target, target.position) + AI_DASH_RUN_UP_PX;
   }
 
   /**
    * How far apart two bodies have to be, centre to centre, to be just touching
    * along the line between them.
    *
-   * The one number every consumer shares: the separation pass, the attack test,
-   * where a connecting dash stops, and how close a hunter is told to stand. They
-   * must agree or the game argues with itself — a steer that arrives inside the
-   * distance the solver holds is a permanent push-war, and a dash that stops at a
-   * distance the hit test never called contact is a ghost pass-through.
+   * The one base number every consumer shares: the separation pass, the attack
+   * test, where a connecting dash stops, and the hunter's run-up measured beyond
+   * it. They must agree or the game argues with itself — a steer that arrives
+   * inside the distance the solver holds is a permanent push-war, and a dash that
+   * stops at a distance the hit test never called contact is a ghost pass-through.
    *
    * NOT `contactReach(a, u) + contactReach(b, -u)`. That sum is what welded bodies
    * together: it samples a single ray of a body that is a core disc with plate
@@ -2546,6 +2572,38 @@ export class DotBotSimulation {
     this.placeBot(attacker, resolveAgainstSolids(contact, attacker.radius, solids));
   }
 
+  /** Bounded physical separation shared by a point-blank bump and a clash. */
+  private recoilDashContact(a: InternalBot, b: InternalBot): Vec2 {
+    const direction = normalize(subtract(b.position, a.position));
+    const axis = length(direction) > 0.001
+      ? direction
+      : coincidentSeparationAxis(a.id, b.id);
+    a.knockbackVel = scale(axis, -this.config.knockbackSpeed);
+    b.knockbackVel = scale(axis, this.config.knockbackSpeed);
+    a.knockbackMs = this.config.knockbackDurationMs;
+    b.knockbackMs = this.config.knockbackDurationMs;
+    return axis;
+  }
+
+  private emitDashContact(
+    a: InternalBot,
+    b: InternalBot,
+    result: "bump" | "clash",
+    direction: Vec2,
+  ): void {
+    const position = scale(add(a.position, b.position), 0.5);
+    this.emitNoise("impact", position, a.floorId, NOISE_LOUDNESS.impact);
+    this.events.push({
+      type: "dashContact",
+      botId: b.id,
+      byBotId: a.id,
+      result,
+      position,
+      direction,
+      tick: this.tickCount,
+    });
+  }
+
   private resolveCombat(): void {
     const aliveBots = [...this.bots.values()].filter((bot) => bot.state === "alive");
 
@@ -2559,8 +2617,6 @@ export class DotBotSimulation {
           continue;
         }
 
-        const aSpeed = length(a.velocity);
-        const bSpeed = length(b.velocity);
         const aDashing = a.dashActiveMs > 0;
         const bDashing = b.dashActiveMs > 0;
 
@@ -2569,11 +2625,57 @@ export class DotBotSimulation {
           // victim as the attacker saw them (lag compensated), so a dash
           // through the enemy on screen lands even though the wire is late.
           // A connecting dash STOPS at its target instead of ghosting on.
-          if (aDashing && this.attackConnects(a, b) && this.damageBot(b, a)) {
+          const aConnects = aDashing && this.attackConnects(a, b);
+          const bConnects = bDashing && this.attackConnects(b, a);
+          const aStartedTouching = a.dashBlockedTargets.has(b.id);
+          const bStartedTouching = b.dashBlockedTargets.has(a.id);
+          const aBlocked = aConnects && aStartedTouching && this.ramSpeedToward(a, b) > 0;
+          const bBlocked = bConnects && bStartedTouching && this.ramSpeedToward(b, a) > 0;
+          const aCanHit = aConnects && !aStartedTouching;
+          const bCanHit = bConnects && !bStartedTouching;
+
+          // Both players spent the same attack verb from clear space. If each
+          // dash meets live plating, resolve the pair before either directed hit
+          // mutates a plate: one unmistakable clash, no iteration-order winner.
+          if (
+            aCanHit
+            && bCanHit
+            && !a.isAmbient
+            && !b.isAmbient
+            && this.impactMeetsIntactPlate(a, b)
+            && this.impactMeetsIntactPlate(b, a)
+          ) {
             this.stopDashAtContact(a, b);
-          }
-          if (bDashing && this.attackConnects(b, a) && this.damageBot(a, b)) {
             this.stopDashAtContact(b, a);
+            const direction = this.recoilDashContact(a, b);
+            this.emitDashContact(a, b, "clash", direction);
+            continue;
+          }
+
+          let bumped = false;
+          if (aBlocked) {
+            this.stopDashAtContact(a, b);
+            bumped = true;
+          } else if (aCanHit) {
+            if (this.damageBot(b, a)) {
+              this.stopDashAtContact(a, b);
+            }
+          }
+          if (bBlocked) {
+            this.stopDashAtContact(b, a);
+            bumped = true;
+          } else if (bCanHit) {
+            if (this.damageBot(a, b)) {
+              this.stopDashAtContact(b, a);
+            }
+          }
+          if (bumped) {
+            const direction = this.recoilDashContact(a, b);
+            if (aBlocked || !bBlocked) {
+              this.emitDashContact(a, b, "bump", direction);
+            } else {
+              this.emitDashContact(b, a, "bump", scale(direction, -1));
+            }
           }
           continue;
         }

@@ -47,17 +47,48 @@ export function impactReactionForTarget(
   reducedMotion: boolean,
 ): ImpactReaction | null {
   const impact = [...impacts].reverse().find((candidate) =>
-    candidate.targetId === targetId && nowMs - candidate.startedAt >= 0
+    (candidate.targetId === targetId || (candidate.kind !== "hit" && candidate.sourceId === targetId))
+      && nowMs - candidate.startedAt >= 0
       && nowMs - candidate.startedAt <= impactReactionDurationMs);
   if (!impact) return null;
   const progress = Math.min(1, (nowMs - impact.startedAt) / impactReactionDurationMs);
   const impulse = Math.sin(Math.PI * progress);
-  const distance = impulse * (reducedMotion ? 4 : impact.result === "downed" ? 14 : 10);
-  const sign = impact.direction.x < 0 ? -1 : 1;
+  const isSource = impact.sourceId === targetId;
+  const direction = isSource
+    ? { x: -impact.direction.x, y: -impact.direction.y }
+    : impact.direction;
+  const distance = impulse * (
+    reducedMotion
+      ? 4
+      : impact.kind === "clash"
+        ? 14
+        : impact.kind === "bump"
+          ? 8
+          : impact.result === "downed"
+            ? 14
+            : 10
+  );
+  const sign = direction.x < 0 ? -1 : 1;
   return {
-    offset: { x: impact.direction.x * distance, y: impact.direction.y * distance },
-    scale: reducedMotion ? 1 : 1 - impulse * (impact.result === "downed" ? 0.12 : 0.075),
-    rotation: reducedMotion ? 0 : sign * impulse * (impact.result === "downed" ? 0.09 : 0.045),
+    offset: { x: direction.x * distance, y: direction.y * distance },
+    scale: reducedMotion ? 1 : 1 - impulse * (
+      impact.kind === "clash"
+        ? 0.09
+        : impact.kind === "bump"
+          ? 0.045
+          : impact.result === "downed"
+            ? 0.12
+            : 0.075
+    ),
+    rotation: reducedMotion ? 0 : sign * impulse * (
+      impact.kind === "clash"
+        ? 0.07
+        : impact.kind === "bump"
+          ? 0.025
+          : impact.result === "downed"
+            ? 0.09
+            : 0.045
+    ),
   };
 }
 
@@ -77,6 +108,7 @@ export function applyPredictedImpactOverlays(
   for (const impact of impacts) {
     const ageMs = nowMs - impact.startedAt;
     if (ageMs < 0 || ageMs > predictedImpactHoldMs) continue;
+    if (impact.kind !== "hit") continue;
     const target = snapshot.bots.find((bot) => bot.id === impact.targetId);
     if (!target || target.state !== "alive") continue;
 

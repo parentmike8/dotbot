@@ -285,13 +285,16 @@ export class NetSession implements GameSession {
     if (now - this.lastImpactFxAtMs < 400) return [];
     this.lastImpactFxAtMs = now;
     const predictionId = `${this.playerIdValue || "player"}-${++this.impactPredictionSeq}`;
-    recordPredictedHit(this.impactTelemetry, contact.targetId, now, predictionId);
+    if (contact.kind === "hit") {
+      recordPredictedHit(this.impactTelemetry, contact.targetId, now, predictionId);
+    }
     return [{
       ...contact.position,
       targetId: contact.targetId,
       sourceId: this.playerIdValue,
       predictionId,
       predictedAtMs: now,
+      kind: contact.kind,
     }];
   }
 
@@ -703,7 +706,9 @@ export class NetSession implements GameSession {
         // server calls it moving, and diverges the yield split by 2.5 units a tick.
         moving: bot.moving,
         shieldSegments: [...bot.shieldSegments],
-        hostile: own !== undefined && bot.squadId !== own.squadId && bot.invulnerabilityMs <= 0,
+        hostile: own !== undefined && bot.squadId !== own.squadId,
+        damageable: bot.invulnerabilityMs <= 0,
+        dashActiveMs: bot.dashActiveMs,
       })));
   }
 

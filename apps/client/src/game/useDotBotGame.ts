@@ -279,11 +279,34 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const predictedImpacts = session.drainPredictedImpacts?.() ?? [];
         for (const impact of predictedImpacts) {
           const result = renderer.queueImpact(impact, nextSnapshot);
-          feedback.playPredicted(result, impactPan(listener, { x: impact.x, y: impact.y }));
+          const pan = impactPan(listener, { x: impact.x, y: impact.y });
+          if (impact.kind === "hit" && result) {
+            feedback.playPredicted(result, pan);
+          } else if (impact.kind !== "hit") {
+            feedback.playDashContact(impact.kind, "attacker", false, pan);
+          }
         }
         for (const event of frameEvents) {
           if (event.type === "plea") renderer.queuePlea(event);
           if (event.type === "mineSensor") renderer.queueMineSensor(event);
+          if (event.type === "dashContact") {
+            const alreadyPredicted = renderer.queueDashContact(event, session.playerId);
+            const perspective: ImpactPerspective = event.byBotId === session.playerId
+              ? "attacker"
+              : event.botId === session.playerId
+                ? "victim"
+                : "observer";
+            const earshot = perspective === "observer" && listener
+              ? earshotGain(event.position, listener, view)
+              : 1;
+            feedback.playDashContact(
+              event.result,
+              perspective,
+              alreadyPredicted,
+              impactPan(listener, event.position),
+              earshot,
+            );
+          }
           if (event.type === "hit") {
             const alreadyPredicted = renderer.confirmImpact(event, nextSnapshot, session.playerId);
             const perspective: ImpactPerspective = event.byBotId === session.playerId

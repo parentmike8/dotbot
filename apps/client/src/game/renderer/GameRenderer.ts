@@ -392,12 +392,15 @@ export class GameRenderer {
 
   /** Instant impact response at predicted dash contact. Returns the predicted
    * outcome so audio/haptics can use the same classification as the shield. */
-  queueImpact(impact: PredictedImpact, snapshot: GameSnapshot): HitResult {
+  queueImpact(impact: PredictedImpact, snapshot: GameSnapshot): HitResult | null {
     const result = classifyPredictedImpact(snapshot, impact);
     const direction = predictedImpactDirection(snapshot, impact);
     this.impactFlashes.push({ ...impact, result, direction, startedAt: performance.now() });
-    this.addCameraImpulse(direction, result === "downed" ? 5 : 3.5);
-    return result;
+    this.addCameraImpulse(
+      direction,
+      impact.kind === "clash" ? 5 : impact.kind === "bump" ? 2.5 : result === "downed" ? 5 : 3.5,
+    );
+    return impact.kind === "hit" ? result : null;
   }
 
   /** Locks an authoritative result onto its existing predicted presentation.
@@ -411,7 +414,8 @@ export class GameRenderer {
   ): boolean {
     const now = performance.now();
     const match = [...this.impactFlashes].reverse().find((impact) =>
-      impact.targetId === event.botId
+      impact.kind === "hit"
+        && impact.targetId === event.botId
         && impact.sourceId === event.byBotId
         && impact.confirmedAt === undefined
         && now - impact.startedAt <= 800);
@@ -444,6 +448,7 @@ export class GameRenderer {
       sourceId: event.byBotId,
       predictionId: `authoritative-${event.tick}-${event.byBotId}-${event.botId}-${now}`,
       predictedAtMs: now,
+      kind: "hit",
       result: event.result,
       direction,
       startedAt: now,
@@ -451,6 +456,41 @@ export class GameRenderer {
     });
     if (event.byBotId === viewerId || event.botId === viewerId) {
       this.addCameraImpulse(direction, event.result === "downed" ? 5.5 : 3.5);
+    }
+    return false;
+  }
+
+  queueDashContact(event: Extract<SimEvent, { type: "dashContact" }>, viewerId: string): boolean {
+    const now = performance.now();
+    const match = [...this.impactFlashes].reverse().find((impact) =>
+      impact.kind === event.result
+        && (
+          (impact.targetId === event.botId && impact.sourceId === event.byBotId)
+          || (impact.targetId === event.byBotId && impact.sourceId === event.botId)
+        )
+        && impact.confirmedAt === undefined
+        && now - impact.startedAt <= 800);
+    if (match) {
+      match.confirmedAt = now;
+      match.direction = event.direction;
+      return true;
+    }
+
+    this.impactFlashes.push({
+      x: event.position.x,
+      y: event.position.y,
+      targetId: event.botId,
+      sourceId: event.byBotId,
+      predictionId: `dash-contact-${event.tick}-${event.byBotId}-${event.botId}-${now}`,
+      predictedAtMs: now,
+      kind: event.result,
+      result: "plateBreak",
+      direction: event.direction,
+      startedAt: now,
+      confirmedAt: now,
+    });
+    if (event.byBotId === viewerId || event.botId === viewerId) {
+      this.addCameraImpulse(event.direction, event.result === "clash" ? 5 : 2.5);
     }
     return false;
   }
@@ -1677,18 +1717,37 @@ export class GameRenderer {
         continue;
       }
 
-      const lifeMs = this.reducedMotion ? 150 : flash.result === "downed" ? 300 : 240;
+      const lifeMs = this.reducedMotion
+        ? 150
+        : flash.kind === "clash"
+          ? 320
+          : flash.kind === "bump"
+            ? 190
+            : flash.result === "downed"
+              ? 300
+              : 240;
       let view = this.impactViews.get(flash.predictionId);
       if (!view) {
         const root = new Container();
         const burst = new Graphics();
         const pulse = new Graphics();
-        burst.circle(0, 0, 8).stroke({ color: INK.structure, width: 3.5 });
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-          burst.moveTo(dx * 8, dy * 8).lineTo(dx * 13, dy * 13).stroke({ color: INK.structure, width: 2 });
+        if (flash.kind === "clash") {
+          burst.circle(0, 0, 7).stroke({ color: 0xffffff, width: 4 });
+          burst.circle(0, 0, 12).stroke({ color: INK.structure, width: 2.5 });
+          for (const [dx, dy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as const) {
+            burst.moveTo(dx * 6, dy * 6).lineTo(dx * 13, dy * 13)
+              .stroke({ color: INK.structure, width: 2.5 });
+          }
+        } else if (flash.kind === "bump") {
+          burst.circle(0, 0, 9).stroke({ color: INK.fixture, width: 3 });
+        } else {
+          burst.circle(0, 0, 8).stroke({ color: INK.structure, width: 3.5 });
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+            burst.moveTo(dx * 8, dy * 8).lineTo(dx * 13, dy * 13).stroke({ color: INK.structure, width: 2 });
+          }
         }
         const target = snapshot.bots.find((bot) => bot.id === flash.targetId);
-        if (target) {
+        if (target && flash.kind === "hit") {
           pulse.circle(0, 0, target.radius * 0.5).stroke({ color: 0xffffff, width: 6 });
           pulse.circle(0, 0, target.radius * 0.72).stroke({ color: INK.structure, width: 2.5 });
         }
@@ -1715,7 +1774,7 @@ export class GameRenderer {
       // A short white-black pulse on the victim makes the contact readable on
       // a busy floor plan while the speculative shield break above conveys
       // the actual damage result without waiting for a network round trip.
-      if (target && age <= 110) {
+      if (target && flash.kind === "hit" && age <= 110) {
         const targetProgress = age / 110;
         view.pulse.visible = true;
         view.pulse.alpha = (1 - targetProgress) * 0.95;

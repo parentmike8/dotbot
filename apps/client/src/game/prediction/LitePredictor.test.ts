@@ -101,8 +101,63 @@ describe("LitePredictor", () => {
     const gap = Math.hypot(state.position.x - 1260, state.position.y - 850) - 48;
     expect(gap).toBeGreaterThanOrEqual(-0.5);
     expect(gap).toBeLessThanOrEqual(1.5);
-    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target" });
+    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "hit" });
     expect(predictor.consumeDashContact()).toBeNull();
+  });
+
+  it("predicts a point-blank dash as a bump without letting it become a hit", () => {
+    const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    predictor.setObstacles([{
+      id: "target",
+      position: { x: 1248, y: 850 },
+      radius: 24,
+      facing: Math.PI,
+      shieldSegments: [1, 1, 1],
+      hostile: true,
+    }]);
+
+    predictor.step({ ...moveRight, dash: true });
+
+    expect(predictor.current.dashActiveMs).toBe(0);
+    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "bump" });
+  });
+
+  it("lets a predicted dash escape away from a body it started touching", () => {
+    const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    predictor.setObstacles([{
+      id: "target",
+      position: { x: 1248, y: 850 },
+      radius: 24,
+      facing: Math.PI,
+      shieldSegments: [1, 1, 1],
+      hostile: true,
+    }]);
+
+    predictor.step({ move: { x: -1, y: 0 }, dash: true });
+
+    expect(predictor.current.position.x).toBeLessThan(1200);
+    expect(predictor.current.dashActiveMs).toBeGreaterThan(0);
+    expect(predictor.consumeDashContact()).toBeNull();
+  });
+
+  it("predicts two plated active dashes meeting as a clash", () => {
+    const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    predictor.setObstacles([{
+      id: "target",
+      position: { x: 1260, y: 850 },
+      radius: 24,
+      facing: Math.PI,
+      shieldSegments: [1, 1, 1],
+      hostile: true,
+      dashActiveMs: 100,
+    }]);
+
+    predictor.step({ ...moveRight, dash: true });
+    for (let tick = 0; tick < 12 && predictor.current.dashActiveMs > 0; tick += 1) {
+      predictor.step(moveRight);
+    }
+
+    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "clash" });
   });
 
   it("passes a predicted dash through friendly bodies untouched", () => {
