@@ -581,6 +581,8 @@ describe("Room input stream", () => {
     step();
     expect(member.lastAppliedSeq).toBe(4);
     expect(member.inputQueue).toHaveLength(0);
+    const streamedSnapshot = peer.sent.find(({ message }) => message.type === "snap");
+    expect(streamedSnapshot?.encoded).toBe(JSON.stringify(streamedSnapshot?.message));
 
     // Underrun: held movement keeps flowing, the ack does not advance.
     step();
@@ -718,9 +720,24 @@ describe("Room contract manifest", () => {
   });
 });
 
-function collectingPeer(id: string): { peer: RoomPeer; messages: ServerMessage[] } {
+function collectingPeer(id: string): {
+  peer: RoomPeer;
+  messages: ServerMessage[];
+  sent: Array<{ message: ServerMessage; encoded?: string }>;
+} {
   const messages: ServerMessage[] = [];
-  return { peer: { id, send: (message) => messages.push(message) }, messages };
+  const sent: Array<{ message: ServerMessage; encoded?: string }> = [];
+  return {
+    peer: {
+      id,
+      send: (message, _delivery, encoded) => {
+        messages.push(message);
+        sent.push({ message, encoded });
+      },
+    },
+    messages,
+    sent,
+  };
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

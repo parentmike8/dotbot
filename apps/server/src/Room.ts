@@ -15,7 +15,14 @@ import { KillCamHistory } from "./killCam";
 
 export interface RoomPeer {
   readonly id: string;
-  send(message: ServerMessage, delivery?: DeliveryClass): void;
+  /**
+   * `encoded` is the exact JSON payload already measured by the room.
+   *
+   * Stream messages are bandwidth-accounted before they reach the transport.
+   * Passing that encoding through avoids immediately serializing the same
+   * snapshot a second time in the WebSocket adapter.
+   */
+  send(message: ServerMessage, delivery?: DeliveryClass, encoded?: string): void;
 }
 
 type Member = LobbyMember & {
@@ -909,8 +916,9 @@ export class Room {
   }
 
   private sendStream(member: Member, message: ServerMessage, delivery: DeliveryClass = "reliable"): void {
-    this.bandwidthWindowBytes += Buffer.byteLength(JSON.stringify(message));
-    member.peer?.send(message, delivery);
+    const encoded = JSON.stringify(message);
+    this.bandwidthWindowBytes += Buffer.byteLength(encoded);
+    member.peer?.send(message, delivery, encoded);
   }
 
   private rollBandwidthWindow(now: number): void {

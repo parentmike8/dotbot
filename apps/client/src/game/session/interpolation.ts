@@ -8,6 +8,80 @@ export type TimelineSample = {
   underRunTicks: number;
 };
 
+type SnapshotIndexes = {
+  bots: ReadonlyMap<string, DotBotEntity>;
+  dots: ReadonlyMap<string, GameSnapshot["dots"][number]>;
+  mines: ReadonlyMap<string, MineEntity>;
+  coverages: ReadonlyMap<string, GameSnapshot["coverages"][number]>;
+  noises: ReadonlyMap<string, NoiseEvent>;
+  doors: ReadonlyMap<string, NonNullable<GameSnapshot["doors"]>[number]>;
+};
+
+type ArrayIndex<T> = {
+  refs: readonly T[];
+  keys: readonly string[];
+  byKey: ReadonlyMap<string, T>;
+};
+
+/**
+ * Keep a guarded lookup index with each entity array instead of rebuilding six
+ * Maps at 60 Hz. GameSnapshot is intentionally mutable today, including entity
+ * replacement/addition/removal in tests and downstream consumers, so a WeakMap
+ * hit alone is not proof that an index is current.
+ *
+ * The validation walk catches:
+ * - a replacement or reorder by reference,
+ * - an addition/removal by length,
+ * - an in-place id/key mutation by recomputing the key.
+ *
+ * Other in-place field mutations are already visible through the Map's live
+ * entity reference. A changed array gets a new WeakMap key. Rebuilding an array
+ * in place overwrites its one cache entry, releasing the old refs. Once an array
+ * leaves the snapshot/history buffer, both it and its index remain collectible.
+ */
+function guardedIndex<T>(keyFor: (value: T) => string): (values: readonly T[]) => ReadonlyMap<string, T> {
+  const indexes = new WeakMap<readonly T[], ArrayIndex<T>>();
+  return (values) => {
+    const cached = indexes.get(values);
+    if (cached && cached.refs.length === values.length) {
+      let valid = true;
+      for (let index = 0; index < values.length; index += 1) {
+        if (cached.refs[index] !== values[index] || cached.keys[index] !== keyFor(values[index])) {
+          valid = false;
+          break;
+        }
+      }
+      if (valid) return cached.byKey;
+    }
+
+    const refs = [...values];
+    const keys = refs.map(keyFor);
+    const byKey = new Map<string, T>();
+    for (let index = 0; index < refs.length; index += 1) byKey.set(keys[index], refs[index]);
+    indexes.set(values, { refs, keys, byKey });
+    return byKey;
+  };
+}
+
+const botIndex = guardedIndex<DotBotEntity>((bot) => bot.id);
+const dotIndex = guardedIndex<GameSnapshot["dots"][number]>((dot) => dot.id);
+const mineIndex = guardedIndex<MineEntity>((mine) => mine.id);
+const coverageIndex = guardedIndex<GameSnapshot["coverages"][number]>(coverageKey);
+const noiseIndex = guardedIndex<NoiseEvent>((noise) => noise.id);
+const doorIndex = guardedIndex<NonNullable<GameSnapshot["doors"]>[number]>((door) => door.id);
+const noDoors = Object.freeze([]) as readonly NonNullable<GameSnapshot["doors"]>[number][];
+
+function indexesFor(snapshot: GameSnapshot): SnapshotIndexes {
+  return {
+    bots: botIndex(snapshot.bots),
+    dots: dotIndex(snapshot.dots),
+    mines: mineIndex(snapshot.mines),
+    coverages: coverageIndex(snapshot.coverages),
+    noises: noiseIndex(snapshot.noises),
+    doors: doorIndex(snapshot.doors ?? noDoors),
+  };
+}
+
 export function sampleTimeline(
   samples: readonly TimelineSnapshot[],
   renderTick: number,
@@ -15,7 +89,10 @@ export function sampleTimeline(
 ): TimelineSample | null {
   if (samples.length === 0) return null;
   const newest = samples[samples.length - 1];
-  const bufferDepthSnapshots = samples.filter((sample) => sample.tick >= renderTick).length;
+  let bufferDepthSnapshots = 0;
+  for (const sample of samples) {
+    if (sample.tick >= renderTick) bufferDepthSnapshots += 1;
+  }
 
   if (renderTick <= samples[0].tick) {
     return { snapshot: samples[0].snapshot, bufferDepthSnapshots, underRunTicks: 0 };
@@ -80,7 +157,7 @@ export function capRemoteRecovery(
  * a dash stops on the enemy NOW, so their arc must break NOW.
  */
 export function fastForwardCombatState(sampled: GameSnapshot, freshest: GameSnapshot, ownBotId: string): GameSnapshot {
-  const freshBots = new Map(freshest.bots.map((bot) => [bot.id, bot]));
+  const freshBots = botIndex(freshest.bots);
   return {
     ...sampled,
     bots: sampled.bots.map((bot) => {
@@ -99,12 +176,14 @@ export function fastForwardCombatState(sampled: GameSnapshot, freshest: GameSnap
 }
 
 function interpolateSnapshot(older: GameSnapshot, newer: GameSnapshot, alpha: number, renderTick: number): GameSnapshot {
-  const newerBots = new Map(newer.bots.map((bot) => [bot.id, bot]));
-  const newerDots = new Map(newer.dots.map((dot) => [dot.id, dot]));
-  const newerMines = new Map(newer.mines.map((mine) => [mine.id, mine]));
-  const newerCoverages = new Map(newer.coverages.map((coverage) => [coverageKey(coverage), coverage]));
-  const newerNoises = new Map(newer.noises.map((noise) => [noise.id, noise]));
-  const newerDoors = new Map((newer.doors ?? []).map((door) => [door.id, door]));
+  const {
+    bots: newerBots,
+    dots: newerDots,
+    mines: newerMines,
+    coverages: newerCoverages,
+    noises: newerNoises,
+    doors: newerDoors,
+  } = indexesFor(newer);
 
   return {
     ...older,
@@ -130,16 +209,22 @@ function interpolateSnapshot(older: GameSnapshot, newer: GameSnapshot, alpha: nu
 
 function interpolateBot(bot: DotBotEntity, next: DotBotEntity | undefined, alpha: number): DotBotEntity {
   if (!next || bot.floorId !== next.floorId) return bot;
-  const nextPings = new Map(next.radarPings.map((ping) => [`${ping.x}:${ping.y}`, ping]));
+  // Radar rings are normally absent. Avoid constructing one empty Map per bot
+  // per display frame while preserving a freshly materialized output array.
+  let radarPings: DotBotEntity["radarPings"] = [];
+  if (bot.radarPings.length > 0) {
+    const nextPings = new Map(next.radarPings.map((ping) => [`${ping.x}:${ping.y}`, ping]));
+    radarPings = bot.radarPings.map((ping) => {
+      const nextPing = nextPings.get(`${ping.x}:${ping.y}`);
+      return nextPing ? { ...ping, ageMs: lerp(ping.ageMs, nextPing.ageMs, alpha) } : ping;
+    });
+  }
   return {
     ...bot,
     position: interpolatePoint(bot.position, next.position, alpha),
     facing: lerpAngle(bot.facing, next.facing, alpha),
     radarActiveMs: lerp(bot.radarActiveMs, next.radarActiveMs, alpha),
-    radarPings: bot.radarPings.map((ping) => {
-      const nextPing = nextPings.get(`${ping.x}:${ping.y}`);
-      return nextPing ? { ...ping, ageMs: lerp(ping.ageMs, nextPing.ageMs, alpha) } : ping;
-    }),
+    radarPings,
     dashCooldownMs: lerp(bot.dashCooldownMs, next.dashCooldownMs, alpha),
     dashActiveMs: lerp(bot.dashActiveMs, next.dashActiveMs, alpha),
     invulnerabilityMs: lerp(bot.invulnerabilityMs, next.invulnerabilityMs, alpha),
