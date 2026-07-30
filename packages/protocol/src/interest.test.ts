@@ -15,9 +15,19 @@ const meta: EntityMeta[] = [
   { id: "upper-enemy", name: "Upper", squadId: "b", isAmbient: false, maxShields: 3, radius: 24 },
 ];
 const bots: WireBot[] = [
-  bot("viewer", "outdoor", 500, 500, { b: ["h", null, null, null], c: 1, r: [100, [{ x: 10, y: 20, ageMs: 0 }]] }),
-  bot("mate", "lot6:B1", 500, 1200, { b: ["r", null, null, null], c: 1, r: [100, [{ x: 30, y: 40, ageMs: 0 }]] }),
-  bot("street-enemy", "outdoor", 1000, 660, { b: ["d", null, null, null], h: ["b:bed"], c: 2, r: [100, [{ x: 50, y: 60, ageMs: 0 }]] }),
+  bot("viewer", "outdoor", 500, 500, {
+    b: ["h", null, null, null], bs: ["mercy", null, null, null], ir: 3,
+    c: 1, r: [100, [{ x: 10, y: 20, ageMs: 0 }]],
+  }),
+  bot("mate", "lot6:B1", 500, 1200, {
+    b: ["r", null, null, null], bs: ["lot6", null, null, null], ir: 4,
+    c: 1, r: [100, [{ x: 30, y: 40, ageMs: 0 }]],
+  }),
+  bot("street-enemy", "outdoor", 1000, 660, {
+    b: ["d", null, null, null], h: ["b:bed"],
+    bs: ["yard", null, null, null], hs: ["mercy"], ir: 7,
+    c: 2, r: [100, [{ x: 50, y: 60, ageMs: 0 }]],
+  }),
   bot("upper-enemy", "mercy:F1", 400, 250),
 ];
 const dots: FullWireSnapshot["dots"] = [
@@ -61,11 +71,14 @@ describe("filterForViewer", () => {
     const own = filtered.bots.find((entry) => entry.i === "viewer")!;
     const mate = filtered.bots.find((entry) => entry.i === "mate")!;
     const enemy = filtered.bots.find((entry) => entry.i === "street-enemy")!;
-    expect(own).toMatchObject({ b: ["h", null, null, null], h: [], c: 1 });
-    expect(mate).toMatchObject({ b: ["r", null, null, null], h: [], c: 1 });
+    expect(own).toMatchObject({ b: ["h", null, null, null], h: [], bs: ["mercy", null, null, null], ir: 3, c: 1 });
+    expect(mate).toMatchObject({ b: ["r", null, null, null], h: [], bs: ["lot6", null, null, null], ir: 4, c: 1 });
     expect(enemy).toMatchObject({ c: 2 });
     expect(enemy.b).toBeUndefined();
     expect(enemy.h).toBeUndefined();
+    expect(enemy.bs).toBeUndefined();
+    expect(enemy.hs).toBeUndefined();
+    expect(enemy.ir).toBeUndefined();
   });
 
   it("opens a rival's inventory once their body has been searched, and not before", () => {
@@ -80,10 +93,21 @@ describe("filterForViewer", () => {
       viewerCtx,
     ).bots.find((entry) => entry.i === "street-enemy")!;
 
-    expect(down({ s: "downed" }).b).toBeUndefined();
+    expect(down({ s: "downed" })).toMatchObject({
+      b: undefined, h: undefined, bs: undefined, hs: undefined, ir: undefined,
+    });
     // Searched, but on its feet again — a revive closes the body back up.
-    expect(down({ sr: true }).b).toBeUndefined();
-    expect(down({ s: "downed", sr: true })).toMatchObject({ b: ["d", null, null, null], h: ["b:bed"], c: 2 });
+    expect(down({ sr: true })).toMatchObject({
+      b: undefined, h: undefined, bs: undefined, hs: undefined, ir: undefined,
+    });
+    expect(down({ s: "downed", sr: true })).toMatchObject({
+      b: ["d", null, null, null],
+      h: ["b:bed"],
+      bs: ["yard", null, null, null],
+      hs: ["mercy"],
+      ir: 7,
+      c: 2,
+    });
   });
 
   it("ships radar pings only for the viewer's own bot", () => {

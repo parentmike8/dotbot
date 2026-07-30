@@ -9,7 +9,7 @@ import { arrivalGroups, selectBaseMap, spawnAt } from "../mapSelection";
 import { BodyPromptView, DownedSelfView } from "./downed/DownedPrompts";
 import { useDownedPrompts } from "./downed/useDownedPrompts";
 import {
-  BayBank, DebugPanel, FloorRail, HoldPicker, PingPicker, RunReadout, SettingsPanel, SpawnPicker, TouchControls,
+  BayBank, DebugPanel, FloorRail, InventoryPanel, PingPicker, RunReadout, SettingsPanel, SpawnPicker, TouchControls,
 } from "./hud/Overlay";
 import { hudSkinClass } from "./hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "./hud/hud";
@@ -73,13 +73,13 @@ function GameSession({
 }) {
   const {
     hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, settingsVisible, toggleSettings,
-    joystick, joystickHandlers, queueDash, useBay, swapBayItem, leaveRun, selectDownedVerb, plea,
+    joystick, joystickHandlers, queueDash, useBay, swapBayItem, dropItem, leaveRun, selectDownedVerb, plea,
+    inventoryVisible, toggleInventory, closeInventory,
     takeFromBody, setBodyAction,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker, spectating,
     worldMapVisible, toggleWorldMap, closeWorldMap, markExterior, chooseExteriorMark, squadMarks,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ map: requestedMap, spectate: true });
-  const [swapBay, setSwapBay] = useState<number | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === playerId);
   const { prompt, self: downed, onVerb } = useDownedPrompts({
     snapshot, events, playerId, spectating, runOver: runResult !== null,
@@ -133,18 +133,19 @@ function GameSession({
         slots={defaultGameConfig.baySlots}
         holdSlots={defaultGameConfig.holdSlots}
         onUse={useBay}
-        onSwapRequest={setSwapBay}
+        onOpen={toggleInventory}
+        open={inventoryVisible}
       />
 
-      {swapBay !== null && player?.hold.length ? (
-        <HoldPicker
-          bay={swapBay}
-          hold={player.hold}
-          onClose={() => setSwapBay(null)}
-          onChoose={(holdIndex) => {
-            swapBayItem(swapBay, holdIndex);
-            setSwapBay(null);
-          }}
+      {inventoryVisible && player && runResult === null ? (
+        <InventoryPanel
+          player={player}
+          slots={defaultGameConfig.baySlots}
+          holdSlots={defaultGameConfig.holdSlots}
+          onUse={useBay}
+          onSwap={swapBayItem}
+          onDrop={dropItem}
+          onClose={closeInventory}
         />
       ) : null}
 

@@ -1,4 +1,4 @@
-import type { BayIndex, DownedVerb, GameConfig, MapDocument, PingKind, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
+import type { BayIndex, DownedVerb, DropCommand, GameConfig, MapDocument, PingKind, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
@@ -44,6 +44,11 @@ export type WireBot = {
   /** Detailed inventory is present only for the viewer's squad. */
   b?: (WireItemCode | null)[];
   h?: WireItemCode[];
+  /** Optional provenance sidecars aligned with `b` and `h`. */
+  bs?: (string | null)[];
+  hs?: (string | null)[];
+  /** Authoritative inventory mutation revision. */
+  ir?: number;
   /** Always present, including privacy-redacted rivals. */
   c?: number;
   /** Searched: this body is open, so `b`/`h` are sent to everyone who can see it. */
@@ -63,6 +68,10 @@ export type WireDot = {
   radius: number;
   floorId: string;
   it: WireItemCode;
+  /** Optional item provenance sidecar. */
+  src?: string;
+  /** Runtime rather than authored map definition. */
+  rt?: true;
   active: boolean;
   captureProgressMs?: number;
 };
@@ -112,6 +121,10 @@ export type WireSnapshot = {
   ack: number;
   bots: WireBot[];
   dotDeltas?: WireDotDelta[];
+  /** Full definitions for runtime dots created after the baseline. */
+  dotAdds?: WireDot[];
+  /** Complete current runtime-dot set, repeated in every latest snapshot. */
+  runtimeDots?: WireDot[];
   dotSync?: WireDotContextSync[];
   mines?: WireMine[];
   coverages?: import("@dotbot/game/types").CoverageSnapshot[];
@@ -130,6 +143,69 @@ export type MatchIntel = {
     floorId: string;
     expiresAtTick: number;
   };
+};
+
+export type KillCamActor = {
+  id: string;
+  position: { x: number; y: number };
+  facing: number;
+  floorId: string;
+  shieldSegments: number[];
+  dashActiveMs: number;
+  state: "alive" | "downed";
+};
+
+export type KillCamFrame = {
+  tick: number;
+  victim: KillCamActor;
+  /**
+   * Present only while the historical victim could legitimately see the
+   * source. An absent actor is not a stale last-known position.
+   */
+  source?: KillCamActor;
+  /** Nearby closed doors that shaped the victim's historical fog. */
+  blockingDoorIds: string[];
+};
+
+export type KillCamClip = {
+  id: string;
+  victimId: string;
+  /** Omitted for mines, environment, and unknown sources. */
+  sourceBotId?: string;
+  cause: import("@dotbot/game/types").DownCause;
+  startTick: number;
+  deathTick: number;
+  tickHz: number;
+  frames: KillCamFrame[];
+};
+
+export type WireKillCamActor = [
+  id: string,
+  x: number,
+  y: number,
+  facing: number,
+  floorId: string,
+  shieldSegments: number[],
+  dashActiveMs: number,
+  downed?: 1,
+];
+
+export type WireKillCamFrame = [
+  tick: number,
+  victim: WireKillCamActor,
+  source: WireKillCamActor | null,
+  blockingDoorIds?: string[],
+];
+
+export type WireKillCamClip = {
+  i: string;
+  v: string;
+  s?: string;
+  c: [kind: 0 | 1 | 2 | 3, tick: number, x: number, y: number, dx: number, dy: number];
+  a: number;
+  z: number;
+  h: number;
+  f: WireKillCamFrame[];
 };
 
 export type WireSimEvent =
@@ -152,14 +228,14 @@ export type WireSimEvent =
       direction: { x: number; y: number };
       tick: number;
     }
-  | { type: "downed"; botId: string; byBotId?: string }
+  | { type: "downed"; botId: string; byBotId?: string; cause?: import("@dotbot/game/types").DownCause }
   | { type: "searched"; botId: string; byBotId: string }
-  | { type: "looted"; botId: string; byBotId: string; items: WireItemCode[] }
+  | { type: "looted"; botId: string; byBotId: string; items: WireItemCode[]; itemSources?: (string | null)[] }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "recruited"; botId: string; byBotId: string; fromSquadId: string; squadId: string }
   | { type: "plea"; botId: string; squadId: string; position: { x: number; y: number }; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
-  | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[] }
+  | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[]; itemSources?: (string | null)[] }
   | { type: "mineRotated"; botId: string; mineId: string }
   | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: { x: number; y: number }; floorId: string }
   | {
@@ -187,6 +263,7 @@ export type WireInputFrame = {
   viewTick?: number;
   useBay?: BayIndex;
   swapBay?: { bayIndex: BayIndex; holdIndex: number };
+  drop?: DropCommand;
   downedVerb?: DownedVerb;
   take?: TakeCommand;
   plea?: boolean;
@@ -209,6 +286,7 @@ export type ActionEdges = {
   dash?: boolean;
   useBay?: BayIndex;
   swapBay?: unknown;
+  drop?: unknown;
   take?: unknown;
   plea?: boolean;
   ping?: unknown;
@@ -218,6 +296,7 @@ export function carriesAction(frame: ActionEdges): boolean {
   return frame.dash === true
     || frame.useBay !== undefined
     || frame.swapBay !== undefined
+    || frame.drop !== undefined
     || frame.take !== undefined
     || frame.plea === true
     // A ping is the most obviously one-shot input there is: shedding it loses the mark
@@ -247,6 +326,7 @@ export type ClientMessage =
       viewTick?: number;
       useBay?: BayIndex;
       swapBay?: { bayIndex: BayIndex; holdIndex: number };
+      drop?: DropCommand;
       downedVerb?: DownedVerb;
       take?: TakeCommand;
       plea?: boolean;
@@ -285,6 +365,8 @@ export type ServerMessage =
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }
   | { type: "ev"; events: WireSimEvent[] }
+  /** Reliable and addressed only to the victim. Never broadcast. */
+  | { type: "killCam"; clip: WireKillCamClip }
   | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptItems: WireItemCode[]; lostItems: WireItemCode[]; learnedBlueprints: string[]; contractCompletions?: Array<{ contractId: string; title: string; payout: WireItemCode[] }>; persistenceStatus?: "saved" | "failed" }
   | { type: "matchEnd"; reason: string }
   | { type: "pong"; cts: number; sts: number; tick?: number }

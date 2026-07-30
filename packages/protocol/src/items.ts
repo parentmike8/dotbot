@@ -3,6 +3,7 @@ import type { Item, WireLoadoutCode, WirePowerupCode } from "@dotbot/game/types"
 export type { WirePowerupCode } from "@dotbot/game/types";
 export type { WireLoadoutCode } from "@dotbot/game/types";
 export type WireItemCode = WireLoadoutCode | `b:${string}`;
+export type WireItemPayload = WireItemCode | { c: WireItemCode; s: string };
 
 export function itemToCode(item: Item): WireItemCode {
   if (item.kind === "blueprint") return `b:${item.blueprintId}`;
@@ -20,4 +21,15 @@ export function itemFromCode(code: WireItemCode): Item {
     case "m": return { kind: "mine" };
     default: throw new Error(`Unknown wire item code: ${code}`);
   }
+}
+
+/** Compact in-run item payload, extended only when provenance exists. */
+export function itemToWire(item: Item): WireItemPayload {
+  const code = itemToCode(item);
+  return item.sourceBuildingId ? { c: code, s: item.sourceBuildingId } : code;
+}
+
+export function itemFromWire(payload: WireItemPayload): Item {
+  if (typeof payload === "string") return itemFromCode(payload);
+  return { ...itemFromCode(payload.c), sourceBuildingId: payload.s };
 }

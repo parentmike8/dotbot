@@ -174,7 +174,7 @@ button {
 .hud-plate,
 .bay-bank,
 .debug-panel,
-.hold-picker,
+.inventory-panel,
 .settings-panel,
 .insertion-card,
 .net-game-connection {
@@ -425,7 +425,7 @@ button {
   pointer-events: auto;
 }
 
-.hold-picker header,
+.inventory-panel header,
 .settings-panel header {
   display: flex;
   align-items: center;
@@ -433,7 +433,7 @@ button {
   gap: 10px;
 }
 
-.hold-picker header button,
+.inventory-panel header button,
 .settings-panel header button {
   border: 0;
   background: transparent;
@@ -451,7 +451,11 @@ button {
   gap: 5px;
 }
 
-.bay-slot { display: grid; gap: 2px; }
+.bay-bank-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
 
 .bay-button {
   position: relative;
@@ -473,30 +477,41 @@ button {
 .bay-button small { position: absolute; top: 3px; left: 4px; color: var(--muted-strong); font: 700 7px/1 var(--font-mono); }
 .bay-button strong { font: 900 21px/1 var(--font-mono); }
 
-.swap-control {
-  padding: 3px 0;
+.inventory-access {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-width: 66px;
+}
+
+.inventory-open {
+  padding: 0 8px;
   border: 1px solid var(--hairline);
   background: var(--panel);
   color: var(--muted-strong);
-  font: 800 6px/1 var(--font-mono);
+  font: 800 7px/1 var(--font-mono);
   letter-spacing: .08em;
   text-transform: uppercase;
   cursor: pointer;
 }
 
+.inventory-open:hover,
+.inventory-open[aria-expanded="true"] {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
 .hold-chip {
-  margin-top: 6px;
-  padding-top: 5px;
-  border-top: 1px solid var(--hairline);
+  padding-top: 4px;
   color: var(--muted-strong);
-  font: 700 8px/1 var(--font-mono);
-  letter-spacing: .12em;
+  font: 700 7px/1 var(--font-mono);
+  letter-spacing: .08em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .hold-chip strong { color: var(--ink); }
 
-.hold-picker,
+.inventory-panel,
 .settings-panel {
   position: absolute;
   z-index: 15;
@@ -507,22 +522,161 @@ button {
   letter-spacing: .08em;
 }
 
-.hold-picker { top: 132px; right: 14px; }
-.hold-picker p { margin: 8px 0; color: var(--muted-strong); font-size: 7px; letter-spacing: .08em; }
-.hold-picker > div { display: grid; gap: 4px; }
-.hold-picker > div button {
-  display: flex;
-  gap: 8px;
-  padding: 7px;
+.inventory-panel {
+  z-index: 25;
+  top: 88px;
+  right: 14px;
+  width: min(540px, calc(100vw - 28px));
+  max-height: calc(100vh - 108px);
+  overflow: auto;
+}
+
+.inventory-panel header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.inventory-panel header small {
+  color: var(--muted-strong);
+  font-size: 7px;
+}
+
+.inventory-panel section {
+  margin-top: 11px;
+  padding-top: 9px;
+  border-top: 1px solid var(--hairline);
+}
+
+.inventory-panel h3 {
+  margin: 0 0 7px;
+  color: var(--muted-strong);
+  font: 800 8px/1 var(--font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.inventory-bays {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.inventory-slot {
+  min-width: 0;
   border: 1px solid var(--hairline);
   background: var(--panel);
   color: var(--ink);
-  text-align: left;
+}
+
+.inventory-slot > span {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 6px;
+  overflow: hidden;
+}
+
+.inventory-slot > span small {
+  color: var(--muted-strong);
+  font-size: 6px;
+  text-transform: uppercase;
+}
+
+.inventory-slot > span strong {
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.inventory-slot.powerup > span strong,
+.inventory-hold-slot.powerup .inventory-hold-select strong { color: var(--item-powerup); }
+.inventory-slot.blueprint > span strong,
+.inventory-hold-slot.blueprint .inventory-hold-select strong { color: var(--item-blueprint); }
+
+.inventory-slot-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid var(--hairline);
+}
+
+.inventory-slot-actions button,
+.inventory-hold-select,
+.inventory-drop {
+  min-height: 29px;
+  border: 0;
+  border-right: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--muted-strong);
+  font: 800 6px/1 var(--font-mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
   cursor: pointer;
 }
-.hold-picker > div button:hover { border-color: var(--ink); }
-.hold-picker > div button .powerup { color: var(--item-powerup); }
-.hold-picker > div button .blueprint { color: var(--item-blueprint); }
+
+.inventory-slot-actions button:last-child { border-right: 0; }
+.inventory-slot-actions button:hover:not(:disabled),
+.inventory-hold-select:hover:not(:disabled),
+.inventory-drop:hover:not(:disabled) { color: var(--ink); }
+.inventory-slot-actions button:disabled,
+.inventory-hold-select:disabled,
+.inventory-drop:disabled { cursor: default; opacity: .34; }
+
+.inventory-hold-heading {
+  display: flex;
+  justify-content: space-between;
+}
+
+.inventory-hold-heading span,
+.inventory-guidance {
+  color: var(--muted-strong);
+  font-size: 7px;
+}
+
+.inventory-guidance {
+  min-height: 9px;
+  margin: 0 0 7px;
+}
+
+.inventory-hold {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.inventory-hold-slot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.inventory-hold-slot.is-selected {
+  border-color: var(--squad-cyan);
+  box-shadow: inset 0 0 0 1px var(--squad-cyan);
+}
+
+.inventory-hold-select {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  padding: 5px 6px;
+  overflow: hidden;
+  text-align: left;
+}
+
+.inventory-hold-select small { color: var(--muted-strong); }
+.inventory-hold-select strong { font-size: 15px; }
+.inventory-hold-select span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inventory-drop {
+  width: 43px;
+  border-right: 0;
+  border-left: 1px solid var(--hairline);
+}
 
 .settings-panel { top: 50%; left: 50%; transform: translate(-50%, -50%); }
 .settings-panel small { display: block; margin-top: 4px; color: var(--muted-strong); font-size: 7px; }
@@ -1114,9 +1268,7 @@ button {
 }
 
 @media (max-width: 620px) {
-  /* Nothing is centred at the top any more, so both corners keep their own row. */
-  .hud-top-left,
-  .hud-top-right {
+  .hud-top-left {
     top: max(10px, env(safe-area-inset-top));
   }
 
@@ -1125,7 +1277,12 @@ button {
   }
 
   .hud-top-right {
-    right: max(10px, env(safe-area-inset-right));
+    top: auto;
+    right: auto;
+    bottom: max(22px, calc(env(safe-area-inset-bottom) + 14px));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 14;
   }
 
   .run-readout dd {
@@ -1199,21 +1356,52 @@ button {
     height: 82px;
     font-size: 12px;
   }
+
+  .inventory-panel {
+    top: auto;
+    right: auto;
+    bottom: max(138px, calc(env(safe-area-inset-bottom) + 130px));
+    left: 50%;
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 150px);
+    transform: translateX(-50%);
+  }
+
+  .inventory-hold {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 430px) {
   .bay-bank {
-    padding: 6px;
+    padding: 5px;
   }
 
   .bay-strip {
-    gap: 3px;
+    gap: 2px;
   }
 
   .bay-button {
-    min-width: 39px;
-    height: 40px;
+    min-width: 32px;
+    height: 38px;
   }
+
+  .bay-button strong { font-size: 18px; }
+  .inventory-access { min-width: 45px; }
+  .inventory-open { padding: 0 5px; }
+  .hold-chip { font-size: 6px; letter-spacing: 0; }
+
+  .inventory-panel {
+    padding: 10px;
+  }
+
+  .inventory-bays { gap: 4px; }
+  .inventory-slot > span {
+    grid-template-columns: auto auto;
+    gap: 4px;
+  }
+  .inventory-slot > span { font-size: 7px; }
+  .inventory-slot-actions button { min-width: 0; font-size: 5.5px; }
 }
 
 .manifest-items {
@@ -2156,7 +2344,8 @@ button {
 .hud-skin .restart-button,
 .hud-skin .settings-button,
 .hud-skin .bay-button,
-.hud-skin .swap-control {
+.hud-skin .inventory-open,
+.hud-skin .inventory-panel {
   border-radius: 5px;
   backdrop-filter: blur(10px) saturate(.9);
 }
@@ -2272,7 +2461,8 @@ button {
 .hud-skin-deep .restart-button,
 .hud-skin-deep .settings-button,
 .hud-skin-deep .bay-button,
-.hud-skin-deep .swap-control {
+.hud-skin-deep .inventory-open,
+.hud-skin-deep .inventory-panel {
   border-color: transparent;
   border-radius: 9px;
   backdrop-filter: blur(18px) saturate(.85);
@@ -2301,7 +2491,8 @@ button {
 .hud-skin-rim .restart-button,
 .hud-skin-rim .settings-button,
 .hud-skin-rim .bay-button,
-.hud-skin-rim .swap-control {
+.hud-skin-rim .inventory-open,
+.hud-skin-rim .inventory-panel {
   border: none;
   border-radius: 4px;
   backdrop-filter: blur(13px) saturate(.88);

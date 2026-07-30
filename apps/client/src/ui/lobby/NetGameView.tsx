@@ -1,13 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import type { NetSession } from "../../game/session/NetSession";
 import { ManifestScreen } from "../ManifestScreen";
 import { FeedbackControls } from "../FeedbackControls";
+import { KillCamOverlay } from "../downed/KillCamOverlay";
 import { BodyPromptView, DownedSelfView } from "../downed/DownedPrompts";
 import { useDownedPrompts } from "../downed/useDownedPrompts";
 import {
-  BayBank, DebugPanel, FloorRail, HoldPicker, PingPicker, RunReadout, SettingsPanel, TouchControls,
+  BayBank, DebugPanel, FloorRail, InventoryPanel, PingPicker, RunReadout, SettingsPanel, TouchControls,
 } from "../hud/Overlay";
 import { hudSkinClass } from "../hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "../hud/hud";
@@ -35,12 +36,12 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
-    selectDownedVerb, plea, useBay, swapBayItem, takeFromBody, setBodyAction,
+    killCam, skipKillCam, selectDownedVerb, plea, useBay, swapBayItem, dropItem, takeFromBody, setBodyAction,
+    inventoryVisible, toggleInventory, closeInventory, setConnectionBlocked,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker,
     worldMapVisible, toggleWorldMap, closeWorldMap, markExterior, chooseExteriorMark, squadMarks,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ session, spectate: true, worldMapEnabled: !connectionMessage });
-  const [swapBay, setSwapBay] = useState<number | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
   const { prompt, self: downed, onVerb } = useDownedPrompts({
@@ -61,8 +62,8 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   );
 
   useEffect(() => {
-    if (connectionMessage && worldMapVisible) closeWorldMap();
-  }, [closeWorldMap, connectionMessage, worldMapVisible]);
+    setConnectionBlocked(Boolean(connectionMessage));
+  }, [connectionMessage, setConnectionBlocked]);
 
   return (
     <main
@@ -81,6 +82,8 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       data-hit-confirm-p90={networkDebug?.hitConfirmationP90Ms}
       data-frame-p99={networkDebug?.frameP99Ms}
       data-buffer-ms={networkDebug?.interpolationDelayMs}
+      data-kill-cam={killCam ? "playing" : undefined}
+      data-kill-cam-cause={killCam?.clip.cause.kind}
     >
       <div ref={hostRef} className="game-canvas" {...pingHandlers} />
 
@@ -107,29 +110,31 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         <span className="room-chip">Room {roomCode}</span>
       </RunReadout>
 
-      {playing ? (
+      {runResult === null && player ? (
         <BayBank
           player={player}
           slots={session.config.baySlots}
           holdSlots={session.config.holdSlots}
           onUse={useBay}
-          onSwapRequest={setSwapBay}
+          onOpen={toggleInventory}
+          open={inventoryVisible}
+          disabled={Boolean(connectionMessage) || Boolean(killCam)}
         />
       ) : null}
 
-      {swapBay !== null && player?.hold.length ? (
-        <HoldPicker
-          bay={swapBay}
-          hold={player.hold}
-          onClose={() => setSwapBay(null)}
-          onChoose={(holdIndex) => {
-            swapBayItem(swapBay, holdIndex);
-            setSwapBay(null);
-          }}
+      {inventoryVisible && player && runResult === null && !connectionMessage && !killCam ? (
+        <InventoryPanel
+          player={player}
+          slots={session.config.baySlots}
+          holdSlots={session.config.holdSlots}
+          onUse={useBay}
+          onSwap={swapBayItem}
+          onDrop={dropItem}
+          onClose={closeInventory}
         />
       ) : null}
 
-      {settingsVisible ? (
+      {settingsVisible && !connectionMessage && !killCam ? (
         <SettingsPanel onClose={toggleSettings}>
           <FeedbackControls
             preferences={feedbackPreferences}
@@ -174,13 +179,21 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         </aside>
       ) : null}
 
-      {mineRotated ? <div className="spectating-chip" aria-live="polite">Mine rotated</div> : null}
+      {killCam ? (
+        <KillCamOverlay
+          label={killCam.label}
+          progress={killCam.progress}
+          onSkip={skipKillCam}
+        />
+      ) : null}
 
-      {spectating ? (
+      {!killCam && mineRotated ? <div className="spectating-chip" aria-live="polite">Mine rotated</div> : null}
+
+      {!killCam && spectating ? (
         <button className="spectating-chip" type="button" onPointerDown={cycleSpectator}>
           Watching {spectating.name}
         </button>
-      ) : spectateMode ? <div className="spectating-chip">Squad down · map overview</div> : null}
+      ) : !killCam && spectateMode ? <div className="spectating-chip">Squad down · map overview</div> : null}
 
       {spectateMode ? (
         <button className="leave-to-base" type="button" onClick={() => {

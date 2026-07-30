@@ -1,5 +1,5 @@
 import type { GameSnapshot, InputCommand, Item, MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
-import type { MatchIntel } from "@dotbot/protocol";
+import type { EntityMeta, KillCamClip, MatchIntel } from "@dotbot/protocol";
 import type { NetworkDebugStats } from "./netgraph";
 
 export type RunState =
@@ -18,6 +18,7 @@ export interface GameSession {
   readonly map: MapDocument;
   readonly playerId: string;
   readonly intel?: MatchIntel;
+  getEntityMeta?(id: string): EntityMeta | undefined;
   /** Async init (Rapier load today; WS connect for M1's NetSession). */
   start(): Promise<void>;
   /** Latest input intent for the local player; called once per render frame. */
@@ -31,6 +32,10 @@ export interface GameSession {
   update(elapsedMs: number): GameSnapshot | null;
   /** Events since last drain (manifest/UI consumption lands in M1). */
   drainEvents(): SimEvent[];
+  /** Private authoritative death replays addressed to this player. */
+  drainKillCams?(): KillCamClip[];
+  /** Suspend live prediction/movement while a render-only replay owns the view. */
+  setReplayActive?(active: boolean): void;
   /** Authoritative run outcome for this session implementation. */
   getRunState(): RunState;
   /** Leave while downed. Local ends immediately; network leaves the run. */

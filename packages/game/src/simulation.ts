@@ -243,6 +243,7 @@ type AiAlert = {
 };
 
 type InternalBot = DotBotEntity & {
+  inventoryRevision: number;
   factionKind: BotFactionKind;
   patrol?: PatrolRoute;
   spawn: Vec2;
@@ -333,7 +334,7 @@ type InternalBot = DotBotEntity & {
   pleaCooldownMs: number;
   pingCooldownMs: number;
   radarPingElapsedMs: number;
-  activeSwap?: { bayIndex: BayIndex; holdIndex: number; progressMs: number };
+  activeSwap?: { bayIndex: BayIndex; holdIndex: number; inventoryRevision: number; progressMs: number };
 };
 
 type InternalDot = DotEntity;
@@ -414,6 +415,7 @@ export class DotBotSimulation {
   private readonly squadHostilityUntil = new Map<string, number>();
   private noiseSeq = 0;
   private mineSeq = 0;
+  private dropSeq = 0;
 
   private constructor(map: MapDocument, config: GameConfig) {
     this.map = map;
@@ -562,6 +564,7 @@ export class DotBotSimulation {
       shieldSegments,
       bays: normalizedBays(spawn, this.config),
       hold: factionKind === "ambient" ? [] : (spawn.hold ?? []).slice(0, this.config.holdSlots),
+      inventoryRevision: 0,
       carriedCount: 0,
       searched: false,
       pleaded: false,
@@ -632,6 +635,7 @@ export class DotBotSimulation {
       dash: (current?.dash ?? false) || input.dash,
       useBay: current?.useBay ?? input.useBay,
       swapBay: current?.swapBay ?? input.swapBay,
+      drop: current?.drop ?? input.drop,
       downedVerb: input.downedVerb,
       take: current?.take ?? input.take,
       plea: (current?.plea ?? false) || input.plea,
@@ -989,43 +993,45 @@ export class DotBotSimulation {
         continue;
       }
 
+      const input = this.inputs.get(bot.id);
+      const dropped = input?.drop && !bot.isAmbient ? this.dropItem(bot, input.drop) : false;
+
       if (bot.state !== "alive") {
-        const input = this.inputs.get(bot.id);
         if (bot.state === "downed" && input?.plea && !bot.isAmbient && bot.pleaCooldownMs <= 0) {
           this.pleaFor(bot);
         }
         // A downed bot may still mark. Watching a rival walk past while you wait for a
         // pickup is exactly when telling your squad where they are matters most.
         if (input?.ping) this.pingFor(bot, input.ping.kind, input.ping.position, input.ping.floorId);
-        if (input?.dash || input?.useBay !== undefined || input?.swapBay || input?.plea || input?.ping) {
-          this.inputs.set(bot.id, { move: zeroVec(), dash: false, plea: false });
+        if (input?.dash || input?.useBay !== undefined || input?.swapBay || input?.drop || input?.plea || input?.ping) {
+          this.inputs.set(bot.id, { move: zeroVec(), dash: false, plea: false, drop: undefined });
         }
         continue;
       }
 
-      const input = this.inputs.get(bot.id) ?? { move: zeroVec(), dash: false };
-      bot.desiredMove = bot.activeSwap ? zeroVec() : input.move;
+      const aliveInput = input ?? { move: zeroVec(), dash: false };
+      bot.desiredMove = bot.activeSwap ? zeroVec() : aliveInput.move;
 
-      if (length(input.move) > 0.05) {
-        bot.lastAim = input.move;
+      if (length(aliveInput.move) > 0.05) {
+        bot.lastAim = aliveInput.move;
       }
 
-      if (input.useBay !== undefined && isSlot(bot.bays, input.useBay)) {
-        this.fireBay(bot, input.useBay);
+      if (!dropped && aliveInput.useBay !== undefined && isSlot(bot.bays, aliveInput.useBay)) {
+        this.fireBay(bot, aliveInput.useBay);
       }
-      if (input.swapBay && !bot.activeSwap) {
-        const { bayIndex, holdIndex } = input.swapBay;
+      if (!dropped && aliveInput.swapBay && !bot.activeSwap) {
+        const { bayIndex, holdIndex } = aliveInput.swapBay;
         if (isSlot(bot.bays, bayIndex) && isSlot(bot.hold, holdIndex)) {
-          bot.activeSwap = { bayIndex, holdIndex, progressMs: 0 };
+          bot.activeSwap = { bayIndex, holdIndex, inventoryRevision: bot.inventoryRevision, progressMs: 0 };
           bot.desiredMove = zeroVec();
         }
       }
 
-      if (input.take) {
-        this.takeFromBody(bot, input.take);
+      if (!dropped && aliveInput.take) {
+        this.takeFromBody(bot, aliveInput.take);
       }
 
-      if (input.dash && !bot.activeSwap) {
+      if (aliveInput.dash && !bot.activeSwap) {
         const overcharged = bot.dashOverchargeCharges > 0;
         if ((overcharged || bot.dashCooldownMs <= 0) && bot.dashActiveMs <= 0) {
           bot.dashActiveMs = this.config.dashDurationMs;
@@ -1038,19 +1044,69 @@ export class DotBotSimulation {
         // A press is consumed on the tick it is considered, fired or not.
         // Pressing during cooldown must never bank a dash for later.
       }
-      if (input.ping) this.pingFor(bot, input.ping.kind, input.ping.position, input.ping.floorId);
-      if (input.dash || input.useBay !== undefined || input.swapBay || input.take || input.plea || input.ping) {
+      if (aliveInput.ping) this.pingFor(bot, aliveInput.ping.kind, aliveInput.ping.position, aliveInput.ping.floorId);
+      if (aliveInput.dash || aliveInput.useBay !== undefined || aliveInput.swapBay || aliveInput.drop || aliveInput.take || aliveInput.plea || aliveInput.ping) {
         this.inputs.set(bot.id, {
-          ...input, dash: false, useBay: undefined, swapBay: undefined, take: undefined, plea: false, ping: undefined,
+          ...aliveInput, dash: false, useBay: undefined, swapBay: undefined, drop: undefined, take: undefined, plea: false, ping: undefined,
         });
       }
     }
+  }
+
+  private dropItem(bot: InternalBot, request: NonNullable<InputCommand["drop"]>): boolean {
+    if (
+      !Number.isInteger(request.index)
+      || request.index < 0
+      || !Number.isInteger(request.revision)
+      || request.revision !== bot.inventoryRevision
+    ) return false;
+    let item: Item | null = null;
+    if (request.from === "bay") {
+      if (!isSlot(bot.bays, request.index)) return false;
+      item = bot.bays[request.index];
+      if (!item || !sameItem(item, request.expected)) return false;
+      bot.bays[request.index] = null;
+    } else if (request.from === "hold") {
+      if (!isSlot(bot.hold, request.index)) return false;
+      item = bot.hold[request.index] ?? null;
+      if (!item || !sameItem(item, request.expected)) return false;
+      bot.hold.splice(request.index, 1);
+    } else {
+      return false;
+    }
+    bot.inventoryRevision += 1;
+
+    // A hold splice can retarget an in-progress swap. Cancel it instead of
+    // letting a stale index exchange a different item.
+    if (bot.activeSwap) {
+      bot.activeSwap = undefined;
+      this.coverages.delete(`swap:${bot.id}`);
+    }
+
+    let id: string;
+    do {
+      id = `runtime-drop-${this.dropSeq}`;
+      this.dropSeq += 1;
+    } while (this.dots.has(id));
+
+    this.dots.set(id, {
+      id,
+      position: { ...bot.position },
+      radius: this.config.dotRadius,
+      item: { ...item },
+      floorId: bot.floorId,
+      active: true,
+      captureProgressMs: 0,
+      runtime: true,
+    });
+    return true;
   }
 
   private fireBay(bot: InternalBot, bayIndex: BayIndex): void {
     const item = bot.bays[bayIndex];
     if (!item || item.kind === "blueprint") return;
     bot.bays[bayIndex] = null;
+    bot.inventoryRevision += 1;
     if (item.kind === "mine") {
       this.placeMine(bot);
       return;
@@ -1154,7 +1210,13 @@ export class DotBotSimulation {
     this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation, owner);
 
     if (armourHit.core) {
-      this.putBotDown(target, mine.placedByBotId);
+      const away = normalize(subtract(target.position, mine.position));
+      this.putBotDown(target, mine.placedByBotId, {
+        kind: "mine",
+        tick: this.tickCount,
+        position: { ...mine.position },
+        direction: length(away) > 0.001 ? away : { x: 1, y: 0 },
+      });
     }
   }
 
@@ -1174,7 +1236,7 @@ export class DotBotSimulation {
    * you are on the floor, and a bank that still shows them is telling the player
    * they have protection they cannot use.
    */
-  private putBotDown(target: InternalBot, byBotId: string): void {
+  private putBotDown(target: InternalBot, byBotId: string, cause: import("./types").DownCause): void {
     // A plea belongs to the down it was made in.
     target.pleaded = false;
     target.shieldSegments = platesForCount(target.maxShields, 0);
@@ -1184,7 +1246,7 @@ export class DotBotSimulation {
     target.aiHuntTargetId = null;
     target.velocity = zeroVec();
     target.knockbackMs = 0;
-    this.events.push({ type: "downed", botId: target.id, byBotId });
+    this.events.push({ type: "downed", botId: target.id, byBotId, cause });
   }
 
   /**
@@ -3142,7 +3204,15 @@ export class DotBotSimulation {
     if (armourHit.core) {
       // Losing every plate is not what puts a bot down — being hit where a plate
       // used to be is. A stripped bot can still run, still extract, still be saved.
-      this.putBotDown(target, source.id);
+      this.putBotDown(target, source.id, {
+        kind: source.dashActiveMs > 0 ? "dash" : "ram",
+        tick: this.tickCount,
+        position: {
+          x: target.position.x - away.x * target.radius,
+          y: target.position.y - away.y * target.radius,
+        },
+        direction: away,
+      });
       return true;
     }
 
@@ -3196,7 +3266,9 @@ export class DotBotSimulation {
       if (dot.captureProgressMs >= this.config.dotCaptureDurationMs) {
         const inserted = insertItem(coveringBot, { ...dot.item }, this.config.holdSlots);
         if (inserted) {
-          dot.active = false;
+          coveringBot.inventoryRevision += 1;
+          if (dot.runtime) this.dots.delete(dot.id);
+          else dot.active = false;
           this.events.push({ type: "dotCaptured", botId: coveringBot.id, dotId: dot.id });
         } else {
           dot.captureProgressMs = 0;
@@ -3391,7 +3463,7 @@ export class DotBotSimulation {
     for (const bot of this.bots.values()) {
       const swap = bot.activeSwap;
       const key = `swap:${bot.id}`;
-      if (!swap || bot.state !== "alive") {
+      if (!swap || bot.state !== "alive" || swap.inventoryRevision !== bot.inventoryRevision) {
         this.coverages.delete(key);
         bot.activeSwap = undefined;
         continue;
@@ -3415,6 +3487,7 @@ export class DotBotSimulation {
           bot.bays[swap.bayIndex] = held;
           if (bayItem) bot.hold[swap.holdIndex] = bayItem;
           else bot.hold.splice(swap.holdIndex, 1);
+          bot.inventoryRevision += 1;
         }
         bot.activeSwap = undefined;
         this.coverages.delete(key);
@@ -3517,6 +3590,8 @@ export class DotBotSimulation {
     }
 
     if (taken.length > 0) {
+      taker.inventoryRevision += 1;
+      body.inventoryRevision += 1;
       this.events.push({ type: "looted", botId: body.id, byBotId: taker.id, items: taken });
     }
     return taken;
@@ -3551,6 +3626,15 @@ function isSlot(slots: unknown[], index: number): boolean {
   return Number.isInteger(index) && index >= 0 && index < slots.length;
 }
 
+function sameItem(left: Item, right: unknown): boolean {
+  if (!right || typeof right !== "object") return false;
+  const candidate = right as Partial<Item>;
+  if (left.kind !== candidate.kind || left.sourceBuildingId !== candidate.sourceBuildingId) return false;
+  if (left.kind === "powerup") return candidate.kind === "powerup" && left.type === candidate.type;
+  if (left.kind === "blueprint") return candidate.kind === "blueprint" && left.blueprintId === candidate.blueprintId;
+  return candidate.kind === "mine";
+}
+
 function toBotSnapshot(bot: InternalBot): DotBotEntity {
   return {
     id: bot.id,
@@ -3571,6 +3655,7 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     shieldSegments: [...bot.shieldSegments],
     bays: bot.bays.map((item) => item && { ...item }),
     hold: bot.hold.map((item) => ({ ...item })),
+    inventoryRevision: bot.inventoryRevision,
     carriedCount: carriedCount(bot),
     searched: bot.searched,
     pleaded: bot.pleaded,

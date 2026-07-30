@@ -77,6 +77,20 @@ export type DownedVerb = "loot" | "revive";
  */
 export type TakeCommand = { fromBotId: string; index: number | "all" };
 
+/**
+ * Drop one authoritative inventory slot.
+ *
+ * The location is accepted only while the authoritative inventory revision and
+ * expected item still match. Item contents, position, floor, radius, and
+ * runtime id are always derived by the simulation.
+ */
+export type DropCommand = {
+  from: "bay" | "hold";
+  index: number;
+  revision: number;
+  expected: Item;
+};
+
 /** Compact persistence/wire codes for powerups. Blueprint cargo is excluded. */
 export type WirePowerupCode = "h" | "r" | "d" | "i";
 export type WireLoadoutCode = WirePowerupCode | "m";
@@ -132,6 +146,21 @@ export type MineEntity = GameEntity & {
 export type HitResult = "plateBreak" | "downed";
 export type DashContactResult = "bump" | "clash";
 
+/**
+ * The authoritative reason a bot went down.
+ *
+ * This is deliberately source-neutral. A mine can identify its device and
+ * impact without handing the victim the remote owner's location; future world
+ * hazards can do the same without pretending to be a bot attack.
+ */
+export type DownCause = {
+  kind: "dash" | "ram" | "mine" | "environment";
+  tick: number;
+  position: Vec2;
+  /** Points away from the impact source. */
+  direction: Vec2;
+};
+
 export type SimEvent =
   | {
       type: "hit";
@@ -156,7 +185,7 @@ export type SimEvent =
       direction: Vec2;
       tick: number;
     }
-  | { type: "downed"; botId: string; byBotId?: string }
+  | { type: "downed"; botId: string; byBotId?: string; cause?: DownCause }
   /** A loot channel finished: this body is open, and everyone can see it is. */
   | { type: "searched"; botId: string; byBotId: string }
   /** Items actually left this body. One event per take, `items` is what moved. */
@@ -849,6 +878,8 @@ export type DotBotEntity = GameEntity & {
   shieldSegments: number[];
   bays: (Item | null)[];
   hold: Item[];
+  /** Increments after every authoritative inventory mutation. */
+  inventoryRevision?: number;
   /** Total carried items, authoritative even when a remote inventory is privacy-redacted. */
   carriedCount: number;
   /**
@@ -885,6 +916,8 @@ export type DotEntity = GameEntity & {
   active: boolean;
   capturedBy?: string;
   captureProgressMs: number;
+  /** Created during the run rather than authored in map data. */
+  runtime?: true;
 };
 
 export type DoorPhase = "closed" | "opening" | "open" | "closing";
@@ -922,6 +955,7 @@ export type InputCommand = {
   dash: boolean;
   useBay?: BayIndex;
   swapBay?: { bayIndex: BayIndex; holdIndex: number };
+  drop?: DropCommand;
   downedVerb?: DownedVerb;
   take?: TakeCommand;
   plea?: boolean;

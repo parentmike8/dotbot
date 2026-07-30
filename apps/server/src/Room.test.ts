@@ -3,7 +3,7 @@ import type { ServerMessage } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence } from "./db";
 import type { BaseObjectKind } from "@dotbot/game/types";
 import { Room, type RoomPeer } from "./Room";
-import { carriesAction } from "@dotbot/protocol";
+import { carriesAction, fromWireKillCamClip } from "@dotbot/protocol";
 import { buildingContaining, buildingOfFloor } from "@dotbot/game/mapModel";
 import { downtownMap } from "@dotbot/game/content/downtown";
 
@@ -259,6 +259,111 @@ describe("Room owner-private match intel", () => {
   });
 });
 
+describe("Room victim-private kill cam", () => {
+  it("delivers only to the victim, resends after reconnect, clears on revive, and replaces on a repeated down", async () => {
+    const room = new Room("KCAM", {
+      countdownMs: 0,
+      persistence: new NoopPersistence(),
+      aiWingmates: false,
+    });
+    const victim = collectingPeer("killcam-victim");
+    const rival = collectingPeer("killcam-rival");
+    room.join(victim.peer, "killcam-token-victim", "Victim", "killcam-player-victim", "alpha");
+    room.join(rival.peer, "killcam-token-rival", "Rival", "killcam-player-rival", "bravo");
+    room.receive("killcam-player-victim", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+
+    type MutableBot = import("@dotbot/game/types").DotBotEntity;
+    const internals = room as unknown as {
+      members: Map<string, { botId: string; lastKillCam: import("@dotbot/protocol").KillCamClip | null }>;
+      simulation: {
+        bots: Map<string, MutableBot>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+      killCamHistory: { record(snapshot: import("@dotbot/game/types").GameSnapshot): void };
+      processKillCamEvents(
+        events: import("@dotbot/game/types").SimEvent[],
+        snapshot: import("@dotbot/game/types").GameSnapshot,
+      ): void;
+    };
+    const victimMember = internals.members.get("killcam-player-victim")!;
+    const rivalMember = internals.members.get("killcam-player-rival")!;
+    const victimBot = internals.simulation.bots.get(victimMember.botId)!;
+    const rivalBot = internals.simulation.bots.get(rivalMember.botId)!;
+    victimBot.position = { x: 500, y: 500 };
+    rivalBot.position = { x: 560, y: 500 };
+    victimBot.floorId = "outdoor";
+    rivalBot.floorId = "outdoor";
+
+    const before = structuredClone(internals.simulation.getSnapshot());
+    before.debug.tickCount = 120;
+    internals.killCamHistory.record(before);
+    victimBot.state = "downed";
+    victimBot.shields = 0;
+    victimBot.shieldSegments = victimBot.shieldSegments.map(() => 0);
+    const death = structuredClone(internals.simulation.getSnapshot());
+    death.debug.tickCount = 123;
+    internals.killCamHistory.record(death);
+    internals.processKillCamEvents([{
+      type: "downed",
+      botId: victimMember.botId,
+      byBotId: rivalMember.botId,
+      cause: {
+        kind: "dash",
+        tick: 123,
+        position: { x: 524, y: 500 },
+        direction: { x: -1, y: 0 },
+      },
+    }], death);
+
+    const first = victim.messages.filter((message) => message.type === "killCam");
+    expect(first).toHaveLength(1);
+    expect(fromWireKillCamClip(first[0].clip)).toMatchObject({
+      id: `${victimMember.botId}-123`,
+      victimId: victimMember.botId,
+      sourceBotId: rivalMember.botId,
+    });
+    expect(rival.messages.some((message) => message.type === "killCam")).toBe(false);
+
+    room.disconnect(victim.peer.id);
+    const refreshed = collectingPeer("killcam-victim-refreshed");
+    expect(room.join(
+      refreshed.peer,
+      "killcam-token-victim",
+      "Victim",
+      "killcam-player-victim",
+      "alpha",
+    )).not.toBeNull();
+    expect(refreshed.messages.filter((message) => message.type === "killCam")).toHaveLength(1);
+
+    internals.processKillCamEvents([{
+      type: "revived",
+      botId: victimMember.botId,
+      byBotId: rivalMember.botId,
+    }], death);
+    expect(victimMember.lastKillCam).toBeNull();
+
+    const secondDeath = structuredClone(death);
+    secondDeath.debug.tickCount = 126;
+    internals.killCamHistory.record(secondDeath);
+    internals.processKillCamEvents([{
+      type: "downed",
+      botId: victimMember.botId,
+      byBotId: rivalMember.botId,
+      cause: {
+        kind: "ram",
+        tick: 126,
+        position: { x: 524, y: 500 },
+        direction: { x: -1, y: 0 },
+      },
+    }], secondDeath);
+    const repeatedWire = refreshed.messages.filter((message) => message.type === "killCam").at(-1)?.clip;
+    expect(repeatedWire && fromWireKillCamClip(repeatedWire))
+      .toMatchObject({ id: `${victimMember.botId}-126`, cause: { kind: "ram" } });
+    room.dispose();
+  });
+});
+
 describe("Room input stream", () => {
   it("treats every one-shot edge as an action the jitter buffer must not shed", () => {
     // Shedding picks the first frame that carries no press. That rule lived twice,
@@ -270,12 +375,126 @@ describe("Room input stream", () => {
     expect(carriesAction({ ...move, dash: true })).toBe(true);
     expect(carriesAction({ ...move, useBay: 0 })).toBe(true);
     expect(carriesAction({ ...move, swapBay: { bayIndex: 0, holdIndex: 0 } })).toBe(true);
+    expect(carriesAction({
+      ...move,
+      drop: { from: "bay", index: 0, revision: 0, expected: { kind: "mine" } },
+    })).toBe(true);
     expect(carriesAction({ ...move, take: { fromBotId: "enemy", index: "all" } })).toBe(true);
     expect(carriesAction({ ...move, plea: true })).toBe(true);
     // A verb is standing state, not an edge: it repeats every frame while a key is
     // held, so shedding one costs nothing — which is why `ActionEdges` does not
     // name it, and why passing it here would not typecheck.
     expect(carriesAction({ ...move })).toBe(false);
+  });
+
+  it("derives a dropped pickup from server state and includes it in a reconnect baseline", async () => {
+    let clock = 0;
+    const room = new Room("DROP", {
+      countdownMs: 0,
+      persistence: new NoopPersistence(),
+      aiWingmates: false,
+      now: () => clock,
+    });
+    const first = collectingPeer("drop-first");
+    room.join(first.peer, "drop-token", "Dropper", "drop-player", "alpha");
+    room.receive("drop-player", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+    const internals = room as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: {
+        bots: Map<string, {
+          position: { x: number; y: number };
+          bays: unknown[];
+          inventoryRevision: number;
+        }>;
+        dots: Map<string, unknown>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+    };
+    const member = internals.members.get("drop-player")!;
+    const authoritative = internals.simulation.bots.get(member.botId)!;
+    const cargo = { kind: "powerup", type: "health", sourceBuildingId: "mercy" } as const;
+    authoritative.bays[0] = cargo;
+    const at = { ...authoritative.position };
+
+    room.receive("drop-player", {
+      type: "input",
+      seq: 1,
+      move: [0, 0],
+      dash: false,
+      drop: {
+        from: "bay",
+        index: 0,
+        revision: 0,
+        expected: cargo,
+        item: { kind: "mine" },
+        position: [9999, 9999],
+        floorId: "forged",
+      },
+      frames: [
+        {
+          seq: 1,
+          move: [0, 0],
+          dash: false,
+          drop: {
+            from: "bay",
+            index: 0,
+            revision: 0,
+            expected: cargo,
+            item: { kind: "mine" },
+            position: [9999, 9999],
+            floorId: "forged",
+          },
+        },
+        { seq: 2, move: [0, 0], dash: false },
+      ],
+    } as never);
+    clock += 1000 / 60 + 0.01;
+    room.tick(clock);
+    clock += 1000 / 60 + 0.01;
+    room.tick(clock);
+
+    const dropped = internals.simulation.getSnapshot().dots.find((dot) => dot.id.startsWith("runtime-drop-"))!;
+    expect(dropped).toMatchObject({
+      position: at,
+      floorId: "outdoor",
+      item: cargo,
+    });
+    expect(authoritative.bays[0]).toBeNull();
+    for (let tick = 0; tick < 5; tick += 1) {
+      clock += 1000 / 60 + 0.01;
+      room.tick(clock);
+    }
+    const runtimeFrames = first.messages
+      .filter((message) => message.type === "snap")
+      .filter((message) => message.runtimeDots?.some((dot) => dot.id === dropped.id));
+    // Discard the first latest-state frame conceptually. The later frame must
+    // independently carry the complete active runtime set.
+    expect(runtimeFrames.length).toBeGreaterThanOrEqual(2);
+    expect(runtimeFrames.at(-1)?.runtimeDots)
+      .toContainEqual(expect.objectContaining({ id: dropped.id, it: "h", src: "mercy", rt: true }));
+
+    room.disconnect(first.peer.id);
+    const reconnected = collectingPeer("drop-reconnected");
+    expect(room.join(reconnected.peer, "drop-token", "Dropper", "drop-player", "alpha")).not.toBeNull();
+    const start = reconnected.messages.find((message) => message.type === "matchStart");
+    expect(start?.dotBaseline).toContainEqual(expect.objectContaining({
+      id: dropped.id,
+      position: at,
+      it: "h",
+      src: "mercy",
+      active: true,
+    }));
+
+    // Retired runtime definitions are physically collected and therefore
+    // cannot accumulate in a reconnect baseline forever.
+    internals.simulation.dots.delete(dropped.id);
+    room.disconnect(reconnected.peer.id);
+    const afterGc = collectingPeer("drop-after-gc");
+    expect(room.join(afterGc.peer, "drop-token", "Dropper", "drop-player", "alpha")).not.toBeNull();
+    expect(afterGc.messages.find((message) => message.type === "matchStart")?.dotBaseline)
+      .not.toContainEqual(expect.objectContaining({ id: dropped.id }));
+    room.dispose();
   });
 
   it("consumes one frame per tick in seq order, acks only applied frames, and sheds stall backlogs", async () => {

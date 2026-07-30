@@ -1,7 +1,7 @@
 import type { BayIndex, GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { physicsFloorId } from "@dotbot/game/mapModel";
-import { applyWireDotFrame, assertNever, carriesAction, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
-import type { ClientMessage, DeliveryClass, EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot, WireInputFrame } from "@dotbot/protocol";
+import { applyWireDotFrame, assertNever, carriesAction, fromWireEvent, fromWireKillCamClip, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
+import type { ClientMessage, DeliveryClass, EntityMeta, KillCamClip, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot, WireInputFrame } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
   classifyCorrection,
@@ -61,12 +61,15 @@ export class NetSession implements GameSession {
   private metaIndex = new Map<string, EntityMeta>();
   private snapshots: BufferedSnapshot[] = [];
   private events: SimEvent[] = [];
+  private killCams: KillCamClip[] = [];
+  private replayActive = false;
   private seq = 0;
   private pendingInputs: PendingInput[] = [];
   private predictionInput: InputCommand = { move: { x: 0, y: 0 }, dash: false };
   private predictionDashQueued = false;
   private queuedUseBay: BayIndex | undefined;
   private queuedSwapBay: { bayIndex: BayIndex; holdIndex: number } | undefined;
+  private queuedDrop: InputCommand["drop"];
   private stagedDownedVerb: InputCommand["downedVerb"];
   private queuedTake: InputCommand["take"];
   private queuedPlea = false;
@@ -174,10 +177,17 @@ export class NetSession implements GameSession {
    * display's frame rate.
    */
   sendInput(input: InputCommand): void {
+    if (this.replayActive) {
+      this.predictionInput = { move: { x: 0, y: 0 }, dash: false };
+      this.stagedDownedVerb = input.downedVerb;
+      this.queuedPlea ||= input.plea ?? false;
+      return;
+    }
     this.predictionInput = { move: { ...input.move }, dash: false };
     this.predictionDashQueued ||= input.dash;
     if (input.useBay !== undefined && this.queuedUseBay === undefined) this.queuedUseBay = input.useBay;
     if (input.swapBay && !this.queuedSwapBay) this.queuedSwapBay = input.swapBay;
+    if (input.drop && !this.queuedDrop) this.queuedDrop = input.drop;
     if (input.take && !this.queuedTake) this.queuedTake = input.take;
     this.stagedDownedVerb = input.downedVerb;
     this.queuedPlea ||= input.plea ?? false;
@@ -302,6 +312,26 @@ export class NetSession implements GameSession {
     return this.events.splice(0);
   }
 
+  drainKillCams(): KillCamClip[] {
+    return this.killCams.splice(0);
+  }
+
+  setReplayActive(active: boolean): void {
+    this.replayActive = active;
+    if (!active) return;
+    this.predictionInput = { move: { x: 0, y: 0 }, dash: false };
+    this.predictionDashQueued = false;
+    this.queuedUseBay = undefined;
+    this.queuedSwapBay = undefined;
+    this.queuedDrop = undefined;
+    this.queuedTake = undefined;
+    this.queuedPing = undefined;
+    this.pendingInputs = this.pendingInputs.map((pending) => pending.input.drop
+      ? { ...pending, input: { ...pending.input, drop: undefined } }
+      : pending);
+    this.edgeAwaitingFlush = this.pendingInputs.some(({ input }) => carriesAction(input));
+  }
+
   getRunState(): RunState {
     return this.runState;
   }
@@ -318,6 +348,7 @@ export class NetSession implements GameSession {
     this.transport = null;
     this.snapshots = [];
     this.events = [];
+    this.killCams = [];
     this.pendingInputs = [];
     this.predictor = null;
     this.dotStore.clear();
@@ -365,6 +396,7 @@ export class NetSession implements GameSession {
         this.impactPredictionSeq = 0;
         this.interpolationDelayMs = maximumInterpolationDelayMs;
         this.pendingInputs = [];
+        this.killCams = [];
         this.mapValue = message.map;
         this.configValue = message.config;
         this.playerIdValue = message.yourBotId;
@@ -408,6 +440,19 @@ export class NetSession implements GameSession {
             recordAuthoritativeHit(this.impactTelemetry, event, this.playerIdValue, performance.now());
           }
           this.events.push(event);
+        }
+        return;
+      case "killCam":
+        // The server addresses this message only to its victim. Replace an
+        // older queued clip for the same down so reconnect resend is idempotent.
+        {
+          // Receipt is the first authoritative replay boundary. The render
+          // hook drains this clip after advancing networking, so waiting for
+          // the UI to activate replay would still ship staged/resend drops.
+          this.setReplayActive(true);
+          const clip = fromWireKillCamClip(message.clip);
+          this.killCams = this.killCams.filter((queued) => queued.id !== clip.id);
+          this.killCams.push(clip);
         }
         return;
       case "runOver":
@@ -511,6 +556,7 @@ export class NetSession implements GameSession {
     this.predictionDashQueued = false;
     this.queuedUseBay = undefined;
     this.queuedSwapBay = undefined;
+    this.queuedDrop = undefined;
     this.queuedPlea = false;
     this.queuedPing = undefined;
     this.edgeAwaitingFlush = false;
@@ -562,6 +608,7 @@ export class NetSession implements GameSession {
       dash: this.predictionDashQueued,
       useBay: this.queuedUseBay,
       swapBay: this.queuedSwapBay,
+      drop: this.queuedDrop,
       downedVerb: this.stagedDownedVerb,
       take: this.queuedTake,
       plea: this.queuedPlea || undefined,
@@ -570,9 +617,10 @@ export class NetSession implements GameSession {
     this.predictionDashQueued = false;
     this.queuedUseBay = undefined;
     this.queuedSwapBay = undefined;
+    this.queuedDrop = undefined;
     this.queuedTake = undefined;
     this.queuedPlea = false;
-    if (this.predictor && this.predictionEnabled) {
+    if (this.predictor && this.predictionEnabled && !this.replayActive) {
       this.predictor.step(frame);
     }
     if (carriesAction(frame)) {
@@ -604,6 +652,7 @@ export class NetSession implements GameSession {
       viewTick,
       useBay: input.useBay,
       swapBay: input.swapBay,
+      drop: input.drop,
       downedVerb: input.downedVerb,
       take: input.take,
       plea: input.plea,
@@ -623,6 +672,7 @@ export class NetSession implements GameSession {
       viewTick: top.viewTick,
       useBay: top.useBay,
       swapBay: top.swapBay,
+      drop: top.drop,
       downedVerb: top.downedVerb,
       take: top.take,
       plea: top.plea,

@@ -8,13 +8,19 @@ import { DotBotSimulation, waypointRetired } from "./simulation";
 import { buildContactShape, contactDistance, makeContactShape } from "./bodyContact";
 import { contactReach } from "./shields";
 import { hasLineOfSight } from "./visibility";
-import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, MapDocument, Vec2, WallSegment } from "./types";
+import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, InputCommand, Item, MapDocument, Vec2, WallSegment } from "./types";
 
 const healthItem = { kind: "powerup", type: "health" } as const;
 const radarItem = { kind: "powerup", type: "radar" } as const;
 const overchargeItem = { kind: "powerup", type: "dashOvercharge" } as const;
 const incognitoItem = { kind: "powerup", type: "incognito" } as const;
 const mineItem = { kind: "mine" } as const;
+const drop = (
+  from: "bay" | "hold",
+  index: number,
+  revision: number,
+  expected: Item = from === "bay" ? healthItem : radarItem,
+) => ({ from, index, revision, expected });
 /** `count` health items, then empties out to however many bays the game has. */
 const testBays = (count: number) =>
   Array.from({ length: defaultGameConfig.baySlots }, (_, index) => index < count ? healthItem : null);
@@ -309,6 +315,172 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("drops authoritative cargo as a public runtime pickup without losing provenance", async () => {
+    const cargo = { ...healthItem, sourceBuildingId: "source-building" };
+    const simulation = await makeSimulation([
+      playerSpawn({
+        position: { x: 140, y: 180 },
+        state: "downed",
+        shields: 0,
+        bays: [cargo, null, null],
+        hold: [radarItem],
+      }),
+    ], [
+      // Deliberately collide with the first generated runtime id. Runtime ids
+      // must skip authored content rather than overwrite it.
+      { id: "runtime-drop-0", item: incognitoItem, position: { x: 360, y: 180 } },
+    ]);
+
+    simulation.applyInput("player", {
+      move: { x: 0, y: 0 },
+      dash: false,
+      drop: {
+        ...drop("bay", 0, 0, cargo),
+        // A hostile client may add fields at the JSON boundary. They are not
+        // part of DropCommand and must never become authoritative.
+        item: mineItem,
+        position: { x: 420, y: 300 },
+        floorId: "forged-floor",
+      },
+    } as InputCommand);
+    simulation.step();
+
+    let snapshot = simulation.getSnapshot();
+    const player = snapshot.bots.find((bot) => bot.id === "player")!;
+    const dropped = snapshot.dots.find((dot) => dot.id.startsWith("runtime-drop-") && dot.id !== "runtime-drop-0")!;
+    expect(player.bays).toEqual([null, null, null]);
+    expect(player.hold).toEqual([radarItem]);
+    expect(dropped).toMatchObject({
+      id: "runtime-drop-1",
+      position: player.position,
+      floorId: player.floorId,
+      item: cargo,
+      active: true,
+    });
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: drop("hold", 0, 1) } as InputCommand);
+    simulation.step();
+    snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "player")?.hold).toEqual([]);
+    expect(snapshot.dots.filter((dot) => dot.id.startsWith("runtime-drop-") && dot.id !== "runtime-drop-0")).toHaveLength(2);
+    simulation.dispose();
+  });
+
+  it("gives a dropped item to exactly one of two racing players", async () => {
+    const cargo = { kind: "blueprint", blueprintId: "shelf", sourceBuildingId: "lot6" } as const;
+    const simulation = await makeSimulation([
+      playerSpawn({ id: "dropper", position: { x: 100, y: 180 }, state: "downed", shields: 0, bays: [cargo, null, null] }),
+      playerSpawn({ id: "racer-a", squadId: "bravo", position: { x: 72, y: 180 } }),
+      playerSpawn({ id: "racer-b", squadId: "crew-3", position: { x: 128, y: 180 } }),
+    ]);
+
+    simulation.applyInput("dropper", { move: { x: 0, y: 0 }, dash: false, drop: drop("bay", 0, 0, cargo) } as InputCommand);
+    runTicks(simulation, 12);
+
+    const snapshot = simulation.getSnapshot();
+    const racers = snapshot.bots.filter((bot) => bot.id.startsWith("racer-"));
+    expect(racers.flatMap((bot) => [...bot.bays.filter(Boolean), ...bot.hold])).toEqual([cargo]);
+    expect(snapshot.bots.find((bot) => bot.id === "dropper")?.bays.filter(Boolean)).toEqual([]);
+    expect(snapshot.dots.find((dot) => dot.id.startsWith("runtime-drop-"))).toBeUndefined();
+    simulation.dispose();
+  });
+
+  it("accepts a drop precondition exactly once and rejects a stale shifted hold index", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ bays: [healthItem, null, null], hold: [radarItem, overchargeItem] }),
+    ]);
+    const first = drop("hold", 0, 0);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: first } as InputCommand);
+    simulation.step();
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: first } as InputCommand);
+    simulation.step();
+
+    const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(player.inventoryRevision).toBe(1);
+    expect(player.hold).toEqual([overchargeItem]);
+    expect(simulation.getSnapshot().dots.filter((dot) => dot.id.startsWith("runtime-drop-"))).toHaveLength(1);
+    simulation.dispose();
+  });
+
+  it("gives a valid drop authoritative precedence over a same-frame swap", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ bays: [healthItem, null, null], hold: [radarItem] }),
+    ]);
+    simulation.applyInput("player", {
+      move: { x: 0, y: 0 },
+      dash: false,
+      drop: drop("hold", 0, 0),
+      swapBay: { bayIndex: 0, holdIndex: 0 },
+    } as InputCommand);
+    simulation.step();
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "player")).toMatchObject({
+      bays: [healthItem, null, null],
+      hold: [],
+      inventoryRevision: 1,
+    });
+    expect(snapshot.coverages.some((coverage) => coverage.kind === "swap")).toBe(false);
+    expect(snapshot.dots.filter((dot) => dot.id.startsWith("runtime-drop-"))).toHaveLength(1);
+    simulation.dispose();
+  });
+
+  it("rejects invalid drops without duplication or loss and leaves full-inventory pickups in the world", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({
+          position: { x: 100, y: 100 },
+          bays: [healthItem],
+          hold: [radarItem],
+        }),
+      ], [{ id: "world-item", item: overchargeItem, position: { x: 100, y: 100 } }]),
+      config: { ...testConfig, baySlots: 1, holdSlots: 1 },
+    });
+
+    for (const drop of [
+      { from: "bay", index: -1 },
+      { from: "bay", index: 1.5 },
+      { from: "bay", index: 99 },
+      { from: "hold", index: -1 },
+      { from: "hold", index: 99 },
+      { from: "forged", index: 0 },
+      { from: "bay", index: 0, revision: 0, expected: mineItem },
+      { from: "bay", index: 0, revision: 0, expected: null },
+    ]) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop } as InputCommand);
+      simulation.step();
+    }
+
+    runTicks(simulation, 12);
+    const snapshot = simulation.getSnapshot();
+    const player = snapshot.bots.find((bot) => bot.id === "player")!;
+    expect(player.bays).toEqual([healthItem]);
+    expect(player.hold).toEqual([radarItem]);
+    expect(snapshot.dots.filter((dot) => dot.id.startsWith("runtime-drop-"))).toEqual([]);
+    expect(snapshot.dots.find((dot) => dot.id === "world-item")?.active).toBe(true);
+    simulation.dispose();
+  });
+
+  it("keeps a world channel running when an item is dropped", async () => {
+    const map = makeMap([playerSpawn({
+      position: { x: 100, y: 180 },
+      bays: [healthItem, null, null],
+      hold: [radarItem],
+    })]);
+    map.extractionPoints = [{ id: "exit", name: "EXIT", rect: { x: 60, y: 140, w: 80, h: 80 } }];
+    const simulation = await DotBotSimulation.create({ map, config: { ...testConfig, extractionDurationMs: 1_000 } });
+    simulation.step();
+    const before = simulation.getSnapshot().coverages.find((coverage) => coverage.kind === "extract")!;
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: drop("bay", 0, 0) } as InputCommand);
+    simulation.step();
+    const after = simulation.getSnapshot().coverages.find((coverage) => coverage.kind === "extract")!;
+    expect(after.progressMs).toBeGreaterThan(before.progressMs);
+    expect(simulation.getSnapshot().dots.some((dot) => dot.id.startsWith("runtime-drop-"))).toBe(true);
+    simulation.dispose();
+  });
+
   it("fires health with one-plate restore and caps at maximum", async () => {
     const simulation = await makeSimulation([playerSpawn({ maxShields: 3, shields: 1, bays: [healthItem, healthItem, null, null] })]);
     simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
@@ -383,6 +555,16 @@ describe("DotBotSimulation", () => {
     plateless.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
     plateless.step();
     expect(plateless.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
+    expect(plateless.drainEvents()).toContainEqual(expect.objectContaining({
+      type: "downed",
+      botId: "enemy",
+      byBotId: "player",
+      cause: expect.objectContaining({
+        kind: "mine",
+        tick: 1,
+        position: { x: 100, y: 180 },
+      }),
+    }));
     plateless.dispose();
   });
 
@@ -1405,6 +1587,12 @@ describe("DotBotSimulation", () => {
       byBotId: "player",
       result: "downed",
     }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "downed",
+      botId: "enemy",
+      byBotId: "player",
+      cause: expect.objectContaining({ kind: "dash" }),
+    }));
     expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")!.state).toBe("downed");
     simulation.dispose();
   });
@@ -2399,7 +2587,7 @@ describe("DotBotSimulation", () => {
 
     expect(simulation.drainEvents()).toEqual(
       expect.arrayContaining([
-        { type: "downed", botId: "enemy", byBotId: "player" },
+        expect.objectContaining({ type: "downed", botId: "enemy", byBotId: "player" }),
         { type: "looted", botId: "lootable", byBotId: "player", items: [healthItem, healthItem] },
         { type: "revived", botId: "downed-ally", byBotId: "player" },
       ]),

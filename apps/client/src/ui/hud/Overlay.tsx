@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { DotBotEntity, GameConfig, GameSnapshot, Item, PingKind } from "@dotbot/game/types";
 import { PING_KINDS } from "@dotbot/game/types";
 import { arrivalSparkline, type NetworkDebugStats } from "../../game/session/netgraph";
@@ -86,44 +86,208 @@ export function BayBank({
   slots,
   holdSlots,
   onUse,
-  onSwapRequest,
+  onOpen,
+  open,
+  disabled = false,
 }: {
   player: DotBotEntity | undefined;
   slots: number;
   holdSlots: number;
   onUse: (index: number) => void;
-  onSwapRequest: (index: number) => void;
+  onOpen: () => void;
+  open: boolean;
+  disabled?: boolean;
 }) {
   const canAct = player?.state === "alive";
+  const openButton = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (wasOpen.current && !open) openButton.current?.focus();
+    wasOpen.current = open;
+  }, [open]);
   return (
     <section className="hud hud-top-right" aria-label="Bays">
       <div className="bay-bank">
-        <div className="bay-strip">
-          {bayStrip(player?.bays, slots).map((item, index) => (
-            <div className="bay-slot" key={index}>
+        <div className="bay-bank-row">
+          <div className="bay-strip">
+            {bayStrip(player?.bays, slots).map((item, index) => (
               <button
                 type="button"
                 className={`bay-button ${itemFamily(item)}`}
+                key={index}
                 onClick={() => onUse(index)}
                 disabled={!item || !canAct}
                 aria-label={`Bay ${index + 1}${item ? `: ${itemLabel(item)}` : ": empty"}`}
               >
                 <small>{index + 1}</small><strong>{itemGlyph(item)}</strong>
               </button>
-              <button
-                type="button"
-                className="swap-control"
-                onClick={() => onSwapRequest(index)}
-                disabled={!player?.hold.length || !canAct}
-              >Swap</button>
+            ))}
+          </div>
+          <div className="inventory-access">
+            <button
+              ref={openButton}
+              type="button"
+              className="inventory-open"
+              onClick={onOpen}
+              disabled={disabled}
+              aria-expanded={open}
+              aria-controls="inventory-panel"
+            >Open</button>
+            <div className="hold-chip" aria-label={`${player?.hold.length ?? 0} items in hold`}>
+              Hold <strong>{player?.hold.length ?? 0}</strong> / {holdSlots}
             </div>
-          ))}
-        </div>
-        <div className="hold-chip" aria-label={`${player?.hold.length ?? 0} items in hold`}>
-          Hold <strong>{player?.hold.length ?? 0}</strong> / {holdSlots}
+          </div>
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * The whole carried inventory, without stopping the game behind it.
+ *
+ * A held item is selected first, then a bay receives the existing two-second
+ * swap request. Drop is separate and immediate. Empty hold slots remain visible
+ * so capacity is a shape rather than a number the player has to remember.
+ */
+export function InventoryPanel({
+  player,
+  slots,
+  holdSlots,
+  onUse,
+  onSwap,
+  onDrop,
+  onClose,
+}: {
+  player: DotBotEntity;
+  slots: number;
+  holdSlots: number;
+  onUse: (bayIndex: number) => void;
+  onSwap: (bayIndex: number, holdIndex: number) => void;
+  onDrop: (from: "bay" | "hold", index: number, item: Item, revision: number) => void;
+  onClose: () => void;
+}) {
+  const panel = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose);
+  const [selectedHold, setSelectedHold] = useState<number | null>(null);
+  const canSwap = player.state === "alive";
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    setSelectedHold(null);
+  }, [player.inventoryRevision]);
+
+  useEffect(() => {
+    panel.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onCloseRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  return (
+    <aside
+      ref={panel}
+      id="inventory-panel"
+      className="inventory-panel"
+      role="dialog"
+      aria-modal="false"
+      aria-label="Inventory"
+    >
+      <header>
+        <div>
+          <strong>Inventory</strong>
+          <small>Live · the run continues</small>
+        </div>
+        <button type="button" onClick={onClose} aria-label="Close inventory">×</button>
+      </header>
+
+      <section aria-labelledby="inventory-bays-title">
+        <h3 id="inventory-bays-title">Bays</h3>
+        <div className="inventory-bays">
+          {bayStrip(player.bays, slots).map((item, index) => (
+            <div
+              className={`inventory-slot ${itemFamily(item)}`}
+              key={index}
+              aria-label={`Bay ${index + 1}${item ? `: ${itemLabel(item)}` : ": empty"}`}
+            >
+              <span><small>Bay {index + 1}</small><strong>{itemGlyph(item)}</strong>{item ? itemLabel(item) : "Empty"}</span>
+              <div className="inventory-slot-actions">
+                <button type="button" onClick={() => onUse(index)} disabled={!item || !canSwap}>Use</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedHold === null) return;
+                    onSwap(index, selectedHold);
+                    setSelectedHold(null);
+                  }}
+                  disabled={selectedHold === null || !canSwap}
+                  aria-label={`Swap selected hold item into bay ${index + 1}`}
+                >Swap</button>
+                <button
+                  type="button"
+                  onClick={() => item && onDrop("bay", index, item, player.inventoryRevision ?? 0)}
+                  disabled={!item}
+                  aria-label={item ? `Drop ${itemLabel(item)} from bay ${index + 1}` : `Bay ${index + 1} is empty`}
+                >Drop</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section aria-labelledby="inventory-hold-title">
+        <div className="inventory-hold-heading">
+          <h3 id="inventory-hold-title">Hold</h3>
+          <span>{player.hold.length} / {holdSlots}</span>
+        </div>
+        <p className="inventory-guidance" aria-live="polite">
+          {canSwap
+            ? selectedHold === null ? "Choose a hold item, then a bay to swap." : `Selected hold slot ${selectedHold + 1}. Choose a bay.`
+            : "Swap unavailable while downed"}
+        </p>
+        <div className="inventory-hold">
+          {Array.from({ length: holdSlots }, (_, index) => {
+            const item = player.hold[index] ?? null;
+            return (
+              <div
+                className={`inventory-slot inventory-hold-slot ${itemFamily(item)} ${selectedHold === index ? "is-selected" : ""}`}
+                key={index}
+                aria-label={`Hold slot ${index + 1}${item ? `: ${itemLabel(item)}` : ": empty"}`}
+              >
+                <button
+                  type="button"
+                  className="inventory-hold-select"
+                  disabled={!item || !canSwap}
+                  aria-pressed={selectedHold === index}
+                  onClick={() => setSelectedHold(selectedHold === index ? null : index)}
+                >
+                  <small>{index + 1}</small><strong>{itemGlyph(item)}</strong>
+                  <span>{item ? itemLabel(item) : "Empty"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="inventory-drop"
+                  onClick={() => {
+                    if (!item) return;
+                    onDrop("hold", index, item, player.inventoryRevision ?? 0);
+                    setSelectedHold(null);
+                  }}
+                  disabled={!item}
+                  aria-label={item ? `Drop ${itemLabel(item)} from hold slot ${index + 1}` : `Hold slot ${index + 1} is empty`}
+                >Drop</button>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </aside>
   );
 }
 
@@ -191,36 +355,6 @@ export function PingPicker({
         <button key={kind} type="button" onClick={() => onChoose(kind)}>{PING_LABEL[kind]}</button>
       ))}
       <button type="button" className="ping-clear" onClick={onClear}>Cancel all</button>
-    </aside>
-  );
-}
-
-/** Picking which held item goes into a bay. Only open while a bay is chosen. */
-export function HoldPicker({
-  bay,
-  hold,
-  onChoose,
-  onClose,
-}: {
-  bay: number;
-  hold: Item[];
-  onChoose: (holdIndex: number) => void;
-  onClose: () => void;
-}) {
-  return (
-    <aside className="hold-picker" aria-label={`Choose a hold item for bay ${bay + 1}`}>
-      <header>
-        <strong>Hold → bay {bay + 1}</strong>
-        <button type="button" onClick={onClose} aria-label="Close">×</button>
-      </header>
-      <p>Two seconds, standing still, and loud</p>
-      <div>
-        {hold.map((item, index) => (
-          <button type="button" key={`${itemLabel(item)}-${index}`} onClick={() => onChoose(index)}>
-            <span className={itemFamily(item)}>{itemGlyph(item)}</span>{itemLabel(item)}
-          </button>
-        ))}
-      </div>
     </aside>
   );
 }

@@ -5,6 +5,12 @@ import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer, type InteractionChannelVisual } from "./renderer/GameRenderer";
 import {
+  KillCamPlayback,
+  killCamCameraTarget,
+  killCamDoorCatalog,
+  killCamSnapshot,
+} from "./killCam";
+import {
   ImpactFeedback,
   loadFeedbackPreferences,
   saveFeedbackPreferences,
@@ -20,6 +26,8 @@ import type { BayIndex, DotBotEntity, DownedVerb, GameSnapshot, InputCommand, It
 import { CLICK_PING_KIND, collectPings, type LiveMark } from "./pings";
 import type { NetworkDebugStats } from "./session/netgraph";
 import { WORLD_MAP_PING_FLOOR } from "./worldMap/worldMap";
+import type { EntityMeta, KillCamClip } from "@dotbot/protocol";
+import { initialHudOverlays, transitionHudOverlay, type HudOverlayEvent } from "./hudOverlayLifecycle";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
 
@@ -31,6 +39,12 @@ export type RunResult = {
   contractCompletions: Array<{ contractId: string; title: string; payout: Item[] }>;
   persistenceStatus?: "saved" | "failed";
   runTimeMs: number;
+};
+
+export type KillCamView = {
+  clip: KillCamClip;
+  progress: number;
+  label: string;
 };
 
 type JoystickState = {
@@ -74,12 +88,15 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<GameSession | null>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
+  const killCamPlaybackRef = useRef<KillCamPlayback | null>(null);
+  const killCamDoorsRef = useRef<ReturnType<typeof killCamDoorCatalog>>([]);
   const feedbackRef = useRef<ImpactFeedback | null>(null);
   const keysRef = useRef(new Set<string>());
   const joystickRef = useRef<JoystickState>(emptyJoystick);
   const dashQueuedRef = useRef(false);
   const useBayQueuedRef = useRef<BayIndex | undefined>(undefined);
   const swapQueuedRef = useRef<{ bayIndex: BayIndex; holdIndex: number } | undefined>(undefined);
+  const dropQueuedRef = useRef<InputCommand["drop"]>(undefined);
   const downedVerbRef = useRef<DownedVerb | undefined>(undefined);
   const takeQueuedRef = useRef<TakeCommand | undefined>(undefined);
   const pleaQueuedRef = useRef(false);
@@ -116,11 +133,14 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const [events, setEvents] = useState<SimEvent[]>([]);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [spectating, setSpectating] = useState<DotBotEntity | null>(null);
+  const [killCam, setKillCam] = useState<KillCamView | null>(null);
   const [debugVisible, setDebugVisible] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("netgraph"),
   );
   const [networkDebug, setNetworkDebug] = useState<NetworkDebugStats | null>(null);
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [inventoryVisible, setInventoryVisible] = useState(false);
+  const hudOverlaysRef = useRef(initialHudOverlays);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
   const [feedbackPreferences, setFeedbackPreferences] = useState(loadFeedbackPreferences);
   const [audioStatus, setAudioStatus] = useState<AudioFeedbackStatus>(
@@ -138,10 +158,19 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     resetJoystick();
   }, [resetJoystick]);
 
+  const applyHudOverlayEvent = useCallback((event: HudOverlayEvent) => {
+    const next = transitionHudOverlay(hudOverlaysRef.current, event);
+    hudOverlaysRef.current = next;
+    worldMapOpenRef.current = next.worldMap;
+    setWorldMapVisible(next.worldMap);
+    setSettingsVisible(next.settings);
+    setInventoryVisible(next.inventory);
+    if (!next.worldMap) setPingPicker(null);
+  }, []);
+
   const setWorldMapOpen = useCallback((visible: boolean) => {
     const nextVisible = visible && worldMapEnabledRef.current;
-    worldMapOpenRef.current = nextVisible;
-    setWorldMapVisible(nextVisible);
+    applyHudOverlayEvent(nextVisible ? "openWorldMap" : "closeWorldMap");
     setPingPicker(null);
     if (nextVisible) {
       clearMovementInput();
@@ -157,9 +186,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         window.clearTimeout(longPressRef.current);
         longPressRef.current = null;
       }
-      setSettingsVisible(false);
     }
-  }, [clearMovementInput]);
+  }, [applyHudOverlayEvent, clearMovementInput]);
 
   useEffect(() => {
     let disposed = false;
@@ -191,6 +219,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       });
       await session.start();
       const renderer = await GameRenderer.create(host, session.map);
+      killCamDoorsRef.current = killCamDoorCatalog(session.map);
       renderer.setReducedMotion(feedbackPreferencesRef.current.reducedMotion);
 
       if (disposed) {
@@ -246,6 +275,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             dash: dashQueuedRef.current,
             useBay: useBayQueuedRef.current,
             swapBay: swapQueuedRef.current,
+            drop: dropQueuedRef.current,
             downedVerb: downedVerbRef.current,
             take: takeQueuedRef.current,
             plea: pleaQueuedRef.current,
@@ -255,11 +285,19 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         dashQueuedRef.current = false;
         useBayQueuedRef.current = undefined;
         swapQueuedRef.current = undefined;
+        dropQueuedRef.current = undefined;
         takeQueuedRef.current = undefined;
         pleaQueuedRef.current = false;
         pingQueuedRef.current = undefined;
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
+        for (const clip of session.drainKillCams?.() ?? []) {
+          if (clip.victimId !== session.playerId) continue;
+          killCamPlaybackRef.current = new KillCamPlayback(clip);
+          dropQueuedRef.current = undefined;
+          applyHudOverlayEvent("startReplay");
+          session.setReplayActive?.(true);
+        }
         const frameEvents = session.drainEvents();
         const framePlayer = nextSnapshot?.bots.find((bot) => bot.id === session.playerId);
         if (framePlayer && playerSquadId !== null && framePlayer.squadId !== playerSquadId) {
@@ -383,6 +421,14 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         }
 
         const currentPlayer = nextSnapshot.bots.find((bot) => bot.id === session.playerId);
+        if (currentPlayer?.state === "alive" && killCamPlaybackRef.current) {
+          killCamPlaybackRef.current.skip();
+          killCamPlaybackRef.current = null;
+          session.setReplayActive?.(false);
+          applyHudOverlayEvent("endReplay");
+          setKillCam(null);
+        }
+        if (currentPlayer) playerSquadId = currentPlayer.squadId;
         const runState = session.getRunState();
 
         if (!runEndedRef.current && runState.phase === "over") {
@@ -400,6 +446,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           joystickRef.current = emptyJoystick;
           setJoystickView(emptyJoystick);
           setRunResult(result);
+          applyHudOverlayEvent("closeInventory");
         }
 
         // Watching begins the moment you go down, not when the run ends: you
@@ -412,13 +459,63 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const spectator = selectSpectatedBot(livingSquadmates, spectatedBotIdRef.current, spectateCycleQueuedRef.current);
         spectateCycleQueuedRef.current = false;
         spectatedBotIdRef.current = spectator?.id ?? null;
-        const renderPlayerId = spectator?.id ?? session.playerId;
+        let renderPlayerId = spectator?.id ?? session.playerId;
+        let renderSnapshot = nextSnapshot;
+        let killCamRender: {
+          clip: KillCamClip;
+          progress: number;
+          cameraTarget: Vec2;
+          sourceVisible: boolean;
+        } | undefined;
+        const playback = killCamPlaybackRef.current;
+        if (playback) {
+          playback.advance(elapsedMs);
+          if (playback.finished) {
+            killCamPlaybackRef.current = null;
+            session.setReplayActive?.(false);
+            applyHudOverlayEvent("endReplay");
+            setKillCam(null);
+          } else {
+            const replayFrame = playback.sample();
+            const ids = [playback.clip.victimId, playback.clip.sourceBotId]
+              .filter((id): id is string => id !== undefined);
+            const meta = new Map<string, EntityMeta>();
+            for (const id of ids) {
+              const known = session.getEntityMeta?.(id);
+              if (known) {
+                meta.set(id, known);
+                continue;
+              }
+              const live = nextSnapshot.bots.find((bot) => bot.id === id);
+              if (live) {
+                meta.set(id, {
+                  id,
+                  name: live.name,
+                  squadId: live.squadId,
+                  isAmbient: live.isAmbient,
+                  maxShields: live.maxShields,
+                  radius: live.radius,
+                  color: live.color,
+                });
+              }
+            }
+            renderSnapshot = killCamSnapshot(replayFrame, playback.clip, meta, killCamDoorsRef.current);
+            renderPlayerId = session.playerId;
+            killCamRender = {
+              clip: playback.clip,
+              progress: playback.progress,
+              cameraTarget: killCamCameraTarget(replayFrame, playback.clip),
+              sourceVisible: replayFrame.source !== undefined,
+            };
+          }
+        }
         const presentedAt = renderer.render(
-          nextSnapshot,
+          renderSnapshot,
           renderPlayerId,
-          watching && runState.phase === "over" && spectator === null,
-          interactionChannelRef.current,
-          session.intel,
+          !killCamRender && watching && runState.phase === "over" && spectator === null,
+          killCamRender ? null : interactionChannelRef.current,
+          killCamRender ? undefined : session.intel,
+          killCamRender,
         );
         for (const impact of predictedImpacts) {
           session.recordImpactPresented?.(impact.predictionId, presentedAt);
@@ -428,6 +525,11 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);
           setSpectating(spectator);
+          setKillCam(killCamRender ? {
+            clip: killCamRender.clip,
+            progress: killCamRender.progress,
+            label: killCamLabel(killCamRender.clip, session, killCamRender.sourceVisible),
+          } : null);
           setNetworkDebug(session.getNetworkDebug?.() ?? null);
           lastHudUpdate = now;
 
@@ -470,8 +572,20 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
       if (event.code === "KeyL") {
         event.preventDefault();
-        setSettingsVisible((visible) => !visible);
+        applyHudOverlayEvent(hudOverlaysRef.current.settings ? "closeSettings" : "openSettings");
         return;
+      }
+
+      if (event.code === "KeyI") {
+        event.preventDefault();
+        if (!runEndedRef.current && !event.repeat) {
+          applyHudOverlayEvent(hudOverlaysRef.current.inventory ? "closeInventory" : "openInventory");
+        }
+        return;
+      }
+
+      if (event.code === "Escape") {
+        applyHudOverlayEvent("closeInventory");
       }
 
       if (event.code === "KeyF") {
@@ -501,7 +615,13 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
       if (event.code === "Space") {
         event.preventDefault();
-        if (runEndedRef.current && spectateEnabled) {
+        if (killCamPlaybackRef.current) {
+          killCamPlaybackRef.current.skip();
+          killCamPlaybackRef.current = null;
+          sessionRef.current?.setReplayActive?.(false);
+          applyHudOverlayEvent("endReplay");
+          setKillCam(null);
+        } else if (runEndedRef.current && spectateEnabled) {
           spectateCycleQueuedRef.current = true;
         } else if (!runEndedRef.current) {
           dashQueuedRef.current = true;
@@ -574,11 +694,22 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       rendererRef.current?.destroy();
       feedbackRef.current?.destroy();
       sessionRef.current?.dispose();
+      killCamPlaybackRef.current = null;
+      killCamDoorsRef.current = [];
+      sessionRef.current?.setReplayActive?.(false);
       rendererRef.current = null;
       feedbackRef.current = null;
       sessionRef.current = null;
     };
-  }, [clearMovementInput, providedSession, requestedMap, resetJoystick, setWorldMapOpen, spectateEnabled]);
+  }, [
+    applyHudOverlayEvent,
+    clearMovementInput,
+    providedSession,
+    requestedMap,
+    resetJoystick,
+    setWorldMapOpen,
+    spectateEnabled,
+  ]);
 
   const queueDash = useCallback(() => {
     void feedbackRef.current?.unlock();
@@ -598,6 +729,18 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     if (!runEndedRef.current) swapQueuedRef.current = { bayIndex, holdIndex };
   }, []);
 
+  const dropItem = useCallback((from: "bay" | "hold", index: number, expected: Item, revision: number) => {
+    void feedbackRef.current?.unlock();
+    if (!runEndedRef.current && !hudOverlaysRef.current.replay && !hudOverlaysRef.current.reconnecting) {
+      dropQueuedRef.current = { from, index, expected: { ...expected }, revision };
+    }
+  }, []);
+
+  const setConnectionBlocked = useCallback((blocked: boolean) => {
+    dropQueuedRef.current = undefined;
+    applyHudOverlayEvent(blocked ? "startReconnect" : "endReconnect");
+  }, [applyHudOverlayEvent]);
+
   const cycleSpectator = useCallback(() => {
     if (runEndedRef.current && spectateEnabled) {
       spectateCycleQueuedRef.current = true;
@@ -605,8 +748,21 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   }, [spectateEnabled]);
 
   const leaveRun = useCallback(() => {
+    killCamPlaybackRef.current?.skip();
+    killCamPlaybackRef.current = null;
+    sessionRef.current?.setReplayActive?.(false);
+    applyHudOverlayEvent("endReplay");
+    setKillCam(null);
     sessionRef.current?.leaveRun();
-  }, []);
+  }, [applyHudOverlayEvent]);
+
+  const skipKillCam = useCallback(() => {
+    killCamPlaybackRef.current?.skip();
+    killCamPlaybackRef.current = null;
+    sessionRef.current?.setReplayActive?.(false);
+    applyHudOverlayEvent("endReplay");
+    setKillCam(null);
+  }, [applyHudOverlayEvent]);
 
   /**
    * `undefined` clears it. A verb is standing state — the simulation reads it every
@@ -855,10 +1011,15 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     map: providedSession?.map ?? requestedMap,
     playerId: providedSession?.playerId ?? "player",
     spectating,
+    killCam,
     debugVisible,
     networkDebug,
     settingsVisible,
-    toggleSettings: () => setSettingsVisible((visible) => !visible),
+    toggleSettings: () => applyHudOverlayEvent(hudOverlaysRef.current.settings ? "closeSettings" : "openSettings"),
+    inventoryVisible,
+    toggleInventory: () => applyHudOverlayEvent(hudOverlaysRef.current.inventory ? "closeInventory" : "openInventory"),
+    closeInventory: () => applyHudOverlayEvent("closeInventory"),
+    setConnectionBlocked,
     feedbackPreferences,
     audioStatus,
     toggleSound: () => toggleFeedbackPreference("sound"),
@@ -870,7 +1031,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     queueDash,
     useBay,
     swapBayItem,
+    dropItem,
     leaveRun,
+    skipKillCam,
     selectDownedVerb,
     takeFromBody,
     plea,
@@ -885,4 +1048,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 function impactPan(listener: Vec2 | undefined, point: Vec2): number {
   if (!listener) return 0;
   return clamp((point.x - listener.x) / 320, -1, 1);
+}
+
+function killCamLabel(clip: KillCamClip, session: GameSession, sourceVisible: boolean): string {
+  const source = sourceVisible && clip.sourceBotId
+    ? session.getEntityMeta?.(clip.sourceBotId)?.name
+    : undefined;
+  const cause = clip.cause.kind === "environment" ? "IMPACT" : clip.cause.kind.toUpperCase();
+  return `${source ? `${source.toUpperCase()} · ` : ""}${cause} · CORE HIT`;
 }
