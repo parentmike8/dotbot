@@ -15,21 +15,19 @@ import { jitter, MAT, shade, SUN } from "./tone";
  * misread as a ban on motion often enough that a chairoplane was deleted rather than
  * animated. Motion is wanted. See the memory `motion-is-wanted`.
  *
- * ## The mechanism, and why it is a CHILD of the glyph
+ * ## The mechanism, and why the builder owns the display list
  *
- * A moving part is a `Graphics` added as a child of the object's own view. In Pixi 8 a
- * `Graphics` IS a `Container`, so this costs nothing and buys three things at once:
+ * A glyph registers each moving `Graphics` against the object's own view, then the builder
+ * takes those parts with `liftParts` and parents them to a real `Container`. Pixi 8 still
+ * permits children on `Graphics`, but deprecates it and logs on every game load.
  *
- *  - draw order is guaranteed — a child draws over its parent's own geometry, so the
- *    turning canopy lands on the deck it stands on without any display-list bookkeeping;
- *  - the object's view stays ONE `Graphics`, which parallax (`redrawFloorObjects`), Studio
- *    fabrication and `objectViews` all depend on;
+ *  - the builder owns draw order explicitly, including the outdoor overhead pass;
+ *  - the object's base stays ONE `Graphics`, which parallax (`redrawFloorObjects`), Studio
+ *    fabrication and `objectViews` all depend on, while its parts remain reusable siblings;
  *  - the part gets its own transform, which is the entire point.
  *
- * The alternative — a sibling Graphics pushed into the builder's array next to the base —
- * works only in the one builder that remembers to do it, and there are three of them
- * (outdoor, floor, Studio). A child works everywhere `drawModelObject` is called, which is
- * why the glyphs tag their own moving parts and the builders merely `collectMovers`.
+ * The registry is the bridge: glyphs still decide what moves, redraws still find and reuse
+ * the same part after it has been lifted, and builders decide where that part renders.
  *
  * ## What it costs
  *
@@ -66,10 +64,9 @@ const LABEL: Record<AmbientKind, string> = {
 /**
  * Parts belonging to a glyph, in the order they were created.
  *
- * A WeakMap rather than a scan of `g.children`, and the reason is `liftParts`: an outdoor
- * canopy is RE-PARENTED onto the foreground layer so a bot can walk under it, at which point
- * it is no longer among the glyph's children and a children-scan would happily build a second
- * one on the next redraw. The registry follows the part wherever it ends up.
+ * A WeakMap rather than `g.children`, because parts never use the glyph's `Graphics` as a
+ * display-list parent. `liftParts` hands an outdoor canopy to the overhead builder, while
+ * this registry keeps the same part discoverable on every redraw.
  */
 const parts = new WeakMap<Graphics, Map<string, Graphics>>();
 
@@ -87,7 +84,6 @@ function partOf(g: Graphics, label: string): Graphics {
   const part = new Graphics();
   part.label = label;
   owned.set(label, part);
-  g.addChild(part);
   return part;
 }
 
@@ -166,7 +162,7 @@ export type AmbientMover = {
  * Find the moving parts a glyph tagged, and bind them to the clock.
  *
  * Called by whichever builder drew the object. Cheap enough to call for every object —
- * it is a scan of one view's direct children, and almost every object has none.
+ * it is a scan of one view's small registry, and almost every object has none.
  */
 export function collectMovers(view: Container, o: MapObject): AmbientMover[] {
   const movers: AmbientMover[] = [];

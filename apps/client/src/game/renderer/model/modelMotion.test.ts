@@ -1,5 +1,5 @@
 import { Container, Graphics } from "pixi.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { worldMap } from "@dotbot/game/content/world";
 import type { MapObject, Vec2 } from "@dotbot/game/types";
@@ -78,6 +78,18 @@ describe("ambient motion", () => {
     expect(movers[0].kind).toBe("spin");
     // The part turns about the point it was given, not about the object's origin.
     expect(movers[0].about).toEqual({ x: 140, y: 240 });
+  });
+
+  it("does not parent a moving part to Graphics before a builder owns it", () => {
+    const g = new Graphics();
+    const addChild = vi.spyOn(g, "addChild");
+
+    movingPart(g, "spin", { x: 140, y: 240 });
+
+    // Pixi 8 deprecates Graphics as a display-list parent. The builder takes the
+    // registered part from `liftParts` and parents it to a real Container.
+    expect(addChild).not.toHaveBeenCalled();
+    expect(liftParts(g)).toHaveLength(1);
   });
 
   it("gives the world's rides a turning part each", () => {
@@ -261,10 +273,10 @@ describe("ambient motion", () => {
    * The hazard that makes `movingPart` idempotent, pinned.
    *
    * `redrawFloorObjects` re-runs the glyph on the SAME `Graphics` on every object-parallax
-   * step, and `Graphics.clear()` empties geometry while leaving children in place. A fresh
-   * child per call would add one canopy per camera step, unbounded, with every mover but the
-   * first pointing at a view nobody animates. Costs nothing to check and would be very hard
-   * to notice: the symptom is a slow leak and a tree that gradually stops moving.
+   * step. A fresh registered part per call would add one canopy per camera step, unbounded,
+   * with every mover but the first pointing at a view nobody animates. Costs nothing to
+   * check and would be very hard to notice: the symptom is a slow leak and a tree that
+   * gradually stops moving.
    */
   it("survives being redrawn without growing a second canopy", () => {
     const tree = downtownMap.outdoor.objects.find((o) => o.kind === "tree")!;
@@ -277,9 +289,10 @@ describe("ambient motion", () => {
       view.clear();
       drawModelObject(view, pad(), tree);
     }
-    // One canopy, still one canopy after five redraws. This caught an unconditional trunk
-    // child growing one per camera step back when the trunk was drawn over the leaves.
-    expect(view.children).toHaveLength(1);
+    // One registered canopy, still one after five redraws, and never parented to the
+    // Graphics that Pixi 8 deprecates as a display-list parent.
+    expect(view.children).toHaveLength(0);
+    expect(liftParts(view)).toEqual([mover.view]);
     expect(collectMovers(view, tree)[0].view).toBe(mover.view);
     // And it did not snap back to centre mid-lean because the camera moved.
     expect({ x: mover.view.position.x, y: mover.view.position.y }).toEqual(leaning);
@@ -305,17 +318,17 @@ describe("ambient motion", () => {
   /**
    * The cost claim, asserted directly.
    *
-   * A moving part is a CHILD of its object's view, which is what keeps the view a single
-   * `Graphics` for parallax and the Studio, and what guarantees the part draws over the
-   * base without any display-list bookkeeping. If a later pass promotes an object's view
-   * to a Container of siblings, this fails and the reason is in `modelMotion`'s header.
+   * A glyph registers its moving part without making `Graphics` a display-list parent.
+   * The outdoor builder later lifts these into its overhead `Container`; the production
+   * ownership assertion below pins that second half.
    */
-  it("keeps every moving part a child of its own object's Graphics", () => {
+  it("keeps every moving part registered without parenting it to Graphics", () => {
     for (const ride of rides) {
       const { view, movers } = drawn(ride);
       for (const mover of movers) {
-        expect(mover.view.parent).toBe(view);
-        expect(view.children).toContain(mover.view);
+        expect(mover.view.parent).toBeNull();
+        expect(view.children).not.toContain(mover.view);
+        expect(liftParts(view)).toContain(mover.view);
       }
     }
   });

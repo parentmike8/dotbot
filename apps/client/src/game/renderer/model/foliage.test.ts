@@ -4,6 +4,7 @@ import { downtownMap } from "@dotbot/game/content/downtown";
 import type { MapObject } from "@dotbot/game/types";
 import { drawModelObject } from "./modelGlyphs";
 import { canopyValueRamp } from "./foliageValues";
+import { liftParts } from "./modelMotion";
 import { MAT, SHADOW_ALPHA, shade, type ShadowPad } from "./tone";
 
 /**
@@ -117,7 +118,7 @@ describe("a canopy is foliage, not stone", () => {
       const view = new Graphics();
       drawModelObject(view, pad(), tree);
       /**
-       * ONE child: the swaying canopy. The trunk is in the base.
+       * ONE registered part: the swaying canopy. The trunk is in the base.
        *
        * It was briefly drawn as a second, still child ON TOP of the canopy, so that the only
        * part of a tree which stops you would be visible. Reported and reversed: "seeing the top
@@ -126,10 +127,12 @@ describe("a canopy is foliage, not stone", () => {
        *
        * What replaces it is a parting: a dark thinning at the centre of the canopy with no ring
        * and no edge, drawn ON the crown so it sways with the leaves it is a gap in. This pins
-       * both halves — the trunk is not a child, and the canopy is.
+       * both halves — the trunk stays in the base, while the canopy is the sole part
+       * the outdoor builder lifts into its overhead Container.
        */
-      expect(view.children, tree.id).toHaveLength(1);
-      expect(view.children[0].label, tree.id).toBe("ambient:sway");
+      expect(view.children, tree.id).toHaveLength(0);
+      expect(liftParts(view), tree.id).toHaveLength(1);
+      expect(liftParts(view)[0].label, tree.id).toBe("ambient:sway");
       // Geometry in the base too, which is where the trunk went.
       expect(view.context.instructions.length, tree.id).toBeGreaterThan(0);
     }
