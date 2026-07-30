@@ -110,8 +110,29 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
         { id: "obs-niche-e", kind: "shelf", x: CX + 120, y: CY - 60, w: 28, h: 120 },
         { id: "obs-niche-s", kind: "shelf", x: CX - 60, y: CY + 116, w: 120, h: 28 },
         { id: "obs-altar", kind: "altar", x: CX - 54, y: CY - 26, w: 108, h: 54 },
-        { id: "obs-brazier", kind: "brazier", x: CX + 74, y: CY + 78, w: 46, h: 46 },
-        { id: "obs-jar", kind: "drum", x: CX - 120, y: CY + 104, w: 30, h: 30 },
+        /**
+         * Pulled in off the drum, and the reason is the same for all three fixtures the probe
+         * found standing in this building's wall.
+         *
+         * The chamber is a 170-radius drum drawn as a 30-step polygon, and these are
+         * rectangles positioned by their top-left corner as though the wall were straight. The
+         * brazier's far corner sat 172.6 from the centre, the storage jar's 179.9 and F1's
+         * stele's 188.3 — all outside a wall face at about 169. Nothing reported it:
+         * `solid-overlap` compares object to object, and `object-off-floor` asks about the
+         * floor's own bounds, which a chamfered or curved shell is not.
+         *
+         * A round room's usable rectangle shrinks fast off-axis, and the fix is SIZE rather
+         * than position. Moving them inward worked geometrically and broke the floor twice
+         * over: the brazier pulled in to CX+62 pinched the only route past the altar, cutting
+         * 3,072 square units off the chamber and wedging the ambient bot that stands at
+         * CX+40,CY+60; the stele moved twice and took the drafting table's blueprint spawn with
+         * it both times. This drum has one generous band, through the middle, and every fixture
+         * on it competes for that band — so each keeps the spot it was composed in and gives up
+         * the corner that was in the wall. Farthest corners now 153, 166 and 160 against a wall
+         * face at 169.
+         */
+        { id: "obs-brazier", kind: "brazier", x: CX + 74, y: CY + 78, w: 32, h: 32 },
+        { id: "obs-jar", kind: "drum", x: CX - 114, y: CY + 94, w: 28, h: 26 },
       ],
       dots: [{ id: "obs-dot-a", item: { kind: "powerup", type: "radar" }, x: CX + 40, y: CY + 60 }],
     },
@@ -176,7 +197,20 @@ export const OBSERVATORY_SOURCE: SourceBuilding = {
          * brief reserves "the whole ring of floor, deliberately", and it was carrying
          * five fixtures plus a stair. Four is what it holds.
          */
-        { id: "obs-stele", kind: "stele", x: CX + 86, y: CY + 66, w: 40, h: 74 },
+        /**
+         * Far corner at 156 rather than 188: a 40 x 74 stele that far off-axis was a third of
+         * the way through the drum. See the brazier's note on GROUND.
+         *
+         * Smaller, not moved, because moving it is what broke the floor. Both attempts to
+         * relocate it — straight in toward the centre, then south-west — took the drafting
+         * table's blueprint spawn with them, and the map stopped compiling with "No bot-clear
+         * blueprint spawn for observatory/observatory:F1/draftingTable". A 170-radius drum has
+         * one generous band, through the middle, and everything on the floor competes for it.
+         *
+         * So the stele stays where it was composed and loses 16 x 28 instead: far corner at
+         * 160 rather than 188, which is inside the wall face at 169 with margin to spare.
+         */
+        { id: "obs-stele", kind: "stele", x: CX + 86, y: CY + 70, w: 24, h: 46 },
       ],
       // Was at (CX - 78, CY - 74), which is INSIDE the stair rect — a Dot on the
       // flight itself. It went unreported while the flight had no guards, because the

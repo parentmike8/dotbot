@@ -191,7 +191,16 @@ export const PAVILION_SOURCE: SourceBuilding = {
          * not pinch that strip it was 2 units outside the north-east facet.
          */
         { id: "pav-projector", kind: "listeningPost", x: HALL.x - 46, y: HALL.y - 250, w: 92, h: 52, facing: "S", scannable: true },
-        { id: "pav-proj-desk", kind: "desk", x: HALL.x + 46, y: HALL.y - 250, w: 92, h: 44, facing: "S" },
+        /**
+         * 76 wide and 18 units further south, which is the octagon reasserting itself.
+         *
+         * The comment above records a reel shelf being cut because "at the only x where it did
+         * not pinch that strip it was 2 units outside the north-east facet". This desk had the
+         * same fault and survived: 92 wide starting at +46 puts its north-east corner past the
+         * same facet. The projector gets away with it because it straddles the centreline,
+         * where the facet is furthest away.
+         */
+        { id: "pav-proj-desk", kind: "desk", x: HALL.x + 46, y: HALL.y - 232, w: 76, h: 44, facing: "S" },
         // The gallery: a couch against each facet that faces one end of the hall below.
         { id: "pav-couch-w", kind: "couch", x: HALL.x - 240, y: HALL.y - 60, w: 40, h: 120, facing: "E" },
         { id: "pav-couch-e", kind: "couch", x: HALL.x + 200, y: HALL.y - 60, w: 40, h: 120, facing: "W" },
