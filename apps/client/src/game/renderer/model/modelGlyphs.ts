@@ -2,7 +2,8 @@ import type { Graphics } from "pixi.js";
 import type { Facing, MapObject, Vec2 } from "@dotbot/game/types";
 import { treeTrunkRadius } from "@dotbot/game/mapModel";
 import { landmarkGlyphs } from "./modelLandmarks";
-import { movingPart } from "./modelMotion";
+import { movingPart, stillPart } from "./modelMotion";
+import { cappedLift } from "./prism";
 import {
   contact,
   contactRound,
@@ -18,6 +19,7 @@ import {
   sitRound,
   V,
   volume,
+  volumeShape,
   type Material,
   type Rect,
   type ShadowPad,
@@ -810,57 +812,161 @@ function deskGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
 }
 
 /**
- * Vegetation as one irregular mass, not a cluster of discs.
+ * Vegetation as a real MASS, extruded, with a frayed rim.
  *
- * Overlapping equal-value circles are the worst reading in the kit: from directly
- * above they are indistinguishable from a puff of smoke — which is exactly the
- * static-smoke defect rule 4 was written about, arrived at by accident on a tree.
- * A closed blob with a genuinely dark underside, a mid body and a bright north-west
- * crown reads as a canopy at every zoom, and the notches are what make it leaves
- * rather than a lump.
+ * Two defects, found in that order, and the second one is why this is `volumeShape` now.
+ *
+ * FIRST: overlapping equal-value circles are the worst reading in the kit — from directly
+ * above they are indistinguishable from a puff of smoke, which is the static-smoke defect
+ * rule 4 was written about, arrived at by accident on a tree. That was fixed by going to a
+ * closed blob with a dark underside, a mid body and a bright crown.
+ *
+ * SECOND, and reported by looking at the temple forest at play zoom: the closed blob READ AS
+ * A BOULDER. It was flat `poly().fill()` — a dark mass with lighter round lobes, which is
+ * `boulderGlyph` with different values — while the thickets standing beside it read as
+ * vegetation on sight. `modelLandmarks` already says why, about the thicket: "OUTLINE CARRIES
+ * MATERIAL AT LEAST AS HARD AS VALUE DOES ... what fixed it was fraying the silhouette. A
+ * closed polygonal outline means STONE in this language whatever tone it is." The trees never
+ * got that lesson applied to them.
+ *
+ * So: a broken rim, and a genuine extrusion.
+ *
+ * THE EXTRUSION IS ALSO TASK #79(a), and it turns out to be the same job rather than a
+ * separate one. Trees were said to read flat because they ground at `LIFT.column + 4` while a
+ * landmark gets `LIFT.tower`, and the proposed fix was to raise that number. Raising it would
+ * have lengthened the CAST SHADOW and changed nothing else, because the canopy was never in
+ * the prism system at all: flat fills have no top face, and object parallax works by pulling a
+ * top face. `volumeShape` puts the canopy in the system, so it has a lit top, side faces
+ * shaded by their own normals, and a top that slides with the camera like everything else.
+ *
+ * `LIFT.mass` rather than `LIFT.tower`: a tree is not a water tower. `cappedLift` holds a
+ * small plant down anyway — a 30-unit pot plant gets 13.5 whatever it asks for.
  */
-function foliageMass(g: Graphics, cx: number, cy: number, radius: number, seed: string, spread = 1): void {
-  const steps = 20;
-  const ring = (scale: number, dx = 0, dy = 0): Vec2[] =>
-    Array.from({ length: steps }, (_, i) => {
-      const a = (i / steps) * Math.PI * 2;
-      const wobble = (0.78 + jitter(seed, i) * 0.34) * scale * spread;
-      return { x: cx + dx + Math.cos(a) * radius * wobble, y: cy + dy + Math.sin(a) * radius * wobble };
-    });
-  const fill = (points: Vec2[], color: number, alpha = 1): void => {
-    g.poly(points.map((point) => ({ x: point.x, y: point.y }))).fill({ color, alpha });
-  };
+function foliageMass(
+  g: Graphics,
+  cx: number,
+  cy: number,
+  radius: number,
+  seed: string,
+  spread = 1,
+  lift = LIFT.mass,
+): void {
+  const steps = 26;
 
   /**
-   * A canopy absorbs light, so every step of this ramp stays well below the
-   * paving it stands on. The previous version topped out at 0xcfd4d1 against
-   * 0xd5d8db footway — indistinguishable — so the middle of each tree dropped out
-   * and left a dark ring, which is exactly what "circles that look like smoke"
-   * describes.
+   * The silhouette: a few big branch masses, not uniform noise.
+   *
+   * Two frequencies. The low one (three or four lobes, phase off the seed) is what makes a
+   * canopy read as a canopy rather than as a lumpy circle — a tree is a handful of branch
+   * masses seen from above. The high one keeps any single lobe from being a smooth arc.
    */
-  const shaded = shade(MAT.foliage.top, 0.46);
-  const body = shade(MAT.foliage.top, 0.62);
-  const crown = shade(MAT.foliage.top, 0.84);
+  const lobes = 3 + Math.floor(jitter(seed, 5) * 2);
+  const twist = jitter(seed, 6) * Math.PI * 2;
+  const outline: Vec2[] = Array.from({ length: steps }, (_, i) => {
+    const a = (i / steps) * Math.PI * 2;
+    const big = 1 + Math.sin(a * lobes + twist) * 0.13;
+    const small = 0.9 + jitter(seed, i) * 0.2;
+    const r = radius * spread * big * small;
+    return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+  });
 
-  // Cast shadow on the ground, thrown south-east.
-  fill(ring(1.04, radius * 0.15, radius * 0.19), 0x000000, 0.17);
-  fill(ring(1), shaded);
   /**
-   * The ramp runs north-west, like every other lit surface in this language. The
-   * earlier concentric version — dark rim, light centre — is a dome lit from
-   * directly overhead, and nothing else on the map is lit that way, so the trees
-   * were the one thing on the sheet with their own private sun.
+   * THE RAMP, and it took a third pass to land because two opposite failures bracket it.
+   *
+   * Too LIGHT and the middle of a tree matches the paving it stands on, drops out, and leaves
+   * a dark ring — the "circles that look like smoke" reading, which is what pushed an earlier
+   * version down to a 0.46..0.84 ramp.
+   *
+   * Too DARK and it is a rock. That is what the 0.5..0.88 ramp did: rendered beside the
+   * thickets, which top out AT `MAT.foliage.top`, the trees were the boulders and the thickets
+   * were the plants. `boulderGlyph` builds from `MAT.rock`/`rockDark` through the same
+   * `volumeShape`, so tone is doing half the work of telling them apart and the trees had
+   * borrowed the rock's half.
+   *
+   * So it tops out where the thicket does and the range is WIDER instead of lower — 0.58 to
+   * 1.12 rather than 0.5 to 0.88. A canopy that absorbs light still has a lit crown.
    */
-  fill(ring(0.86, -radius * 0.11, -radius * 0.14), body);
-  fill(ring(0.56, -radius * 0.26, -radius * 0.31), crown);
+  const under = shade(MAT.foliage.top, 0.6);
+  const body = shade(MAT.foliage.top, 0.84);
+  const lit = MAT.foliage.top;
 
-  // Gaps between branch masses, cut in from the rim so the silhouette stays
-  // ragged. Without them the crown is a smooth dome.
-  for (let i = 0; i < 4; i += 1) {
-    const a = (i / 4) * Math.PI * 2 + jitter(seed, i + 70) * 1.4;
-    const d = radius * (0.55 + jitter(seed, i + 80) * 0.3);
-    g.circle(cx + Math.cos(a) * d, cy + Math.sin(a) * d, radius * (0.13 + jitter(seed, i + 90) * 0.1))
-      .fill({ color: shade(MAT.foliage.top, 0.38), alpha: 0.7 });
+  // Cast shadow on the ground, thrown south-east, before the mass that throws it.
+  const shadow = outline.map((point) => ({
+    x: cx + (point.x - cx) * 1.03 + radius * 0.15,
+    y: cy + (point.y - cy) * 1.03 + radius * 0.19,
+  }));
+  g.poly(shadow.map((point) => ({ x: point.x, y: point.y }))).fill({ color: 0x000000, alpha: 0.17 });
+
+  /**
+   * The mass, extruded — the same `volumeShape` every other solid in the world goes through,
+   * which is the point of #79(a): a canopy with a top face has somewhere for parallax to pull.
+   *
+   * LIFTED LESS THAN A ROCK, and that is the lesson of the second attempt. At `LIFT.mass` a
+   * 100-unit canopy gets a 17-unit band of front-face round its away side — a third of the
+   * radius in the darkest tone in the ramp — and a dark ring round a light middle is exactly
+   * the failure the very first version of this function was written to fix. A boulder is
+   * `min(LIFT.mass, 5 + size * 0.22)` and wants that band, because a rock face IS a cliff.
+   * Foliage is not: it wants enough lift to parallax and to sit above its own shadow, and no
+   * more.
+   */
+  const canopyLift = cappedLift(radius * 2, Math.min(lift, 4 + radius * 0.14));
+  volumeShape(g, outline, { top: body, front: under, edge: shade(MAT.foliage.top, 0.44), lit }, canopyLift);
+
+  /**
+   * BRANCH MASSES, and this is where the reading is won or lost.
+   *
+   * Built the way `thicketGlyph` builds its lobes, because the thicket is the one piece of
+   * vegetation in the world that reads as vegetation on sight, and the trees standing beside
+   * it read as boulders. Its proportions are the specification: lobes a THIRD TO A HALF of
+   * the radius across, sitting at a third to two thirds out, shaded by which way they face
+   * the light rather than by a concentric ramp.
+   *
+   * Concentric was the earlier mistake, twice: a dark rim round a light centre is a dome lit
+   * from directly overhead, and nothing else in this world is lit that way, so the trees were
+   * the one subject with their own private sun.
+   */
+  const masses = Math.max(5, Math.round(radius / 13));
+  for (let i = 0; i < masses; i += 1) {
+    const a = (i / masses) * Math.PI * 2 + jitter(seed, i + 20) * 0.8;
+    const d = radius * (0.3 + jitter(seed, i + 30) * 0.34);
+    const facing = (Math.cos(a) * -0.33 + Math.sin(a) * -0.94 + 1) / 2;
+    const r = radius * (0.34 + jitter(seed, i + 40) * 0.18);
+    g.circle(cx + Math.cos(a) * d, cy + Math.sin(a) * d, r)
+      .fill({ color: facing > 0.6 ? lit : body });
+  }
+
+  /**
+   * THE FRAYED RIM — the thing that makes it leaves and not rock.
+   *
+   * `modelLandmarks` states the rule this obeys: "OUTLINE CARRIES MATERIAL AT LEAST AS HARD AS
+   * VALUE DOES ... A closed polygonal outline means STONE in this language whatever tone it
+   * is." In a world with no colour that is not a stylistic preference, it is the only channel
+   * left — `boulderGlyph` and this function both extrude a lumpy blob through `volumeShape`,
+   * so the silhouette is doing nearly all the work of telling a tree from a rock.
+   *
+   * The sizes are the thicket's, and getting them wrong is what cost a round: at 0.09..0.18 of
+   * the radius sitting at 0.94..1.06 the lobes barely broke the outline and the tree stayed a
+   * rock with a stubbled edge. Sitting at 0.78..0.94 of the lobed outline, a tenth to a fifth
+   * of the radius across, they straddle it and the edge goes cloudy.
+   *
+   * These are the only marks allowed outside the footprint, and that is fine: a canopy is
+   * passable and its collider is the trunk. The reach is bounded at a QUARTER of the radius
+   * past it and `foliage.test.ts` holds that line — an earlier pass ran to 1.4x, which on a
+   * 46-unit street tree is a canopy 40% wider than the rect every clearance rule measures.
+   */
+  const fringe = Math.round(steps * 0.85);
+  for (let i = 0; i < fringe; i += 1) {
+    const a = (i / fringe) * Math.PI * 2;
+    /**
+     * On a plain circle, NOT on the lobed outline, and that is the compromise that made both
+     * bounds hold at once. Following the lobes multiplied their 1.13 peak into the fringe's
+     * own offset and ran the canopy to 1.27 of the radius; ignoring them puts the fringe
+     * outside the outline in the troughs and inside it at the peaks, which varies how much
+     * each lobe protrudes and reads better than a uniform stubble anyway.
+     */
+    const at = radius * spread * (0.86 + jitter(seed, i + 60) * 0.16);
+    g.circle(cx + Math.cos(a) * at, cy + Math.sin(a) * at, radius * (0.09 + jitter(seed, i + 70) * 0.07))
+      .fill({ color: jitter(seed, i + 80) > 0.55 ? body : under });
   }
 }
 
@@ -974,7 +1080,15 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   const cx = o.x + o.w / 2;
   const cy = o.y + o.h / 2;
   const radius = Math.min(o.w, o.h) / 2;
-  contactRound(pad, cx, cy, radius * 0.88, LIFT.column + 4);
+  /**
+   * The cast shadow scales with the canopy, because in this language SHADOW LENGTH IS HEIGHT.
+   *
+   * It was a flat `LIFT.column + 4` = 15 for every tree in the world, which is task #79(a)'s
+   * "trees read flat": a 112-unit jungle tree and a 44-unit street tree threw the same shadow,
+   * so the forest had no scale in it at all. Capped at `LIFT.tower` — past that the parallax
+   * is doing a building's work and the thing should be a building.
+   */
+  contactRound(pad, cx, cy, radius * 0.88, Math.min(LIFT.tower, LIFT.column + radius * 0.22));
 
   /**
    * Trunk, visible where the canopy thins. A crown with no trunk floats.
@@ -987,7 +1101,8 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
    *
    * Drawn a touch below centre; `inscribedSolid` applies the same 0.06 offset.
    */
-  cylinder(g, cx, cy + radius * 0.06, treeTrunkRadius(o), MAT.woodDark, 3);
+  const trunkAt = { x: cx, y: cy + radius * 0.06 };
+  const trunkR = treeTrunkRadius(o);
 
   /**
    * The canopy leans about the trunk it grows out of, not about the object's centre.
@@ -997,8 +1112,32 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
    * trunk appear to slide out from under the crown, which is the one thing here that would
    * contradict the collider.
    */
-  const crown = movingPart(g, "sway", { x: cx, y: cy + radius * 0.06 });
+  const crown = movingPart(g, "sway", trunkAt);
   foliageMass(crown, cx, cy, radius * 0.96, o.id);
+
+  /**
+   * THE TRUNK AGAIN, ON TOP, and it is the collider that earns it.
+   *
+   * A tree is the one object in the world whose drawn extent and whose solid are different
+   * things: the canopy is passable and the trunk is not. It was drawn once, under the
+   * canopy, where the canopy's own mass covered it — so the only part of a tree that stops
+   * you was invisible, which is exactly the complaint #33 and #54 fixed from the other side
+   * when thirty ghosts were promoted to solid because a cast shadow promises cover.
+   *
+   * Pictorially a dense crown would hide its own trunk. That trade goes the other way here
+   * for the same reason `markPassable` exists: what the player can act on wins. It is a
+   * 5-to-9-unit disc on an 80-to-110-unit canopy, so it reads as the leader showing through
+   * a gap rather than as a log lying on the leaves.
+   *
+   * A SECOND CHILD, not part of the swaying one. Children draw in order, so the trunk lands
+   * over the canopy while keeping its own transform at rest — which is the whole point.
+   * Drawing it into `crown` would have slid the collider's mark a few units off the collider.
+   */
+  const bole = stillPart(g, "trunk");
+  // DARK on a lit crown, not light. A pale disc on the old dark canopy read as a bolt head;
+  // the crown is the bright thing now, so the trunk is the dark mark in it.
+  cylinder(bole, trunkAt.x, trunkAt.y, trunkR, MAT.woodDark, 3);
+  bole.circle(trunkAt.x, trunkAt.y, trunkR * 0.5).fill({ color: shade(MAT.woodDark.front, 0.8) });
 }
 
 /**

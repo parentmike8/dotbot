@@ -192,7 +192,9 @@ describe("ambient motion", () => {
       view.clear();
       drawModelObject(view, pad(), tree);
     }
-    expect(view.children).toHaveLength(1);
+    // The canopy and the trunk, once each. Before `stillPart` existed the trunk was added
+    // unconditionally and this caught it growing one per redraw.
+    expect(view.children).toHaveLength(2);
     expect(collectMovers(view, tree)[0].view).toBe(mover.view);
     // And it did not snap back to centre mid-lean because the camera moved.
     expect({ x: mover.view.position.x, y: mover.view.position.y }).toEqual(leaning);

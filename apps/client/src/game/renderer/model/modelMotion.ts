@@ -107,6 +107,36 @@ export function movingPart(g: Graphics, kind: AmbientKind, about: Vec2): Graphic
   return part;
 }
 
+/**
+ * A child that draws OVER a moving part and does not move with it.
+ *
+ * The one case is a tree's trunk. Children draw in order, so a still child added after the
+ * canopy lands on top of it while keeping its own transform at rest — which is the only way
+ * to draw the collider over the scenery without the scenery dragging it around.
+ *
+ * Idempotent for the same reason `movingPart` is, and it is worth saying that this was
+ * learned the hard way twice in one session: the first version of the trunk child was
+ * unconditional, and the redraw test that had just been written for `movingPart` caught it
+ * growing a trunk per camera step.
+ */
+export function stillPart(g: Graphics, name: string): Graphics {
+  // A drawing sink that is not a display list gets the marks directly, exactly as in
+  // `movingPart` — and here the fallback is not even a compromise: with no moving sibling to
+  // draw over, "on top" is just "last", which is where it already is.
+  if (typeof (g as { addChild?: unknown }).addChild !== "function") return g;
+
+  const label = `still:${name}`;
+  const existing = g.children.find((child) => child.label === label);
+  if (existing instanceof Graphics) {
+    existing.clear();
+    return existing;
+  }
+  const part = new Graphics();
+  part.label = label;
+  g.addChild(part);
+  return part;
+}
+
 /** A moving part, bound to the clock. Built once; only its transform changes. */
 export type AmbientMover = {
   kind: AmbientKind;

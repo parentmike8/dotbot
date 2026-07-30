@@ -807,6 +807,23 @@ export function sitRound(g: Graphics, cx: number, cy: number, radius: number, li
  * the same angle reads as a tile map; a few degrees of authored-looking scatter
  * reads as a place people work in. Deterministic so collision, tests and
  * screenshots never disagree.
+ *
+ * IT DID NOT SPREAD ON SHORT IDS, and that cost two separate visual bugs before anyone
+ * looked at the hash itself. FNV-1a alone plus `% 10000` reduces a 32-bit value through its
+ * LOW bits, which are the weakest — the multiply propagates entropy upward — so a
+ * two-character id barely moves them. Downtown's outdoor objects are `o0`, `o1`, `o11`, and
+ * the measured result was eight distinct values across twenty-five trees.
+ *
+ * Symptom one: tree canopies took their wind phase from `jitter(id, 3)` and a whole street
+ * moved as one. Symptom two: a canopy's fringe lobes took their radius from `jitter(id, i)`
+ * and landed in a ring instead of scattered, so the silhouette came out stubbled rather than
+ * cloudy. Both were nearly fixed twice by working around the hash at the call site, which is
+ * how a defect like this survives — see the brief's "fix the generator, not the instance".
+ *
+ * So there is a final avalanche (the standard xorshift-multiply finalizer) before the
+ * reduction. Every mark in the world that scatters moves a little as a result. Nothing that
+ * COLLIDES moves: this feeds drawing only, which is the property that makes the change safe
+ * to make at all.
  */
 export function jitter(id: string, salt = 0): number {
   let h = 2166136261 ^ salt;
@@ -814,6 +831,11 @@ export function jitter(id: string, salt = 0): number {
     h ^= id.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
+  h ^= h >>> 15;
+  h = Math.imul(h, 2246822507);
+  h ^= h >>> 13;
+  h = Math.imul(h, 3266489909);
+  h ^= h >>> 16;
   return ((h >>> 0) % 10000) / 10000;
 }
 
