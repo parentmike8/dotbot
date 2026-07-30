@@ -664,10 +664,9 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
      * Anything the glyph made as a part goes overhead, in creation order.
      *
      * Two things at once. It puts a canopy above the bots, which is what play asked for. And
-     * it takes the parts off the `Graphics` they were created on — pixi 8 warns that "only
-     * Containers will be allowed to add children", and a `Graphics` being a `Container` is
-     * true today and deprecated. Lifting them makes the whole mechanism a sibling layer,
-     * which is the shape pixi wants anyway.
+     * it gives registered parts a real `Container` parent — pixi 8 warns that "only
+     * Containers will be allowed to add children" when a `Graphics` owns them. The glyph
+     * registry keeps redraws idempotent; this builder owns the display list.
      */
     const elevated = new Container();
     for (const part of liftParts(g)) elevated.addChild(part);
