@@ -326,6 +326,10 @@ export class NetSession implements GameSession {
     this.queuedDrop = undefined;
     this.queuedTake = undefined;
     this.queuedPing = undefined;
+    this.pendingInputs = this.pendingInputs.map((pending) => pending.input.drop
+      ? { ...pending, input: { ...pending.input, drop: undefined } }
+      : pending);
+    this.edgeAwaitingFlush = this.pendingInputs.some(({ input }) => carriesAction(input));
   }
 
   getRunState(): RunState {
@@ -442,6 +446,10 @@ export class NetSession implements GameSession {
         // The server addresses this message only to its victim. Replace an
         // older queued clip for the same down so reconnect resend is idempotent.
         {
+          // Receipt is the first authoritative replay boundary. The render
+          // hook drains this clip after advancing networking, so waiting for
+          // the UI to activate replay would still ship staged/resend drops.
+          this.setReplayActive(true);
           const clip = fromWireKillCamClip(message.clip);
           this.killCams = this.killCams.filter((queued) => queued.id !== clip.id);
           this.killCams.push(clip);

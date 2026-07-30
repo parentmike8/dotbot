@@ -176,6 +176,63 @@ describe("NetSession item edges", () => {
     expect(predictorStep).toHaveBeenCalledOnce();
   });
 
+  it("activates replay on receipt before advance/drain and strips staged plus resend-buffered drops", () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    Object.assign(session as unknown as object, {
+      transport: { send: (message: Record<string, unknown>) => sent.push(message) },
+      mapValue: downtownMap,
+      configValue: defaultGameConfig,
+      tickHz: 60,
+      handshakeReady: true,
+      pendingInputs: [{
+        seq: 9,
+        input: {
+          move: { x: 0, y: 0 },
+          dash: false,
+          drop: { from: "hold", index: 0, revision: 2, expected: { kind: "mine" } },
+        },
+      }],
+      seq: 9,
+    });
+    session.sendInput({
+      move: { x: 0, y: 0 },
+      dash: false,
+      drop: { from: "bay", index: 0, revision: 2, expected: { kind: "mine" } },
+    });
+
+    const clip = {
+      id: "victim-90",
+      victimId: "victim",
+      cause: { kind: "dash", tick: 90, position: { x: 10, y: 20 }, direction: { x: 1, y: 0 } },
+      startTick: 30,
+      deathTick: 90,
+      tickHz: 60,
+      frames: [{
+        tick: 30,
+        victim: {
+          id: "victim", position: { x: 10, y: 20 }, facing: 0, floorId: "outdoor",
+          shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed",
+        },
+        blockingDoorIds: [],
+      }],
+    } satisfies KillCamClip;
+    (session as unknown as { receive(message: unknown): void })
+      .receive({ type: "killCam", clip: toWireKillCamClip(clip) });
+
+    // Production hook order: receive happens asynchronously, then this frame
+    // advances prediction/networking, then the UI drains the queued clip.
+    (session as unknown as { advancePrediction(ms: number): void })
+      .advancePrediction(1000 / 60 + 1);
+    expect(session.drainKillCams()).toEqual([clip]);
+
+    const frames = sent
+      .filter((message) => message.type === "input")
+      .flatMap((message) => message.frames as Array<Record<string, unknown>>);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((frame) => frame.drop === undefined)).toBe(true);
+  });
+
   it("correlates a predicted contact with the explicit server hit acknowledgement", () => {
     let nowMs = 100;
     vi.stubGlobal("performance", { now: () => nowMs });

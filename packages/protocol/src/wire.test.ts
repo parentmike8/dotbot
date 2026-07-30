@@ -222,6 +222,45 @@ describe("snapshot wire mapping", () => {
     expect([...store.values()]).toEqual([upper]);
   });
 
+  it("retains the authoritative runtime set when a floor context sync arrives in the same lossy frame", () => {
+    const oldRuntime: WireDot = {
+      id: "runtime-drop-old",
+      position: { x: 1, y: 1 },
+      radius: 10,
+      floorId: "outdoor",
+      it: "h",
+      active: true,
+      rt: true,
+    };
+    const authored: WireDot = {
+      id: "outside-authored",
+      position: { x: 2, y: 2 },
+      radius: 10,
+      floorId: "outdoor",
+      it: "r",
+      active: true,
+    };
+    const currentRuntime: WireDot = {
+      id: "runtime-drop-current",
+      position: { x: 3, y: 3 },
+      radius: 10,
+      floorId: "outdoor",
+      it: "b:desk",
+      src: "mercy",
+      active: true,
+      rt: true,
+    };
+    const store = new Map([[oldRuntime.id, oldRuntime]]);
+
+    // This frame must stand on its own if the following latest snapshot is lost.
+    applyWireDotFrame(store, {
+      dotSync: [{ context: "outdoor", dots: [authored] }],
+      runtimeDots: [currentRuntime],
+    }, (floorId) => floorId);
+
+    expect([...store.values()]).toEqual([authored, currentRuntime]);
+  });
+
   it("converges runtime dots after the first lossy add frame is discarded", () => {
     const store = new Map<string, WireDot>();
     const runtime = {

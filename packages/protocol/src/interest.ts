@@ -56,6 +56,9 @@ export function filterForViewer(
       ...bot,
       b: inventoryVisible ? bot.b : undefined,
       h: inventoryVisible ? bot.h : undefined,
+      bs: inventoryVisible ? bot.bs : undefined,
+      hs: inventoryVisible ? bot.hs : undefined,
+      ir: inventoryVisible ? bot.ir : undefined,
       r: bot.i === viewerCtx.viewerBotId ? bot.r : undefined,
     };
   });

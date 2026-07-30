@@ -160,9 +160,18 @@ export function applyWireDotFrame(
   frame: Pick<WireSnapshot, "dotDeltas" | "dotAdds" | "runtimeDots" | "dotSync">,
   contextForFloor: (floorId: string) => string,
 ): void {
+  for (const sync of frame.dotSync ?? []) {
+    for (const [id, dot] of store) {
+      if (contextForFloor(dot.floorId) === sync.context) store.delete(id);
+    }
+    for (const dot of sync.dots ?? []) store.set(dot.id, { ...dot, position: { ...dot.position } });
+  }
   for (const dot of frame.dotAdds ?? []) {
     store.set(dot.id, { ...dot, position: { ...dot.position } });
   }
+  // Context replacement can delete every definition on an affected floor.
+  // Apply the complete runtime set last so one latest-state frame is atomic:
+  // it is safe even when the following snapshot is lost.
   if (frame.runtimeDots !== undefined) {
     for (const [id, dot] of store) {
       if (dot.rt) store.delete(id);
@@ -170,12 +179,6 @@ export function applyWireDotFrame(
     for (const dot of frame.runtimeDots) {
       store.set(dot.id, { ...dot, rt: true, position: { ...dot.position } });
     }
-  }
-  for (const sync of frame.dotSync ?? []) {
-    for (const [id, dot] of store) {
-      if (contextForFloor(dot.floorId) === sync.context) store.delete(id);
-    }
-    for (const dot of sync.dots ?? []) store.set(dot.id, { ...dot, position: { ...dot.position } });
   }
   for (const delta of frame.dotDeltas ?? []) {
     const dot = store.get(delta.id);
