@@ -1,4 +1,5 @@
 import { defaultGameConfig, downtownMap, type DotBotEntity, type InputCommand } from "@dotbot/game";
+import { DASH_CLINCH_TICKS } from "@dotbot/game/config";
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import type { MapDocument, Vec2 } from "@dotbot/game/types";
 import { describe, expect, it } from "vitest";
@@ -105,7 +106,27 @@ describe("LitePredictor", () => {
     expect(predictor.consumeDashContact()).toBeNull();
   });
 
-  it("predicts a point-blank dash as a bump without letting it become a hit", () => {
+  it("predicts a dash out of a sustained clinch as a bump without letting it become a hit", () => {
+    const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    const clinched = {
+      id: "target",
+      position: { x: 1248, y: 850 },
+      radius: 24,
+      facing: Math.PI,
+      shieldSegments: [1, 1, 1],
+      hostile: true,
+    };
+    // Contact has to persist to disarm, and the predictor counts it per snapshot —
+    // so the clinch is fed in the same way the session feeds it, one frame at a time.
+    for (let frame = 0; frame < DASH_CLINCH_TICKS; frame += 1) predictor.setObstacles([clinched]);
+
+    predictor.step({ ...moveRight, dash: true });
+
+    expect(predictor.current.dashActiveMs).toBe(0);
+    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "bump" });
+  });
+
+  it("predicts a brush of contact as a hit rather than a bump", () => {
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
     predictor.setObstacles([{
       id: "target",
@@ -118,8 +139,7 @@ describe("LitePredictor", () => {
 
     predictor.step({ ...moveRight, dash: true });
 
-    expect(predictor.current.dashActiveMs).toBe(0);
-    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "bump" });
+    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "hit" });
   });
 
   it("predicts a dash from visible daylight as a hit rather than a bump", () => {
@@ -140,14 +160,15 @@ describe("LitePredictor", () => {
 
   it("lets a predicted dash escape away from a body it started touching", () => {
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
-    predictor.setObstacles([{
+    const clinched = {
       id: "target",
       position: { x: 1248, y: 850 },
       radius: 24,
       facing: Math.PI,
       shieldSegments: [1, 1, 1],
       hostile: true,
-    }]);
+    };
+    for (let frame = 0; frame < DASH_CLINCH_TICKS; frame += 1) predictor.setObstacles([clinched]);
 
     predictor.step({ move: { x: -1, y: 0 }, dash: true });
 

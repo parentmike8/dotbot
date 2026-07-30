@@ -10,9 +10,51 @@ import type { GameConfig } from "./types";
  */
 export const MOVING_SPEED = 5;
 
-/** Narrow tolerance for literal body contact when a dash begins. This must
- * stay much smaller than hit forgiveness: visible daylight is valid run-up. */
-export const DASH_START_CONTACT_EPSILON_PX = 0.5;
+/** Narrow tolerance for literal body contact. Visible daylight is valid run-up. */
+export const DASH_CONTACT_EPSILON_PX = 0.5;
+
+/**
+ * How long two bodies must stay touching before a dash between them is disarmed.
+ *
+ * The run-up rule used to disarm on a snapshot: touching on the tick you pressed
+ * meant a bump, full stop. That reads as arbitrary from the keyboard, because a
+ * single tick of contact is not something a player can see or avoid. A body closing
+ * under dash covers 10.7 px in one tick — most of the daylight a hunter is told to
+ * hold — so a charge can erase visible separation between the frame you reacted to
+ * and the tick your dash is judged on, and the separation solver then parks the two
+ * of you at a gap of exactly zero. Reported from play as bumps happening "even when
+ * we didn't start as touching", which was an accurate description of the rule.
+ *
+ * So contact has to PERSIST to disarm anything. Eight ticks is about an eighth of a
+ * second of two bodies genuinely stuck together — long past an incidental brush from
+ * someone charging in, and nowhere near long enough to let anyone stand on a target
+ * and grind dashes into it, which is the pattern the rule exists to kill. Any
+ * daylight at all resets it, because breaking off is the counterplay and it should
+ * work the instant you do it.
+ *
+ * Deliberately NOT hysteresis in the other direction. Making the disarmed state
+ * sticky — touch once, then owe a fixed distance before you re-arm — is a rule that
+ * produces MORE bumps than the one being replaced, in exactly the band where players
+ * already complain about them.
+ */
+export const DASH_CLINCH_TICKS = 8;
+
+/**
+ * How long after a dash ends a body still counts as committed to it, for the parry.
+ *
+ * Two bodies charging each other should clash. Requiring both dashes to be ACTIVE on
+ * the same tick makes that a coincidence rather than a read: a dash is 145 ms and
+ * ends the moment it connects, so whoever committed first has usually spent theirs
+ * by the time the two actually meet, and the later charge lands as a clean hit.
+ * Reported from play as parries being almost impossible to get.
+ *
+ * A grace of roughly one more dash length means two charges begun within about a
+ * quarter second of each other still meet as a parry, which is what "we both went
+ * for it" feels like from either chair. It only ever widens the clash: the damage
+ * path stays gated on an actually-active dash, so this can turn a hit into a parry
+ * and never the other way round.
+ */
+export const DASH_PARRY_GRACE_MS = 120;
 
 /** Swept-hit tolerance for simulation sampling and small network error. */
 export const DASH_HIT_FORGIVENESS_PX = 4;

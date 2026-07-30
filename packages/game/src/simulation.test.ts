@@ -938,11 +938,17 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("turns a dash started at contact into a no-damage bump", async () => {
+  it("turns a dash out of a sustained clinch into a no-damage bump", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
       enemySpawn({ position: { x: 148, y: 180 }, controller: "frozen" }),
     ]);
+
+    // Contact has to PERSIST to disarm, so hold the clinch first. One tick of it is
+    // an accident; `DASH_CLINCH_TICKS` of it is standing on someone.
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+    for (let tick = 0; tick < 12; tick += 1) simulation.step();
+    simulation.drainEvents();
 
     simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
     simulation.step();
@@ -999,6 +1005,108 @@ describe("DotBotSimulation", () => {
     expect(snapshot.bots.find((bot) => bot.id === "player")!.dashActiveMs).toBeGreaterThan(0);
     expect(snapshot.bots.find((bot) => bot.id === "enemy")!.shieldSegments).toEqual([1, 1, 1]);
     expect(simulation.drainEvents().some((event) => event.type === "dashContact")).toBe(false);
+    simulation.dispose();
+  });
+
+  /**
+   * The half of the run-up rule that play reported as broken.
+   *
+   * Disarming on a snapshot — touching on the tick you pressed, full stop — reads as
+   * arbitrary, because one tick of contact is not something a player can see or
+   * avoid. A body closing under dash covers 10.7 px in a tick, which is most of the
+   * daylight a hunter holds, and the separation solver then parks the pair at a gap
+   * of exactly zero. Reported as bumps "even when we didn't start as touching".
+   *
+   * So a brush does not disarm and a clinch does. This is the discriminating case:
+   * it passes only because contact now has to persist.
+   */
+  it("does not disarm a dash for a moment of incidental contact", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ position: { x: 148, y: 180 }, controller: "frozen" }),
+    ]);
+
+    // Spawned touching, so one tick of dwell is on the books — and one tick is a
+    // brush. Under the old snapshot rule this dash was a bump.
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+    simulation.step();
+    simulation.drainEvents();
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    const events = [];
+    for (let tick = 0; tick < 4; tick += 1) {
+      simulation.step();
+      events.push(...simulation.drainEvents());
+    }
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "hit",
+      botId: "enemy",
+      byBotId: "player",
+      result: "plateBreak",
+    }));
+    expect(events.some((event) => event.type === "dashContact" && event.result === "bump")).toBe(false);
+    simulation.dispose();
+  });
+
+  it("re-arms a dash as soon as the clinch is broken", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ position: { x: 148, y: 180 }, controller: "frozen" }),
+    ]);
+
+    // Long enough in contact to be disarmed.
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+    for (let tick = 0; tick < 12; tick += 1) simulation.step();
+
+    // Then break off. Daylight resets the dwell, because breaking off is the
+    // counterplay and it should work the instant you do it.
+    simulation.applyInput("player", { move: { x: -1, y: 0 }, dash: false });
+    for (let tick = 0; tick < 4; tick += 1) simulation.step();
+    simulation.drainEvents();
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    const events = [];
+    for (let tick = 0; tick < 8; tick += 1) {
+      simulation.step();
+      events.push(...simulation.drainEvents());
+    }
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "hit",
+      botId: "enemy",
+      byBotId: "player",
+      result: "plateBreak",
+    }));
+    expect(events.some((event) => event.type === "dashContact" && event.result === "bump")).toBe(false);
+    simulation.dispose();
+  });
+
+  it("never wounds a body with a dash that is travelling away from it", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ position: { x: 148, y: 180 }, controller: "frozen" }),
+    ]);
+
+    // Held in contact past the disarm threshold, then dashing OUT of it. The swept
+    // segment still starts within reach of the body, so the direction is the only
+    // thing keeping this from registering as a hit.
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+    for (let tick = 0; tick < 12; tick += 1) simulation.step();
+    simulation.drainEvents();
+
+    simulation.applyInput("player", { move: { x: -1, y: 0 }, dash: true });
+    const events = [];
+    for (let tick = 0; tick < 4; tick += 1) {
+      simulation.step();
+      events.push(...simulation.drainEvents());
+    }
+
+    expect(events.some((event) => event.type === "hit")).toBe(false);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")!.shieldSegments)
+      .toEqual([1, 1, 1]);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position.x)
+      .toBeLessThan(100);
     simulation.dispose();
   });
 
@@ -1122,6 +1230,50 @@ describe("DotBotSimulation", () => {
     expect(snapshot.bots.find((bot) => bot.id === rightId)!.shieldSegments).toEqual([1, 1, 1]);
     expect(snapshot.bots.find((bot) => bot.id === leftId)!.dashActiveMs).toBe(0);
     expect(snapshot.bots.find((bot) => bot.id === rightId)!.dashActiveMs).toBe(0);
+    simulation.dispose();
+  });
+
+  /**
+   * Two bodies charging each other parry, and that must not depend on them pressing
+   * on the same tick.
+   *
+   * A dash is 145 ms and ends the instant it connects, so whoever committed first has
+   * usually spent theirs by the time the two actually meet — which made the parry a
+   * coincidence rather than a read, and play reported it as almost never happening.
+   * The grace is what makes "we both went for it" resolve the way it looks.
+   */
+  it("clashes charges that began several ticks apart", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({
+        id: "enemy",
+        squadId: "rival-1",
+        position: { x: 320, y: 180 },
+        controller: "human",
+        isAmbient: false,
+      }),
+    ]);
+
+    // The player commits first and is already most of the way through the lunge
+    // before the enemy answers it.
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    for (let tick = 0; tick < 7; tick += 1) simulation.step();
+    simulation.applyInput("enemy", { move: { x: -1, y: 0 }, dash: true });
+
+    const events = [];
+    for (let tick = 0; tick < 12; tick += 1) {
+      simulation.step();
+      events.push(...simulation.drainEvents());
+    }
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "dashContact",
+      result: "clash",
+    }));
+    expect(events.some((event) => event.type === "hit")).toBe(false);
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "player")!.shieldSegments).toEqual([1, 1, 1]);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")!.shieldSegments).toEqual([1, 1, 1]);
     simulation.dispose();
   });
 

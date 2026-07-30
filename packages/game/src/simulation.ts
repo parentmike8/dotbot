@@ -12,8 +12,10 @@ import {
   stableHash,
 } from "./kinematics";
 import {
+  DASH_CLINCH_TICKS,
+  DASH_CONTACT_EPSILON_PX,
   DASH_HIT_FORGIVENESS_PX,
-  DASH_START_CONTACT_EPSILON_PX,
+  DASH_PARRY_GRACE_MS,
   MOVING_SPEED,
   defaultGameConfig,
 } from "./config";
@@ -97,13 +99,15 @@ const MAX_REWIND_TICKS = 18;
  * Hunters need visible daylight before committing a damaging dash. This sits
  * outside the contact test's forgiveness ring: parking inside that ring would
  * make every AI dash a point-blank bump under the run-up rule.
- *
- * The hit test and the AI's inside-contact decision deliberately share
- * `DASH_HIT_FORGIVENESS_PX`; dash-start contact does not. Treating that wider
- * hit tolerance as literal starting contact made visible daylight behave like
- * a clinch.
  */
 const AI_DASH_RUN_UP_PX = DASH_HIT_FORGIVENESS_PX + 8;
+
+/**
+ * Centre distance past which a pair cannot possibly be touching, so the exact
+ * plate-aware gap is never computed for them. Two full-plate bodies touch at 48;
+ * twice a diameter is a wide, cheap, obviously-safe bound.
+ */
+const CLINCH_CULL_PX = 96;
 
 /**
  * Where a bot is told to stand to work on a downed body, as a share of its
@@ -208,6 +212,15 @@ type InternalBot = DotBotEntity & {
   spawnFloorId: string;
   desiredMove: Vec2;
   lastAim: Vec2;
+  /**
+   * Time left in which this body still counts as committed to its last dash.
+   *
+   * Only the parry reads it. A dash ends the moment it connects, so two bodies that
+   * charged each other rarely had live dashes on the same tick — whoever went first
+   * had already spent theirs by the time they met. This is what lets "we both went
+   * for it" resolve as a parry instead of a coincidence.
+   */
+  dashParryGraceMs: number;
   /** Velocity applied this tick (movement + knockback); combat reads this. */
   velocity: Vec2;
   /**
@@ -226,9 +239,18 @@ type InternalBot = DotBotEntity & {
   /** How many ticks in the past this bot perceives the world (render delay). */
   viewDelayTicks: number;
   /**
-   * Hostiles already touching when this dash began. A dash needs a run-up
-   * against each target; the set lasts for the dash so float jitter cannot turn
-   * a point-blank bump into damage halfway through the same lunge.
+   * Consecutive ticks spent touching each hostile, kept by `updateClinches`.
+   *
+   * A count rather than a flag, because one tick of contact is not something a
+   * player can see coming: a body closing under dash crosses a hunter's whole
+   * standoff in a single tick. Only sustained contact — `DASH_CLINCH_TICKS` —
+   * disarms a dash, and any daylight resets the count to zero.
+   */
+  contactDwell: Map<string, number>;
+  /**
+   * The clinches that were live when this dash began. A dash needs a run-up
+   * against each target; the set lasts for the dash so arriving at contact
+   * mid-lunge cannot retroactively disarm a lunge that started with daylight.
    */
   dashBlockedTargets: Set<string>;
   aiWanderTarget: Vec2;
@@ -496,6 +518,7 @@ export class DotBotSimulation {
       incognitoMs: 0,
       dashCooldownMs: 0,
       dashActiveMs: 0,
+      dashParryGraceMs: 0,
       invulnerabilityMs: 0,
       spawn: { ...spawn.position },
       spawnFloorId: floorId,
@@ -508,6 +531,7 @@ export class DotBotSimulation {
       prevPosition: { ...spawn.position },
       positionHistory: [],
       viewDelayTicks: 0,
+      contactDwell: new Map(),
       dashBlockedTargets: new Set(),
       aiWanderTarget: { ...spawn.position },
       aiRetargetMs: 0,
@@ -609,6 +633,8 @@ export class DotBotSimulation {
 
     for (const other of this.bots.values()) {
       other.aiAvoidTargets.delete(botId);
+      other.contactDwell.delete(botId);
+      other.dashBlockedTargets.delete(botId);
     }
   }
 
@@ -638,6 +664,19 @@ export class DotBotSimulation {
     for (const bot of this.bots.values()) {
       bot.prevPosition = { ...bot.position };
     }
+
+    /**
+     * Before any dash is judged, and that ordering is the whole correctness of it.
+     *
+     * Bodies have not moved since separation settled them last tick, so this reads the
+     * same positions it would at the bottom of the tick — but a dash pressed THIS tick
+     * is decided in `updateHumanIntents` a few lines below, and a latch computed after
+     * that decision is a latch the decision could not see. Run last, the first tick of
+     * a match had an empty clinch set, so two bodies spawned in contact were armed
+     * against each other: the point-blank bump did damage, and a bot dashing AWAY from
+     * contact was counted as connecting and snapped back to where it started.
+     */
+    this.updateClinches();
 
     this.updateHumanIntents();
     this.updateBotAi();
@@ -798,6 +837,12 @@ export class DotBotSimulation {
     for (const bot of this.bots.values()) {
       bot.dashCooldownMs = Math.max(0, bot.dashCooldownMs - dtMs);
       bot.dashActiveMs = Math.max(0, bot.dashActiveMs - dtMs);
+      // Held full while the dash is live and only then allowed to run down, so the
+      // grace measures time since the dash ENDED however it ended — expired, or cut
+      // short by stopping at contact.
+      bot.dashParryGraceMs = bot.dashActiveMs > 0
+        ? DASH_PARRY_GRACE_MS
+        : Math.max(0, bot.dashParryGraceMs - dtMs);
       bot.invulnerabilityMs = Math.max(0, bot.invulnerabilityMs - dtMs);
       bot.pleaCooldownMs = Math.max(0, bot.pleaCooldownMs - dtMs);
       bot.pingCooldownMs = Math.max(0, bot.pingCooldownMs - dtMs);
@@ -2129,6 +2174,20 @@ export class DotBotSimulation {
     // than throwing a harmless point-blank bump forever; the ordinary cooldown
     // then creates a readable disengage/re-entry cycle.
     if (insideContact) {
+      /**
+       * But not into an incoming charge, because that is how the parry got lost.
+       *
+       * A hunter inside contact always spent its dash backing off, so its dash was
+       * on cooldown for the next second and a half — exactly the window in which a
+       * player who has just broken off comes back in. Two opposed dashes therefore
+       * almost never existed at the same time, and the clash could only happen by
+       * coincidence. Reported from play as "I almost never parry."
+       *
+       * Holding here costs nothing: the retreat is not urgent, and the bot is about
+       * to be shoved out of contact by the charge anyway. What it buys is a ready
+       * dash at the moment the charge arrives.
+       */
+      if (hostile.dashActiveMs > 0 && this.ramSpeedToward(hostile, bot) > 0) return;
       const away = normalize(subtract(bot.position, hostile.position));
       if (length(away) < 0.5) return;
       bot.lastAim = away;
@@ -2430,16 +2489,47 @@ export class DotBotSimulation {
     return sweep - this.contactGap(attacker, victim, perceived.position) <= DASH_HIT_FORGIVENESS_PX;
   }
 
-  /** Record target-specific point-blank contacts on the dash input edge. */
+  /** Freeze the targets this dash is disarmed against for its whole length. */
   private recordDashStartContacts(attacker: InternalBot): void {
     attacker.dashBlockedTargets.clear();
-    for (const victim of this.bots.values()) {
-      if (victim.id === attacker.id || victim.state !== "alive" || areFriendly(attacker, victim)) continue;
-      const perceived = this.perceivedTarget(attacker, victim);
-      if (perceived.floorId !== attacker.floorId) continue;
-      const gap = distance(attacker.position, perceived.position)
-        - this.contactGap(attacker, victim, perceived.position);
-      if (gap <= DASH_START_CONTACT_EPSILON_PX) attacker.dashBlockedTargets.add(victim.id);
+    for (const [victimId, ticks] of attacker.contactDwell) {
+      if (ticks >= DASH_CLINCH_TICKS) attacker.dashBlockedTargets.add(victimId);
+    }
+  }
+
+  /**
+   * How long each pair has been touching, refreshed once a tick from settled
+   * positions.
+   *
+   * Symmetric: contact is a fact about a pair, so both bodies count it. Cheap
+   * centre-distance cull first, because the exact gap decomposes both bodies into
+   * convex pieces and no pair further apart than two diameters can be touching.
+   */
+  private updateClinches(): void {
+    const alive = [...this.bots.values()].filter((bot) => bot.state === "alive");
+    const touchingNow = new Set<string>();
+    for (let i = 0; i < alive.length; i += 1) {
+      for (let j = i + 1; j < alive.length; j += 1) {
+        const a = alive[i];
+        const b = alive[j];
+        if (areFriendly(a, b) || a.floorId !== b.floorId) continue;
+        const centres = distance(a.position, b.position);
+        if (centres > CLINCH_CULL_PX) continue;
+        if (centres - this.contactGap(a, b, b.position) > DASH_CONTACT_EPSILON_PX) continue;
+        a.contactDwell.set(b.id, (a.contactDwell.get(b.id) ?? 0) + 1);
+        b.contactDwell.set(a.id, (b.contactDwell.get(a.id) ?? 0) + 1);
+        touchingNow.add(`${a.id}|${b.id}`);
+        touchingNow.add(`${b.id}|${a.id}`);
+      }
+    }
+
+    // Anything not touching this tick has no dwell, and that one rule also covers
+    // every way a pair stops being a pair: down, gone, or on another floor. All of
+    // them are absent from the sweep above, so all of them drop to zero here.
+    for (const bot of this.bots.values()) {
+      for (const otherId of bot.contactDwell.keys()) {
+        if (!touchingNow.has(`${bot.id}|${otherId}`)) bot.contactDwell.delete(otherId);
+      }
     }
   }
 
@@ -2648,14 +2738,32 @@ export class DotBotSimulation {
           const bConnects = bDashing && this.attackConnects(b, a);
           const aStartedTouching = a.dashBlockedTargets.has(b.id);
           const bStartedTouching = b.dashBlockedTargets.has(a.id);
-          const aBlocked = aConnects && aStartedTouching && this.ramSpeedToward(a, b) > 0;
-          const bBlocked = bConnects && bStartedTouching && this.ramSpeedToward(b, a) > 0;
-          const aCanHit = aConnects && !aStartedTouching;
-          const bCanHit = bConnects && !bStartedTouching;
-          const aArmed = aDashing && !aStartedTouching;
-          const bArmed = bDashing && !bStartedTouching;
-          const opposingDashes = this.ramSpeedToward(a, b) > 0
-            && this.ramSpeedToward(b, a) > 0;
+          /**
+           * A dash only reaches what it is driving INTO.
+           *
+           * `attackConnects` measures the swept segment against the target, and a
+           * segment that starts at contact is within reach of it whichever way it
+           * then travels — so a bot dashing away from a body it was touching read as
+           * connecting with it. The old start-of-dash rule hid that: anything already
+           * touching was disarmed outright, so the direction never got asked about.
+           * Once contact had to persist to disarm, the gap became reachable, and a
+           * dash used to ESCAPE a clinch would wound the thing it was escaping.
+           *
+           * Closing is the same condition the non-dash ram already imposes, for the
+           * same reason: wearing a shove is not attacking, and neither is leaving.
+           */
+          const aClosing = this.ramSpeedToward(a, b) > 0;
+          const bClosing = this.ramSpeedToward(b, a) > 0;
+          const aBlocked = aConnects && aStartedTouching && aClosing;
+          const bBlocked = bConnects && bStartedTouching && bClosing;
+          const aCanHit = aConnects && !aStartedTouching && aClosing;
+          const bCanHit = bConnects && !bStartedTouching && bClosing;
+          // Committed, not merely mid-dash: a body still counts for the length of the
+          // parry grace after its dash ended, so the player who charged first is still
+          // party to the clash when the second charge arrives.
+          const aArmed = (aDashing || a.dashParryGraceMs > 0) && !aStartedTouching;
+          const bArmed = (bDashing || b.dashParryGraceMs > 0) && !bStartedTouching;
+          const opposingDashes = aClosing && bClosing;
 
           // Both bots spent the same attack verb from clear space and are
           // driving into one another. The first connecting sweep resolves the
@@ -2674,6 +2782,10 @@ export class DotBotSimulation {
             else a.dashActiveMs = 0;
             if (bConnects) this.stopDashAtContact(b, a);
             else b.dashActiveMs = 0;
+            // Spent. One charge buys one parry, or a single dash would go on
+            // clashing for the whole grace as the two bodies recoil through it.
+            a.dashParryGraceMs = 0;
+            b.dashParryGraceMs = 0;
             const direction = this.recoilDashContact(a, b);
             this.disengageAiAfterClash(a, b);
             this.disengageAiAfterClash(b, a);

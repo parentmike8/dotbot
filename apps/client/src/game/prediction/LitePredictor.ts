@@ -13,7 +13,8 @@ import {
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import {
   DASH_HIT_FORGIVENESS_PX,
-  DASH_START_CONTACT_EPSILON_PX,
+  DASH_CLINCH_TICKS,
+  DASH_CONTACT_EPSILON_PX,
   MOVING_SPEED,
 } from "@dotbot/game/config";
 import { contactReach, coveringPlate } from "@dotbot/game/shields";
@@ -138,7 +139,13 @@ export class LitePredictor {
    * it, otherwise inferred from the previous snapshot's position. */
   private readonly obstacleMoving = new Map<string, boolean>();
   private readonly lastObstaclePositions = new Map<string, Vec2>();
-  /** Target-specific run-up state for the current local dash. */
+  /**
+   * Consecutive snapshots spent touching each hostile, mirroring the server's dwell
+   * count so a predicted bump and an authoritative one agree about which dashes are
+   * disarmed.
+   */
+  private readonly contactDwell = new Map<string, number>();
+  /** The clinches frozen for the length of the current local dash. */
   private readonly dashBlockedTargets = new Set<string>();
   private channelFrozen = false;
   /** Contact point of the most recent predicted dash stop; a side channel
@@ -183,6 +190,35 @@ export class LitePredictor {
             && Math.hypot(obstacle.position.x - previous.x, obstacle.position.y - previous.y) > 0.001),
       );
       this.lastObstaclePositions.set(obstacle.id, { ...obstacle.position });
+    }
+    this.updateClinches();
+  }
+
+  /**
+   * The server's dwell count, run once per snapshot rather than per replayed input.
+   *
+   * Per snapshot because replay advances the same frame many times over: counting
+   * inside `advance` would make the dwell depend on how many inputs happened to be
+   * buffered, which is not a property of the world. Authoritative obstacle positions
+   * against the predicted own position — the same pair everything else here reasons
+   * about.
+   */
+  private updateClinches(): void {
+    const touchingNow = new Set<string>();
+    for (const obstacle of this.obstacles) {
+      if (!obstacle.hostile) continue;
+      const gap = Math.hypot(
+        obstacle.position.x - this.state.position.x,
+        obstacle.position.y - this.state.position.y,
+      ) - contactGap(this.state, obstacle, this.state.position);
+      if (gap > DASH_CONTACT_EPSILON_PX) continue;
+      this.contactDwell.set(obstacle.id, (this.contactDwell.get(obstacle.id) ?? 0) + 1);
+      touchingNow.add(obstacle.id);
+    }
+    // Obstacles arrive pre-filtered to this bot's own floor, so anything absent has
+    // gone down, left the floor, or left the match. All of those end the contact.
+    for (const id of this.contactDwell.keys()) {
+      if (!touchingNow.has(id)) this.contactDwell.delete(id);
     }
   }
 
@@ -243,13 +279,8 @@ export class LitePredictor {
       state.dashActiveMs = this.config.dashDurationMs;
       state.dashCooldownMs = this.config.dashCooldownMs;
       this.dashBlockedTargets.clear();
-      for (const obstacle of this.obstacles) {
-        if (!obstacle.hostile) continue;
-        const gap = Math.hypot(
-          obstacle.position.x - state.position.x,
-          obstacle.position.y - state.position.y,
-        ) - contactGap(state, obstacle, state.position);
-        if (gap <= DASH_START_CONTACT_EPSILON_PX) this.dashBlockedTargets.add(obstacle.id);
+      for (const [targetId, ticks] of this.contactDwell) {
+        if (ticks >= DASH_CLINCH_TICKS) this.dashBlockedTargets.add(targetId);
       }
     }
 
@@ -292,7 +323,12 @@ export class LitePredictor {
         const startedTouching = this.dashBlockedTargets.has(obstacle.id);
         const closing = (position.x - previous.x) * (obstacle.position.x - previous.x)
           + (position.y - previous.y) * (obstacle.position.y - previous.y) > 0;
-        if (startedTouching && !closing) continue;
+        // A dash only reaches what it drives INTO, mirroring the server. The swept
+        // segment is within reach of a body the dash STARTED on whichever way it then
+        // travels, so without this a dash used to escape a clinch registers against
+        // the thing it is escaping. Was masked while anything touching was disarmed
+        // outright; contact having to persist made it reachable.
+        if (!closing) continue;
         const blocked = startedTouching;
         if (!blocked && obstacle.damageable === false) continue;
         state.dashActiveMs = 0;
