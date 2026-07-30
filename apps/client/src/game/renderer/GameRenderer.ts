@@ -342,6 +342,18 @@ export class GameRenderer {
     this.reducedMotion = reduced;
   }
 
+  setInteractionDotsVisible(visibleIds: ReadonlySet<string>): void {
+    for (const floor of this.art.buildings.flatMap((building) => building.floors)) {
+      for (const [id, view] of floor.interactionViews) view.visible = visibleIds.has(id);
+    }
+  }
+
+  setPlacementSlotsVisible(visible: boolean): void {
+    for (const floor of this.art.buildings.flatMap((building) => building.floors)) {
+      floor.placementView.visible = visible;
+    }
+  }
+
   destroy(): void {
     if (this.destroyed) {
       return;
@@ -386,6 +398,7 @@ export class GameRenderer {
       ? { x: object.x, y: object.y, w: object.w, h: object.h }
       : { ...stairEntry!.stair.rect };
     const view: Container = entry?.view ?? stairEntry!.view;
+    view.visible = true;
 
     const mask = new Graphics();
     const front = new Graphics();

@@ -3,6 +3,15 @@ import WebSocket from "ws";
 import type { ServerMessage } from "@dotbot/protocol";
 import { createServer } from "./app";
 import { GameLiftSessionGate } from "./GameLiftSessionGate";
+import { NoopPersistence } from "./db";
+import { completedBaseTutorialState } from "@dotbot/game/baseTutorial";
+
+class CompletedTestPersistence extends NoopPersistence {
+  override readonly live = true;
+  override async getBaseTutorialForPlayer() {
+    return { ...completedBaseTutorialState };
+  }
+}
 
 const clients: WebSocket[] = [];
 
@@ -30,7 +39,7 @@ describe("GameLift dedicated server mode", () => {
     const { app } = await createServer({
       // Player-session admission is isolated here; database identity matching
       // has separate coverage and must not depend on an ambient DATABASE_URL.
-      databaseUrl: null,
+      persistence: new CompletedTestPersistence(),
       gameLift: gate,
       playerSessionReconnectMs: 50,
     });

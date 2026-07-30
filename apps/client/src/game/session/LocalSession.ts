@@ -7,13 +7,14 @@ import type { RunState } from "./GameSession";
 export type LocalSimulation = Pick<
   DotBotSimulation,
   "applyInput" | "dispose" | "drainEvents" | "getSnapshot" | "setMeasuredFps" | "step"
->;
+> & Partial<Pick<DotBotSimulation, "removeBot" | "setDoorLocked" | "setMapObjectEnabled">>;
 
 export type LocalSessionOptions = {
   map: MapDocument;
   config: GameConfig;
   playerId: string;
   createSimulation?: () => Promise<LocalSimulation>;
+  inputObserver?: (input: InputCommand) => void;
 };
 
 export class LocalSession implements GameSession {
@@ -22,6 +23,7 @@ export class LocalSession implements GameSession {
 
   private readonly config: GameConfig;
   private readonly createSimulation: () => Promise<LocalSimulation>;
+  private readonly inputObserver?: (input: InputCommand) => void;
   private simulation: LocalSimulation | null = null;
   private accumulator = 0;
   private input: InputCommand = { move: { x: 0, y: 0 }, dash: false };
@@ -34,6 +36,7 @@ export class LocalSession implements GameSession {
     this.config = options.config;
     this.playerId = options.playerId;
     this.createSimulation = options.createSimulation ?? (() => DotBotSimulation.create({ map: this.map, config: this.config }));
+    this.inputObserver = options.inputObserver;
   }
 
   async start(): Promise<void> {
@@ -41,12 +44,25 @@ export class LocalSession implements GameSession {
   }
 
   sendInput(input: InputCommand): void {
+    this.inputObserver?.(input);
     this.input = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
     // Hand the intent to the sim immediately so its own sticky Dash queue
     // retains a press even when this render frame does not produce a tick.
     // Subsequent ticks reapply movement with Dash false, matching the old
     // hook's once-per-press Dash clearing without adding a second queue.
     this.simulation?.applyInput(this.playerId, input);
+  }
+
+  setMapObjectEnabled(objectId: string, enabled: boolean): boolean {
+    return this.simulation?.setMapObjectEnabled?.(objectId, enabled) ?? false;
+  }
+
+  setDoorLocked(doorwayId: string, locked: boolean): boolean {
+    return this.simulation?.setDoorLocked?.(doorwayId, locked) ?? false;
+  }
+
+  removeBot(botId: string): void {
+    this.simulation?.removeBot?.(botId);
   }
 
   update(elapsedMs: number): GameSnapshot | null {

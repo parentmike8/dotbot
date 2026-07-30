@@ -10,8 +10,9 @@ import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/gam
 import { recipeById } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import type { BaseLayout, Item, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
-import { isBaseTutorialAction, isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
+import { isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
 import { createPersistence, type Persistence } from "./db";
+import { BaseTutorialAuthority } from "./BaseTutorialAuthority";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
 import { GameLiftSessionGate } from "./GameLiftSessionGate";
 
@@ -29,6 +30,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     ...(tls ? { https: tls } : {}),
   });
   const persistence = options.persistence ?? await createPersistence(options.databaseUrl);
+  const baseTutorialAuthority = new BaseTutorialAuthority(persistence);
   const gameLift = options.gameLift;
   const playerSessionReconnectMs = options.playerSessionReconnectMs ?? 20_000;
   const activePlayerSessions = new Map<string, {
@@ -48,7 +50,17 @@ export async function createServer(options: CreateServerOptions = {}) {
     } : {}),
   });
   const requireCompletedIntroduction = async (token: string, reply: FastifyReply): Promise<boolean> => {
-    const base = await persistence.getBase(token);
+    if (!persistence.live) {
+      reply.code(503).send({ error: "Authoritative storage is unavailable." });
+      return false;
+    }
+    let base;
+    try {
+      base = await persistence.getBase(token);
+    } catch {
+      reply.code(503).send({ error: "Authoritative storage is unavailable." });
+      return false;
+    }
     if (!base) {
       reply.code(404).send({ error: "Unknown device token." });
       return false;
@@ -130,26 +142,6 @@ export async function createServer(options: CreateServerOptions = {}) {
     const base = await persistence.getBase(token);
     if (!base) return reply.code(404).send({ error: "Unknown device token." });
     return { storageLinked: persistence.live, ...base };
-  });
-
-  app.post<{
-    Headers: { "x-device-token"?: string; authorization?: string };
-    Body: { action?: unknown; revision?: unknown };
-  }>("/api/base/tutorial", async (request, reply) => {
-    const token = authToken(request.headers);
-    if (!token) return reply.code(400).send({ error: "A device token header is required." });
-    const action = request.body?.action;
-    const revision = request.body?.revision;
-    if (!isBaseTutorialAction(action) || !Number.isInteger(revision) || (revision as number) < 0) {
-      return reply.code(400).send({ error: "A known tutorial action and non-negative revision are required." });
-    }
-    try {
-      const base = await persistence.advanceBaseTutorial(token, action, revision as number);
-      if (!base) return reply.code(404).send({ error: "Unknown device token." });
-      return { storageLinked: persistence.live, ...base };
-    } catch (error) {
-      return reply.code(409).send({ error: errorMessage(error) });
-    }
   });
 
   app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { layout?: unknown } }>("/api/base/layout", async (request, reply) => {
@@ -362,6 +354,7 @@ export async function createServer(options: CreateServerOptions = {}) {
       return;
     }
     let acceptedPlayerSessionId: string | null = null;
+    let connectionMode: "base" | "game" | null = null;
     const peer = {
       id: randomUUID(),
       send(message: ServerMessage, _delivery?: import("@dotbot/protocol").DeliveryClass) {
@@ -377,6 +370,60 @@ export async function createServer(options: CreateServerOptions = {}) {
         return;
       }
       try {
+        if (message.type === "baseHello") {
+          if (connectionMode !== null) {
+            peer.send({ type: "err", code: "bad_message", msg: "This connection already has a session." });
+            return;
+          }
+          try {
+            const state = await baseTutorialAuthority.connect(peer.id, message.token);
+            connectionMode = "base";
+            peer.send({
+              type: "baseWelcome",
+              tutorial: state.tutorial,
+              playerPosition: state.playerPosition,
+              inputAck: state.inputAck,
+            });
+          } catch (error) {
+            peer.send({ type: "err", code: "storage_unavailable", msg: errorMessage(error) });
+          }
+          return;
+        }
+        if (message.type === "baseInput") {
+          if (connectionMode !== "base") {
+            peer.send({ type: "err", code: "tutorial_session_required", msg: "Start an authoritative base session first." });
+            return;
+          }
+          if (
+            !Array.isArray(message.move)
+            || message.move.length !== 2
+            || !Number.isFinite(message.move[0])
+            || !Number.isFinite(message.move[1])
+          ) {
+            peer.send({ type: "err", code: "bad_tutorial_input", msg: "Tutorial movement input is invalid." });
+            return;
+          }
+          try {
+            const state = await baseTutorialAuthority.handleInput(peer.id, {
+              seq: message.seq,
+              input: { move: { x: message.move[0], y: message.move[1] }, dash: message.dash },
+              interact: message.interact,
+            });
+            peer.send({
+              type: "baseState",
+              tutorial: state.tutorial,
+              playerPosition: state.playerPosition,
+              inputAck: state.inputAck,
+            });
+          } catch (error) {
+            peer.send({ type: "err", code: "bad_tutorial_input", msg: errorMessage(error) });
+          }
+          return;
+        }
+        if (connectionMode === "base") {
+          peer.send({ type: "err", code: "bad_message", msg: "A base session accepts tutorial input only." });
+          return;
+        }
         if (gameLift && message.type === "hello") {
           if (acceptedPlayerSessionId) {
             peer.send({ type: "err", code: "bad_message", msg: "This connection already has a player session." });
@@ -414,6 +461,8 @@ export async function createServer(options: CreateServerOptions = {}) {
               await removePlayerSession(playerSessionId, peer.id, true);
               acceptedPlayerSessionId = null;
               ws.close(1008, "Player identity rejected");
+            } else {
+              connectionMode = "game";
             }
             return;
           } catch {
@@ -426,7 +475,8 @@ export async function createServer(options: CreateServerOptions = {}) {
             return;
           }
         }
-        await rooms.handleMessage(peer, message);
+        const joined = await rooms.handleMessage(peer, message);
+        if (message.type === "hello" && joined) connectionMode = "game";
       } catch {
         peer.send({ type: "err", code: "server_unavailable", msg: "The allocated game session is not ready." });
       }
@@ -439,6 +489,7 @@ export async function createServer(options: CreateServerOptions = {}) {
       inbound = inbound.then(() => processMessage(data));
     });
     ws.on("close", () => {
+      baseTutorialAuthority.disconnect(peer.id);
       rooms.disconnect(peer.id);
       if (gameLift && acceptedPlayerSessionId) {
         void removePlayerSession(acceptedPlayerSessionId, peer.id, false);
@@ -448,6 +499,7 @@ export async function createServer(options: CreateServerOptions = {}) {
 
   app.addHook("onReady", async () => rooms.start());
   app.addHook("onClose", async () => {
+    baseTutorialAuthority.close();
     await rooms.stop();
     await new Promise<void>((resolve) => wss.close(() => resolve()));
     if (gameLift) {

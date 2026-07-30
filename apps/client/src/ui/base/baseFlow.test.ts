@@ -5,16 +5,10 @@ import { defaultGameConfig } from "@dotbot/game/config";
 import { interactionDotReach } from "@dotbot/game/interactions";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import { selectClientSurface } from "../../routing";
-import { advanceBaseChannel, findBaseTarget, hasMovedForBaseOnboarding } from "./baseFlow";
+import { advanceBaseChannel, findBaseTarget } from "./baseFlow";
 
 describe("base boot and deployment seams", () => {
   const tutorial = (phase: BaseTutorialState["phase"], revision: number): BaseTutorialState => ({ phase, revision });
-
-  it("advances first-entry guidance only after the player actually moves", () => {
-    const origin = { x: 100, y: 100 };
-    expect(hasMovedForBaseOnboarding(origin, { x: 127.9, y: 100 })).toBe(false);
-    expect(hasMovedForBaseOnboarding(origin, { x: 128, y: 100 })).toBe(true);
-  });
 
   it("boots to the base while preserving explicit solo and studio development surfaces", () => {
     expect(selectClientSurface("")).toBe("base");
@@ -24,7 +18,7 @@ describe("base boot and deployment seams", () => {
   });
 
   it("channels the deployment threshold for one stationary second and movement cancels", () => {
-    const map = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("complete", 3) });
+    const map = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("complete", 4) });
     const position = map.interactionDots!.find((dot) => dot.kind === "deployment")!.position;
     const target = findBaseTarget(map, position);
     expect(target?.type).toBe("deployment");
@@ -44,11 +38,12 @@ describe("base boot and deployment seams", () => {
     expect(moved.completed).toBeNull();
   });
 
-  it("cannot resolve deployment or item stations from an incomplete tutorial map", () => {
-    const incomplete = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("doorOpen", 2) });
-    expect(incomplete.interactionDots).toEqual([]);
+  it("keeps the bounded tutorial fabricator and completed item/deployment stations addressable on one map", () => {
+    const incomplete = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("fabricator", 2) });
+    const tutorialDot = incomplete.interactionDots!.find((dot) => dot.targetId === "base-intro-fabricator")!;
+    expect(findBaseTarget(incomplete, tutorialDot.position)?.type).toBe("tutorialFabricator");
 
-    const complete = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("complete", 3) });
+    const complete = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("complete", 4) });
     const deployment = complete.interactionDots!.find((dot) => dot.kind === "deployment")!;
     const locker = complete.interactionDots!.find((dot) => dot.kind === "object")!;
     expect(findBaseTarget(complete, deployment.position)?.type).toBe("deployment");

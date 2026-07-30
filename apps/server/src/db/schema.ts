@@ -17,7 +17,7 @@ export const players = pgTable("players", {
   contractReroll: integer("contract_reroll").notNull().default(0),
   /** Existing accounts migrate complete; new registrations explicitly start at movement. */
   baseTutorialPhase: text("base_tutorial_phase").$type<BaseTutorialPhase>().notNull().default("complete"),
-  baseTutorialRevision: integer("base_tutorial_revision").notNull().default(3),
+  baseTutorialRevision: integer("base_tutorial_revision").notNull().default(4),
 }, (table) => [uniqueIndex("players_device_token_hash_unique").on(table.deviceTokenHash)]);
 
 export const matchResults = pgTable("match_results", {

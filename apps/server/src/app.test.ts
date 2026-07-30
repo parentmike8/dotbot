@@ -3,6 +3,14 @@ import WebSocket from "ws";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { createServer } from "./app";
 import { NoopPersistence } from "./db";
+import { completedBaseTutorialState } from "@dotbot/game/baseTutorial";
+
+class CompletedTestPersistence extends NoopPersistence {
+  override readonly live = true;
+  override async getBaseTutorialForPlayer() {
+    return { ...completedBaseTutorialState };
+  }
+}
 
 type Inbox = {
   ws: WebSocket;
@@ -23,7 +31,7 @@ describe("multiplayer server", () => {
     const { app } = await createServer({
       // This suite tests realtime simulation behavior, not Postgres. Keep it
       // independent from an ambient DATABASE_URL used by persistence tests.
-      databaseUrl: null,
+      persistence: new CompletedTestPersistence(),
       countdownMs: 0,
       config: {
         botRadius: 5,
@@ -82,7 +90,14 @@ describe("multiplayer server", () => {
     await steerTo(a, startA.yourBotId, { x: 965, y: 1205 }, seqAfterLane + 1);
 
     const runOverA = await a.waitFor("runOver", 5000);
-    expect(runOverA).toEqual({ type: "runOver", reason: "extracted", keptItems: ["h"], lostItems: [], learnedBlueprints: [] });
+    expect(runOverA).toEqual({
+      type: "runOver",
+      reason: "extracted",
+      keptItems: ["h"],
+      lostItems: [],
+      learnedBlueprints: [],
+      persistenceStatus: "saved",
+    });
 
     const bSnapshotsAtExtraction = b.messages.filter((message) => message.type === "snap").length;
     await delay(250);
@@ -123,7 +138,7 @@ describe("multiplayer server", () => {
     const identityGate = new Promise<void>((resolve) => {
       releaseIdentity = resolve;
     });
-    class DelayedIdentityPersistence extends NoopPersistence {
+    class DelayedIdentityPersistence extends CompletedTestPersistence {
       override async resolveOrRegisterPlayer(token: string, offeredName: string) {
         await identityGate;
         return super.resolveOrRegisterPlayer(token, offeredName);

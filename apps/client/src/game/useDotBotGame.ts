@@ -130,6 +130,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
    */
   const bodyActionRef = useRef<(() => void) | null>(null);
   const pendingDraftsRef = useRef<string[]>([]);
+  const interactionVisibilityRef = useRef<ReadonlySet<string> | null>(null);
+  const placementVisibilityRef = useRef<boolean | null>(null);
   const frameRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState<GameSnapshot | null>(null);
   const [events, setEvents] = useState<SimEvent[]>([]);
@@ -234,6 +236,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       sessionRef.current = session;
       rendererRef.current = renderer;
       for (const objectId of pendingDraftsRef.current.splice(0)) renderer.draftObject(objectId);
+      if (interactionVisibilityRef.current) {
+        renderer.setInteractionDotsVisible(interactionVisibilityRef.current);
+      }
+      if (placementVisibilityRef.current !== null) {
+        renderer.setPlacementSlotsVisible(placementVisibilityRef.current);
+      }
       const initialSnapshot = session.update(0);
       setSnapshot(initialSnapshot);
       playerSquadId = initialSnapshot?.bots.find((bot) => bot.id === session.playerId)?.squadId ?? null;
@@ -820,6 +828,16 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     }
   }, []);
 
+  const setInteractionDotsVisible = useCallback((visibleIds: ReadonlySet<string>) => {
+    interactionVisibilityRef.current = new Set(visibleIds);
+    rendererRef.current?.setInteractionDotsVisible(interactionVisibilityRef.current);
+  }, []);
+
+  const setPlacementSlotsVisible = useCallback((visible: boolean) => {
+    placementVisibilityRef.current = visible;
+    rendererRef.current?.setPlacementSlotsVisible(visible);
+  }, []);
+
   const updateJoystick = useCallback((clientX: number, clientY: number) => {
     const state = joystickRef.current;
     const raw = {
@@ -1060,6 +1078,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     setInteractionChannel,
     setBodyAction,
     draftObjects,
+    setInteractionDotsVisible,
+    setPlacementSlotsVisible,
   };
 }
 

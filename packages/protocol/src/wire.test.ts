@@ -381,6 +381,8 @@ describe("event wire mapping", () => {
 
 function exhaustClient(message: ClientMessage): string {
   switch (message.type) {
+    case "baseHello": return message.token;
+    case "baseInput": return String(message.seq);
     case "hello": return message.token;
     case "joinSquad": return message.squadId;
     case "startMatch": return message.type;
@@ -394,6 +396,8 @@ function exhaustClient(message: ClientMessage): string {
 
 function exhaustServer(message: ServerMessage): string {
   switch (message.type) {
+    case "baseWelcome": return message.tutorial.phase;
+    case "baseState": return message.tutorial.phase;
     case "welcome": return message.playerId;
     case "lobby": return message.hostId;
     case "matchStart": return message.yourBotId;

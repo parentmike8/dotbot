@@ -23,6 +23,12 @@ export interface GameSession {
   start(): Promise<void>;
   /** Latest input intent for the local player; called once per render frame. */
   sendInput(input: InputCommand): void;
+  /** Runtime-authored base fixtures change without replacing the session. */
+  setMapObjectEnabled?(objectId: string, enabled: boolean): boolean;
+  /** Runtime door authority changes without replacing the session. */
+  setDoorLocked?(doorwayId: string, locked: boolean): boolean;
+  /** Removes a tutorial-only actor after completion. */
+  removeBot?(botId: string): void;
   /**
    * Advance session time by elapsedMs and return the freshest snapshot to
    * render (null until start() resolves). LocalSession runs the fixed-step

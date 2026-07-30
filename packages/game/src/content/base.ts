@@ -2,6 +2,7 @@ import { defaultGameConfig } from "../config";
 import {
   BASE_TUTORIAL_DOOR_ID,
   BASE_TUTORIAL_FABRICATOR_ID,
+  BASE_TUTORIAL_FABRICATOR_DOT_ID,
   BASE_TUTORIAL_TARGET_ID,
   completedBaseTutorialState,
   isBaseTutorialComplete,
@@ -511,8 +512,9 @@ export function createBaseMap(
   options: { expanded?: boolean; tutorial?: BaseTutorialState } = {},
 ): MapDocument {
   validateBaseLayout(layout, options);
+  const tutorialConfigured = options.tutorial !== undefined;
   const tutorial = options.tutorial ?? completedBaseTutorialState;
-  const tutorialActive = !isBaseTutorialComplete(tutorial);
+  const tutorialActive = tutorialConfigured && !isBaseTutorialComplete(tutorial);
   if (tutorialActive && shellId !== "workshop") {
     throw new Error("The introductory room belongs to the workshop shell.");
   }
@@ -545,6 +547,7 @@ export function createBaseMap(
     h: 76,
     facing: "W",
     solid: true,
+    enabled: tutorial.phase === "fabricator" || tutorial.phase === "doorOpen" || tutorial.phase === "complete",
   };
   const groundDoorways = tutorialActive
     ? shell.doorways.map((doorway) => doorway.id === "ws-arch"
@@ -573,7 +576,7 @@ export function createBaseMap(
       walls: shell.walls.map((wall) => ({ ...wall })),
       doorways: groundDoorways,
       windows: shell.windows.map((window) => ({ ...window })),
-      objects: [...groundObjects, ...(tutorial.phase === "doorOpen" ? [tutorialFabricator] : [])],
+      objects: [...groundObjects, ...(tutorialConfigured ? [tutorialFabricator] : [])],
       stairs: options.expanded ? [{ ...shell.upper.stairs.ground, rect: { ...shell.upper.stairs.ground.rect } }] : [],
       dotSpawns: [],
     }, ...(options.expanded ? [{
@@ -622,20 +625,32 @@ export function createBaseMap(
       color: "#777777",
       position: { x: 260, y: 536 },
       floorId: OUTDOOR_FLOOR_ID,
-      state: tutorial.phase === "doorOpen" ? "downed" as const : "alive" as const,
-      maxShields: 0,
+      state: tutorial.phase === "fabricator" || tutorial.phase === "doorOpen" ? "downed" as const : "alive" as const,
+      maxShields: 1,
       shields: 0,
       bays: [],
       hold: [],
     }] : [])],
-    placementSlots: (tutorialActive ? [] : [...shell.slots, ...(options.expanded ? shell.upper.slots : [])]).map((slot) => ({
+    placementSlots: [...shell.slots, ...(options.expanded ? shell.upper.slots : [])].map((slot) => ({
       id: slot.id,
       zone: SLOT_ZONES.get(slot.id)!,
       floor: SLOT_FLOORS.get(slot.id)!,
       rect: { ...slot.rect },
     })),
   };
-  map.interactionDots = tutorialActive ? [] : deriveBaseInteractionDots(map);
+  map.interactionDots = deriveBaseInteractionDots(map);
+  if (tutorialConfigured) {
+    const ground = base.floors[0];
+    const standOnAble = createStandabilityCheck(map, base, ground);
+    map.interactionDots.push({
+      id: BASE_TUTORIAL_FABRICATOR_DOT_ID,
+      kind: "object",
+      targetId: BASE_TUTORIAL_FABRICATOR_ID,
+      floorId: ground.id,
+      position: objectInteractionPosition(base, ground, tutorialFabricator, standOnAble),
+      radius: BASE_INTERACTION_DOT_RADIUS,
+    });
+  }
   return map;
 }
 

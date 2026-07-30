@@ -59,6 +59,10 @@ export type FloorArt = {
   objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
   /** Addressable stair fixtures reuse the fabrication draw-on hook when an expansion commissions. */
   stairViews: Map<string, { stair: StairLink; view: Container }>;
+  /** Base interaction marks toggle by authoritative tutorial phase without rebuilding the floor. */
+  interactionViews: Map<string, Container>;
+  /** Empty placement brackets stay hidden until the introduction is complete. */
+  placementView: Container;
   /** Ambient moving parts on this floor. See `modelMotion`; empty on every floor today. */
   movers: AmbientMover[];
   /**
@@ -350,8 +354,7 @@ function buildFloorArt(
   placementSlots: PlacementSlot[] = [],
 ): FloorArt {
   const model = buildFloorModel(building, floor);
-  const interactionDotGfx = new Graphics();
-  const interactionLabels = new Container();
+  const interactionViews = new Map<string, Container>();
 
   const occupied = new Set(floor.objects.map((object) => object.slotId).filter(Boolean));
   const slotGfx = new Graphics();
@@ -370,12 +373,15 @@ function buildFloorArt(
   }
 
   for (const dot of interactionDots) {
-    drawInteractionDot(interactionDotGfx, dot);
+    const view = new Container();
+    const gfx = new Graphics();
+    drawInteractionDot(gfx, dot);
+    view.addChild(gfx);
     const label = interactionLabel(dot, floor);
-    if (label) interactionLabels.addChild(makeInteractionLabel(label, dot));
+    if (label) view.addChild(makeInteractionLabel(label, dot));
+    model.view.addChild(view);
+    interactionViews.set(dot.id, view);
   }
-
-  model.view.addChild(interactionDotGfx, interactionLabels);
 
   return {
     floor,
@@ -388,6 +394,8 @@ function buildFloorArt(
     foreground: new Container(),
     objectViews: model.objectViews,
     stairViews: model.stairViews,
+    interactionViews,
+    placementView: slotGfx,
     annotation: model.annotation,
     annotationGfx: model.annotationGfx,
   };
@@ -512,6 +520,8 @@ function buildRoofArt(building: Building, floor: FloorPlan): FloorArt {
     foreground: new Container(),
     objectViews: model.objectViews,
     stairViews,
+    interactionViews: new Map(),
+    placementView: new Container(),
     annotation,
     annotationGfx,
   };

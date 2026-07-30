@@ -243,6 +243,7 @@ export const SURFACE_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
 ]);
 
 export function isSolidObject(object: MapObject): boolean {
+  if (object.enabled === false) return false;
   return object.solid ?? SOLID_KINDS.has(object.kind);
 }
 

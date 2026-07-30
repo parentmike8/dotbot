@@ -858,6 +858,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
       g.position.set(cx, cy);
       g.rotation = object.angle;
     }
+    g.visible = object.enabled !== false;
     objects.addChild(g);
     objectViews.set(object.id, { object, view: g });
     movers.push(...collectMovers(g, object));

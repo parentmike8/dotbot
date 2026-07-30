@@ -523,6 +523,11 @@ export type MapObject = {
   angle?: number;
   /** Solid objects get physics colliders. Default varies by kind (see solidByDefault). */
   solid?: boolean;
+  /**
+   * Disabled runtime-capable objects keep their production glyph addressable
+   * for a draw-on reveal, but contribute no visible art or collision.
+   */
+  enabled?: boolean;
   /** Optional collision pieces in object-local coordinates for compound plan
    * shapes such as U counters. The visible glyph must trace the same pieces. */
   collisionParts?: Rect[];

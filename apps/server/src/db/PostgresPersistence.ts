@@ -144,7 +144,7 @@ export class PostgresPersistence implements Persistence {
     return {
       tutorial: {
         phase: player[0]?.baseTutorialPhase ?? "complete",
-        revision: player[0]?.baseTutorialRevision ?? 3,
+        revision: player[0]?.baseTutorialRevision ?? 4,
       },
       shell: player[0]?.baseShell ?? DEFAULT_BASE_SHELL,
       upgrades: upgrades.map((row) => row.upgradeId),

@@ -3,8 +3,10 @@ import { interactionDotReach } from "@dotbot/game/interactions";
 import type { InteractionDot, MapDocument, MapObject, PlacementSlot, Rect, Vec2 } from "@dotbot/game/types";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import { physicsFloorId } from "@dotbot/game/mapModel";
+import { BASE_TUTORIAL_FABRICATOR_ID } from "@dotbot/game/baseTutorial";
 
 export type BaseTarget =
+  | { id: string; type: "tutorialFabricator"; center: Vec2; rect: Rect; object: MapObject; dot: InteractionDot }
   | { id: string; type: "deployment"; center: Vec2; rect: Rect; dot: InteractionDot }
   | { id: string; type: "object"; center: Vec2; rect: Rect; object: MapObject; dot: InteractionDot }
   | { id: string; type: "emptySlot"; center: Vec2; rect: Rect; slot: PlacementSlot; dot: InteractionDot };
@@ -15,10 +17,6 @@ export type BaseChannelState = {
   lastPosition: Vec2;
   completedId: string | null;
 };
-
-export function hasMovedForBaseOnboarding(origin: Vec2, position: Vec2, requiredDistance = 28): boolean {
-  return distance(origin, position) >= requiredDistance;
-}
 
 export function findBaseTarget(
   map: MapDocument,
@@ -35,6 +33,19 @@ export function findBaseTarget(
 
   const floor = map.buildings[0]?.floors.find((candidate) => candidate.id === dot.floorId);
   if (dot.kind === "object") {
+    const tutorialFabricator = floor?.objects.find((candidate) =>
+      candidate.id === BASE_TUTORIAL_FABRICATOR_ID
+      && candidate.id === dot.targetId);
+    if (tutorialFabricator) {
+      return {
+        id: dot.id,
+        type: "tutorialFabricator",
+        center: dot.position,
+        object: tutorialFabricator,
+        rect: tutorialFabricator,
+        dot,
+      };
+    }
     const object = floor?.objects.find((candidate) => candidate.id === dot.targetId && candidate.slotId);
     return object ? { id: dot.id, type: "object", center: dot.position, object, rect: object, dot } : null;
   }

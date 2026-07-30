@@ -1,7 +1,7 @@
-export const BASE_TUTORIAL_PHASES = ["movement", "practice", "doorOpen", "complete"] as const;
+export const BASE_TUTORIAL_PHASES = ["movement", "practice", "fabricator", "doorOpen", "complete"] as const;
 export type BaseTutorialPhase = (typeof BASE_TUTORIAL_PHASES)[number];
 
-export const BASE_TUTORIAL_ACTIONS = ["moved", "practiceHit", "enteredBase"] as const;
+export const BASE_TUTORIAL_ACTIONS = ["moved", "practiceHit", "usedFabricator", "enteredBase"] as const;
 export type BaseTutorialAction = (typeof BASE_TUTORIAL_ACTIONS)[number];
 
 export type BaseTutorialState = {
@@ -10,25 +10,28 @@ export type BaseTutorialState = {
 };
 
 export const initialBaseTutorialState: BaseTutorialState = { phase: "movement", revision: 0 };
-export const completedBaseTutorialState: BaseTutorialState = { phase: "complete", revision: 3 };
+export const completedBaseTutorialState: BaseTutorialState = { phase: "complete", revision: 4 };
 
 export const BASE_TUTORIAL_TARGET_ID = "base-practice-bot";
 export const BASE_TUTORIAL_DOOR_ID = "base-intro-door";
 export const BASE_TUTORIAL_FABRICATOR_ID = "base-intro-fabricator";
+export const BASE_TUTORIAL_FABRICATOR_DOT_ID = "interaction-object-base-intro-fabricator";
 /** Crossing north of the workshop partition means the player entered the base. */
 export const BASE_TUTORIAL_ENTRY_Y = 450;
 
 const actionIndex: Readonly<Record<BaseTutorialAction, number>> = {
   moved: 0,
   practiceHit: 1,
-  enteredBase: 2,
+  usedFabricator: 2,
+  enteredBase: 3,
 };
 
 const phaseIndex: Readonly<Record<BaseTutorialPhase, number>> = {
   movement: 0,
   practice: 1,
-  doorOpen: 2,
-  complete: 3,
+  fabricator: 2,
+  doorOpen: 3,
+  complete: 4,
 };
 
 export function isBaseTutorialAction(value: unknown): value is BaseTutorialAction {

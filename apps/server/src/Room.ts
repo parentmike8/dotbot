@@ -244,7 +244,10 @@ export class Room {
     return member;
   }
 
-  receive(playerId: string, message: Exclude<ClientMessage, { type: "hello" }>): void {
+  receive(
+    playerId: string,
+    message: Exclude<ClientMessage, { type: "hello" | "baseHello" | "baseInput" }>,
+  ): void {
     const member = this.members.get(playerId);
     if (!member) return;
 

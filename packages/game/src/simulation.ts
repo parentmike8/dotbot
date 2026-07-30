@@ -458,6 +458,8 @@ export class DotBotSimulation {
    * wall. One function, one answer.
    */
   private buildStaticCollision(): void {
+    this.staticSolids.clear();
+    this.solidIndexes.clear();
     const physicsIds = new Set<string>([OUTDOOR_FLOOR_ID]);
     for (const building of this.map.buildings) {
       for (const floor of building.floors) physicsIds.add(physicsFloorId(this.map, floor.id));
@@ -698,6 +700,29 @@ export class DotBotSimulation {
       other.dashBlockedTargets.delete(botId);
       if (other.aiAlert?.targetId === botId) other.aiAlert = undefined;
     }
+  }
+
+  /**
+   * Enables a pre-authored fixture without replacing the simulation. Collision
+   * is rebuilt from the same map object the renderer addresses.
+   */
+  setMapObjectEnabled(objectId: string, enabled: boolean): boolean {
+    const object = [
+      ...this.map.outdoor.objects,
+      ...this.map.buildings.flatMap((building) => building.floors.flatMap((floor) => floor.objects)),
+    ].find((candidate) => candidate.id === objectId);
+    if (!object) return false;
+    object.enabled = enabled;
+    this.buildStaticCollision();
+    return true;
+  }
+
+  /** Changes the live door entity in place; the next tick owns its opening. */
+  setDoorLocked(doorwayId: string, locked: boolean): boolean {
+    const door = [...this.doors.values()].find((candidate) => candidate.doorwayId === doorwayId);
+    if (!door) return false;
+    door.doorway.locked = locked;
+    return true;
   }
 
   drainEvents(): SimEvent[] {

@@ -27,14 +27,12 @@ describe("persistence graceful degradation", () => {
     expect(Object.keys(base.json<{ layout: Record<string, string> }>().layout)).toHaveLength(5);
     expect(base.json<{ contractOffers: unknown[]; activeContracts: unknown[] }>().contractOffers).toHaveLength(3);
     expect(base.json<{ activeContracts: unknown[] }>().activeContracts).toEqual([]);
-    for (const [action, revision] of [["moved", 0], ["practiceHit", 1], ["enteredBase", 2]] as const) {
-      expect((await app.inject({
-        method: "POST",
-        url: "/api/base/tutorial",
-        headers: { "x-device-token": account.token },
-        payload: { action, revision },
-      })).statusCode).toBe(200);
-    }
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/base/tutorial",
+      headers: { "x-device-token": account.token },
+      payload: { action: "enteredBase", revision: 0 },
+    })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/api/base/loadout", headers: { "x-device-token": account.token }, payload: { loadout: ["h"] } })).statusCode).toBe(503);
     expect((await app.inject({ method: "POST", url: "/api/base/shell", headers: { "x-device-token": account.token }, payload: { shell: "hangar" } })).statusCode).toBe(503);
     expect((await app.inject({ method: "POST", url: "/api/base/fabricate", headers: { "x-device-token": account.token }, payload: { recipeId: "convert-radar" } })).statusCode).toBe(503);

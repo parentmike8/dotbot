@@ -367,6 +367,9 @@ export class NetSession implements GameSession {
 
   private receive(message: ServerMessage): void {
     switch (message.type) {
+      case "baseWelcome":
+      case "baseState":
+        return;
       case "welcome":
         if (this.connectTimeoutTimer) clearTimeout(this.connectTimeoutTimer);
         this.connectTimeoutTimer = null;

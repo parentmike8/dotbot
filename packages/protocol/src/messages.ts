@@ -305,6 +305,8 @@ export function carriesAction(frame: ActionEdges): boolean {
 }
 
 export type ClientMessage =
+  | { type: "baseHello"; token: string }
+  | { type: "baseInput"; seq: number; move: [number, number]; dash: boolean; interact: boolean }
   | {
       type: "hello";
       token: string;
@@ -342,6 +344,19 @@ export type ClientMessage =
   | { type: "ping"; cts: number; viewDelayMs?: number };
 
 export type ServerMessage =
+  | {
+      type: "baseWelcome";
+      tutorial: import("@dotbot/game/baseTutorial").BaseTutorialState;
+      playerPosition: { x: number; y: number };
+      /** Last server-accepted input frame; reconnecting clients continue at the next value. */
+      inputAck: number;
+    }
+  | {
+      type: "baseState";
+      tutorial: import("@dotbot/game/baseTutorial").BaseTutorialState;
+      playerPosition: { x: number; y: number };
+      inputAck: number;
+    }
   | {
       type: "welcome";
       playerId: string;

@@ -25,6 +25,23 @@ const peer = (messages: ServerMessage[]): RoomPeer => ({
 });
 
 describe("RoomManager tutorial admission", () => {
+  it("fails closed instead of admitting a stateless Noop identity", async () => {
+    const messages: ServerMessage[] = [];
+    const manager = new RoomManager({ persistence: new NoopPersistence() });
+
+    expect(await manager.handleHello(peer(messages), {
+      type: "hello",
+      token: "offline-token-1234",
+      name: "Offline player",
+      roomCode: "",
+    })).toBe(false);
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: "err",
+      code: "storage_unavailable",
+    }));
+    expect(manager.rooms).toBe(0);
+  });
+
   it("rejects direct deployment attempts until the account has completed its base introduction", async () => {
     const messages: ServerMessage[] = [];
     const manager = new RoomManager({ persistence: new TutorialPersistence(false) });

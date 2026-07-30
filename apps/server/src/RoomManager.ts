@@ -89,39 +89,41 @@ export class RoomManager {
   }
 
   async handleHello(peer: RoomPeer, message: Extract<ClientMessage, { type: "hello" }>, expectedPlayerId?: string): Promise<boolean> {
+    if (!this.persistence.live) {
+      peer.send({
+        type: "err",
+        code: "storage_unavailable",
+        msg: "Authoritative base progress could not be verified. Try again.",
+      });
+      return false;
+    }
     let identity;
     try {
       identity = await this.persistence.resolveOrRegisterPlayer(message.token, message.name);
     } catch (error) {
-      if (this.options.sessionRoomCode) {
-        console.warn(`[persistence] GameLift identity lookup failed; rejecting admission. ${errorMessage(error)}`);
-        peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
-        return false;
-      }
-      console.warn(`[persistence] identity lookup failed; accepting stateless WebSocket identity. ${errorMessage(error)}`);
-      identity = await new NoopPersistence().resolveOrRegisterPlayer(message.token, message.name);
+      console.warn(`[persistence] identity lookup failed; rejecting admission. ${errorMessage(error)}`);
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
+      return false;
     }
     if (expectedPlayerId && identity.playerId !== expectedPlayerId) {
       peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
       return false;
     }
-    if (this.persistence.live) {
-      let tutorial;
-      try {
-        tutorial = await this.persistence.getBaseTutorialForPlayer(identity.playerId);
-      } catch (error) {
-        console.warn(`[persistence] tutorial lookup failed; rejecting admission. ${errorMessage(error)}`);
-        peer.send({ type: "err", code: "storage_unavailable", msg: "Base progress could not be verified. Try again." });
-        return false;
-      }
-      if (!tutorial || !isBaseTutorialComplete(tutorial)) {
-        peer.send({
-          type: "err",
-          code: "tutorial_required",
-          msg: "Complete the base introduction before deploying.",
-        });
-        return false;
-      }
+    let tutorial;
+    try {
+      tutorial = await this.persistence.getBaseTutorialForPlayer(identity.playerId);
+    } catch (error) {
+      console.warn(`[persistence] tutorial lookup failed; rejecting admission. ${errorMessage(error)}`);
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Base progress could not be verified. Try again." });
+      return false;
+    }
+    if (!tutorial || !isBaseTutorialComplete(tutorial)) {
+      peer.send({
+        type: "err",
+        code: "tutorial_required",
+        msg: "Complete the base introduction before deploying.",
+      });
+      return false;
     }
     const assignedCode = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : undefined;
     if (assignedCode && message.roomCode && message.roomCode.trim().toUpperCase() !== assignedCode) {
@@ -145,6 +147,10 @@ export class RoomManager {
   }
 
   async handleMessage(peer: RoomPeer, message: ClientMessage, expectedPlayerId?: string): Promise<boolean> {
+    if (message.type === "baseHello" || message.type === "baseInput") {
+      peer.send({ type: "err", code: "bad_message", msg: "Base tutorial messages use the base session." });
+      return false;
+    }
     if (message.type === "hello") {
       return this.handleHello(peer, message, expectedPlayerId);
     }
