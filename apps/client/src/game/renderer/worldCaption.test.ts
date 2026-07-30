@@ -10,8 +10,8 @@ import { CAPTION, GROUND, captionBar, contrastRatio } from "./worldCaption";
  * This is the check behind a complaint that came back from play more than once — "the
  * text is unclear, poor contrast against the background" — and the reason it kept
  * coming back is that every caption's ink was chosen at its own call site against
- * whatever surface the author was looking at at the time. Two were unreadable and
- * three were fine, and nothing in the code could tell you which was which.
+ * whatever surface the author was looking at at the time. Nothing in the code could
+ * tell you whether a caption was readable.
  */
 
 describe("every caption clears its bar on every ground it lands on", () => {
@@ -29,35 +29,24 @@ describe("every caption clears its bar on every ground it lands on", () => {
   }
 });
 
-describe("the two that were broken", () => {
+describe("the stair tag that was broken", () => {
   /**
    * Written as the failing measurement rather than as a comment, so the check would
    * have caught each of these the day it was introduced.
    */
   it("would still fail on the inks it replaced", () => {
-    // The building name in the palette's quietest ink, seen from the street.
-    expect(contrastRatio(INK.fixture, GROUND.asphalt)).toBeLessThan(captionBar(16));
-    expect(contrastRatio(INK.fixture, GROUND.slab)).toBeLessThan(captionBar(16));
     // The stair tag in near-white, on the floor it actually sits on.
     expect(contrastRatio(0xf2f3f4, GROUND.polish)).toBeLessThan(captionBar(10));
     expect(contrastRatio(0xf2f3f4, GROUND.slab)).toBeLessThan(captionBar(10));
   });
 
-  it("fixed each one with the quietest ink that passes, not the darkest available", () => {
+  it("uses the quietest ink that passes, not the darkest available", () => {
     /**
-     * The point of the table is legibility, not uniformity. A building name in
-     * `INK.structure` would pass with room to spare and would also shout across the
-     * whole footprint, which is the thing the original `fixture` choice was right about.
-     * So both fixes take the lightest ink that clears their own bar, and this pins it by
-     * showing that one step lighter — `INK.fixture` — does not.
-     *
      * Passing is a floor, not a ceiling: `signTitle` and `interactionTag` are
      * deliberately darker than they need to be, because both sit above another line in
-     * a hierarchy. Only the two repaired sites are pinned to the minimum.
+     * a hierarchy. The repaired stair tag is pinned to the minimum.
      */
     const quieter = INK.fixture;
-    expect(CAPTION.buildingName.ink).toBe(INK.anchor);
-    expect(contrastRatio(quieter, GROUND.asphalt)).toBeLessThan(captionBar(CAPTION.buildingName.size));
 
     /**
      * The stair tag lands on `anchor` and not on the darker `opening` because its
@@ -111,5 +100,11 @@ describe("the table is what the renderer actually draws", () => {
     for (const name of Object.keys(CAPTION)) {
       expect(all, `CAPTION.${name} is declared and never drawn`).toContain(`CAPTION.${name}`);
     }
+  });
+
+  it("does not paint building or extraction names directly onto the map", () => {
+    const mapArt = sources.find(({ file }) => file === "mapArt.ts")!.text;
+    expect(mapArt).not.toMatch(/makeLabel\((?:building|point)\.name/);
+    expect(mapArt).not.toContain("drawExtractionLabels");
   });
 });

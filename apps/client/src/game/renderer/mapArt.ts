@@ -26,7 +26,7 @@ import { CAPTION, type Caption } from "./worldCaption";
  * order the renderer and Map Studio both expect. Every mark is decided in
  * `model/`, from `model/tone.ts`. What lives here besides assembly is the handful
  * of things that sit *over* the world rather than in it — interaction Dots, their
- * labels, stair tags, building and extraction captions.
+ * labels, stair tags, and proximity-read sign text.
  *
  * It used to be ~1,600 lines because it also held a second drawing language: the
  * pen-plotter plan, its city furniture, its glyph library, and the branches to
@@ -95,7 +95,6 @@ export type BuildingArt = {
   /** Street-view entrance marks; visible only when viewed from outside. */
   entranceMarks: Container;
   floors: FloorArt[];
-  label: Text;
 };
 
 export type MapArt = {
@@ -110,7 +109,6 @@ export type MapArt = {
   outdoorForeground: Container;
   buildingsLayer: Container;
   buildings: BuildingArt[];
-  labels: Container;
   /** Every body of water's drifting surface. The renderer moves these each frame. */
   water: WaterSurface[];
   /**
@@ -133,7 +131,6 @@ export function buildMapArt(map: MapDocument): MapArt {
   const foreground = new Container();
   const outdoorForeground = new Container();
   const buildingsLayer = new Container();
-  const labels = new Container();
   foreground.addChild(outdoorForeground);
 
   const outdoors = buildOutdoorModel(map);
@@ -151,7 +148,7 @@ export function buildMapArt(map: MapDocument): MapArt {
   outdoorObjects.addChild(outdoors.objects);
 
   const buildings = map.buildings.map((building) => buildBuildingArt(
-    building, buildingsLayer, labels, map.placementSlots, map.interactionDots, foreground,
+    building, buildingsLayer, map.placementSlots, map.interactionDots, foreground,
   ));
   /**
    * Outdoor movers plus every floor's, in one list.
@@ -164,12 +161,11 @@ export function buildMapArt(map: MapDocument): MapArt {
     ...outdoors.movers,
     ...buildings.flatMap((art) => art.floors.flatMap((floor) => floor.movers)),
   ];
-  drawExtractionLabels(labels, map);
-  root.addChild(ground, outdoorDetail, outdoorObjects, buildingsLayer, labels);
+  root.addChild(ground, outdoorDetail, outdoorObjects, buildingsLayer);
 
   return {
     root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground,
-    buildingsLayer, buildings, labels, water: water.surfaces, movers,
+    buildingsLayer, buildings, water: water.surfaces, movers,
   };
 }
 
@@ -208,19 +204,6 @@ function makeLabel(text: string, caption: Caption): Text {
   return label;
 }
 
-function drawExtractionLabels(layer: Container, map: MapDocument): void {
-  for (const point of map.extractionPoints) {
-    // Home Base has a dedicated interaction-dot marker and contextual DEPLOY
-    // tag. The generic map caption beneath it is redundant and visually clips
-    // into the sealed threshold.
-    if (point.id === "base-deployment") continue;
-    const label = makeLabel(point.name, CAPTION.extractionName);
-    label.anchor.set(0.5, 0);
-    label.position.set(point.rect.x + point.rect.w / 2, point.rect.y + point.rect.h + 8);
-    layer.addChild(label);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Buildings
 // ---------------------------------------------------------------------------
@@ -228,7 +211,6 @@ function drawExtractionLabels(layer: Container, map: MapDocument): void {
 function buildBuildingArt(
   building: Building,
   buildingsLayer: Container,
-  labels: Container,
   placementSlots: PlacementSlot[] | undefined,
   interactionDots: InteractionDot[] | undefined,
   foregroundRoot: Container,
@@ -272,14 +254,6 @@ function buildBuildingArt(
   const entranceMarks = new Container();
   buildingsLayer.addChild(entranceMarks);
 
-  const label = makeLabel(building.name, CAPTION.buildingName);
-  label.anchor.set(0.5, 0.5);
-  label.position.set(
-    building.footprint.x + building.footprint.w / 2,
-    building.footprint.y + building.footprint.h / 2,
-  );
-  labels.addChild(label);
-
   return {
     building,
     roof,
@@ -287,7 +261,6 @@ function buildBuildingArt(
     roofFloorId: floors.find((art) => art.roofMass)?.floor.id ?? null,
     entranceMarks,
     floors,
-    label,
   };
 }
 
@@ -553,4 +526,3 @@ function placeStairTag(tag: Text, stair: StairLink): void {
 function line(g: Graphics, x1: number, y1: number, x2: number, y2: number, s: { color: number; width: number; alpha?: number }): void {
   g.moveTo(x1, y1).lineTo(x2, y2).stroke(s);
 }
-

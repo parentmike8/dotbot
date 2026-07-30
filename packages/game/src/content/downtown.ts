@@ -267,7 +267,9 @@ function outdoorPlan(): OutdoorPlan {
     // the kerb line the signs sat 160 units from anything and every one of them read
     // "DOWNTOWN", which is what the derived text does when it cannot find a building.
     obj("sign", 276, 592, 44, 12),
-    obj("sign", 1640, 574, 44, 12),
+    // Against Civic's south face, east of the main entrance furniture. The first
+    // position at 1640,574 read correctly but sat in the bench's cast shadow.
+    obj("sign", 1886, 574, 44, 12),
     obj("sign", 458, 968, 44, 12),
     obj("sign", 1642, 986, 44, 12),
 
@@ -402,6 +404,20 @@ function outdoorPlan(): OutdoorPlan {
      * four trees, two planters and a 110-unit pad. A lamp in the middle of the one open
      * space is not a thing anybody would put there.
      */
+
+    /**
+     * Extraction signs sit beside their pads, never on the approach.
+     *
+     * The north sign is east of the planter pair so the pad's narrow plaza stays open
+     * from the street. The depot sign is east because the one useful route runs north
+     * past the bins. The park sign uses the slim east verge; north and south already
+     * belong to benches, and the west is the broad route into the court.
+     *
+     * As with every building sign above, their words are derived in `signs.ts`.
+     */
+    obj("sign", 1060, 114, 44, 12),
+    obj("sign", 1038, 1194, 44, 12),
+    obj("sign", 2328, 1214, 44, 12),
   ];
 
   /**

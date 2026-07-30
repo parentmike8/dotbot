@@ -6,17 +6,13 @@ import { V, MAT } from "./model/tone";
  *
  * Play kept reporting that the map's text was hard to read, and the reason it kept
  * happening is that each caption's ink was picked by eye at its own call site, against
- * whatever surface the author happened to be looking at. Two of them were unreadable:
- *
- * - The BUILDING NAME, the largest text on the map, in `INK.fixture` — 1.60 against
- *   asphalt, 2.84 against a floor slab. Effectively invisible from outside.
- * - The STAIR TAG, in near-white, at 1.06 against a polished floor. It was picked to
+ * whatever surface the author happened to be looking at. The stair tag was unreadable:
+ * it used near-white ink at 1.06 against a polished floor. It was picked to
  *   sit on the dark stair plate, but `placeStairTag` puts it four or five units
  *   *outside* the stair rect, so it always lands on the landing floor instead.
  *
- * Three others measured fine, which is the other half of why this is a table rather
- * than a repaint: sign titles, sign details and extraction names all clear their bar
- * comfortably, and darkening them would have been change for its own sake.
+ * The remaining captions measure fine. Sign titles and details clear their bars
+ * comfortably, and darkening them would be change for its own sake.
  *
  * So a caption declares where it can land, and `worldCaption.test.ts` computes the
  * contrast for every pairing. Picking an ink by eye is no longer possible without the
@@ -53,7 +49,7 @@ export const GROUND = {
   shopFloor: V.shopFloor,
   glass: V.glass,
   roofSteel: MAT.steelLit.top,
-  /** The street. The darkest thing anything is written on, and where both failures were. */
+  /** The street. The darkest thing sign text can land on. */
   asphalt: 0xa4a8ad,
   footway: 0xd6dade,
   /** The interaction tag's own plate, which is why that one has never been a problem. */
@@ -65,10 +61,9 @@ export type GroundName = keyof typeof GROUND;
 /**
  * The bar a caption has to clear.
  *
- * 3.0 for 14px and up, 4.5 below it — the standard split, and it matters here because
- * the building name is large enough to earn the lower bar while a 10px stair tag is
- * not. World units are not CSS pixels, but the camera renders roughly one to one at
- * play zoom, so the sizes are comparable and the split lands in the right place.
+ * 3.0 for 14px and up, 4.5 below it — the standard split. World units are not CSS
+ * pixels, but the camera renders roughly one to one at play zoom, so the sizes are
+ * comparable and the split lands in the right place.
  */
 export function captionBar(size: number): number {
   return size >= 14 ? 3.0 : 4.5;
@@ -85,19 +80,6 @@ export type Caption = {
 };
 
 export const CAPTION: Record<string, Caption> = {
-  /**
-   * A building's own name, across the middle of its footprint.
-   *
-   * Was `INK.fixture`, the palette's quietest ink, on the reasoning that a name should
-   * not shout. It went too far: from the street you could not read it at all. `anchor`
-   * is the lightest ink that clears the bar on every ground it lands on — worst case
-   * 4.25 over asphalt — so it is still a quiet label and it is now a legible one.
-   */
-  buildingName: { size: 16, tracking: 3.5, weight: "800", ink: INK.anchor, on: ["roofSteel", "slab", "polish", "asphalt", "glass"] },
-
-  /** An extraction pad's name, on the ground just below the pad. */
-  extractionName: { size: 11, tracking: 3, weight: "700", ink: INK.opening, on: ["asphalt", "footway", "slab"] },
-
   /**
    * UP or DN beside a stair.
    *

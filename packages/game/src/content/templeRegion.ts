@@ -455,6 +455,22 @@ const templeObjects: MapObject[] = [
    * because a fan of engine bays is a 922 x 406 box that the shed occupies a third of.
    */
   obj("wagon", 3420, 1600, 74, 174, { facing: "N" }),
+
+  /**
+   * Place names here are physical signs now, using the same plate as Downtown.
+   *
+   * The temple sign is south-west of the south arch's serpent-and-brazier approach.
+   * Its first position was hidden under the adjacent tree crown; this one is below
+   * both the crown and serpent while remaining outside the central entrance route. The
+   * observatory sign is east of its north door. Neither occupies the route it names.
+   */
+  obj("sign", 3132, 2630, 44, 12),
+  obj("sign", 3810, 2570, 44, 12),
+  /**
+   * Plaza extraction sign east of the pad. The altar-to-pad axis and the west-side
+   * arrival trail remain clear, preserving the square's useful approaches.
+   */
+  obj("sign", 3384, 2952, 44, 12),
 ];
 
 export const templeRegion: RegionParts = {

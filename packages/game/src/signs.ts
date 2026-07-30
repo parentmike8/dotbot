@@ -1,15 +1,15 @@
 import { buildingContaining, physicsFloorId } from "./mapModel";
 import { distance } from "./math";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import type { Building, MapDocument, MapObject, Vec2 } from "./types";
+import type { Building, MapDocument, MapObject, Rect, Vec2 } from "./types";
 
 /**
  * What a sign says, and when you are close enough to read it.
  *
- * The lit-model language had no way to put text in the world. Building names exist,
- * but they are baked into the art as a single label per footprint — there is no
- * mechanism for the world to tell you anything else, which is why the map cannot
- * currently say "four floors" or "clinic" or anything a real street would.
+ * The lit-model language originally painted one building name across each footprint.
+ * That was map annotation rather than part of the place, and it could not say anything
+ * else. Physical signs replace those captions and also let an extraction identify
+ * itself without writing its name directly on the ground.
  *
  * Two rules, and they are the whole design.
  *
@@ -61,17 +61,78 @@ export type SignReading = {
 };
 
 /**
+ * The nearest point on a rectangle and the direction from it to `at`.
+ *
+ * The direction is the side of the target the sign stands on, which is also the side
+ * its words should face. All authored signs stand outside their target; the inside
+ * fallback only keeps the function deterministic for malformed input.
+ */
+function rectDistance(rect: Rect, at: Vec2): { away: number; open: Vec2 } {
+  const x = Math.max(rect.x, Math.min(at.x, rect.x + rect.w));
+  const y = Math.max(rect.y, Math.min(at.y, rect.y + rect.h));
+  const dx = at.x - x;
+  const dy = at.y - y;
+  const away = Math.hypot(dx, dy);
+  if (away > 0) return { away, open: { x: dx / away, y: dy / away } };
+
+  const edges = [
+    { gap: at.y - rect.y, open: { x: 0, y: -1 } },
+    { gap: rect.x + rect.w - at.x, open: { x: 1, y: 0 } },
+    { gap: rect.y + rect.h - at.y, open: { x: 0, y: 1 } },
+    { gap: at.x - rect.x, open: { x: -1, y: 0 } },
+  ];
+  return { away: 0, open: edges.sort((a, b) => a.gap - b.gap)[0].open };
+}
+
+function segmentDistance(at: Vec2, a: Vec2, b: Vec2): { away: number; open: Vec2 } {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const span = vx * vx + vy * vy;
+  const t = span === 0 ? 0 : Math.max(0, Math.min(1, ((at.x - a.x) * vx + (at.y - a.y) * vy) / span));
+  const dx = at.x - (a.x + vx * t);
+  const dy = at.y - (a.y + vy * t);
+  const away = Math.hypot(dx, dy);
+  return { away, open: away === 0 ? { x: 0, y: -1 } : { x: dx / away, y: dy / away } };
+}
+
+/**
+ * Distance to the real outline, not its bounding rectangle.
+ *
+ * This matters most at the roundhouse: its turntable occupies a large empty corner of
+ * the fan's bounding box. Treating that box as the shed made a sign beside the table
+ * announce ROUNDHOUSE instead of the extraction standing next to it.
+ */
+function buildingDistance(building: Building, at: Vec2): { away: number; open: Vec2 } {
+  if (!building.outline?.length) return rectDistance(building.footprint, at);
+  let closest = { away: Number.POSITIVE_INFINITY, open: { x: 0, y: -1 } };
+  for (let i = 0; i < building.outline.length; i += 1) {
+    const candidate = segmentDistance(at, building.outline[i], building.outline[(i + 1) % building.outline.length]);
+    if (candidate.away < closest.away) closest = candidate;
+  }
+  return closest;
+}
+
+/**
  * What this sign has to say, from the map around it.
  *
- * A sign standing on or against a building names it and counts its floors. One
- * standing in the open names the block it is on. Both are read from the map, so a
- * building renamed or a floor added updates every sign that mentions it for free.
+ * A sign standing on or against a building names it and counts its floors. A sign
+ * beside an extraction names the pad and says what it is. Both are read from the map,
+ * so a rename or a new floor updates every sign that mentions it for free.
  */
 export function signText(
   map: MapDocument,
   sign: MapObject,
 ): { title: string; detail: string; open: Vec2 } {
   const centre = { x: sign.x + sign.w / 2, y: sign.y + sign.h / 2 };
+  const authoredOpen: Vec2 | null = sign.facing === "N"
+    ? { x: 0, y: -1 }
+    : sign.facing === "E"
+      ? { x: 1, y: 0 }
+      : sign.facing === "S"
+        ? { x: 0, y: 1 }
+        : sign.facing === "W"
+          ? { x: -1, y: 0 }
+          : null;
   /**
    * Probed at the sign's own centre first, then a little way in each direction.
    *
@@ -93,19 +154,40 @@ export function signText(
     { at: { x: centre.x, y: centre.y + REACH }, toward: { x: 0, y: 1 } },
     { at: { x: centre.x, y: centre.y - REACH }, toward: { x: 0, y: -1 } },
   ];
-  const describe = (building: Building, toward: Vec2) => {
+  const describe = (building: Building, open: Vec2) => {
     // ROOF is the exterior, not a storey you can stand on, so it is not counted.
     const storeys = building.floors.filter((floor) => floor.label !== "ROOF").length;
     return {
       title: building.name,
       detail: `${storeys} ${storeys === 1 ? "FLOOR" : "FLOORS"}`,
-      // Away from the building, which is the footway the sign faces.
-      open: { x: -toward.x, y: -toward.y },
+      open: authoredOpen ?? open,
     };
   };
+
+  const TARGET_REACH = 170;
+  let nearestExtraction: {
+    point: MapDocument["extractionPoints"][number];
+    away: number;
+    open: Vec2;
+  } | null = null;
+  for (const point of map.extractionPoints) {
+    const relation = rectDistance(point.rect, centre);
+    if (relation.away > TARGET_REACH || (nearestExtraction && relation.away >= nearestExtraction.away)) continue;
+    nearestExtraction = { point, ...relation };
+  }
+
+  let nearestBuilding: { building: Building; away: number; open: Vec2 } | null = null;
   for (const probe of probes) {
     const building = buildingContaining(map, probe.at);
-    if (building) return describe(building, probe.toward);
+    if (!building) continue;
+    const relation = buildingDistance(building, centre);
+    nearestBuilding = {
+      building,
+      away: buildingContaining(map, centre) === building ? 0 : relation.away,
+      // The probe is authoritative when the plate sits just inside a wall.
+      open: probe.at === centre ? relation.open : { x: -probe.toward.x, y: -probe.toward.y },
+    };
+    break;
   }
 
   /**
@@ -120,18 +202,22 @@ export function signText(
    * from play, and it was wrong twice over — wrong building, and a place name that
    * only ever made sense while the city WAS the map.
    */
-  const NEARBY = 170;
-  let closest: { building: Building; away: number; toward: Vec2 } | null = null;
-  for (const building of map.buildings) {
-    const fp = building.footprint;
-    const dx = centre.x - Math.max(fp.x, Math.min(centre.x, fp.x + fp.w));
-    const dy = centre.y - Math.max(fp.y, Math.min(centre.y, fp.y + fp.h));
-    const away = Math.hypot(dx, dy);
-    if (away > NEARBY || (closest && away >= closest.away)) continue;
-    const span = Math.hypot(dx, dy) || 1;
-    closest = { building, away, toward: { x: -dx / span, y: -dy / span } };
+  if (!nearestBuilding) {
+    for (const building of map.buildings) {
+      const relation = buildingDistance(building, centre);
+      if (relation.away > TARGET_REACH || (nearestBuilding && relation.away >= nearestBuilding.away)) continue;
+      nearestBuilding = { building, ...relation };
+    }
   }
-  if (closest) return describe(closest.building, closest.toward);
+
+  if (nearestExtraction && (!nearestBuilding || nearestExtraction.away < nearestBuilding.away)) {
+    return {
+      title: nearestExtraction.point.name,
+      detail: "EXTRACTION",
+      open: authoredOpen ?? nearestExtraction.open,
+    };
+  }
+  if (nearestBuilding) return describe(nearestBuilding.building, nearestBuilding.open);
 
   /**
    * Nothing within reach at all. The map's own name, not a district's: a sign has
