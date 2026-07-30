@@ -47,7 +47,7 @@ import {
 import { DOT_COLOR, INK, RIVAL_RED, SQUAD_CYAN, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
 import { redrawFloorObjects } from "./model/modelFloor";
-import { animateAmbient } from "./model/modelMotion";
+import { animateAmbient, driftLeaves } from "./model/modelMotion";
 import { driftWater } from "./model/modelWater";
 import { GRD } from "./model/modelGround";
 import { isInWater } from "@dotbot/game/water";
@@ -522,6 +522,10 @@ export class GameRenderer {
     // The rest of the world's ambient motion — turning rides, swaying canopies — on the
     // same clock and the same contract: one transform per part, nothing redrawn.
     animateAmbient(this.art.movers, nowMs, this.reducedMotion);
+    // Leaves spawn only off canopies the player can actually see — the same visible-bounds
+    // answer audio earshot uses, for the same reason: forty-eight leaves spread over a
+    // 4,200-unit sheet is none of them on screen.
+    driftLeaves(this.art.leaves, this.art.movers, nowMs, this.visibleWorldBounds(), this.reducedMotion);
     this.updateWading(player ?? null, nowMs);
 
     const playerContext = player ? this.contextKey(player.floorId, player.position) : "outdoor:street";

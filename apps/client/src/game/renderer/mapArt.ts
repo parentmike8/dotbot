@@ -11,7 +11,7 @@ import type {
 import { buildFloorModel, drawStair, drawStairHead } from "./model/modelFloor";
 import { buildOutdoorModel } from "./model/modelOutdoor";
 import { buildRoofModel } from "./model/modelRoof";
-import { type AmbientMover } from "./model/modelMotion";
+import { buildLeafFall, type AmbientMover, type LeafFall } from "./model/modelMotion";
 import { buildWaterSurfaces, type WaterSurface } from "./model/modelWater";
 import { SHADOW_ALPHA, V, type ShadowPad } from "./model/tone";
 import { drawDotDisc } from "./dotArt";
@@ -118,6 +118,8 @@ export type MapArt = {
    * transforms all of them — `animateAmbient` in `modelMotion`. Nothing here is redrawn.
    */
   movers: AmbientMover[];
+  /** The leaf pool, drifting off whichever canopies are on screen. */
+  leaves: LeafFall;
 };
 
 const LABEL_FONT = "system-ui, -apple-system, Segoe UI, sans-serif";
@@ -144,6 +146,7 @@ export function buildMapArt(map: MapDocument): MapArt {
    */
   const water = buildWaterSurfaces(map);
   ground.addChild(outdoors.ground, water.view);
+  const leaves = buildLeafFall();
   outdoorDetail.addChild(outdoors.detail);
   outdoorObjects.addChild(outdoors.objects);
 
@@ -162,10 +165,25 @@ export function buildMapArt(map: MapDocument): MapArt {
     ...buildings.flatMap((art) => art.floors.flatMap((floor) => floor.movers)),
   ];
   root.addChild(ground, outdoorDetail, outdoorObjects, buildingsLayer);
+  /**
+   * CANOPIES AND LEAVES DRAW ABOVE THE BOTS, on the one layer built for that.
+   *
+   * `outdoorForeground` is documented as the place for "marks that must cover a bot passing
+   * behind them", and a tree is the clearest case in the world: the collider is the trunk, so
+   * everything else about a tree is something you walk UNDER. Reported from play — "the player
+   * doesn't go under the tree canopy but they should" — and a leaf in the air belongs there
+   * for the same reason.
+   *
+   * A first attempt put leaves on `outdoorDetail`, the walk-through dressing layer, with a
+   * comment arguing a leaf should not cross in front of a trunk. That was wrong, and looking
+   * at it settled it in one frame: leaves spend the first half of their fall over the canopy
+   * they came off, so under it there was nothing to see at all.
+   */
+  outdoorForeground.addChild(outdoors.overhead, leaves.view);
 
   return {
     root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground,
-    buildingsLayer, buildings, water: water.surfaces, movers,
+    buildingsLayer, buildings, water: water.surfaces, movers, leaves,
   };
 }
 

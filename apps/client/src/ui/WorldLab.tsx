@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
 import type { MapDocument, Rect } from "@dotbot/game/types";
 import { buildMapArt } from "../game/renderer/mapArt";
-import { animateAmbient } from "../game/renderer/model/modelMotion";
+import { animateAmbient, driftLeaves } from "../game/renderer/model/modelMotion";
 import { selectMapDocument } from "../mapSelection";
 
 /**
@@ -216,7 +216,18 @@ export function WorldLab() {
       }
 
       const stage = new Container();
-      stage.addChild(art.root);
+      /**
+       * `art.foreground` TOO, and it was missing.
+       *
+       * The renderer parents it separately — `worldLayer.addChild(..., dynamicGfx,
+       * art.foreground)` — because it is the one layer that draws after the bots. This surface
+       * staged only `art.root`, which was invisible for as long as the foreground was empty and
+       * became a hole in the world the moment tree canopies moved onto it: the shot came back
+       * with three cast shadows and no trees above them.
+       *
+       * Added in the renderer's own order, so a still is the same stack a frame of play is.
+       */
+      stage.addChild(art.root, art.foreground);
       created.stage.addChild(stage);
 
       /**
@@ -284,6 +295,9 @@ export function WorldLab() {
         const wanted = pick ? allFrames.filter((frame) => frame.id === pick) : allFrames;
         for (const shot of wanted) {
           showFloor(shot.floorId ?? null);
+          // The frame's own rect stands in for the camera's visible bounds: a still has no
+          // camera, and leaves that spawned off the whole sheet would put none in the crop.
+          driftLeaves(art.leaves, art.movers, clockMs, shot.rect, false);
           const long = Math.max(shot.rect.w, shot.rect.h);
           const scale = Math.min(1, 2200 / long);
           const width = Math.round(shot.rect.w * scale);
@@ -308,6 +322,7 @@ export function WorldLab() {
 
       const chosen = allFrames.find((candidate) => candidate.id === pick) ?? allFrames[0];
       showFloor(chosen.floorId ?? null);
+      driftLeaves(art.leaves, art.movers, clockMs, chosen.rect, false);
       const draw = (): void => {
         created.renderer.resize(host.clientWidth, host.clientHeight);
         frame(chosen.rect, created.renderer.width, created.renderer.height);
@@ -332,7 +347,9 @@ export function WorldLab() {
       if (params.get("play") === "1") {
         const started = performance.now();
         const step = (): void => {
-          animateAmbient(art.movers, clockMs + performance.now() - started, false);
+          const at = clockMs + performance.now() - started;
+          animateAmbient(art.movers, at, false);
+          driftLeaves(art.leaves, art.movers, at, chosen.rect, false);
           created.render();
           frameHandle = requestAnimationFrame(step);
         };

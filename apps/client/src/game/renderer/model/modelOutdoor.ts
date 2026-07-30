@@ -6,7 +6,7 @@ import { capsuleRuns } from "./modelWalls";
 import { drawRegions } from "./modelGround";
 import { isAcross, outwardBand, perimeterEntrances } from "./entrances";
 import { drawModelObject } from "./modelGlyphs";
-import { collectMovers, type AmbientMover } from "./modelMotion";
+import { collectMovers, liftParts, type AmbientMover } from "./modelMotion";
 import {
   AO_ALPHA,
   contact,
@@ -51,6 +51,14 @@ export type OutdoorModel = {
    * once per frame and redraws none of them — see `modelMotion`.
    */
   movers: AmbientMover[];
+  /**
+   * Canopies and trunks, lifted off their glyphs onto a layer that draws ABOVE BOTS.
+   *
+   * Reported from play: "the player doesn't go under the tree canopy but they should." A
+   * canopy is passable — the collider is the trunk — so a bot beneath it has to be covered by
+   * it, and only `MapArt.foreground` draws after the bots.
+   */
+  overhead: Container;
 };
 
 /** Sidewalks sit this far above the carriageway. */
@@ -611,12 +619,23 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   const solid: Graphics[] = [];
   const passable: Graphics[] = [];
   const movers: AmbientMover[] = [];
+  const overhead = new Container();
   for (const object of [...map.outdoor.objects].sort((a, b) => a.y + a.h - (b.y + b.h))) {
     const g = new Graphics();
     drawModelObject(g, pad, object);
     // Asked of every object, and answered by the glyph rather than by a list of kinds
     // here: a builder should not have to know that a carousel turns and a bench does not.
     movers.push(...collectMovers(g, object));
+    /**
+     * Anything the glyph made as a part goes overhead, in creation order.
+     *
+     * Two things at once. It puts a canopy above the bots, which is what play asked for. And
+     * it takes the parts off the `Graphics` they were created on — pixi 8 warns that "only
+     * Containers will be allowed to add children", and a `Graphics` being a `Container` is
+     * true today and deprecated. Lifting them makes the whole mechanism a sibling layer,
+     * which is the shape pixi wants anyway.
+     */
+    for (const part of liftParts(g)) overhead.addChild(part);
     if (!isSolidObject(object) && !SURFACE_KINDS.has(object.kind)) {
       markPassable(g, { x: object.x, y: object.y, w: object.w, h: object.h });
     }
@@ -633,7 +652,7 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   // passable dressing or no solid fixtures outdoors.
   if (passable.length) detail.addChild(...passable);
   if (solid.length) objects.addChild(...solid);
-  return { ground, detail, objects, movers };
+  return { ground, detail, objects, movers, overhead };
 }
 
 /** Kerb rise, exported so building entrances can meet the sidewalk correctly. */

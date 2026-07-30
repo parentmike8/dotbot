@@ -1,10 +1,11 @@
-import { Graphics } from "pixi.js";
+import { Container, Graphics } from "pixi.js";
 import { describe, expect, it } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { worldMap } from "@dotbot/game/content/world";
 import type { MapObject } from "@dotbot/game/types";
 import { drawModelObject } from "./modelGlyphs";
 import { buildOutdoorModel } from "./modelOutdoor";
+import { buildMapArt } from "../mapArt";
 import { animateAmbient, collectMovers, movingPart, type AmbientMover } from "./modelMotion";
 import { SHADOW_ALPHA, type ShadowPad } from "./tone";
 
@@ -247,5 +248,38 @@ describe("ambient motion", () => {
   it("carries every moving part out of the outdoor builder", () => {
     const built = buildOutdoorModel(downtownMap);
     expect(Array.isArray(built.movers)).toBe(true);
+    expect(built.movers.length).toBeGreaterThan(20);
+  });
+
+  /**
+   * A CANOPY HAS TO DRAW ABOVE THE BOTS, and this is the assertion that says so.
+   *
+   * Reported from play: "the player doesn't go under the tree canopy but they should." A tree's
+   * collider is its trunk, so the canopy is something you walk UNDER — and the only layer that
+   * draws after `dynamicGfx` is `MapArt.foreground`, which exists for "marks that must cover a
+   * bot passing behind them".
+   *
+   * Pinned structurally because it cannot be pinned visually from here: putting a bot under a
+   * tree needs the game loop, and the game loop needs a socket and real input. What CAN be
+   * checked is that every canopy is parented into the foreground subtree, which is the whole
+   * mechanism — if a later change parents them back onto the object layer the bot goes back on
+   * top and nothing else complains.
+   */
+  it("parents every canopy into the layer that draws above bots", () => {
+    const art = buildMapArt(downtownMap);
+    const sways = art.movers.filter((mover) => mover.kind === "sway");
+    expect(sways.length).toBeGreaterThan(20);
+
+    const inSubtree = (node: Container | null, root: Container): boolean => {
+      for (let at = node; at; at = at.parent) if (at === root) return true;
+      return false;
+    };
+    for (const mover of sways) {
+      expect(inSubtree(mover.view, art.foreground)).toBe(true);
+      // And NOT on the solid-object layer, which is drawn before the bots.
+      expect(inSubtree(mover.view, art.outdoorObjects)).toBe(false);
+    }
+    // The leaves are in the air, so they belong on the same layer.
+    expect(inSubtree(art.leaves.view, art.foreground)).toBe(true);
   });
 });
