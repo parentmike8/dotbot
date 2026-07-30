@@ -89,78 +89,144 @@ export const MERCY_SOURCE: SourceBuilding = {
         { id: "mercy-staff", thickness: INT, path: [{ x: 720, y: 488 }, { x: 720, y: 568 }] },
       ],
       objects: [
-        // Exam 1 (NW): table, worktop, stool.
-        { id: "mercy-exam-a-bed", kind: "bed", x: 232, y: 162, w: 48, h: 88, facing: "N", scannable: true },
-        { id: "mercy-exam-a-cabinet", kind: "cabinet", x: 216, y: 268, w: 34, h: 22 },
-        { id: "mercy-exam-a-sink", kind: "sink", x: 320, y: 158, w: 26, h: 18 },
         /**
-         * Beside the worktop, which is where a clinician's stool lives, and not out in
-         * the middle of the room.
+         * Exam 1 (NW): table on the west wall, worktop run along the north wall.
          *
-         * At 322 it left a 42-unit slot between itself and the bed — six short of a
-         * bot — so the moment a chair collided, the whole north half of exam 1 was cut
-         * off from its own door and the bed had nowhere to put a blueprint. Flush to
-         * the cabinet the room is 102 units clear.
+         * The worktop, the sink and the stool used to be three unrelated objects — the
+         * cabinet in the south-west corner, the sink diagonally opposite it on the north
+         * wall, and the stool flush against the cabinet. Nobody washes their hands at one
+         * end of a room and writes at the other, and the probe found the consequence: no
+         * bot could stand beside the cabinet at all, because the bed boxed it in from the
+         * north and the corridor wall from the south. A worktop you cannot reach with a
+         * sink nowhere near it is two mistakes making each other invisible.
+         *
+         * Now they are one installation on one wall, in the order a clinician uses them:
+         * worktop, sink at its end, stool tucked under. Walk in from the corridor and the
+         * whole working side of the room is in front of you, with the table to the left.
          */
-        { id: "mercy-exam-a-stool", kind: "chair", x: 250, y: 268, w: 20, h: 20, facing: "E" },
-        // Exam 2.
-        { id: "mercy-exam-b-bed", kind: "bed", x: 396, y: 162, w: 48, h: 88, facing: "N" },
-        { id: "mercy-exam-b-cabinet", kind: "cabinet", x: 384, y: 268, w: 34, h: 22 },
-        { id: "mercy-exam-b-sink", kind: "sink", x: 484, y: 158, w: 26, h: 18 },
-        // Same fix, same reason: exam 2 sealed its own north-east pocket, which is the
-        // 2048 square units the connectivity audit was reporting.
-        { id: "mercy-exam-b-stool", kind: "chair", x: 418, y: 268, w: 20, h: 20, facing: "E" },
-        // Imaging: scanner table and console.
-        { id: "mercy-scanner", kind: "cot", x: 566, y: 170, w: 44, h: 84, facing: "N", scannable: true },
-        { id: "mercy-console", kind: "serverRack", x: 632, y: 154, w: 26, h: 56 },
-        { id: "mercy-imaging-power", kind: "utilityBox", x: 632, y: 220, w: 26, h: 20 },
-        // Pharmacy: shelving runs and dispensing worktop.
-        { id: "mercy-pharmacy-shelf-a", kind: "shelf", x: 688, y: 168, w: 24, h: 108, scannable: true },
-        // Six units east, so the pharmacy run is a 64-unit work aisle rather than a
-        // 58-unit one — wide enough to look like a way between the shelves and too
-        // narrow to be one. Read off the plan in the §4.1 pass before the audit was
-        // consulted, which is the order that pass exists to enforce.
-        { id: "mercy-pharmacy-shelf-b", kind: "shelf", x: 776, y: 168, w: 24, h: 108 },
-        { id: "mercy-dispensing", kind: "counter", x: 782, y: 286, w: 24, h: 26 },
-        { id: "mercy-pharmacy-fridge", kind: "fridge", x: 682, y: 286, w: 30, h: 30, facing: "E" },
+        /**
+         * Order along the run matters, and getting it wrong once proved why. The first
+         * attempt put the sink at the east end with the stool directly beneath it, against
+         * the partition — which walled the sink in on all four sides and stranded it exactly
+         * as the cabinet had been stranded before. Sink first, then worktop, then the stool
+         * tucked at the worktop's far end: every piece keeps open floor to the south, and
+         * the stool sits at a run END, where an attached seam is what the contract wants.
+         */
+        { id: "mercy-exam-a-bed", kind: "bed", x: 216, y: 162, w: 48, h: 88, facing: "N", scannable: true },
+        { id: "mercy-exam-a-sink", kind: "sink", x: 292, y: 154, w: 24, h: 16 },
+        { id: "mercy-exam-a-cabinet", kind: "cabinet", x: 318, y: 154, w: 54, h: 22 },
+        { id: "mercy-exam-a-stool", kind: "chair", x: 352, y: 178, w: 20, h: 20, facing: "N" },
+        // Exam 2: the same room, because a clinic's exam rooms ARE the same room. What
+        // was wrong here was never the repetition — it was the layout being repeated.
+        { id: "mercy-exam-b-bed", kind: "bed", x: 384, y: 162, w: 48, h: 88, facing: "N" },
+        { id: "mercy-exam-b-sink", kind: "sink", x: 452, y: 154, w: 24, h: 16 },
+        { id: "mercy-exam-b-cabinet", kind: "cabinet", x: 478, y: 154, w: 54, h: 22 },
+        { id: "mercy-exam-b-stool", kind: "chair", x: 512, y: 178, w: 20, h: 20, facing: "N" },
+        /**
+         * Imaging: scanner table west, control console on the east wall at its head.
+         *
+         * The console was 14 units off the partition it was meant to be against, in a
+         * 36-unit slot beside the scanner — out of reach, like exam 1's worktop. Facing
+         * the scanner across the room is not an option either: a 132-wide room cannot
+         * hold a 44-wide table and a 26-wide console with a comfortable aisle between
+         * them, and the false-aisle rule is right to say so. So the console goes where a
+         * radiographer's console actually goes, against the wall by the patient's head,
+         * short enough that it does not become a second wall down the room.
+         */
+        { id: "mercy-scanner", kind: "cot", x: 552, y: 168, w: 44, h: 84, facing: "N", scannable: true },
+        { id: "mercy-console", kind: "serverRack", x: 646, y: 154, w: 26, h: 36 },
+        { id: "mercy-imaging-power", kind: "utilityBox", x: 646, y: 196, w: 26, h: 20 },
+        /**
+         * Pharmacy: shelving on both side walls, dispensing worktop facing the door.
+         *
+         * Both shelf runs go flush to their walls, which widens the work aisle between
+         * them from 64 to 72, and the dispensing counter moves out of the south-east
+         * corner onto the north wall — where it faces the door, which is the whole job of
+         * a dispensing counter. In the corner it faced a wall and was the last thing you
+         * would find in the room.
+         *
+         * The fridge goes to the NORTH-west corner, beside the dispensing counter, and not
+         * the south-west one. In the south-west it reached x=714 and the pharmacy door's
+         * walking line starts at 712 — a fridge two units into its own doorway, which the
+         * doorway rule caught and which is the third time this pass that "tuck it in the
+         * corner" has meant "put it where somebody has to walk". Cold stock beside the
+         * dispensing point is also just where it belongs.
+         */
+        { id: "mercy-pharmacy-fridge", kind: "fridge", x: 684, y: 154, w: 30, h: 30, facing: "E" },
+        { id: "mercy-dispensing", kind: "counter", x: 716, y: 154, w: 56, h: 24 },
+        { id: "mercy-pharmacy-shelf-a", kind: "shelf", x: 684, y: 190, w: 24, h: 108, scannable: true },
+        { id: "mercy-pharmacy-shelf-b", kind: "shelf", x: 780, y: 168, w: 24, h: 108 },
         // Corridor: one crash cart, nothing else — it is a lane.
         { id: "mercy-crash-cart", kind: "medicalCart", x: 770, y: 332, w: 30, h: 22 },
-        // Waiting hall: reception faces the entrance; two chair rows west.
-        { id: "mercy-reception", kind: "receptionDesk", x: 360, y: 420, w: 140, h: 26, facing: "S", scannable: true },
-        { id: "mercy-wait-a", kind: "chair", x: 240, y: 480, w: 22, h: 22, facing: "S" },
-        { id: "mercy-wait-b", kind: "chair", x: 286, y: 480, w: 22, h: 22, facing: "S" },
-        { id: "mercy-wait-c", kind: "chair", x: 332, y: 480, w: 22, h: 22, facing: "S" },
         /**
-         * Back-to-back with the front row, not 18 units behind it.
+         * Waiting hall: reception beside the entrance's walking line, seating in an L.
          *
-         * Two rows of seats with an 18-unit slot between them is furniture a bot cannot
-         * pass through that looks like it could — the same defect as a false aisle, and
-         * invisible to that rule because a 22-unit chair is not a long run. Joined, the
-         * six seats read as one bench block, which is what a waiting hall has.
+         * Three things were wrong and they were one thing. The desk sat centred on the
+         * main entrance, so the only way from the door to the corridor was to squeeze
+         * round its east end. The six chairs were welded into one 114 x 44 block in the
+         * south-west corner with 28 units to the west wall and 44 to the south — dead on
+         * two sides, and three of the six seats had no floor a bot could stand on beside
+         * them. And a 44 x 32 table floated in the open 24 units north-west of the block,
+         * belonging to nothing. Meanwhile the hall's whole east half was empty.
+         *
+         * All three come from filling a corner instead of composing a room. So: the desk
+         * slides west until its east end is exactly the entrance's west jamb, which keeps
+         * the walk from door to corridor dead straight; it gets a chair and a filing
+         * cabinet behind it so it reads as somewhere a person works rather than a bar
+         * across the floor; and the seating becomes two benches in an L along the west and
+         * south walls with a table in the crook, every seat approachable from the open
+         * side. Fewer objects, more floor, and a hall you can read on the way in.
+         *
+         * The desk is 110 wide, and two rounds of the probe say why. At 140 it reached back
+         * to x=276 and left a 40-unit choke between its west end and the seating bench,
+         * which sealed a 16 x 72 strip of hall — and sealed the pocket just inside the
+         * AMBULANCE door, the one route in this building that has to stay open. Then the
+         * filing cabinet's back at y=374 left 46 units of corridor in front of the four room
+         * doors, two short of a bot, and that single pinch cut exam 1 AND the whole west half
+         * of the hall off from the rest of the building. The workstation now stands 56 clear
+         * of the clinical band. The expensive mistakes on this floor are two units wide.
          */
-        { id: "mercy-wait-d", kind: "chair", x: 240, y: 502, w: 22, h: 22, facing: "N" },
-        { id: "mercy-wait-e", kind: "chair", x: 286, y: 502, w: 22, h: 22, facing: "N" },
-        { id: "mercy-wait-f", kind: "chair", x: 332, y: 502, w: 22, h: 22, facing: "N" },
-        { id: "mercy-wait-table", kind: "table", x: 232, y: 424, w: 44, h: 32 },
-        { id: "mercy-hall-plant-w", kind: "plant", x: 218, y: 544, w: 20, h: 20 },
-        { id: "mercy-hall-plant-e", kind: "plant", x: 566, y: 540, w: 20, h: 20 },
-        // Staff WC (west room) and staff room (east room).
-        { id: "mercy-wc-pan", kind: "toilet", x: 664, y: 530, w: 26, h: 34, facing: "S" },
-        // Clear of the WC door's threshold, which reaches to x=614. The basin was
-        // clipping it by four units — a fixture standing in its own doorway.
-        { id: "mercy-wc-basin", kind: "sink", x: 618, y: 494, w: 24, h: 16 },
+        { id: "mercy-reception", kind: "receptionDesk", x: 306, y: 410, w: 110, h: 26, facing: "S", scannable: true },
+        // Cabinet at one end of the counter, the seat at the other. Mid-run the chair was a
+        // small fixture parked 4 units off the face of a 110-unit desk, which is the
+        // `wedged-fixture` shape exactly — and this time the rule was right: there is no
+        // wall between a desk and its own chair.
+        { id: "mercy-reception-file", kind: "filingCabinet", x: 306, y: 382, w: 26, h: 24 },
+        { id: "mercy-reception-chair", kind: "chair", x: 394, y: 384, w: 22, h: 22, facing: "S" },
+        // Below the ambulance door's approach, which owns the west wall down to y=384.
+        { id: "mercy-wait-bench-w", kind: "bench", x: 214, y: 432, w: 22, h: 124, facing: "E" },
+        // Stops at 368, a bot's full diameter clear of the main entrance's west jamb.
+        { id: "mercy-wait-bench-s", kind: "bench", x: 244, y: 546, w: 124, h: 22, facing: "N" },
+        // 64 clear of the west bench rather than parked 14 units off its face: a small
+        // fixture that close to the middle of a long run reads as neither joined nor
+        // passable, which is exactly what `wedged-fixture` is for.
+        { id: "mercy-wait-table", kind: "table", x: 300, y: 470, w: 44, h: 40 },
+        /**
+         * At the reception counter's east end, where a plant in a foyer goes.
+         *
+         * At 566,540 it had been standing 23 units off the WC door's threshold for as long
+         * as street furniture has been solid, and it was the reason that WC read as an
+         * island in the probe — not the fixtures inside it, which is where I looked first.
+         * It cannot go in the corridor either: the corridor is 68 deep and a 20-unit pot in
+         * the middle of it leaves 36, so the clinic's one artery would be blocked by a
+         * houseplant. Parked in the open hall it just drew the eye to how empty the east
+         * half is; the east half SHOULD be empty, because that is the trolley route the
+         * floor brief reserves. So it goes where it terminates something.
+         */
+        { id: "mercy-hall-plant-e", kind: "plant", x: 424, y: 410, w: 20, h: 20 },
+        /**
+         * Staff WC (west room) and staff room (east room).
+         *
+         * Both fixtures move to the far end. The pan stood 4 units inside the door's own
+         * swing at x=664 and the basin faced it across the entry, so the only standable
+         * spot in the room was a 320-unit sliver cut off from the hall — a WC nobody could
+         * use, which the probe found as an island and the eye finds as a fixture in a
+         * doorway. Against the east wall the room has its whole width as approach.
+         */
+        { id: "mercy-wc-pan", kind: "toilet", x: 686, y: 528, w: 26, h: 34, facing: "S" },
+        { id: "mercy-wc-basin", kind: "sink", x: 690, y: 494, w: 24, h: 16 },
         { id: "mercy-staff-locker-a", kind: "locker", x: 728, y: 490, w: 26, h: 38, scannable: true },
         { id: "mercy-staff-locker-b", kind: "locker", x: 728, y: 532, w: 26, h: 36 },
-        /**
-         * West along the south wall, out of the staff entrance's walking line: the
-         * door at 820,528 opens into x 794 and the plant reached to 808.
-         *
-         * Moved west again, to 700. "Out of the walking line" was measured against the
-         * door's own clear width; an ENTRANCE gets a bot's full diameter of approach on
-         * both sides, which is the wider rule the octagon's blocked archways bought us,
-         * and at 762 this still clipped it.
-         */
-        { id: "mercy-staff-plant", kind: "plant", x: 700, y: 548, w: 18, h: 18 },
       ],
       dots: [
         { id: "mercy-dot-exam", item: { kind: "powerup", type: "health" }, x: 470, y: 208 },
@@ -193,8 +259,40 @@ export const MERCY_SOURCE: SourceBuilding = {
           id: "mercy-core-south",
           thickness: INT,
           path: [{ x: 600, y: 484 }, { x: 808, y: 484 }],
-          openings: [{ kind: "door", width: DOOR, near: { x: 768, y: 484 } }],
+          /**
+           * A paired leaf, not a single one, and the reason is measured rather than
+           * stylistic. A 56-wide opening in an 8-thick wall compiles to two capsules whose
+           * end caps eat 4 units each, so the widest clear standing point on the threshold
+           * is 28 from anything — exactly a bot's radius plus four. `findNavigationPath`
+           * will not thread 4 units of margin, so with this as a single leaf the stair core
+           * had NO PATH into it at radius 24 from either side, and the AI would never have
+           * used these stairs. It passed every existing check: the doorway rules ask whether
+           * the walking line is clear of objects, which it is.
+           *
+           * Every 56-wide door in the world measures the same 28. Some thread and some do
+           * not, depending on where the navigator's grid happens to fall, which is worse
+           * than a clean failure — filed as its own task rather than widened here, because
+           * it is a world-wide constant and not a Mercy decision.
+           */
+          openings: [{ kind: "door", width: DOUBLE, near: { x: 750, y: 484 } }],
         },
+        /**
+         * The shaft's west end is closed on F1, and this is task #76.
+         *
+         * The flight runs west-to-east with its bottom at the west, so on GROUND the west
+         * end is where you step on and the core is correctly open to the corridor there.
+         * F1 inherited that opening and it is the wrong end upstairs: west is the EXIT half
+         * on this floor, so walking in from the ward put you on the far half of the flight
+         * from the room, which drops you a storey you did not ask for. That is the
+         * `mercy:F1: mercy-stair-down can be walked onto from the wrong side` line in the
+         * ledger, and it was the only entry in it.
+         *
+         * Sealing this end leaves the south door at 768 as the one way in, which lands you
+         * in the entry half — so the flight is entered from the bottom going up and from
+         * the top going down, and never side-on. The wall's east face lands exactly on the
+         * shaft's west edge at x=604, so it closes the opening without narrowing the run.
+         */
+        { id: "mercy-core-west", thickness: INT, path: [{ x: 600, y: 396 }, { x: 600, y: 484 }] },
         // Supply room SW: north face, then down its east face to the shell.
         {
           id: "mercy-supply",
@@ -211,24 +309,47 @@ export const MERCY_SOURCE: SourceBuilding = {
         },
       ],
       objects: [
-        // Recovery ward: four bays, each bed + bedside unit; IV poles between.
-        { id: "mercy-ward-bed-a", kind: "bed", x: 268, y: 162, w: 48, h: 92, facing: "N", scannable: true },
-        { id: "mercy-ward-bed-b", kind: "bed", x: 388, y: 162, w: 48, h: 92, facing: "N" },
-        { id: "mercy-ward-bed-c", kind: "bed", x: 508, y: 162, w: 48, h: 92, facing: "N" },
-        { id: "mercy-ward-bed-d", kind: "bed", x: 628, y: 162, w: 48, h: 92, facing: "N" },
-        { id: "mercy-ward-unit-a", kind: "medicalCabinet", x: 230, y: 166, w: 26, h: 20 },
-        { id: "mercy-ward-unit-b", kind: "medicalCabinet", x: 444, y: 166, w: 26, h: 20 },
-        { id: "mercy-ward-unit-c", kind: "medicalCabinet", x: 564, y: 166, w: 26, h: 20 },
-        { id: "mercy-ward-unit-d", kind: "medicalCabinet", x: 684, y: 166, w: 26, h: 20 },
-        // Flush against its bed, not parked 12 units off it. A 12-unit slot beside a
-        // bed is a gap a bot can see and cannot enter; an IV stand stands at the
-        // bedside anyway.
-        { id: "mercy-iv-a", kind: "ivStand", x: 316, y: 190, w: 16, h: 16 },
-        { id: "mercy-iv-b", kind: "ivStand", x: 676, y: 200, w: 16, h: 16 },
-        // Nurse station: counter facing the ward, desk tucked behind. Kept
-        // narrow so the lanes on both sides of the station stay walkable.
+        /**
+         * Recovery ward: four bays laid out the same way, because a ward IS four of the
+         * same bay. The repetition was never the problem — the inconsistency was.
+         *
+         * Bay A had its bedside unit on the WEST of the bed and B, C and D on the east,
+         * which reads as three decisions and one accident. Worse, B and C wedged their unit
+         * into the 8-unit slot between the bed and the bay partition, so in two of the four
+         * bays nobody could stand beside the thing the bed is served from. Bay A's IV stand
+         * was in the same trap on the other side.
+         *
+         * Now every bay is bed flush to its west partition, unit against the bed's east
+         * side, and the rest of the bay's width is the approach — which is what the width
+         * is for. The IV stands are gone rather than made consistent: two of four beds had
+         * one, both were 16-unit decorations jammed into the leftover gap, and B and C are
+         * 112 units wide, which does not hold a bed, a unit, a pole and a body.
+         */
+        { id: "mercy-ward-bed-a", kind: "bed", x: 216, y: 162, w: 48, h: 92, facing: "N", scannable: true },
+        { id: "mercy-ward-bed-b", kind: "bed", x: 362, y: 162, w: 48, h: 92, facing: "N" },
+        { id: "mercy-ward-bed-c", kind: "bed", x: 482, y: 162, w: 48, h: 92, facing: "N" },
+        { id: "mercy-ward-bed-d", kind: "bed", x: 602, y: 162, w: 48, h: 92, facing: "N" },
+        { id: "mercy-ward-unit-a", kind: "medicalCabinet", x: 266, y: 166, w: 26, h: 20 },
+        { id: "mercy-ward-unit-b", kind: "medicalCabinet", x: 412, y: 166, w: 26, h: 20 },
+        { id: "mercy-ward-unit-c", kind: "medicalCabinet", x: 532, y: 166, w: 26, h: 20 },
+        { id: "mercy-ward-unit-d", kind: "medicalCabinet", x: 652, y: 166, w: 26, h: 20 },
+        /**
+         * Nurse station: counter facing the ward, desk behind it, chair at the desk.
+         *
+         * The desk faced SOUTH — away from the ward, over the empty floor — while this
+         * floor's brief says the station "sits mid-floor so every bay is in view". A desk
+         * whose whole reason to exist is the sightline north was pointed at the back wall.
+         * It faces north now, over its own counter, and it has a chair at the west end so
+         * the station reads as a post somebody keeps rather than two bars on the floor.
+         * The chair sits flush to the desk's end on purpose: a small fixture a few units
+         * off the middle of a longer run is the `wedged-fixture` shape.
+         */
         { id: "mercy-station-counter", kind: "counter", x: 420, y: 380, w: 110, h: 24, scannable: true },
-        { id: "mercy-station-desk", kind: "desk", x: 430, y: 414, w: 72, h: 44, facing: "S" },
+        { id: "mercy-station-desk", kind: "desk", x: 430, y: 414, w: 72, h: 44, facing: "N" },
+        // At the desk's EAST end. At the west end it landed in the 34-unit band between the
+        // desk and the supply-room and WC walls, where no bot can stand — so the chair was
+        // unreachable for a reason that had nothing to do with the chair.
+        { id: "mercy-station-chair", kind: "chair", x: 480, y: 460, w: 22, h: 22, facing: "N" },
         /**
          * East far enough to leave a lane past the nurse station.
          *
@@ -238,20 +359,58 @@ export const MERCY_SOURCE: SourceBuilding = {
          * lanes walkable was already the intent. A walk-through cart is what let the
          * lane look open while it was not.
          */
-        { id: "mercy-ward-cart", kind: "medicalCart", x: 584, y: 388, w: 30, h: 22 },
-        // Supply room SW.
-        { id: "mercy-supply-shelf-a", kind: "shelf", x: 222, y: 442, w: 24, h: 110 },
-        { id: "mercy-supply-shelf-b", kind: "shelf", x: 262, y: 540, w: 90, h: 24 },
-        { id: "mercy-supply-crate", kind: "crateStack", x: 300, y: 528, w: 34, h: 34 },
-        // Staff WC.
-        { id: "mercy-ward-wc-pan", kind: "toilet", x: 398, y: 532, w: 26, h: 34, facing: "S" },
-        { id: "mercy-ward-wc-basin", kind: "sink", x: 396, y: 496, w: 24, h: 16 },
-        // Lounge SE below the stair: soft corner, no solid blockers — this is
-        // the only route between the stair door and the open floor.
-        { id: "mercy-lounge-rug", kind: "rug", x: 640, y: 502, w: 110, h: 58 },
-        { id: "mercy-lounge-chair-a", kind: "chair", x: 656, y: 516, w: 22, h: 22, facing: "E" },
-        { id: "mercy-lounge-chair-b", kind: "chair", x: 712, y: 516, w: 22, h: 22, facing: "W" },
-        { id: "mercy-lounge-plant", kind: "plant", x: 780, y: 544, w: 20, h: 20 },
+        /**
+         * North of the core wall, not astride it. At y=388 this cart straddled the stair
+         * core's north partition — 4 units of it in the ward and the rest inside the shaft —
+         * and `solid-overlap` cannot see it, because that rule only compares object to
+         * object (`left.ownerKind === "object" && right.ownerKind === "object"`). It took
+         * zooming in on the render to notice a trolley with a wall through it.
+         */
+        { id: "mercy-ward-cart", kind: "medicalCart", x: 584, y: 366, w: 30, h: 22 },
+        /**
+         * Supply room SW: shelving on the west and south walls, crates in the corner.
+         *
+         * The crate stack overlapped the south shelf run by 34 x 22 — two solids in the
+         * same place, and the single entry in Mercy's recorded floor-quality debt. Both
+         * runs now go flush to their walls and the crates sit east of the shelf with a
+         * seam, so the room reads as a corner stacked to the walls with its floor free.
+         */
+        { id: "mercy-supply-shelf-a", kind: "shelf", x: 214, y: 442, w: 24, h: 110 },
+        { id: "mercy-supply-shelf-b", kind: "shelf", x: 244, y: 544, w: 90, h: 24 },
+        { id: "mercy-supply-crate", kind: "crateStack", x: 340, y: 530, w: 34, h: 34 },
+        /**
+         * Staff WC. Both fixtures west, because the door is east and the room is 80 x 72 —
+         * which after a bot's 24 of standoff from four walls leaves one standable band
+         * through the middle. The basin used to sit in that band's north edge with the pan
+         * across from it, so it could be looked at and not reached.
+         */
+        { id: "mercy-ward-wc-pan", kind: "toilet", x: 390, y: 538, w: 34, h: 30, facing: "S" },
+        { id: "mercy-ward-wc-basin", kind: "sink", x: 390, y: 498, w: 24, h: 16 },
+        /**
+         * Lounge SE below the stair: soft corner, no solid blockers — this is
+         * the only route between the stair door and the open floor.
+         *
+         * The two chairs faced each other across a bare rug with nothing between them,
+         * which reads as two chairs that happen to be near each other. A side table
+         * between them is what makes it a place someone sits.
+         *
+         * Two wrong answers before this one, and both were the same mistake in different
+         * places. This band is 72 deep. Anything standing in the middle of it leaves 20
+         * north and 30 south, so the first attempt's table could be seen and not touched.
+         * Moving the row up against the core wall then left 54 units to the south wall —
+         * enough for a bot to FIT and not enough for the navigator to thread, which turned
+         * the group into a wall across the one route between the stair door and the floor.
+         *
+         * So the group goes into the SOUTH-EAST CORNER and stops being a row across
+         * anything. The band's whole west reach stays open as the route, the seats have 48
+         * units of approach in front of them, and the rug lies under the group instead of
+         * out in the traffic.
+         */
+        { id: "mercy-lounge-rug", kind: "rug", x: 688, y: 512, w: 120, h: 56 },
+        { id: "mercy-lounge-chair-a", kind: "chair", x: 700, y: 544, w: 22, h: 22, facing: "N" },
+        { id: "mercy-lounge-table", kind: "table", x: 726, y: 544, w: 26, h: 22 },
+        { id: "mercy-lounge-chair-b", kind: "chair", x: 756, y: 544, w: 22, h: 22, facing: "N" },
+        { id: "mercy-lounge-plant", kind: "plant", x: 784, y: 544, w: 20, h: 20 },
       ],
       dots: [
         { id: "mercy-dot-ward-w", item: { kind: "powerup", type: "health" }, x: 330, y: 300 },

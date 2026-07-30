@@ -400,7 +400,12 @@ describe("downtown map validation", () => {
    */
   const FLOOR_QUALITY_BUDGET: Record<string, Partial<Record<FloorQualityIssue["kind"], number>>> = {
     lot6: {},
-    mercy: { "solid-overlap": 1 },
+    /**
+     * Zero, down from one solid-overlap. The supply room's crate stack sat inside the south
+     * shelf run; both now go flush to their own walls. Mercy is the first of the three
+     * legacy buildings to clear its debt entirely.
+     */
+    mercy: {},
     /**
      * Down from 7 with the archive furnished, not up.
      *
@@ -1037,7 +1042,13 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
      * The two things that WERE reported — the observatory and the temple — are fixed, and
      * `openEnd` covers Quayside's freestanding flight. Filed instead.
      */
-    const WRONG_SIDE_DEBT = ["mercy:F1: mercy-stair-down can be walked onto from the wrong side"];
+    /**
+     * Empty, and it stays empty. Mercy F1's shaft inherited GROUND's west opening, which is
+     * the wrong end upstairs — west is the EXIT half on F1, so walking in from the ward put
+     * you on the far half of the flight. Sealed, with the south door widened to a paired leaf
+     * because a 56-wide single leaf left the core with no navigable route into it at all.
+     */
+    const WRONG_SIDE_DEBT: string[] = [];
 
     it("keeps the far half of every flight off limits from the room", () => {
       const open: string[] = [];
