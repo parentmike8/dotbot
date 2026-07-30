@@ -962,6 +962,29 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("treats visible daylight as run-up instead of a point-blank bump", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({ position: { x: 151, y: 180 }, controller: "frozen" }),
+    ]);
+
+    // Three pixels outside the real 48 px contact span. This is inside the
+    // four-pixel HIT forgiveness ring, but it is not physical starting contact.
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.step();
+
+    const events = simulation.drainEvents();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "hit",
+      botId: "enemy",
+      byBotId: "player",
+      result: "plateBreak",
+    }));
+    expect(events.some((event) => event.type === "dashContact" && event.result === "bump")).toBe(false);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")!.shields).toBe(2);
+    simulation.dispose();
+  });
+
   it("lets a bot dash away from contact without creating a bump", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
@@ -1099,6 +1122,67 @@ describe("DotBotSimulation", () => {
     expect(snapshot.bots.find((bot) => bot.id === rightId)!.shieldSegments).toEqual([1, 1, 1]);
     expect(snapshot.bots.find((bot) => bot.id === leftId)!.dashActiveMs).toBe(0);
     expect(snapshot.bots.find((bot) => bot.id === rightId)!.dashActiveMs).toBe(0);
+    simulation.dispose();
+  });
+
+  it("clashes opposing active dashes when only the first lag-compensated sweep connects", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({
+        position: { x: 180, y: 180 },
+        controller: "human",
+        isAmbient: false,
+      }),
+    ]);
+    runTicks(simulation, 3);
+    // The enemy sees the player two ticks behind. On the collision tick the
+    // player's sweep reaches the enemy, while the enemy's own directed sweep
+    // is still short of that older perceived position.
+    simulation.setViewDelayTicks("enemy", 2);
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("enemy", { move: { x: 0, y: 0 }, dash: false });
+    simulation.step();
+    simulation.drainEvents();
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+    simulation.applyInput("enemy", { move: { x: -1, y: 0 }, dash: true });
+    simulation.step();
+
+    expect(simulation.drainEvents()).toContainEqual(expect.objectContaining({
+      type: "dashContact",
+      result: "clash",
+    }));
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "player")!.shieldSegments).toEqual([1, 1, 1]);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")!.shieldSegments).toEqual([1, 1, 1]);
+    simulation.dispose();
+  });
+
+  it("does not clash with an active dash moving away from the impact", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 380, y: 180 } }),
+      enemySpawn({
+        position: { x: 452, y: 180 },
+        controller: "human",
+        isAmbient: false,
+      }),
+    ]);
+
+    // The enemy dashes east into the wall while the player catches it from the
+    // west. Both dash windows are active, but they are not opposing attacks.
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.applyInput("enemy", { move: { x: 1, y: 0 }, dash: true });
+    for (let tick = 0; tick < 12; tick += 1) simulation.step();
+
+    const events = simulation.drainEvents();
+    expect(events.some((event) => event.type === "dashContact" && event.result === "clash")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "hit",
+      botId: "enemy",
+      byBotId: "player",
+      result: "plateBreak",
+    }));
     simulation.dispose();
   });
 

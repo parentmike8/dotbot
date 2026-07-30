@@ -122,6 +122,22 @@ describe("LitePredictor", () => {
     expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "bump" });
   });
 
+  it("predicts a dash from visible daylight as a hit rather than a bump", () => {
+    const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    predictor.setObstacles([{
+      id: "target",
+      position: { x: 1251, y: 850 },
+      radius: 24,
+      facing: Math.PI,
+      shieldSegments: [1, 1, 1],
+      hostile: true,
+    }]);
+
+    predictor.step({ ...moveRight, dash: true });
+
+    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "hit" });
+  });
+
   it("lets a predicted dash escape away from a body it started touching", () => {
     const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
     predictor.setObstacles([{
@@ -158,6 +174,26 @@ describe("LitePredictor", () => {
     }
 
     expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "clash" });
+  });
+
+  it("does not predict a clash when the other active dash is moving away", () => {
+    const predictor = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    predictor.setObstacles([{
+      id: "target",
+      position: { x: 1260, y: 850 },
+      radius: 24,
+      facing: 0,
+      shieldSegments: [1, 1, 1],
+      hostile: true,
+      dashActiveMs: 100,
+    }]);
+
+    predictor.step({ ...moveRight, dash: true });
+    for (let tick = 0; tick < 12 && predictor.current.dashActiveMs > 0; tick += 1) {
+      predictor.step(moveRight);
+    }
+
+    expect(predictor.consumeDashContact()).toMatchObject({ targetId: "target", kind: "hit" });
   });
 
   it("passes a predicted dash through friendly bodies untouched", () => {

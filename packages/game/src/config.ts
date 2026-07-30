@@ -10,6 +10,13 @@ import type { GameConfig } from "./types";
  */
 export const MOVING_SPEED = 5;
 
+/** Narrow tolerance for literal body contact when a dash begins. This must
+ * stay much smaller than hit forgiveness: visible daylight is valid run-up. */
+export const DASH_START_CONTACT_EPSILON_PX = 0.5;
+
+/** Swept-hit tolerance for simulation sampling and small network error. */
+export const DASH_HIT_FORGIVENESS_PX = 4;
+
 export const defaultGameConfig: GameConfig = {
   tickHz: 60,
   botRadius: 24,

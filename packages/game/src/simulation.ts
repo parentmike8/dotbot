@@ -11,7 +11,12 @@ import {
   separationPush,
   stableHash,
 } from "./kinematics";
-import { MOVING_SPEED, defaultGameConfig } from "./config";
+import {
+  DASH_HIT_FORGIVENESS_PX,
+  DASH_START_CONTACT_EPSILON_PX,
+  MOVING_SPEED,
+  defaultGameConfig,
+} from "./config";
 import { downtownMap } from "./content/downtown";
 import {
   buildingContaining,
@@ -89,21 +94,16 @@ const DEFAULT_DOOR_NOISE = 0.42;
 const MAX_REWIND_TICKS = 18;
 
 /**
- * How far past touching still counts as a hit, and how far inside touching still
- * counts as worth swinging at.
- *
- * One constant for both, deliberately. The hit test and the AI's decision to throw
- * a dash have to answer the same question or the AI stands in poses it could hit
- * from and declines to — which is what happened when the dash gate was `<
- * contactGap` and the separation pass rested pairs at exactly `contactGap`.
- */
-const CONTACT_FORGIVENESS_PX = 4;
-/**
  * Hunters need visible daylight before committing a damaging dash. This sits
  * outside the contact test's forgiveness ring: parking inside that ring would
  * make every AI dash a point-blank bump under the run-up rule.
+ *
+ * The hit test and the AI's inside-contact decision deliberately share
+ * `DASH_HIT_FORGIVENESS_PX`; dash-start contact does not. Treating that wider
+ * hit tolerance as literal starting contact made visible daylight behave like
+ * a clinch.
  */
-const AI_DASH_RUN_UP_PX = CONTACT_FORGIVENESS_PX + 8;
+const AI_DASH_RUN_UP_PX = DASH_HIT_FORGIVENESS_PX + 8;
 
 /**
  * Where a bot is told to stand to work on a downed body, as a share of its
@@ -2123,7 +2123,7 @@ export class DotBotSimulation {
 
     const targetDistance = distance(bot.position, hostile.position);
     const contact = this.contactGap(bot, hostile, hostile.position);
-    const insideContact = targetDistance - contact <= CONTACT_FORGIVENESS_PX;
+    const insideContact = targetDistance - contact <= DASH_HIT_FORGIVENESS_PX;
 
     // A player can clinch a hunter too. Spend a ready dash on retreat rather
     // than throwing a harmless point-blank bump forever; the ordinary cooldown
@@ -2427,7 +2427,7 @@ export class DotBotSimulation {
       return false;
     }
     const sweep = pointSegmentDistance(perceived.position, attacker.prevPosition, attacker.position);
-    return sweep - this.contactGap(attacker, victim, perceived.position) <= CONTACT_FORGIVENESS_PX;
+    return sweep - this.contactGap(attacker, victim, perceived.position) <= DASH_HIT_FORGIVENESS_PX;
   }
 
   /** Record target-specific point-blank contacts on the dash input edge. */
@@ -2439,7 +2439,7 @@ export class DotBotSimulation {
       if (perceived.floorId !== attacker.floorId) continue;
       const gap = distance(attacker.position, perceived.position)
         - this.contactGap(attacker, victim, perceived.position);
-      if (gap <= CONTACT_FORGIVENESS_PX) attacker.dashBlockedTargets.add(victim.id);
+      if (gap <= DASH_START_CONTACT_EPSILON_PX) attacker.dashBlockedTargets.add(victim.id);
     }
   }
 
@@ -2652,18 +2652,28 @@ export class DotBotSimulation {
           const bBlocked = bConnects && bStartedTouching && this.ramSpeedToward(b, a) > 0;
           const aCanHit = aConnects && !aStartedTouching;
           const bCanHit = bConnects && !bStartedTouching;
+          const aArmed = aDashing && !aStartedTouching;
+          const bArmed = bDashing && !bStartedTouching;
+          const opposingDashes = this.ramSpeedToward(a, b) > 0
+            && this.ramSpeedToward(b, a) > 0;
 
-          // Both bots spent the same attack verb from clear space. If each
-          // dash meets live plating, resolve the pair before either directed hit
-          // mutates a plate: one unmistakable clash, no iteration-order winner.
+          // Both bots spent the same attack verb from clear space and are
+          // driving into one another. The first connecting sweep resolves the
+          // pair: requiring BOTH lag-compensated sweeps on the same 60 Hz tick
+          // made a parry depend on identical clocks rather than overlapping,
+          // opposing dashes.
           if (
-            aCanHit
-            && bCanHit
+            aArmed
+            && bArmed
+            && (aConnects || bConnects)
+            && opposingDashes
             && this.impactMeetsIntactPlate(a, b)
             && this.impactMeetsIntactPlate(b, a)
           ) {
-            this.stopDashAtContact(a, b);
-            this.stopDashAtContact(b, a);
+            if (aConnects) this.stopDashAtContact(a, b);
+            else a.dashActiveMs = 0;
+            if (bConnects) this.stopDashAtContact(b, a);
+            else b.dashActiveMs = 0;
             const direction = this.recoilDashContact(a, b);
             this.disengageAiAfterClash(a, b);
             this.disengageAiAfterClash(b, a);

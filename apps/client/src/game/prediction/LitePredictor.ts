@@ -11,7 +11,11 @@ import {
   separationPush,
 } from "@dotbot/game/kinematics";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
-import { MOVING_SPEED } from "@dotbot/game/config";
+import {
+  DASH_HIT_FORGIVENESS_PX,
+  DASH_START_CONTACT_EPSILON_PX,
+  MOVING_SPEED,
+} from "@dotbot/game/config";
 import { contactReach, coveringPlate } from "@dotbot/game/shields";
 import { buildContactShape, contactDistance, makeContactShape } from "@dotbot/game/bodyContact";
 import type { DoorEntity, DotBotEntity, GameConfig, InputCommand, MapDocument, Solid, Vec2 } from "@dotbot/game";
@@ -78,6 +82,22 @@ function contactGap(state: PredictedOwnBot, obstacle: PredictionObstacle, from: 
   const ux = dist > 0.001 ? dx / dist : 1;
   const uy = dist > 0.001 ? dy / dist : 0;
   return contactGapAlong(state, obstacle, ux, uy);
+}
+
+function activeDashesOppose(
+  state: PredictedOwnBot,
+  obstacle: PredictionObstacle,
+  from: Vec2,
+): boolean {
+  const dx = obstacle.position.x - from.x;
+  const dy = obstacle.position.y - from.y;
+  const away = Math.hypot(dx, dy);
+  if (away < 0.001) return true;
+  const ux = dx / away;
+  const uy = dy / away;
+  const ownToward = Math.cos(state.facing) * ux + Math.sin(state.facing) * uy;
+  const otherToward = Math.cos(obstacle.facing) * -ux + Math.sin(obstacle.facing) * -uy;
+  return ownToward > 0 && otherToward > 0;
 }
 
 function contactGapAlong(
@@ -229,7 +249,7 @@ export class LitePredictor {
           obstacle.position.x - state.position.x,
           obstacle.position.y - state.position.y,
         ) - contactGap(state, obstacle, state.position);
-        if (gap <= 4) this.dashBlockedTargets.add(obstacle.id);
+        if (gap <= DASH_START_CONTACT_EPSILON_PX) this.dashBlockedTargets.add(obstacle.id);
       }
     }
 
@@ -268,7 +288,7 @@ export class LitePredictor {
       for (const obstacle of this.obstacles) {
         if (!obstacle.hostile) continue;
         const sweep = pointSegmentDistance(obstacle.position, previous, position);
-        if (sweep - contactGap(state, obstacle, position) > 4) continue;
+        if (sweep - contactGap(state, obstacle, position) > DASH_HIT_FORGIVENESS_PX) continue;
         const startedTouching = this.dashBlockedTargets.has(obstacle.id);
         const closing = (position.x - previous.x) * (obstacle.position.x - previous.x)
           + (position.y - previous.y) * (obstacle.position.y - previous.y) > 0;
@@ -293,7 +313,9 @@ export class LitePredictor {
           targetId: obstacle.id,
           kind: blocked
             ? "bump"
-            : (obstacle.dashActiveMs ?? 0) > 0 && platesMeet(state, obstacle, position)
+            : (obstacle.dashActiveMs ?? 0) > 0
+                && activeDashesOppose(state, obstacle, position)
+                && platesMeet(state, obstacle, position)
               ? "clash"
               : "hit",
           position: {
