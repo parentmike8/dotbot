@@ -86,14 +86,55 @@ Two things to hold to when implementing:
 - **Respect `reducedMotion`.** The renderer already carries the preference, and camera
   look-ahead already honours it. Ambient motion is exactly what that setting is for.
 
+## What exists now
+
+`renderer/model/modelMotion.ts` is the general mechanism; `modelWater.ts` predates it and
+stays as it is. Four of the five things on the ambient list are shipped.
+
+| effect | state |
+| --- | --- |
+| water breathing | `modelWater`, two layers in opposite phase |
+| the carousel and the waltzer turning | slowly, unevenly, never backwards |
+| canopies swaying | one wind, gusts crossing the map at 0.35 units/ms |
+| leaves falling | a fixed pool of 48, off visible canopies only |
+| trails in grass and dirt | NOT DONE — the pool machinery is shared, so this is small |
+
+**The mechanism.** A glyph tags its own moving part with `movingPart(g, kind, about)` and
+gets back a `Graphics` to draw into; a builder calls `collectMovers` and hands the list up;
+the renderer calls `animateAmbient` once a frame. One transform per part, nothing redrawn.
+
+Two things learned by doing it that are not obvious from the outside:
+
+- **A part is LIFTED off the glyph onto the layer it belongs on.** For a tree that is
+  `outdoorForeground`, the layer that draws above bots, because a canopy is passable and you
+  walk under it. It also clears a pixi 8 deprecation — adding children to a `Graphics` is
+  going away — so ownership lives in a `WeakMap` rather than in `g.children`.
+- **Reduced motion parks everything at its resting pose exactly**, which is also what makes
+  the lab's stills trustworthy.
+
+**Reviewing it.** `?worlds&play=1` animates the lab on a bare `requestAnimationFrame` — the
+same `animateAmbient` the renderer calls, which is possible precisely because ambient motion
+needs no socket, no snapshot and no input. `?t=<ms>` renders one still at a given clock
+instead, and `&pick=` narrows the sheet to one frame so the same crop can be shot at two
+clock values. Not `?at=` — that name is taken by `spawnAt`.
+
 ## Where the current regions stand
 
-Every one of the four has somewhere obvious for ambient motion, and none of them has any:
+Every one of the four has somewhere obvious for ambient motion:
 
-- **The fairground.** The carousel and the waltzer should turn, slowly and unevenly. This is
-  not a compromise on the derelict story — *wind* moving a ride nobody maintains is a better
-  version of it than a ride welded still. The big top's canvas should breathe.
-- **The temple.** The cenote is standing water, which breathes rather than flows. The forest
-  is the largest sway surface in the world.
+- **The fairground.** The carousel and the waltzer TURN. Wind moving a ride nobody maintains
+  is a better version of the derelict story than a ride welded still. The big top's canvas
+  should breathe, and does not yet.
+- **The temple.** The cenote breathes. The forest is the largest sway surface in the world and
+  it sways; it also sheds.
 - **The yard.** A working depot whose motion is engines, and there are no engines yet.
-- **Downtown.** Street trees, and the first honest place for a vehicle.
+- **Downtown.** Street trees sway. Still the first honest place for a vehicle.
+
+## What a thicket does not do, and why it is written down
+
+Thickets do NOT sway, deliberately. On a tree the drawn canopy is not the collider — the
+trunk is — so moving the canopy says nothing untrue about where you can go. A thicket's
+silhouette IS its collider: it is the one piece of vegetation that means *go round*, and
+sliding its outline a few units would be a lie about cover in the region where cover matters
+most. If a later pass wants a thicket to rustle, it needs a mechanism that leaves the
+silhouette alone.
