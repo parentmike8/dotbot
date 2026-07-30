@@ -738,7 +738,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("blacklists multiple unreachable objectives and continues to reachable loot", async () => {
+  it("never sends an escort to loot, reachable or otherwise", async () => {
     const baseMap = makeMap(
       [enemySpawn({ isAmbient: false, position: { x: 50, y: 300 } })],
       [
@@ -766,7 +766,8 @@ describe("DotBotSimulation", () => {
     const snapshot = simulation.getSnapshot();
     expect(snapshot.dots.find((dot) => dot.id === "blocked-a")?.active).toBe(true);
     expect(snapshot.dots.find((dot) => dot.id === "blocked-b")?.active).toBe(true);
-    expect(snapshot.dots.find((dot) => dot.id === "reachable")?.active).toBe(false);
+    expect(snapshot.dots.find((dot) => dot.id === "reachable")?.active).toBe(true);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.carriedCount).toBe(0);
     simulation.dispose();
   });
 
@@ -1190,10 +1191,10 @@ describe("DotBotSimulation", () => {
   });
 
   it.each([
-    { name: "player against rival player", leftAmbient: false, rightAmbient: false },
-    { name: "player against ambient AI", leftAmbient: false, rightAmbient: true },
-    { name: "ambient AI against ambient AI", leftAmbient: true, rightAmbient: true },
-  ])("clashes plated dashes with clear space: $name", async ({ leftAmbient, rightAmbient }) => {
+    { name: "player against rival player", leftAmbient: false, rightAmbient: false, shouldClash: true },
+    { name: "player against ambient AI", leftAmbient: false, rightAmbient: true, shouldClash: true },
+    { name: "ambient AI against ambient AI", leftAmbient: true, rightAmbient: true, shouldClash: false },
+  ])("clashes plated hostile dashes but not ambient faction-mates: $name", async ({ leftAmbient, rightAmbient, shouldClash }) => {
     const leftId = leftAmbient ? "ambient-left" : "player";
     const rightId = rightAmbient ? "ambient-right" : "enemy";
     const left = leftAmbient
@@ -1225,11 +1226,13 @@ describe("DotBotSimulation", () => {
     }
 
     const snapshot = simulation.getSnapshot();
-    expect(clash).toBe(true);
+    expect(clash).toBe(shouldClash);
     expect(snapshot.bots.find((bot) => bot.id === leftId)!.shieldSegments).toEqual([1, 1, 1]);
     expect(snapshot.bots.find((bot) => bot.id === rightId)!.shieldSegments).toEqual([1, 1, 1]);
-    expect(snapshot.bots.find((bot) => bot.id === leftId)!.dashActiveMs).toBe(0);
-    expect(snapshot.bots.find((bot) => bot.id === rightId)!.dashActiveMs).toBe(0);
+    if (shouldClash) {
+      expect(snapshot.bots.find((bot) => bot.id === leftId)!.dashActiveMs).toBe(0);
+      expect(snapshot.bots.find((bot) => bot.id === rightId)!.dashActiveMs).toBe(0);
+    }
     simulation.dispose();
   });
 
@@ -1460,7 +1463,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("lets different-squad ambient AI bots damage each other", async () => {
+  it("never lets legacy ambient squad ids create ambient-on-ambient combat", async () => {
     const simulation = await makeSimulation([
       enemySpawn({ id: "ambient-a", squadId: "rival-a", position: { x: 100, y: 180 }, maxShields: 1, shields: 1 }),
       enemySpawn({ id: "ambient-b", squadId: "rival-b", position: { x: 220, y: 180 }, maxShields: 1, shields: 1 }),
@@ -1475,12 +1478,8 @@ describe("DotBotSimulation", () => {
     }
 
     const bots = simulation.getSnapshot().bots;
-    expect(combatEvents).toContainEqual(expect.objectContaining({
-      type: "dashContact",
-      result: "clash",
-    }));
-    expect(combatEvents).toContainEqual(expect.objectContaining({ type: "hit" }));
-    expect(bots.some((bot) => bot.state !== "alive" || bot.shields < 1)).toBe(true);
+    expect(combatEvents).toEqual([]);
+    expect(bots.every((bot) => bot.state === "alive" && bot.shields === 1)).toBe(true);
     simulation.dispose();
   });
 
@@ -1954,11 +1953,11 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("lets AI rivals climb stairs to pursue a player on another floor", async () => {
+  it("lets ambient AI climb stairs after a valid player noise on another floor", async () => {
     const stairRect = { x: 250, y: 80, w: 60, h: 160 };
     const baseMap = makeMap([
       playerSpawn({ position: { x: 360, y: 180 }, floorId: "tower:F2" }),
-      enemySpawn({ isAmbient: false, position: { x: 280, y: 210 } }),
+      enemySpawn({ position: { x: 280, y: 210 } }),
     ]);
     const simulation = await DotBotSimulation.create({
       map: {
@@ -1995,6 +1994,7 @@ describe("DotBotSimulation", () => {
       config: testConfig,
     });
 
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
     runTicks(simulation, 90);
 
     expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.floorId).toBe("tower:F2");
@@ -2096,7 +2096,7 @@ describe("DotBotSimulation", () => {
       playerAt: Vec2,
       watcherAt: Vec2,
       trees = [tree("canopy", 100, 130)],
-      watcherAmbient = false,
+      watcherAmbient = true,
     ) => {
       const smallMap = makeMap([
         playerSpawn({ position: playerAt }),
@@ -2379,13 +2379,21 @@ describe("DotBotSimulation", () => {
       runTicks(simulation, 18);
     }
     simulation.removeBot("enemy");
-    simulation.setController("player", "frozen");
     const playerPosition = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!.position;
     simulation.spawnBot(
       enemySpawn({ id: "lootable", isAmbient: false, position: playerPosition, state: "downed", shields: 0, bays: testBays(2), hold: [] }),
       "frozen",
     );
-    runTicks(simulation, 12);
+    for (let tick = 0; tick < 12; tick += 1) {
+      simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
+      simulation.step();
+    }
+    simulation.applyInput("player", {
+      move: { x: 0, y: 0 },
+      dash: false,
+      take: { fromBotId: "lootable", index: "all" },
+    });
+    simulation.step();
     simulation.spawnBot(allySpawn({ id: "downed-ally", position: playerPosition, state: "downed", shields: 0 }), "frozen");
     runTicks(simulation, 12);
 
@@ -2401,7 +2409,7 @@ describe("DotBotSimulation", () => {
   });
 
   it(
-    "exercises ambient movement, combat, and stairs without looting through a two-minute neighborhood soak",
+    "exercises quiet ambient patrol without friendly combat or looting through a two-minute neighborhood soak",
     async () => {
       const simulation = await DotBotSimulation.create({ map: downtownMap });
       const spawnById = new Map(
@@ -2424,8 +2432,7 @@ describe("DotBotSimulation", () => {
 
       for (let tick = 0; tick < 7_200; tick += 1) {
         simulation.step();
-        // Greys are dumb obstacles by design: they must never complete a dot
-        // capture. Non-ambient AI rivals looting is legitimate behavior.
+        // Ambient patrol never completes a Dot capture.
         for (const event of simulation.drainEvents()) {
           if (event.type === "dotCaptured" && ambientById.get(event.botId)) {
             ambientCaptors.push(event.botId);
@@ -2451,8 +2458,8 @@ describe("DotBotSimulation", () => {
       expect(ambientCaptors).toEqual([]);
       expect(milestones).toEqual({
         movement: true,
-        combat: true,
-        floorChange: true,
+        combat: false,
+        floorChange: false,
       });
       for (const bot of snapshot.bots) {
         expect(Number.isFinite(bot.position.x), `${bot.id} x position`).toBe(true);
@@ -2835,10 +2842,13 @@ describe("AI commands and the separation solver agree", () => {
      * for. Measured alone, so the claim rule below cannot be what stops the
      * pressing.
      */
-    const simulation = await makeSimulation([
-      enemySpawn({ id: "body", isAmbient: false, controller: "frozen", position: { x: 250, y: 180 }, state: "downed" }),
-      allySpawn({ id: "looter", position: { x: 100, y: 180 } }),
-    ]);
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        allySpawn({ id: "body", controller: "frozen", position: { x: 250, y: 180 }, state: "downed" }),
+        allySpawn({ id: "looter", position: { x: 100, y: 180 } }),
+      ]),
+      config: { ...testConfig, coverDurationMs: 1e9 },
+    });
     disableDashes(simulation);
     runTicks(simulation, 1200);
 
@@ -2886,7 +2896,7 @@ describe("AI commands and the separation solver agree", () => {
     const simulation = await makeSimulation([
       // Hard against the east wall, holding into it, and never dashing.
       playerSpawn({ id: "victim", position: { x: 452, y: 180 }, maxShields: 3, shields: 3 }),
-      enemySpawn({ id: "attacker", squadId: "rival-1", isAmbient: false, position: { x: 380, y: 180 }, maxShields: 3, shields: 0 }),
+      enemySpawn({ id: "attacker", squadId: "rival-1", position: { x: 380, y: 180 }, maxShields: 3, shields: 0 }),
     ]);
     let attackerDied = false;
     let victimWasHit = false;
@@ -2919,9 +2929,9 @@ describe("AI commands and the separation solver agree", () => {
      * a live one dashes it from the east.
      */
     const simulation = await makeSimulation([
-      enemySpawn({ id: "behind", squadId: "rival-1", isAmbient: false, controller: "frozen", position: { x: 200, y: 180 }, maxShields: 3, shields: 0 }),
+      enemySpawn({ id: "behind", squadId: "rival-1", controller: "frozen", position: { x: 200, y: 180 }, maxShields: 3, shields: 0 }),
       playerSpawn({ id: "victim", position: { x: 248, y: 180 }, maxShields: 3, shields: 3 }),
-      enemySpawn({ id: "ahead", squadId: "rival-2", isAmbient: false, position: { x: 340, y: 180 }, maxShields: 3, shields: 3 }),
+      enemySpawn({ id: "ahead", squadId: "rival-2", position: { x: 340, y: 180 }, maxShields: 3, shields: 3 }),
     ]);
     let behindDied = false;
     let victimWasHit = false;
@@ -2963,8 +2973,8 @@ describe("AI commands and the separation solver agree", () => {
     const simulation = await DotBotSimulation.create({
       map: {
         ...makeMap([
-          allySpawn({ id: "wedged", position: { x: 120, y: 180 } }),
-          enemySpawn({ id: "far", squadId: "rival-1", isAmbient: false, controller: "frozen", position: { x: 430, y: 180 } }),
+          enemySpawn({ id: "wedged", position: { x: 120, y: 180 } }),
+          playerSpawn({ id: "far", squadId: "alpha", controller: "frozen", position: { x: 430, y: 180 } }),
         ]),
         outdoor: {
           roads: [], parks: [], objects: [], dotSpawns: [],
@@ -3119,7 +3129,7 @@ describe("AI commands and the separation solver agree", () => {
           ...Array.from({ length: HUNTERS }, (_, index) => enemySpawn({
             id: `hunter-${index}`,
             squadId: "rival-1",
-            isAmbient: false,
+            isAmbient: true,
             position: { x: 120 + index * 30, y: 60 },
           })),
         ]),
@@ -3175,7 +3185,7 @@ describe("AI commands and the separation solver agree", () => {
     expect(tailContactTicks, "ticks in the last 300 with any pair in contact").toBeLessThan(15);
   });
 
-  it("makes two AI bots that have closed on each other actually fight", async () => {
+  it("makes an acquired ambient hunter that has closed on a player actually fight", async () => {
     /**
      * Reported from play as "AI bots are just stopping together like this a lot
      * without doing anything", with a screenshot of two bodies nose to nose.
@@ -3199,7 +3209,10 @@ describe("AI commands and the separation solver agree", () => {
      * forgiveness of contact, dash off cooldown, not dashing. That is the bug
      * stated directly, and it cannot be satisfied by anything incidental.
      */
-    const simulation = await DotBotSimulation.create({ map: downtownMap });
+    const simulation = await makeSimulation([
+      playerSpawn({ id: "quarry", position: { x: 250, y: 180 } }),
+      enemySpawn({ id: "hunter", position: { x: 430, y: 180 } }),
+    ]);
     const sim = simulation as unknown as {
       bots: Map<string, { id: string; state: string; floorId: string; position: Vec2; dashCooldownMs: number; dashActiveMs: number }>;
       controllers: Map<string, string>;
@@ -3341,11 +3354,14 @@ describe("AI commands and the separation solver agree", () => {
      * from the same snapshot with nothing written down. Spawned equidistant here
      * precisely so the tie-break is what decides it.
      */
-    const simulation = await makeSimulation([
-      enemySpawn({ id: "body", isAmbient: false, controller: "frozen", position: { x: 250, y: 180 }, state: "downed" }),
-      allySpawn({ id: "loot-west", position: { x: 100, y: 180 } }),
-      allySpawn({ id: "loot-east", position: { x: 400, y: 180 } }),
-    ]);
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        allySpawn({ id: "body", controller: "frozen", position: { x: 250, y: 180 }, state: "downed" }),
+        allySpawn({ id: "loot-west", position: { x: 100, y: 180 } }),
+        allySpawn({ id: "loot-east", position: { x: 400, y: 180 } }),
+      ]),
+      config: { ...testConfig, coverDurationMs: 1e9 },
+    });
     disableDashes(simulation);
     runTicks(simulation, 1200);
 
