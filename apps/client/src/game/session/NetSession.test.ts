@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { NetSession } from "./NetSession";
-import type { ClientMessage, DeliveryClass } from "@dotbot/protocol";
+import { toWireKillCamClip, type ClientMessage, type DeliveryClass, type KillCamClip } from "@dotbot/protocol";
 import type { GameTransport, GameTransportHandlers } from "../transport/GameTransport";
 
 describe("NetSession item edges", () => {
@@ -64,6 +64,65 @@ describe("NetSession item edges", () => {
       phase: "over",
       contractCompletions: [{ contractId: "contract-test", title: "TEST HAUL", payout: [{ kind: "powerup", type: "radar" }] }],
     });
+  });
+
+  it("queues a private kill cam once and deduplicates a reconnect resend by clip id", () => {
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    const clip = {
+      id: "victim-60",
+      victimId: "victim",
+      cause: { kind: "mine", tick: 60, position: { x: 10, y: 20 }, direction: { x: 1, y: 0 } },
+      startTick: 0,
+      deathTick: 60,
+      tickHz: 60,
+      frames: [{
+        tick: 0,
+        victim: { id: "victim", position: { x: 10, y: 20 }, facing: 0, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" },
+        blockingDoorIds: [],
+      }],
+    } satisfies KillCamClip;
+    const receive = (message: unknown) => (session as unknown as { receive(message: unknown): void }).receive(message);
+    receive({ type: "killCam", clip: toWireKillCamClip(clip) });
+    receive({ type: "killCam", clip: toWireKillCamClip(clip) });
+    expect(session.drainKillCams()).toEqual([clip]);
+    expect(session.drainKillCams()).toEqual([]);
+  });
+
+  it("keeps networking and plea live during replay while suppressing movement, actions, and prediction", () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const predictorStep = vi.fn();
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    Object.assign(session as unknown as object, {
+      transport: { send: (message: Record<string, unknown>) => sent.push(message) },
+      mapValue: downtownMap,
+      configValue: defaultGameConfig,
+      tickHz: 60,
+      handshakeReady: true,
+      predictionEnabled: true,
+      predictor: { step: predictorStep },
+    });
+    session.setReplayActive(true);
+    session.sendInput({
+      move: { x: 1, y: 0 },
+      dash: true,
+      useBay: 2,
+      plea: true,
+      ping: { kind: "enemy", position: { x: 10, y: 20 } },
+    });
+    (session as unknown as { advancePrediction(ms: number): void })
+      .advancePrediction(1000 / 60 + 1);
+
+    const frame = (sent.find((message) => message.type === "input")?.frames as Array<Record<string, unknown>>)[0];
+    expect(frame).toMatchObject({ move: [0, 0], dash: false, plea: true });
+    expect(frame.useBay).toBeUndefined();
+    expect(frame.ping).toBeUndefined();
+    expect(predictorStep).not.toHaveBeenCalled();
+
+    session.setReplayActive(false);
+    session.sendInput({ move: { x: 1, y: 0 }, dash: false });
+    (session as unknown as { advancePrediction(ms: number): void })
+      .advancePrediction(1000 / 60 + 1);
+    expect(predictorStep).toHaveBeenCalledOnce();
   });
 
   it("correlates a predicted contact with the explicit server hit acknowledgement", () => {

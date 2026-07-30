@@ -5,6 +5,12 @@ import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
 import { clamp, normalizeInputVector } from "@dotbot/game/math";
 import { GameRenderer, type InteractionChannelVisual } from "./renderer/GameRenderer";
 import {
+  KillCamPlayback,
+  killCamCameraTarget,
+  killCamDoorCatalog,
+  killCamSnapshot,
+} from "./killCam";
+import {
   ImpactFeedback,
   loadFeedbackPreferences,
   saveFeedbackPreferences,
@@ -19,6 +25,7 @@ import type { GameSession } from "./session/GameSession";
 import type { BayIndex, DotBotEntity, DownedVerb, GameSnapshot, InputCommand, Item, MapDocument, PingKind, SimEvent, TakeCommand, Vec2 } from "@dotbot/game/types";
 import { CLICK_PING_KIND, collectPings, type LiveMark } from "./pings";
 import type { NetworkDebugStats } from "./session/netgraph";
+import type { EntityMeta, KillCamClip } from "@dotbot/protocol";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
 
@@ -30,6 +37,12 @@ export type RunResult = {
   contractCompletions: Array<{ contractId: string; title: string; payout: Item[] }>;
   persistenceStatus?: "saved" | "failed";
   runTimeMs: number;
+};
+
+export type KillCamView = {
+  clip: KillCamClip;
+  progress: number;
+  label: string;
 };
 
 type JoystickState = {
@@ -70,6 +83,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<GameSession | null>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
+  const killCamPlaybackRef = useRef<KillCamPlayback | null>(null);
+  const killCamDoorsRef = useRef<ReturnType<typeof killCamDoorCatalog>>([]);
   const feedbackRef = useRef<ImpactFeedback | null>(null);
   const keysRef = useRef(new Set<string>());
   const joystickRef = useRef<JoystickState>(emptyJoystick);
@@ -110,6 +125,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const [events, setEvents] = useState<SimEvent[]>([]);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [spectating, setSpectating] = useState<DotBotEntity | null>(null);
+  const [killCam, setKillCam] = useState<KillCamView | null>(null);
   const [debugVisible, setDebugVisible] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("netgraph"),
   );
@@ -162,6 +178,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       });
       await session.start();
       const renderer = await GameRenderer.create(host, session.map);
+      killCamDoorsRef.current = killCamDoorCatalog(session.map);
       renderer.setReducedMotion(feedbackPreferencesRef.current.reducedMotion);
 
       if (disposed) {
@@ -223,6 +240,11 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         pingQueuedRef.current = undefined;
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
+        for (const clip of session.drainKillCams?.() ?? []) {
+          if (clip.victimId !== session.playerId) continue;
+          killCamPlaybackRef.current = new KillCamPlayback(clip);
+          session.setReplayActive?.(true);
+        }
         const frameEvents = session.drainEvents();
         const uiEvents = frameEvents.filter((event) => event.type !== "hit");
         if (uiEvents.length > 0) setEvents((current) => [...current, ...uiEvents]);
@@ -340,6 +362,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         }
 
         const currentPlayer = nextSnapshot.bots.find((bot) => bot.id === session.playerId);
+        if (currentPlayer?.state === "alive" && killCamPlaybackRef.current) {
+          killCamPlaybackRef.current.skip();
+          killCamPlaybackRef.current = null;
+          session.setReplayActive?.(false);
+          setKillCam(null);
+        }
         if (currentPlayer) playerSquadId = currentPlayer.squadId;
         const runState = session.getRunState();
 
@@ -370,13 +398,62 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const spectator = selectSpectatedBot(livingSquadmates, spectatedBotIdRef.current, spectateCycleQueuedRef.current);
         spectateCycleQueuedRef.current = false;
         spectatedBotIdRef.current = spectator?.id ?? null;
-        const renderPlayerId = spectator?.id ?? session.playerId;
+        let renderPlayerId = spectator?.id ?? session.playerId;
+        let renderSnapshot = nextSnapshot;
+        let killCamRender: {
+          clip: KillCamClip;
+          progress: number;
+          cameraTarget: Vec2;
+          sourceVisible: boolean;
+        } | undefined;
+        const playback = killCamPlaybackRef.current;
+        if (playback) {
+          playback.advance(elapsedMs);
+          if (playback.finished) {
+            killCamPlaybackRef.current = null;
+            session.setReplayActive?.(false);
+            setKillCam(null);
+          } else {
+            const replayFrame = playback.sample();
+            const ids = [playback.clip.victimId, playback.clip.sourceBotId]
+              .filter((id): id is string => id !== undefined);
+            const meta = new Map<string, EntityMeta>();
+            for (const id of ids) {
+              const known = session.getEntityMeta?.(id);
+              if (known) {
+                meta.set(id, known);
+                continue;
+              }
+              const live = nextSnapshot.bots.find((bot) => bot.id === id);
+              if (live) {
+                meta.set(id, {
+                  id,
+                  name: live.name,
+                  squadId: live.squadId,
+                  isAmbient: live.isAmbient,
+                  maxShields: live.maxShields,
+                  radius: live.radius,
+                  color: live.color,
+                });
+              }
+            }
+            renderSnapshot = killCamSnapshot(replayFrame, playback.clip, meta, killCamDoorsRef.current);
+            renderPlayerId = session.playerId;
+            killCamRender = {
+              clip: playback.clip,
+              progress: playback.progress,
+              cameraTarget: killCamCameraTarget(replayFrame, playback.clip),
+              sourceVisible: replayFrame.source !== undefined,
+            };
+          }
+        }
         const presentedAt = renderer.render(
-          nextSnapshot,
+          renderSnapshot,
           renderPlayerId,
-          watching && runState.phase === "over" && spectator === null,
-          interactionChannelRef.current,
-          session.intel,
+          !killCamRender && watching && runState.phase === "over" && spectator === null,
+          killCamRender ? null : interactionChannelRef.current,
+          killCamRender ? undefined : session.intel,
+          killCamRender,
         );
         for (const impact of predictedImpacts) {
           session.recordImpactPresented?.(impact.predictionId, presentedAt);
@@ -386,6 +463,11 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         if (now - lastHudUpdate >= 80) {
           setSnapshot(nextSnapshot);
           setSpectating(spectator);
+          setKillCam(killCamRender ? {
+            clip: killCamRender.clip,
+            progress: killCamRender.progress,
+            label: killCamLabel(killCamRender.clip, session, killCamRender.sourceVisible),
+          } : null);
           setNetworkDebug(session.getNetworkDebug?.() ?? null);
           lastHudUpdate = now;
 
@@ -447,7 +529,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
       if (event.code === "Space") {
         event.preventDefault();
-        if (runEndedRef.current && spectateEnabled) {
+        if (killCamPlaybackRef.current) {
+          killCamPlaybackRef.current.skip();
+          killCamPlaybackRef.current = null;
+          sessionRef.current?.setReplayActive?.(false);
+          setKillCam(null);
+        } else if (runEndedRef.current && spectateEnabled) {
           spectateCycleQueuedRef.current = true;
         } else if (!runEndedRef.current) {
           dashQueuedRef.current = true;
@@ -520,6 +607,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       rendererRef.current?.destroy();
       feedbackRef.current?.destroy();
       sessionRef.current?.dispose();
+      killCamPlaybackRef.current = null;
+      killCamDoorsRef.current = [];
+      sessionRef.current?.setReplayActive?.(false);
       rendererRef.current = null;
       feedbackRef.current = null;
       sessionRef.current = null;
@@ -551,7 +641,18 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   }, [spectateEnabled]);
 
   const leaveRun = useCallback(() => {
+    killCamPlaybackRef.current?.skip();
+    killCamPlaybackRef.current = null;
+    sessionRef.current?.setReplayActive?.(false);
+    setKillCam(null);
     sessionRef.current?.leaveRun();
+  }, []);
+
+  const skipKillCam = useCallback(() => {
+    killCamPlaybackRef.current?.skip();
+    killCamPlaybackRef.current = null;
+    sessionRef.current?.setReplayActive?.(false);
+    setKillCam(null);
   }, []);
 
   /**
@@ -782,6 +883,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     map: providedSession?.map ?? requestedMap,
     playerId: providedSession?.playerId ?? "player",
     spectating,
+    killCam,
     debugVisible,
     networkDebug,
     settingsVisible,
@@ -798,6 +900,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     useBay,
     swapBayItem,
     leaveRun,
+    skipKillCam,
     selectDownedVerb,
     takeFromBody,
     plea,
@@ -812,4 +915,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 function impactPan(listener: Vec2 | undefined, point: Vec2): number {
   if (!listener) return 0;
   return clamp((point.x - listener.x) / 320, -1, 1);
+}
+
+function killCamLabel(clip: KillCamClip, session: GameSession, sourceVisible: boolean): string {
+  const source = sourceVisible && clip.sourceBotId
+    ? session.getEntityMeta?.(clip.sourceBotId)?.name
+    : undefined;
+  const cause = clip.cause.kind === "environment" ? "IMPACT" : clip.cause.kind.toUpperCase();
+  return `${source ? `${source.toUpperCase()} · ` : ""}${cause} · CORE HIT`;
 }

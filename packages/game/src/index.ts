@@ -35,6 +35,7 @@ export type {
   DotBotEntity,
   DotEntity,
   DoorEntity,
+  DownCause,
   GameConfig,
   GameSnapshot,
   InputCommand,

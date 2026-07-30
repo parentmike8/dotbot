@@ -4,6 +4,7 @@ import { useDotBotGame } from "../../game/useDotBotGame";
 import type { NetSession } from "../../game/session/NetSession";
 import { ManifestScreen } from "../ManifestScreen";
 import { FeedbackControls } from "../FeedbackControls";
+import { KillCamOverlay } from "../downed/KillCamOverlay";
 import { BodyPromptView, DownedSelfView } from "../downed/DownedPrompts";
 import { useDownedPrompts } from "../downed/useDownedPrompts";
 import {
@@ -34,7 +35,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
-    selectDownedVerb, plea, useBay, swapBayItem, takeFromBody, setBodyAction,
+    killCam, skipKillCam, selectDownedVerb, plea, useBay, swapBayItem, takeFromBody, setBodyAction,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ session, spectate: true });
@@ -75,6 +76,8 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       data-hit-confirm-p90={networkDebug?.hitConfirmationP90Ms}
       data-frame-p99={networkDebug?.frameP99Ms}
       data-buffer-ms={networkDebug?.interpolationDelayMs}
+      data-kill-cam={killCam ? "playing" : undefined}
+      data-kill-cam-cause={killCam?.clip.cause.kind}
     >
       <div ref={hostRef} className="game-canvas" {...pingHandlers} />
 
@@ -148,13 +151,21 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         </aside>
       ) : null}
 
-      {mineRotated ? <div className="spectating-chip" aria-live="polite">Mine rotated</div> : null}
+      {killCam ? (
+        <KillCamOverlay
+          label={killCam.label}
+          progress={killCam.progress}
+          onSkip={skipKillCam}
+        />
+      ) : null}
 
-      {spectating ? (
+      {!killCam && mineRotated ? <div className="spectating-chip" aria-live="polite">Mine rotated</div> : null}
+
+      {!killCam && spectating ? (
         <button className="spectating-chip" type="button" onPointerDown={cycleSpectator}>
           Watching {spectating.name}
         </button>
-      ) : spectateMode ? <div className="spectating-chip">Squad down · map overview</div> : null}
+      ) : !killCam && spectateMode ? <div className="spectating-chip">Squad down · map overview</div> : null}
 
       {spectateMode ? (
         <button className="leave-to-base" type="button" onClick={() => {

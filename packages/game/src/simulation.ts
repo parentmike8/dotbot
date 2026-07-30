@@ -1069,7 +1069,13 @@ export class DotBotSimulation {
     this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation);
 
     if (armourHit.core) {
-      this.putBotDown(target, mine.placedByBotId);
+      const away = normalize(subtract(target.position, mine.position));
+      this.putBotDown(target, mine.placedByBotId, {
+        kind: "mine",
+        tick: this.tickCount,
+        position: { ...mine.position },
+        direction: length(away) > 0.001 ? away : { x: 1, y: 0 },
+      });
     }
   }
 
@@ -1089,7 +1095,7 @@ export class DotBotSimulation {
    * you are on the floor, and a bank that still shows them is telling the player
    * they have protection they cannot use.
    */
-  private putBotDown(target: InternalBot, byBotId: string): void {
+  private putBotDown(target: InternalBot, byBotId: string, cause: import("./types").DownCause): void {
     // A plea belongs to the down it was made in.
     target.pleaded = false;
     target.shieldSegments = platesForCount(target.maxShields, 0);
@@ -1098,7 +1104,7 @@ export class DotBotSimulation {
     target.dashActiveMs = 0;
     target.velocity = zeroVec();
     target.knockbackMs = 0;
-    this.events.push({ type: "downed", botId: target.id, byBotId });
+    this.events.push({ type: "downed", botId: target.id, byBotId, cause });
   }
 
   /**
@@ -2940,7 +2946,15 @@ export class DotBotSimulation {
     if (armourHit.core) {
       // Losing every plate is not what puts a bot down — being hit where a plate
       // used to be is. A stripped bot can still run, still extract, still be saved.
-      this.putBotDown(target, source.id);
+      this.putBotDown(target, source.id, {
+        kind: source.dashActiveMs > 0 ? "dash" : "ram",
+        tick: this.tickCount,
+        position: {
+          x: target.position.x - away.x * target.radius,
+          y: target.position.y - away.y * target.radius,
+        },
+        direction: away,
+      });
       return true;
     }
 

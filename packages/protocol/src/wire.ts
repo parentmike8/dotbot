@@ -2,13 +2,95 @@ import { defaultGameConfig } from "@dotbot/game/config";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, DotEntity, GameSnapshot, MineEntity, NoiseEvent, CoverageSnapshot, RadarPing } from "@dotbot/game/types";
 import type { SimEvent } from "@dotbot/game/types";
-import type { EntityMeta, FullWireSnapshot, WireBot, WireDot, WireDotContextSync, WireDotDelta, WireMine, WireSnapshot } from "./messages";
+import type { EntityMeta, FullWireSnapshot, KillCamActor, KillCamClip, WireBot, WireDot, WireDotContextSync, WireDotDelta, WireKillCamActor, WireKillCamClip, WireMine, WireSnapshot } from "./messages";
 import type { WireSimEvent } from "./messages";
 import { itemFromCode, itemToCode } from "./items";
 
 const roundPosition = (value: number) => Math.round(value * 100) / 100;
 const roundFloat = (value: number) => Math.round(value * 100) / 100;
 const roundMs = (value: number) => Math.round(value);
+
+const killCamCauseCodes = ["dash", "ram", "mine", "environment"] as const;
+
+export function toWireKillCamClip(clip: KillCamClip): WireKillCamClip {
+  const causeCode = killCamCauseCodes.indexOf(clip.cause.kind);
+  return {
+    i: clip.id,
+    v: clip.victimId,
+    ...(clip.sourceBotId ? { s: clip.sourceBotId } : {}),
+    c: [
+      causeCode as 0 | 1 | 2 | 3,
+      clip.cause.tick,
+      roundPosition(clip.cause.position.x),
+      roundPosition(clip.cause.position.y),
+      roundFloat(clip.cause.direction.x),
+      roundFloat(clip.cause.direction.y),
+    ],
+    a: clip.startTick,
+    z: clip.deathTick,
+    h: clip.tickHz,
+    f: clip.frames.map((frame) => {
+      const wireFrame: import("./messages").WireKillCamFrame = [
+        frame.tick,
+        toWireKillCamActor(frame.victim),
+        frame.source ? toWireKillCamActor(frame.source) : null,
+      ];
+      if (frame.blockingDoorIds.length) wireFrame[3] = frame.blockingDoorIds;
+      return wireFrame;
+    }),
+  };
+}
+
+export function fromWireKillCamClip(wire: WireKillCamClip): KillCamClip {
+  const [kind, tick, x, y, dx, dy] = wire.c;
+  return {
+    id: wire.i,
+    victimId: wire.v,
+    ...(wire.s ? { sourceBotId: wire.s } : {}),
+    cause: {
+      kind: killCamCauseCodes[kind],
+      tick,
+      position: { x, y },
+      direction: { x: dx, y: dy },
+    },
+    startTick: wire.a,
+    deathTick: wire.z,
+    tickHz: wire.h,
+    frames: wire.f.map(([frameTick, victim, source, blockingDoorIds = []]) => ({
+      tick: frameTick,
+      victim: fromWireKillCamActor(victim),
+      ...(source ? { source: fromWireKillCamActor(source) } : {}),
+      blockingDoorIds: [...blockingDoorIds],
+    })),
+  };
+}
+
+function toWireKillCamActor(actor: KillCamActor): WireKillCamActor {
+  const wire: WireKillCamActor = [
+    actor.id,
+    roundPosition(actor.position.x),
+    roundPosition(actor.position.y),
+    roundFloat(actor.facing),
+    actor.floorId,
+    actor.shieldSegments.map(roundFloat),
+    roundMs(actor.dashActiveMs),
+  ];
+  if (actor.state === "downed") wire[7] = 1;
+  return wire;
+}
+
+function fromWireKillCamActor(actor: WireKillCamActor): KillCamActor {
+  const [id, x, y, facing, floorId, shieldSegments, dashActiveMs, downed] = actor;
+  return {
+    id,
+    position: { x, y },
+    facing,
+    floorId,
+    shieldSegments: [...shieldSegments],
+    dashActiveMs,
+    state: downed ? "downed" : "alive",
+  };
+}
 
 export function toEntityMeta(bot: DotBotEntity): EntityMeta {
   return {

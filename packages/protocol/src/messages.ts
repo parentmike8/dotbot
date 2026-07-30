@@ -132,6 +132,69 @@ export type MatchIntel = {
   };
 };
 
+export type KillCamActor = {
+  id: string;
+  position: { x: number; y: number };
+  facing: number;
+  floorId: string;
+  shieldSegments: number[];
+  dashActiveMs: number;
+  state: "alive" | "downed";
+};
+
+export type KillCamFrame = {
+  tick: number;
+  victim: KillCamActor;
+  /**
+   * Present only while the historical victim could legitimately see the
+   * source. An absent actor is not a stale last-known position.
+   */
+  source?: KillCamActor;
+  /** Nearby closed doors that shaped the victim's historical fog. */
+  blockingDoorIds: string[];
+};
+
+export type KillCamClip = {
+  id: string;
+  victimId: string;
+  /** Omitted for mines, environment, and unknown sources. */
+  sourceBotId?: string;
+  cause: import("@dotbot/game/types").DownCause;
+  startTick: number;
+  deathTick: number;
+  tickHz: number;
+  frames: KillCamFrame[];
+};
+
+export type WireKillCamActor = [
+  id: string,
+  x: number,
+  y: number,
+  facing: number,
+  floorId: string,
+  shieldSegments: number[],
+  dashActiveMs: number,
+  downed?: 1,
+];
+
+export type WireKillCamFrame = [
+  tick: number,
+  victim: WireKillCamActor,
+  source: WireKillCamActor | null,
+  blockingDoorIds?: string[],
+];
+
+export type WireKillCamClip = {
+  i: string;
+  v: string;
+  s?: string;
+  c: [kind: 0 | 1 | 2 | 3, tick: number, x: number, y: number, dx: number, dy: number];
+  a: number;
+  z: number;
+  h: number;
+  f: WireKillCamFrame[];
+};
+
 export type WireSimEvent =
   | {
       type: "hit";
@@ -152,7 +215,7 @@ export type WireSimEvent =
       direction: { x: number; y: number };
       tick: number;
     }
-  | { type: "downed"; botId: string; byBotId?: string }
+  | { type: "downed"; botId: string; byBotId?: string; cause?: import("@dotbot/game/types").DownCause }
   | { type: "searched"; botId: string; byBotId: string }
   | { type: "looted"; botId: string; byBotId: string; items: WireItemCode[] }
   | { type: "revived"; botId: string; byBotId: string }
@@ -285,6 +348,8 @@ export type ServerMessage =
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }
   | { type: "ev"; events: WireSimEvent[] }
+  /** Reliable and addressed only to the victim. Never broadcast. */
+  | { type: "killCam"; clip: WireKillCamClip }
   | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptItems: WireItemCode[]; lostItems: WireItemCode[]; learnedBlueprints: string[]; contractCompletions?: Array<{ contractId: string; title: string; payout: WireItemCode[] }>; persistenceStatus?: "saved" | "failed" }
   | { type: "matchEnd"; reason: string }
   | { type: "pong"; cts: number; sts: number; tick?: number }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { DotBotEntity, GameSnapshot } from "@dotbot/game/types";
-import type { ClientMessage, ServerMessage, WireDot } from "./messages";
+import type { ClientMessage, KillCamClip, ServerMessage, WireDot } from "./messages";
 import { assertNever } from "./messages";
-import { applyWireDotFrame, fromWireEvent, fromWireSnapshot, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot } from "./wire";
+import { applyWireDotFrame, fromWireEvent, fromWireKillCamClip, fromWireSnapshot, toEntityMeta, toViewerSnapshot, toWireEvent, toWireKillCamClip, toWireSnapshot } from "./wire";
 import { itemFromCode, itemToCode } from "./items";
 import { defaultGameConfig } from "@dotbot/game/config";
 
@@ -220,6 +220,54 @@ describe("event wire mapping", () => {
     } as const;
     expect(fromWireEvent(toWireEvent(clash))).toEqual(clash);
   });
+
+  it("preserves the authoritative cause of a down without inventing a remote mine owner", () => {
+    const downed = {
+      type: "downed",
+      botId: "victim",
+      byBotId: "owner",
+      cause: {
+        kind: "mine",
+        tick: 96,
+        position: { x: 300, y: 220 },
+        direction: { x: 1, y: 0 },
+      },
+    } as const;
+    expect(fromWireEvent(toWireEvent(downed))).toEqual(downed);
+  });
+
+  it("round-trips a compact private kill cam without private actor fields", () => {
+    const clip = {
+      id: "victim-60",
+      victimId: "victim",
+      sourceBotId: "killer",
+      cause: { kind: "dash", tick: 60, position: { x: 10.123, y: 20.456 }, direction: { x: 1, y: 0 } },
+      startTick: 0,
+      deathTick: 60,
+      tickHz: 60,
+      frames: [{
+        tick: 60,
+        victim: { id: "victim", position: { x: 10.123, y: 20.456 }, facing: 1.234, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" },
+        source: { id: "killer", position: { x: 30, y: 20 }, facing: 3.14, floorId: "outdoor", shieldSegments: [1, 1, 1], dashActiveMs: 10, state: "alive" },
+        blockingDoorIds: ["door-a"],
+      }],
+    } satisfies KillCamClip;
+    const wire = toWireKillCamClip(clip);
+    expect(wire.f[0]).toHaveLength(4);
+    expect(JSON.stringify(wire)).not.toContain("position");
+    expect(fromWireKillCamClip(JSON.parse(JSON.stringify(wire)))).toMatchObject({
+      ...clip,
+      cause: { ...clip.cause, position: { x: 10.12, y: 20.46 } },
+      frames: [{
+        ...clip.frames[0],
+        victim: {
+          ...clip.frames[0].victim,
+          position: { x: 10.12, y: 20.46 },
+          facing: 1.23,
+        },
+      }],
+    });
+  });
 });
 
 function exhaustClient(message: ClientMessage): string {
@@ -242,6 +290,7 @@ function exhaustServer(message: ServerMessage): string {
     case "snap": return String(message.tick);
     case "meta": return String(message.add.length);
     case "ev": return String(message.events.length);
+    case "killCam": return message.clip.i;
     case "runOver": return message.reason;
     case "matchEnd": return message.reason;
     case "pong": return String(message.sts);

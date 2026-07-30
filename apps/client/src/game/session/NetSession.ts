@@ -1,7 +1,7 @@
 import type { BayIndex, GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
 import { physicsFloorId } from "@dotbot/game/mapModel";
-import { applyWireDotFrame, assertNever, carriesAction, fromWireEvent, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
-import type { ClientMessage, DeliveryClass, EntityMeta, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot, WireInputFrame } from "@dotbot/protocol";
+import { applyWireDotFrame, assertNever, carriesAction, fromWireEvent, fromWireKillCamClip, fromWireSnapshot, itemFromCode } from "@dotbot/protocol";
+import type { ClientMessage, DeliveryClass, EntityMeta, KillCamClip, LobbyMember, LobbySquadId, MatchIntel, ServerMessage, WireDot, WireInputFrame } from "@dotbot/protocol";
 import { LitePredictor, type PredictedOwnBot } from "../prediction/LitePredictor";
 import {
   classifyCorrection,
@@ -61,6 +61,8 @@ export class NetSession implements GameSession {
   private metaIndex = new Map<string, EntityMeta>();
   private snapshots: BufferedSnapshot[] = [];
   private events: SimEvent[] = [];
+  private killCams: KillCamClip[] = [];
+  private replayActive = false;
   private seq = 0;
   private pendingInputs: PendingInput[] = [];
   private predictionInput: InputCommand = { move: { x: 0, y: 0 }, dash: false };
@@ -174,6 +176,12 @@ export class NetSession implements GameSession {
    * display's frame rate.
    */
   sendInput(input: InputCommand): void {
+    if (this.replayActive) {
+      this.predictionInput = { move: { x: 0, y: 0 }, dash: false };
+      this.stagedDownedVerb = input.downedVerb;
+      this.queuedPlea ||= input.plea ?? false;
+      return;
+    }
     this.predictionInput = { move: { ...input.move }, dash: false };
     this.predictionDashQueued ||= input.dash;
     if (input.useBay !== undefined && this.queuedUseBay === undefined) this.queuedUseBay = input.useBay;
@@ -302,6 +310,21 @@ export class NetSession implements GameSession {
     return this.events.splice(0);
   }
 
+  drainKillCams(): KillCamClip[] {
+    return this.killCams.splice(0);
+  }
+
+  setReplayActive(active: boolean): void {
+    this.replayActive = active;
+    if (!active) return;
+    this.predictionInput = { move: { x: 0, y: 0 }, dash: false };
+    this.predictionDashQueued = false;
+    this.queuedUseBay = undefined;
+    this.queuedSwapBay = undefined;
+    this.queuedTake = undefined;
+    this.queuedPing = undefined;
+  }
+
   getRunState(): RunState {
     return this.runState;
   }
@@ -318,6 +341,7 @@ export class NetSession implements GameSession {
     this.transport = null;
     this.snapshots = [];
     this.events = [];
+    this.killCams = [];
     this.pendingInputs = [];
     this.predictor = null;
     this.dotStore.clear();
@@ -365,6 +389,7 @@ export class NetSession implements GameSession {
         this.impactPredictionSeq = 0;
         this.interpolationDelayMs = maximumInterpolationDelayMs;
         this.pendingInputs = [];
+        this.killCams = [];
         this.mapValue = message.map;
         this.configValue = message.config;
         this.playerIdValue = message.yourBotId;
@@ -408,6 +433,15 @@ export class NetSession implements GameSession {
             recordAuthoritativeHit(this.impactTelemetry, event, this.playerIdValue, performance.now());
           }
           this.events.push(event);
+        }
+        return;
+      case "killCam":
+        // The server addresses this message only to its victim. Replace an
+        // older queued clip for the same down so reconnect resend is idempotent.
+        {
+          const clip = fromWireKillCamClip(message.clip);
+          this.killCams = this.killCams.filter((queued) => queued.id !== clip.id);
+          this.killCams.push(clip);
         }
         return;
       case "runOver":
@@ -572,7 +606,7 @@ export class NetSession implements GameSession {
     this.queuedSwapBay = undefined;
     this.queuedTake = undefined;
     this.queuedPlea = false;
-    if (this.predictor && this.predictionEnabled) {
+    if (this.predictor && this.predictionEnabled && !this.replayActive) {
       this.predictor.step(frame);
     }
     if (carriesAction(frame)) {
