@@ -3,6 +3,7 @@ import { DotBotSimulation } from "./simulation";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import type { SimEvent } from "./types";
+import { OUTDOOR_FLOOR_ID } from "./types";
 
 /**
  * A mark reaches your squad and nobody else.
@@ -150,6 +151,42 @@ describe("marking a place", () => {
     expect(mark.squadId).toBe(me.squadId);
     // Two squads only exist once a match assigns them, so the rival case is asserted where
     // it can be: `interest.test.ts`, at the delivery boundary that actually filters.
+  });
+
+  it("lets the exterior map deliberately ping outdoors while the player is inside", async () => {
+    const indoorMap = {
+      ...downtownMap,
+      botSpawns: downtownMap.botSpawns.map((spawn) =>
+        spawn.id === "player"
+          ? { ...spawn, floorId: "mercy:F1", position: { x: 500, y: 300 } }
+          : spawn),
+    };
+    const simulation = await DotBotSimulation.create({ map: indoorMap, config: defaultGameConfig });
+    const me = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(me.floorId).toBe("mercy:F1");
+
+    simulation.applyInput(me.id, {
+      move: { x: 0, y: 0 },
+      dash: false,
+      ping: { kind: "here", position: { x: 640, y: 420 }, floorId: OUTDOOR_FLOOR_ID },
+    });
+    simulation.step();
+
+    expect(pings(simulation.drainEvents())).toEqual([
+      expect.objectContaining({ floorId: OUTDOOR_FLOOR_ID, position: { x: 640, y: 420 } }),
+    ]);
+  });
+
+  it("rejects a forged explicit interior-floor ping", async () => {
+    const simulation = await sim();
+    const [me] = twoPlayers(simulation);
+    simulation.applyInput(me.id, {
+      move: { x: 0, y: 0 },
+      dash: false,
+      ping: { kind: "here", position: { x: 500, y: 300 }, floorId: "mercy:F1" },
+    });
+    simulation.step();
+    expect(pings(simulation.drainEvents())).toEqual([]);
   });
 
 });

@@ -94,6 +94,7 @@ type AiInternals = {
     aiMode?: string;
     aiAlert?: { targetId: string };
   }>;
+  dots: Map<string, { id: string; position: Vec2; floorId: string; active: boolean }>;
   pickBotTarget(bot: unknown): AiObjective;
 };
 
@@ -312,6 +313,50 @@ describe("escort hostility, orders, and inventory contract", () => {
     const snapshot = sim.getSnapshot();
     expect(snapshot.dots.find((dot) => dot.id === "loot")?.active).toBe(true);
     expect(snapshot.bots.find((bot) => bot.id === "escort")?.carriedCount).toBe(0);
+    sim.dispose();
+  });
+
+  it("does not let an exterior enemy mark promote an interior hostile at the same coordinates", async () => {
+    const sim = await simulation([
+      player("player", "alpha", { x: 300, y: 300 }),
+      player("escort", "alpha", { x: 250, y: 360 }, "ai"),
+      player("rival", "bravo", { x: 390, y: 300 }),
+    ]);
+
+    sim.applyInput("rival", { move: { x: -1, y: 0 }, dash: true });
+    run(sim, 20);
+    internals(sim).bots.get("rival")!.floorId = "sealed:F1";
+    sim.applyInput("player", {
+      move: { x: 0, y: 0 },
+      dash: false,
+      ping: { kind: "enemy", position: { x: 390, y: 300 }, floorId: "outdoor" },
+    });
+    sim.step();
+
+    expect(objective(sim, "escort")).toMatchObject({ intent: "escort", targetId: "player" });
+    sim.dispose();
+  });
+
+  it("does not let an exterior loot mark promote an interior Dot at the same coordinates", async () => {
+    const testMap = mapWith([
+      player("player", "alpha", { x: 200, y: 300 }),
+      player("escort", "alpha", { x: 260, y: 300 }, "ai"),
+    ]);
+    testMap.outdoor.dotSpawns = [{
+      id: "interior-loot",
+      position: { x: 600, y: 300 },
+      item: { kind: "powerup", type: "health" },
+    }];
+    const sim = await DotBotSimulation.create({ map: testMap, config });
+    internals(sim).dots.get("interior-loot")!.floorId = "sealed:F1";
+    sim.applyInput("player", {
+      move: { x: 0, y: 0 },
+      dash: false,
+      ping: { kind: "loot", position: { x: 600, y: 300 }, floorId: "outdoor" },
+    });
+    sim.step();
+
+    expect(objective(sim, "escort")).toMatchObject({ intent: "escort", targetId: "player" });
     sim.dispose();
   });
 

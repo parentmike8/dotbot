@@ -13,6 +13,7 @@ import {
 } from "./hud/Overlay";
 import { hudSkinClass } from "./hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "./hud/hud";
+import { WorldMapOverlay } from "./WorldMapOverlay";
 
 const coachFadeAtMs = 12_000;
 const coachDismissAtMs = 15_000;
@@ -75,6 +76,7 @@ function GameSession({
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, leaveRun, selectDownedVerb, plea,
     takeFromBody, setBodyAction,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker, spectating,
+    worldMapVisible, toggleWorldMap, closeWorldMap, markExterior, chooseExteriorMark, squadMarks,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ map: requestedMap, spectate: true });
   const [swapBay, setSwapBay] = useState<number | null>(null);
@@ -112,6 +114,7 @@ function GameSession({
         rivals={rivalsAlive(snapshot?.bots, player?.squadId)}
         onSettings={toggleSettings}
       >
+        <button type="button" className="map-button" onClick={toggleWorldMap}>Map <kbd>M</kbd></button>
         <button
           type="button"
           className="restart-button"
@@ -158,7 +161,19 @@ function GameSession({
         </SettingsPanel>
       ) : null}
 
-      {column ? <FloorRail column={column} /> : null}
+      {column && !worldMapVisible ? <FloorRail column={column} /> : null}
+
+      {worldMapVisible && snapshot ? (
+        <WorldMapOverlay
+          map={map}
+          snapshot={snapshot}
+          viewerId={playerId}
+          marks={squadMarks}
+          onPing={markExterior}
+          onChoosePing={chooseExteriorMark}
+          onClose={closeWorldMap}
+        />
+      ) : null}
 
       {pingPicker ? (
         <PingPicker

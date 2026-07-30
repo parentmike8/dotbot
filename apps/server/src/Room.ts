@@ -373,6 +373,7 @@ export class Room {
       const snapshot = this.simulation.getSnapshot();
       this.latestServerTick = snapshot.debug.tickCount;
       const events = this.simulation.drainEvents();
+      this.syncMemberSquads(snapshot);
       this.processRunEvents(events);
       if (events.length > 0) this.broadcastEvents(events, snapshot);
 
@@ -466,7 +467,11 @@ export class Room {
       downedVerb: frame.downedVerb,
       take: frame.take,
       plea: frame.plea,
-      ping: frame.ping ? { kind: frame.ping.kind, position: { x: frame.ping.position[0], y: frame.ping.position[1] } } : undefined,
+      ping: frame.ping ? {
+        kind: frame.ping.kind,
+        position: { x: frame.ping.position[0], y: frame.ping.position[1] },
+        floorId: frame.ping.floorId,
+      } : undefined,
     };
     member.heldInput = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
     return input;
@@ -711,6 +716,26 @@ export class Room {
       const dotFrame = this.dotFrame(member, filtered, visiblePhysicsFloors(wire, context));
       this.sendStream(member, { type: "snap", ...toViewerSnapshot(filtered, member.lastAppliedSeq, dotFrame) }, "latest");
     }
+  }
+
+  /**
+   * Recruitment changes the simulation bot first. Mirror that authoritative
+   * squad onto the connected member before interest filtering this tick, then
+   * refresh client metadata so snapshots decode the same relationship.
+   */
+  private syncMemberSquads(snapshot: GameSnapshot): void {
+    const changed = [];
+    for (const member of this.members.values()) {
+      if (!member.botId) continue;
+      const bot = snapshot.bots.find((candidate) => candidate.id === member.botId);
+      if (!bot || bot.squadId === member.squadId) continue;
+      const squadId = bot.squadId as LobbySquadId;
+      if (!squads.includes(squadId)) continue;
+      member.squadId = squadId;
+      changed.push(toEntityMeta(bot));
+    }
+    if (changed.length === 0) return;
+    this.broadcast({ type: "meta", add: changed, remove: [] });
   }
 
   private dotFrame(
