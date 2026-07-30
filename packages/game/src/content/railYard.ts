@@ -240,10 +240,19 @@ const yardObjects: MapObject[] = [
 
   // -- The back fence ----------------------------------------------------
   // Weeds have taken the strip behind the shed; the thickets are the region saying
-  // there is nothing back there.
+  // there is nothing back there. The spur gate stays clear through this rhythm.
   ...obj.derived(
-    rhythmRule("yard-back-thickets", "back-fence thicket rhythm", "x", "rhythm(3480, 4090, 152)", 3480, 4090, 152),
-    () => rhythm(3480, 4090, 152).map((x) => obj("thicket", x, 1600, 116, 104)),
+    rhythmRule(
+      "yard-back-thickets",
+      "back-fence thicket rhythm",
+      "x",
+      "rhythm(3480, 4090, 152, [[3560, 3900]])",
+      3480,
+      4090,
+      152,
+      [[3560, 3900]],
+    ),
+    () => rhythm(3480, 4090, 152, [[3560, 3900]]).map((x) => obj("thicket", x, 1600, 116, 104)),
   ),
   ...obj.derived(
     rhythmRule("yard-spur-thickets", "spur-gate thicket rhythm", "x", "rhythm(2500, 2960, 168)", 2500, 2960, 168),
@@ -320,16 +329,12 @@ export const railYard: RegionParts = {
      * on to the temple, and legible as a way out from anywhere in the yard.
      */
     /**
-     * The gate the spur leaves through, 240 wide rather than 140.
-     *
-     * At 140 it was a gate with a 74-wide wagon abandoned in the middle of it,
-     * leaving two 33-unit slots for a 48-wide bot: the only route from the yard to
-     * the temple, plugged by its own scenery. Widening it is the honest fix rather
-     * than moving the wagon out of the gateway, because the wagon stopping AT the
-     * gate is the point of the wagon — and a gate a wagon was driven through was
-     * never 140 wide in the first place.
+     * The 240-wide gate contains the abandoned rail formation on its west side and the
+     * continuing foot trail on its east. The pyramid leaves no usable route behind the
+     * old western opening; this opening keeps the ballast, stop, clearing and full-size
+     * traversal lane in one composition.
      */
-    ...fenceRun("yard-fence-s", "h", S1, W0 - 26, 4200, 26, [[3220, 3460]]),
+    ...fenceRun("yard-fence-s", "h", S1, W0 - 26, 4200, 26, [[3600, 3840]]),
   ],
   objects: yardObjects,
   dotSpawns: [
