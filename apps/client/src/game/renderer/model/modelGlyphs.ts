@@ -2,7 +2,7 @@ import type { Graphics } from "pixi.js";
 import type { Facing, MapObject, Vec2 } from "@dotbot/game/types";
 import { treeTrunkRadius } from "@dotbot/game/mapModel";
 import { landmarkGlyphs } from "./modelLandmarks";
-import { movingPart, stillPart } from "./modelMotion";
+import { movingPart } from "./modelMotion";
 import { cappedLift } from "./prism";
 import {
   contact,
@@ -849,7 +849,7 @@ function foliageMass(
   radius: number,
   seed: string,
   spread = 1,
-  lift = LIFT.mass,
+  lifted = LIFT.mass,
 ): void {
   const steps = 26;
 
@@ -898,19 +898,35 @@ function foliageMass(
   g.poly(shadow.map((point) => ({ x: point.x, y: point.y }))).fill({ color: 0x000000, alpha: 0.17 });
 
   /**
-   * The mass, extruded — the same `volumeShape` every other solid in the world goes through,
-   * which is the point of #79(a): a canopy with a top face has somewhere for parallax to pull.
+   * NO `volumeShape`. The extrusion is what made a tree read as a rock.
    *
-   * LIFTED LESS THAN A ROCK, and that is the lesson of the second attempt. At `LIFT.mass` a
-   * 100-unit canopy gets a 17-unit band of front-face round its away side — a third of the
-   * radius in the darkest tone in the ramp — and a dark ring round a light middle is exactly
-   * the failure the very first version of this function was written to fix. A boulder is
-   * `min(LIFT.mass, 5 + size * 0.22)` and wants that band, because a rock face IS a cliff.
-   * Foliage is not: it wants enough lift to parallax and to sit above its own shadow, and no
-   * more.
+   * Reported on sight, on the third look: "a bunch of trees that aren't implemented properly."
+   * What was actually wrong is that `volumeShape` fills a POLYGON and strokes a dark outline
+   * round it, and wherever the fringe lobes did not happen to cover that outline you saw
+   * straight segments and hard corners — an angular dark plate with leaves sitting on it. Which
+   * is exactly the rule `modelLandmarks` states and which this function kept failing from the
+   * other side: a closed polygonal outline means STONE in this language whatever tone it is.
+   * There is no tone that rescues a stroked polygon.
+   *
+   * So the mass is built the way `thicketGlyph` builds its mass — the one piece of vegetation
+   * in this world nobody has ever mistaken for stone. An UNDERSIDE blob offset south-east, then
+   * the branch masses offset north-west over it. The offset between the two IS the height: a
+   * canopy sitting proud of its own shaded underside, with no edge anywhere for the eye to read
+   * as a cut face.
+   *
+   * WHAT THIS GIVES UP, stated rather than hidden: the canopy is out of the prism system again,
+   * so it has no top face for object parallax to pull. That mattered less than it sounds —
+   * outdoor objects are not in the parallax pass at all (task #81), so nothing was pulling it.
+   * When #81 lands, foliage needs its lobe offset driven by `viewPull` rather than nailed
+   * north-west; it does NOT need an extruded polygon back.
    */
-  const canopyLift = cappedLift(radius * 2, Math.min(lift, 4 + radius * 0.14));
-  volumeShape(g, outline, { top: body, front: under, edge: shade(MAT.foliage.top, 0.44), lit }, canopyLift);
+  const lift = cappedLift(radius * 2, Math.min(lifted, 4 + radius * 0.14));
+  const blob = (scale: number, dx: number, dy: number): Vec2[] => outline.map((point) => ({
+    x: cx + (point.x - cx) * scale + dx,
+    y: cy + (point.y - cy) * scale + dy,
+  }));
+  g.poly(blob(0.99, lift * 0.34, lift * 0.5).map((point) => ({ x: point.x, y: point.y })))
+    .fill({ color: under });
 
   /**
    * BRANCH MASSES, and this is where the reading is won or lost.
@@ -931,7 +947,8 @@ function foliageMass(
     const d = radius * (0.3 + jitter(seed, i + 30) * 0.34);
     const facing = (Math.cos(a) * -0.33 + Math.sin(a) * -0.94 + 1) / 2;
     const r = radius * (0.34 + jitter(seed, i + 40) * 0.18);
-    g.circle(cx + Math.cos(a) * d, cy + Math.sin(a) * d, r)
+    // Offset north-west off the underside, which is the whole of the height cue now.
+    g.circle(cx + Math.cos(a) * d - lift * 0.28, cy + Math.sin(a) * d - lift * 0.42, r)
       .fill({ color: facing > 0.6 ? lit : body });
   }
 
@@ -1103,6 +1120,7 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
    */
   const trunkAt = { x: cx, y: cy + radius * 0.06 };
   const trunkR = treeTrunkRadius(o);
+  cylinder(g, trunkAt.x, trunkAt.y, trunkR, MAT.woodDark, 3);
 
   /**
    * The canopy leans about the trunk it grows out of, not about the object's centre.
@@ -1116,28 +1134,29 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   foliageMass(crown, cx, cy, radius * 0.96, o.id);
 
   /**
-   * THE TRUNK AGAIN, ON TOP, and it is the collider that earns it.
+   * NO TRUNK ON TOP OF THE LEAVES. Reported, and right: "seeing the top of the trunk like
+   * this through the canopy is a bit odd?"
    *
-   * A tree is the one object in the world whose drawn extent and whose solid are different
-   * things: the canopy is passable and the trunk is not. It was drawn once, under the
-   * canopy, where the canopy's own mass covered it — so the only part of a tree that stops
-   * you was invisible, which is exactly the complaint #33 and #54 fixed from the other side
-   * when thirty ghosts were promoted to solid because a cast shadow promises cover.
+   * It was drawn over the canopy for a real reason — a tree is the one object whose drawn
+   * extent and whose solid are different things, the canopy is passable and the trunk is not,
+   * and the only part that stops you was otherwise invisible. But a 5-to-9-unit disc centred
+   * on a lit crown does not read as a leader showing through a gap. It reads as a bolt head,
+   * which is a worse lie than the one it was fixing: it says *object* where the truth is
+   * *tree*.
    *
-   * Pictorially a dense crown would hide its own trunk. That trade goes the other way here
-   * for the same reason `markPassable` exists: what the player can act on wins. It is a
-   * 5-to-9-unit disc on an 80-to-110-unit canopy, so it reads as the leader showing through
-   * a gap rather than as a log lying on the leaves.
+   * So the trunk goes back UNDER the canopy — drawn into `g` above, before the crown — and the
+   * collider is signalled the way a real canopy signals it: the crown PARTS over the bole. A
+   * dark thinning at the centre of the mass, no ring and no edge, so you read a gap in the
+   * leaves with something dark below rather than a disc laid on top. A hint rather than a
+   * diagram, which is the right strength for a 5-unit solid inside a 100-unit thing you can
+   * walk through.
    *
-   * A SECOND CHILD, not part of the swaying one. Children draw in order, so the trunk lands
-   * over the canopy while keeping its own transform at rest — which is the whole point.
-   * Drawing it into `crown` would have slid the collider's mark a few units off the collider.
+   * The parting is drawn on the CANOPY, so it sways with the leaves it is a gap in. Put on the
+   * static base it would have slid across the crown as the wind moved, which is the one version
+   * of this that looks broken.
    */
-  const bole = stillPart(g, "trunk");
-  // DARK on a lit crown, not light. A pale disc on the old dark canopy read as a bolt head;
-  // the crown is the bright thing now, so the trunk is the dark mark in it.
-  cylinder(bole, trunkAt.x, trunkAt.y, trunkR, MAT.woodDark, 3);
-  bole.circle(trunkAt.x, trunkAt.y, trunkR * 0.5).fill({ color: shade(MAT.woodDark.front, 0.8) });
+  crown.circle(trunkAt.x - 1, trunkAt.y - 1.5, trunkR * 1.9)
+    .fill({ color: shade(MAT.foliage.top, 0.52), alpha: 0.55 });
 }
 
 /**

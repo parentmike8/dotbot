@@ -128,26 +128,6 @@ export function movingPart(g: Graphics, kind: AmbientKind, about: Vec2): Graphic
   return part;
 }
 
-/**
- * A child that draws OVER a moving part and does not move with it.
- *
- * The one case is a tree's trunk. Children draw in order, so a still child added after the
- * canopy lands on top of it while keeping its own transform at rest — which is the only way
- * to draw the collider over the scenery without the scenery dragging it around.
- *
- * Idempotent for the same reason `movingPart` is, and it is worth saying that this was
- * learned the hard way twice in one session: the first version of the trunk child was
- * unconditional, and the redraw test that had just been written for `movingPart` caught it
- * growing a trunk per camera step.
- */
-export function stillPart(g: Graphics, name: string): Graphics {
-  // A drawing sink that is not a display list gets the marks directly, exactly as in
-  // `movingPart` — and here the fallback is not even a compromise: with no moving sibling to
-  // draw over, "on top" is just "last", which is where it already is.
-  if (typeof (g as { addChild?: unknown }).addChild !== "function") return g;
-  return partOf(g, `still:${name}`);
-}
-
 /** A moving part, bound to the clock. Built once; only its transform changes. */
 export type AmbientMover = {
   kind: AmbientKind;
@@ -372,8 +352,18 @@ export type LeafFall = {
   /** The pool's own container; parented once, into the outdoor detail layer. */
   view: Container;
   leaves: Graphics[];
-  /** Which tree each leaf last came off, and the generation that chose it. */
-  from: number[];
+  /**
+   * The tree each leaf came off, BY IDENTITY.
+   *
+   * Not an index. It was an index into the filtered on-screen list, and that made the pool
+   * depend on the camera: reported from play, "as my player moves around, the leaves
+   * reconfigure and jump around on the screen." Walking made trees enter and leave the
+   * filtered array, every index shifted under the leaves holding it, and each one silently
+   * re-bound to a different tree mid-fall — a whole screen of leaves teleporting because the
+   * player took a step. Holding the mover itself makes a leaf's life independent of where the
+   * camera is, which is what ambient means.
+   */
+  from: (AmbientMover | null)[];
   born: number[];
   generation: number[];
 };
@@ -383,7 +373,7 @@ const LEAF_COUNT = 48;
 /** How long one leaf's fall lasts, and the stagger between them. */
 const LEAF_LIFE_MS = 5_200;
 /** How far the wind carries a leaf over its life, as a share of its tree's radius. */
-const LEAF_CARRY = 1.5;
+const LEAF_CARRY = 2.1;
 
 export function buildLeafFall(): LeafFall {
   const view = new Container();
@@ -424,7 +414,7 @@ export function buildLeafFall(): LeafFall {
   return {
     view,
     leaves,
-    from: new Array(LEAF_COUNT).fill(0),
+    from: new Array<AmbientMover | null>(LEAF_COUNT).fill(null),
     born: new Array(LEAF_COUNT).fill(0),
     generation: new Array(LEAF_COUNT).fill(-1),
   };
@@ -473,21 +463,36 @@ export function driftLeaves(
 
     if (generation !== fall.generation[i]) {
       fall.generation[i] = generation;
-      // Pick a tree from the visible ones. Deterministic per leaf per generation.
+      /**
+       * Pick a tree from the visible ones, ONCE, at the start of this leaf's life.
+       *
+       * The visible set is the right thing to choose from — forty-eight leaves spread over a
+       * 4,200-unit sheet is none of them on screen — but it is the wrong thing to keep looking
+       * up. Chosen here and held for the whole fall, so a leaf that started on a tree you have
+       * since walked past finishes its fall on that tree rather than jumping to another.
+       */
       const pick = jitter(`leaf-${i}`, generation & 0xffff);
-      fall.from[i] = Math.min(onScreen.length - 1, Math.floor(pick * onScreen.length));
+      fall.from[i] = onScreen[Math.min(onScreen.length - 1, Math.floor(pick * onScreen.length))];
       fall.born[i] = nowMs;
     }
 
-    const tree = onScreen[Math.min(fall.from[i], onScreen.length - 1)];
+    const tree = fall.from[i];
     if (!tree) continue;
 
     // Where on the canopy it came off, held for the whole fall.
     const seed = `leaf-${i}-${fall.generation[i]}`;
     const angle = jitter(seed, 1) * Math.PI * 2;
-    // Off the RIM, not out of the middle: a leaf that appears at a canopy's centre and
-    // travels outward reads as being emitted by the tree rather than falling off it.
-    const out = tree.reach * (0.62 + jitter(seed, 2) * 0.4);
+    /**
+     * OUTSIDE the canopy from the start, and this is the third placement.
+     *
+     * Reported on sight: leaves inside the crown read as marks ON the tree rather than as
+     * leaves — in a still frame they are little diamonds lying on the leaves, which is the
+     * frozen-artefact problem rule 4 exists for, arrived at in a new place. At 0.62..1.0 of the
+     * reach most of the pool was over its own canopy at any instant.
+     *
+     * Starting past the rim means every leaf you can see is one that has already left.
+     */
+    const out = tree.reach * (1.02 + jitter(seed, 2) * 0.3);
     const gust = wind(nowMs - (tree.about.x * front.x + tree.about.y * front.y) / GUST_SPEED);
 
     /**

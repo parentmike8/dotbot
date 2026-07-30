@@ -6,7 +6,7 @@ import type { MapObject } from "@dotbot/game/types";
 import { drawModelObject } from "./modelGlyphs";
 import { buildOutdoorModel } from "./modelOutdoor";
 import { buildMapArt } from "../mapArt";
-import { animateAmbient, collectMovers, movingPart, type AmbientMover } from "./modelMotion";
+import { animateAmbient, collectMovers, driftLeaves, movingPart, type AmbientMover } from "./modelMotion";
 import { SHADOW_ALPHA, type ShadowPad } from "./tone";
 
 /**
@@ -193,9 +193,9 @@ describe("ambient motion", () => {
       view.clear();
       drawModelObject(view, pad(), tree);
     }
-    // The canopy and the trunk, once each. Before `stillPart` existed the trunk was added
-    // unconditionally and this caught it growing one per redraw.
-    expect(view.children).toHaveLength(2);
+    // One canopy, still one canopy after five redraws. This caught an unconditional trunk
+    // child growing one per camera step back when the trunk was drawn over the leaves.
+    expect(view.children).toHaveLength(1);
     expect(collectMovers(view, tree)[0].view).toBe(mover.view);
     // And it did not snap back to centre mid-lean because the camera moved.
     expect({ x: mover.view.position.x, y: mover.view.position.y }).toEqual(leaning);
@@ -242,6 +242,38 @@ describe("ambient motion", () => {
     expect(sizes.every((count) => count > 0)).toBe(true);
     for (const ms of [0, 3_100, 28_000, 240_000]) animateAmbient(movers, ms, false);
     expect(movers.map((mover) => (mover.view as Graphics).context.instructions.length)).toEqual(sizes);
+  });
+
+  /**
+   * A LEAF'S FALL MUST NOT DEPEND ON WHERE THE CAMERA IS.
+   *
+   * Reported from play: "as my player moves around, the leaves reconfigure and jump around on
+   * the screen... my movement shouldn't really impact how they appear." It did, and the cause
+   * was one word: each leaf held an INDEX into the filtered on-screen tree list. Walking made
+   * trees enter and leave that list, every index shifted under the leaf holding it, and the
+   * whole pool silently re-bound to different trees mid-fall.
+   *
+   * This drives the pool with two different visible rectangles at the same clock and asserts
+   * that a leaf already in flight has not moved. Ambient means "a pure function of the client
+   * clock"; a camera-dependent pool is not that, and the failure looks like a bug in physics
+   * rather than a bug in bookkeeping.
+   */
+  it("does not move a falling leaf when the camera moves", () => {
+    const art = buildMapArt(downtownMap);
+    const wide = { x: 0, y: 0, w: 2400, h: 1600 };
+    const narrow = { x: 900, y: 600, w: 700, h: 500 };
+
+    driftLeaves(art.leaves, art.movers, 4_000, wide, false);
+    const before = art.leaves.leaves.map((leaf) => ({ x: leaf.position.x, y: leaf.position.y }));
+    // Same clock, a completely different viewport: the player has walked, nothing else.
+    driftLeaves(art.leaves, art.movers, 4_000, narrow, false);
+    const after = art.leaves.leaves.map((leaf) => ({ x: leaf.position.x, y: leaf.position.y }));
+    expect(after).toEqual(before);
+
+    // And a leaf keeps its tree across the generation it was born in.
+    const bound = art.leaves.from.filter(Boolean).length;
+    driftLeaves(art.leaves, art.movers, 4_200, narrow, false);
+    expect(art.leaves.from.filter(Boolean).length).toBe(bound);
   });
 
   /** The builder has to hand the movers on, or the renderer animates an empty list. */

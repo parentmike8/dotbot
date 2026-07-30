@@ -102,26 +102,26 @@ describe("a canopy is foliage, not stone", () => {
     }
   });
 
-  it("draws the trunk last, over the canopy, and holds it still", () => {
+  it("keeps the trunk under the canopy, with the crown parting over it", () => {
     for (const tree of trees) {
       const view = new Graphics();
       drawModelObject(view, pad(), tree);
       /**
-       * Two children in order: the swaying canopy, then the static trunk.
+       * ONE child: the swaying canopy. The trunk is in the base.
        *
-       * The trunk used to be drawn once, underneath, where the canopy's own mass covered it —
-       * so the only part of a tree that stops you was invisible. Drawing it into the canopy
-       * instead would have slid the collider's mark a few units off the collider whenever the
-       * wind blew.
+       * It was briefly drawn as a second, still child ON TOP of the canopy, so that the only
+       * part of a tree which stops you would be visible. Reported and reversed: "seeing the top
+       * of the trunk like this through the canopy is a bit odd?" — a 5-to-9-unit disc centred on
+       * a lit crown reads as a bolt head, which says *object* where the truth is *tree*.
+       *
+       * What replaces it is a parting: a dark thinning at the centre of the canopy with no ring
+       * and no edge, drawn ON the crown so it sways with the leaves it is a gap in. This pins
+       * both halves — the trunk is not a child, and the canopy is.
        */
-      expect(view.children, tree.id).toHaveLength(2);
-      const [canopy, bole] = view.children;
-      expect(canopy.label, tree.id).toBe("ambient:sway");
-      expect(bole.label ?? "", tree.id).not.toBe("ambient:sway");
-      // Something was actually drawn into it, and it is parked at the origin: the canopy's
-      // transform must not reach the trunk.
-      expect((bole as Graphics).context.instructions.length, tree.id).toBeGreaterThan(0);
-      expect({ x: bole.position.x, y: bole.position.y }, tree.id).toEqual({ x: 0, y: 0 });
+      expect(view.children, tree.id).toHaveLength(1);
+      expect(view.children[0].label, tree.id).toBe("ambient:sway");
+      // Geometry in the base too, which is where the trunk went.
+      expect(view.context.instructions.length, tree.id).toBeGreaterThan(0);
     }
   });
 
