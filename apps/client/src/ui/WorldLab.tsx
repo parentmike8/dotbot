@@ -226,8 +226,13 @@ export function WorldLab() {
        * with three cast shadows and no trees above them.
        *
        * Added in the renderer's own order, so a still is the same stack a frame of play is.
+       *
+       * `overhead`, NOT `foreground`: the latter is assigned as the fog mask and pixi consumes
+       * a mask rather than drawing it, so canopies parented there are invisible on screen. That
+       * cost a round — the lab showed them because a mask nobody had assigned yet still draws,
+       * and `?solo` showed three grey shadows and no trees.
        */
-      stage.addChild(art.root, art.foreground);
+      stage.addChild(art.root, art.overhead);
       created.stage.addChild(stage);
 
       /**

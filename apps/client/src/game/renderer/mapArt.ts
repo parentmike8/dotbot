@@ -104,9 +104,31 @@ export type MapArt = {
   outdoorDetail: Container;
   /** Solid outdoor objects. */
   outdoorObjects: Container;
-  /** Marks that must cover a bot passing behind them, and the fog mask's target. */
+  /**
+   * The fog mask's target, and ONLY that.
+   *
+   * It is assigned to `foregroundFogGfx.mask`, and pixi consumes a mask source rather than
+   * drawing it — so anything parented here disappears from the screen. Tree canopies were put
+   * in it for one commit and vanished in `?solo` while every cast shadow stayed, which is a
+   * confusing symptom for an obvious cause. Overhead ART goes in `overhead`.
+   */
   foreground: Container;
   outdoorForeground: Container;
+  /**
+   * Marks that draw ABOVE THE BOTS: tree canopies, their trunks, falling leaves.
+   *
+   * A tree's collider is its trunk, so its canopy is something you walk under — reported from
+   * play, "the player doesn't go under the tree canopy but they should" — and covering a bot
+   * means drawing after it.
+   *
+   * KNOWN AND ACCEPTED: this layer is not fogged. `fogGfx` is drawn before the bots, so a
+   * canopy above them shows through unexplored ground. `foregroundFogGfx` exists for exactly
+   * this pass and is masked to `foreground`, but a mask has to be a silhouette drawn as
+   * geometry rather than the art itself, and duplicating every canopy outline into a mask is a
+   * bigger change than the one that fixed the layering. A tree is not secret; written down
+   * rather than left to be rediscovered.
+   */
+  overhead: Container;
   buildingsLayer: Container;
   buildings: BuildingArt[];
   /** Every body of water's drifting surface. The renderer moves these each frame. */
@@ -133,6 +155,7 @@ export function buildMapArt(map: MapDocument): MapArt {
   const foreground = new Container();
   const outdoorForeground = new Container();
   const buildingsLayer = new Container();
+  const overhead = new Container();
   foreground.addChild(outdoorForeground);
 
   const outdoors = buildOutdoorModel(map);
@@ -179,10 +202,10 @@ export function buildMapArt(map: MapDocument): MapArt {
    * at it settled it in one frame: leaves spend the first half of their fall over the canopy
    * they came off, so under it there was nothing to see at all.
    */
-  outdoorForeground.addChild(outdoors.overhead, leaves.view);
+  overhead.addChild(outdoors.overhead, leaves.view);
 
   return {
-    root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground,
+    root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground, overhead,
     buildingsLayer, buildings, water: water.surfaces, movers, leaves,
   };
 }

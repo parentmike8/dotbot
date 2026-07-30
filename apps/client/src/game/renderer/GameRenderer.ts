@@ -299,6 +299,10 @@ export class GameRenderer {
       this.dynamicBotsLayer,
       this.impactLayer,
       this.signLayer,
+      // Above the bots: canopies, trunks, leaves. See `MapArt.overhead` — and note that
+      // `art.foreground` below is the fog MASK, which pixi consumes rather than draws, so art
+      // parented there is invisible.
+      this.art.overhead,
       this.art.foreground,
       this.foregroundFogGfx,
     );
@@ -1235,6 +1239,9 @@ export class GameRenderer {
     this.art.outdoorDetail.alpha = indoors ? 0.25 : 1;
     this.art.outdoorObjects.alpha = indoors ? 0.35 : 1;
     this.art.outdoorForeground.alpha = indoors ? 0.35 : 1;
+    // Canopies and leaves fade with the rest of the outdoors when you are inside a building:
+    // a tree is not something you see through a floor slab.
+    this.art.overhead.alpha = indoors ? 0.35 : 1;
 
     const activeBuilding =
       player === null

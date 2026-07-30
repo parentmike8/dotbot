@@ -275,11 +275,21 @@ describe("ambient motion", () => {
       return false;
     };
     for (const mover of sways) {
-      expect(inSubtree(mover.view, art.foreground)).toBe(true);
+      expect(inSubtree(mover.view, art.overhead)).toBe(true);
       // And NOT on the solid-object layer, which is drawn before the bots.
       expect(inSubtree(mover.view, art.outdoorObjects)).toBe(false);
+      /**
+       * NOR on `art.foreground`, which is the fog MASK.
+       *
+       * Pixi consumes a mask source instead of drawing it, so canopies parented there vanish
+       * from the screen — reported from a live run as trees showing up "as black circles",
+       * which was the cast shadow with nothing above it. Asserted rather than commented,
+       * because the two containers are one word apart and the symptom looks nothing like the
+       * cause.
+       */
+      expect(inSubtree(mover.view, art.foreground)).toBe(false);
     }
     // The leaves are in the air, so they belong on the same layer.
-    expect(inSubtree(art.leaves.view, art.foreground)).toBe(true);
+    expect(inSubtree(art.leaves.view, art.overhead)).toBe(true);
   });
 });
