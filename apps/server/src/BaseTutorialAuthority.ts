@@ -4,6 +4,7 @@ import {
   BASE_TUTORIAL_FABRICATOR_DOT_ID,
   BASE_TUTORIAL_FABRICATOR_ID,
   BASE_TUTORIAL_TARGET_ID,
+  advanceBaseTutorial,
   type BaseTutorialAction,
   type BaseTutorialState,
 } from "@dotbot/game/baseTutorial";
@@ -29,6 +30,7 @@ export type BaseTutorialAuthoritativeState = {
   playerPosition: Vec2;
   inputAck: number;
   snapshot: GameSnapshot;
+  fabricatorEnabled: boolean;
 };
 
 type LiveTutorialSession = {
@@ -41,14 +43,23 @@ type LiveTutorialSession = {
   lastAt: number;
   accumulatorMs: number;
   fabricatorProgressMs: number;
-  fabricatorPosition: Vec2;
+  fabricatorPosition: Vec2 | null;
+  pendingAction: BaseTutorialAction | null;
   peerId: string | null;
   removalTimer: ReturnType<typeof setTimeout> | null;
+};
+
+type PendingTutorialReservation = {
+  token: string;
+  peerId: string;
+  cancelled: boolean;
 };
 
 export class BaseTutorialAuthority {
   private readonly sessions = new Map<string, LiveTutorialSession>();
   private readonly sessionsByToken = new Map<string, LiveTutorialSession>();
+  private readonly pendingByPeer = new Map<string, PendingTutorialReservation>();
+  private readonly pendingByToken = new Map<string, PendingTutorialReservation>();
   private readonly now: () => number;
 
   constructor(
@@ -60,10 +71,10 @@ export class BaseTutorialAuthority {
 
   async connect(peerId: string, token: string): Promise<BaseTutorialAuthoritativeState> {
     if (!this.persistence.live) throw new Error("Authoritative storage is unavailable.");
-    const identity = await this.persistence.helloPlayer(token);
-    const base = await this.persistence.getBase(token);
-    if (!identity || !base) throw new Error("Unknown device token.");
 
+    if (this.sessions.has(peerId) || this.pendingByPeer.has(peerId)) {
+      throw new Error("This peer already owns a base introduction connection.");
+    }
     const existing = this.sessionsByToken.get(token);
     if (existing) {
       if (existing.peerId) throw new Error("This base introduction is already connected.");
@@ -74,43 +85,68 @@ export class BaseTutorialAuthority {
       this.sessions.set(peerId, existing);
       return this.state(existing);
     }
-
-    this.disconnect(peerId, true);
-    const map = createBaseMap(base.layout, "workshop", { tutorial: base.tutorial });
-    const simulation = await DotBotSimulation.create({
-      map,
-      config: {
-        ...defaultGameConfig,
-        runDurationMs: Number.MAX_SAFE_INTEGER,
-        damageSpeed: 250,
-        dashSpeed: 760,
-      },
-    });
-    const snapshot = simulation.getSnapshot();
-    const player = snapshot.bots.find((bot) => bot.id === "player");
-    const fabricatorPosition = map.interactionDots?.find((dot) => dot.id === BASE_TUTORIAL_FABRICATOR_DOT_ID)?.position;
-    if (!player || !fabricatorPosition) {
-      simulation.dispose();
-      throw new Error("Base introduction map is incomplete.");
+    if (this.pendingByToken.has(token)) {
+      throw new Error("This base introduction is already connecting.");
     }
-    const session: LiveTutorialSession = {
-      token,
-      playerId: identity.playerId,
-      simulation,
-      tutorial: { ...base.tutorial },
-      origin: { ...player.position },
-      seq: -1,
-      lastAt: this.now(),
-      accumulatorMs: 0,
-      fabricatorProgressMs: 0,
-      fabricatorPosition: { ...fabricatorPosition },
-      peerId,
-      removalTimer: null,
-    };
-    this.sessions.set(peerId, session);
-    this.sessionsByToken.set(token, session);
-    this.applyWorldState(session);
-    return this.state(session);
+
+    // The token credential is the ownership key. Reserve it synchronously before
+    // authentication, persistence, or Rapier initialization yields, otherwise two
+    // peers can both build a simulation and both become valid seq-0 writers.
+    const reservation: PendingTutorialReservation = { token, peerId, cancelled: false };
+    this.pendingByPeer.set(peerId, reservation);
+    this.pendingByToken.set(token, reservation);
+    let simulation: DotBotSimulation | null = null;
+    try {
+      const identity = await this.persistence.helloPlayer(token);
+      this.assertReservation(reservation);
+      const base = await this.persistence.getBase(token);
+      this.assertReservation(reservation);
+      if (!identity || !base) throw new Error("Unknown device token.");
+
+      const map = createBaseMap(base.layout, "workshop", { tutorial: base.tutorial });
+      simulation = await DotBotSimulation.create({
+        map,
+        config: {
+          ...defaultGameConfig,
+          runDurationMs: Number.MAX_SAFE_INTEGER,
+          damageSpeed: 250,
+          dashSpeed: 760,
+        },
+      });
+      this.assertReservation(reservation);
+      const snapshot = simulation.getSnapshot();
+      const player = snapshot.bots.find((bot) => bot.id === "player");
+      const fabricatorPosition = map.interactionDots
+        ?.find((dot) => dot.id === BASE_TUTORIAL_FABRICATOR_DOT_ID)?.position ?? null;
+      if (!player || (!fabricatorPosition && base.tutorial.phase !== "complete")) {
+        throw new Error("Base introduction map is incomplete.");
+      }
+      const session: LiveTutorialSession = {
+        token,
+        playerId: identity.playerId,
+        simulation,
+        tutorial: { ...base.tutorial },
+        origin: { ...player.position },
+        seq: -1,
+        lastAt: this.now(),
+        accumulatorMs: 0,
+        fabricatorProgressMs: 0,
+        fabricatorPosition: fabricatorPosition ? { ...fabricatorPosition } : null,
+        pendingAction: null,
+        peerId,
+        removalTimer: null,
+      };
+      this.sessions.set(peerId, session);
+      this.sessionsByToken.set(token, session);
+      this.releaseReservation(reservation);
+      simulation = null;
+      this.applyWorldState(session);
+      return this.state(session);
+    } catch (error) {
+      simulation?.dispose();
+      this.releaseReservation(reservation);
+      throw error;
+    }
   }
 
   async handleInput(peerId: string, frame: BaseTutorialInput): Promise<BaseTutorialAuthoritativeState> {
@@ -126,6 +162,7 @@ export class BaseTutorialAuthority {
     const elapsedMs = Math.max(0, Math.min(maxElapsedMs, now - session.lastAt));
     session.lastAt = now;
     session.seq = frame.seq;
+    await this.flushPendingEvidence(session);
     session.accumulatorMs += elapsedMs;
     const tickMs = 1000 / session.simulation.config.tickHz;
 
@@ -133,13 +170,18 @@ export class BaseTutorialAuthority {
       session.simulation.applyInput("player", input);
       session.simulation.step();
       const events = session.simulation.drainEvents();
-      await this.deriveEvidence(session, input, frame.interact, tickMs, events);
       session.accumulatorMs -= tickMs;
+      await this.deriveEvidence(session, input, frame.interact, tickMs, events);
     }
     return this.state(session);
   }
 
   disconnect(peerId: string, immediate = false): void {
+    const pending = this.pendingByPeer.get(peerId);
+    if (pending) {
+      pending.cancelled = true;
+      this.releaseReservation(pending);
+    }
     const session = this.sessions.get(peerId);
     if (!session) return;
     this.sessions.delete(peerId);
@@ -148,7 +190,9 @@ export class BaseTutorialAuthority {
     const remove = () => {
       if (session.peerId) return;
       session.simulation.dispose();
-      this.sessionsByToken.delete(session.token);
+      if (this.sessionsByToken.get(session.token) === session) {
+        this.sessionsByToken.delete(session.token);
+      }
       session.removalTimer = null;
     };
     if (immediate) {
@@ -160,6 +204,9 @@ export class BaseTutorialAuthority {
   }
 
   close(): void {
+    for (const reservation of this.pendingByToken.values()) reservation.cancelled = true;
+    this.pendingByPeer.clear();
+    this.pendingByToken.clear();
     for (const session of this.sessionsByToken.values()) {
       if (session.removalTimer) clearTimeout(session.removalTimer);
       session.simulation.dispose();
@@ -183,7 +230,7 @@ export class BaseTutorialAuthority {
       session.tutorial.phase === "movement"
       && distance(player.position, session.origin) >= movementEvidenceDistance
     ) {
-      await this.advance(session, "moved");
+      await this.recordEvidence(session, "moved");
       return;
     }
 
@@ -194,44 +241,82 @@ export class BaseTutorialAuthority {
         && event.botId === BASE_TUTORIAL_TARGET_ID
         && event.byBotId === "player")
     ) {
-      await this.advance(session, "practiceHit");
+      await this.recordEvidence(session, "practiceHit");
       return;
     }
 
     if (session.tutorial.phase === "fabricator") {
       const holdingStill = Math.hypot(input.move.x, input.move.y) <= 0.05;
-      const inReach = distance(player.position, session.fabricatorPosition) <= 52;
+      const inReach = session.fabricatorPosition !== null
+        && distance(player.position, session.fabricatorPosition) <= 52;
       session.fabricatorProgressMs = interact && holdingStill && inReach
         ? session.fabricatorProgressMs + tickMs
         : 0;
       if (session.fabricatorProgressMs >= fabricatorChannelMs) {
-        await this.advance(session, "usedFabricator");
+        await this.recordEvidence(session, "usedFabricator");
       }
       return;
     }
 
     if (session.tutorial.phase === "doorOpen" && player.position.y < BASE_TUTORIAL_ENTRY_Y) {
-      await this.advance(session, "enteredBase");
+      await this.recordEvidence(session, "enteredBase");
     }
   }
 
-  private async advance(session: LiveTutorialSession, action: BaseTutorialAction): Promise<void> {
+  private async recordEvidence(session: LiveTutorialSession, action: BaseTutorialAction): Promise<void> {
+    if (session.pendingAction && session.pendingAction !== action) {
+      throw new Error("Tutorial evidence is already awaiting durable persistence.");
+    }
+    session.pendingAction = action;
+    await this.flushPendingEvidence(session);
+  }
+
+  private async flushPendingEvidence(session: LiveTutorialSession): Promise<void> {
+    const action = session.pendingAction;
+    if (!action) return;
+    const expected = advanceBaseTutorial(session.tutorial, action).state;
     const base = await this.persistence.advanceBaseTutorial(
       session.token,
       action,
       session.tutorial.revision,
     );
     if (!base) throw new Error("Tutorial progress could not be persisted.");
+    if (
+      base.tutorial.phase !== expected.phase
+      || base.tutorial.revision !== expected.revision
+    ) {
+      throw new Error("Tutorial persistence did not durably record the evidence.");
+    }
     session.tutorial = { ...base.tutorial };
+    session.pendingAction = null;
     this.applyWorldState(session);
   }
 
   private applyWorldState(session: LiveTutorialSession): void {
     const phase = session.tutorial.phase;
-    const fabricatorEnabled = phase === "fabricator" || phase === "doorOpen" || phase === "complete";
+    const fabricatorEnabled = phase === "fabricator" || phase === "doorOpen";
     session.simulation.setMapObjectEnabled(BASE_TUTORIAL_FABRICATOR_ID, fabricatorEnabled);
     session.simulation.setDoorLocked(BASE_TUTORIAL_DOOR_ID, phase !== "doorOpen" && phase !== "complete");
     if (phase === "complete") session.simulation.removeBot(BASE_TUTORIAL_TARGET_ID);
+  }
+
+  private assertReservation(reservation: PendingTutorialReservation): void {
+    if (
+      reservation.cancelled
+      || this.pendingByPeer.get(reservation.peerId) !== reservation
+      || this.pendingByToken.get(reservation.token) !== reservation
+    ) {
+      throw new Error("Base introduction ownership reservation was cancelled.");
+    }
+  }
+
+  private releaseReservation(reservation: PendingTutorialReservation): void {
+    if (this.pendingByPeer.get(reservation.peerId) === reservation) {
+      this.pendingByPeer.delete(reservation.peerId);
+    }
+    if (this.pendingByToken.get(reservation.token) === reservation) {
+      this.pendingByToken.delete(reservation.token);
+    }
   }
 
   private state(session: LiveTutorialSession): BaseTutorialAuthoritativeState {
@@ -243,6 +328,7 @@ export class BaseTutorialAuthority {
       playerPosition: { ...player.position },
       inputAck: session.seq,
       snapshot,
+      fabricatorEnabled: session.tutorial.phase === "fabricator" || session.tutorial.phase === "doorOpen",
     };
   }
 }

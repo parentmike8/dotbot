@@ -67,8 +67,17 @@ describe("base tutorial room", () => {
     expect(complete.interactionDots?.some((dot) => dot.kind === "deployment")).toBe(true);
     expect(complete.interactionDots?.some((dot) => dot.kind === "object")).toBe(true);
     expect(complete.botSpawns.some((spawn) => spawn.id === BASE_TUTORIAL_TARGET_ID)).toBe(false);
-    expect(complete.buildings[0].floors[0].objects.find((object) => object.id === BASE_TUTORIAL_FABRICATOR_ID))
-      .toMatchObject({ enabled: true, solid: true });
+    expect(complete.buildings[0].floors[0].objects.some((object) => object.id === BASE_TUTORIAL_FABRICATOR_ID))
+      .toBe(false);
+    expect(complete.interactionDots?.some((dot) => dot.id === BASE_TUTORIAL_FABRICATOR_DOT_ID))
+      .toBe(false);
+    expect(complete.buildings[0].floors[0].objects.filter((object) => object.kind === "fabricator"))
+      .toHaveLength(1);
+    expect(complete.interactionDots?.filter((dot) =>
+      dot.kind === "object"
+      && complete.buildings[0].floors[0].objects.some((object) =>
+        object.id === dot.targetId && object.kind === "fabricator")))
+      .toHaveLength(1);
   });
 
   it("uses a harmless frozen fake AI that can be downed but cannot hurt, chase, loot, or drop cargo", async () => {

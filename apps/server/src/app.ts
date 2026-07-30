@@ -383,6 +383,8 @@ export async function createServer(options: CreateServerOptions = {}) {
               tutorial: state.tutorial,
               playerPosition: state.playerPosition,
               inputAck: state.inputAck,
+              snapshot: state.snapshot,
+              fabricatorEnabled: state.fabricatorEnabled,
             });
           } catch (error) {
             peer.send({ type: "err", code: "storage_unavailable", msg: errorMessage(error) });
@@ -414,6 +416,8 @@ export async function createServer(options: CreateServerOptions = {}) {
               tutorial: state.tutorial,
               playerPosition: state.playerPosition,
               inputAck: state.inputAck,
+              snapshot: state.snapshot,
+              fabricatorEnabled: state.fabricatorEnabled,
             });
           } catch (error) {
             peer.send({ type: "err", code: "bad_tutorial_input", msg: errorMessage(error) });

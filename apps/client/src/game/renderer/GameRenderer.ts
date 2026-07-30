@@ -47,7 +47,7 @@ import {
 } from "./bodies";
 import { DOT_COLOR, INK, RIVAL_RED, SQUAD_CYAN, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
-import { redrawFloorObjects } from "./model/modelFloor";
+import { redrawFloorObjects, setFloorObjectViewEnabled } from "./model/modelFloor";
 import {
   OBJECT_PARALLAX_REDRAW_STEP,
   parseObjectParallaxStrength,
@@ -352,6 +352,15 @@ export class GameRenderer {
     for (const floor of this.art.buildings.flatMap((building) => building.floors)) {
       floor.placementView.visible = visible;
     }
+  }
+
+  /** Keeps a live map object's ink, shadows, and ambient occlusion aligned with collision. */
+  setMapObjectEnabled(objectId: string, enabled: boolean): boolean {
+    for (const floor of this.art.buildings.flatMap((building) => building.floors)) {
+      const handle = floor.objectViews.get(objectId);
+      if (handle) return setFloorObjectViewEnabled(handle, enabled);
+    }
+    return false;
   }
 
   destroy(): void {

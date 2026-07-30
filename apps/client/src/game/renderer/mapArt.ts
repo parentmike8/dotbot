@@ -8,7 +8,12 @@ import type {
   PlacementSlot,
   StairLink,
 } from "@dotbot/game/types";
-import { buildFloorModel, drawStair, drawStairHead } from "./model/modelFloor";
+import {
+  buildFloorModel,
+  drawStair,
+  drawStairHead,
+  type FloorObjectView,
+} from "./model/modelFloor";
 import { buildOutdoorModel } from "./model/modelOutdoor";
 import { buildRoofModel } from "./model/modelRoof";
 import {
@@ -56,7 +61,7 @@ export type FloorArt = {
    */
   foreground: Container;
   /** Individually addressable so fabrication can temporarily replace one glyph. */
-  objectViews: Map<string, { object: import("@dotbot/game/types").MapObject; view: Graphics }>;
+  objectViews: Map<string, FloorObjectView>;
   /** Addressable stair fixtures reuse the fabrication draw-on hook when an expansion commissions. */
   stairViews: Map<string, { stair: StairLink; view: Container }>;
   /** Base interaction marks toggle by authoritative tutorial phase without rebuilding the floor. */

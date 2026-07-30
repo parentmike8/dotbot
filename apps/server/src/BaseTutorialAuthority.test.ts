@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { initialBaseTutorialState } from "@dotbot/game/baseTutorial";
+import {
+  BASE_TUTORIAL_TARGET_ID,
+  initialBaseTutorialState,
+} from "@dotbot/game/baseTutorial";
 import type { InputCommand } from "@dotbot/game/types";
 import { NoopPersistence } from "./db";
 import { BaseTutorialAuthority } from "./BaseTutorialAuthority";
@@ -8,9 +11,115 @@ class LiveTutorialPersistence extends NoopPersistence {
   override readonly live = true;
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+class FirstHelloDeferredPersistence extends LiveTutorialPersistence {
+  readonly firstHello = deferred();
+  helloCalls = 0;
+
+  override async helloPlayer(token: string) {
+    const call = ++this.helloCalls;
+    if (call === 1) await this.firstHello.promise;
+    return super.helloPlayer(token);
+  }
+}
+
+class TwoHelloDeferredPersistence extends LiveTutorialPersistence {
+  readonly firstHello = deferred();
+  readonly secondHello = deferred();
+  helloCalls = 0;
+
+  override async helloPlayer(token: string) {
+    const call = ++this.helloCalls;
+    if (call === 1) await this.firstHello.promise;
+    if (call === 2) await this.secondHello.promise;
+    return super.helloPlayer(token);
+  }
+}
+
+class FlakyPracticePersistence extends LiveTutorialPersistence {
+  practiceFailures = 1;
+  failAfterCommit = false;
+
+  override async advanceBaseTutorial(
+    token: string,
+    action: Parameters<LiveTutorialPersistence["advanceBaseTutorial"]>[1],
+    revision: number,
+  ) {
+    if (action === "practiceHit" && this.practiceFailures > 0 && !this.failAfterCommit) {
+      this.practiceFailures -= 1;
+      throw new Error("Transient tutorial write failure.");
+    }
+    const result = await super.advanceBaseTutorial(token, action, revision);
+    if (action === "practiceHit" && this.practiceFailures > 0 && this.failAfterCommit) {
+      this.practiceFailures -= 1;
+      throw new Error("Transient post-commit base read failure.");
+    }
+    return result;
+  }
+}
+
 const idle: InputCommand = { move: { x: 0, y: 0 }, dash: false };
 
 describe("BaseTutorialAuthority", () => {
+  it("atomically reserves one token owner before asynchronous session creation", async () => {
+    let now = 0;
+    const persistence = new FirstHelloDeferredPersistence();
+    const owner = await persistence.registerPlayer("Concurrent owner");
+    const authority = new BaseTutorialAuthority(persistence, { now: () => now });
+
+    const peerA = authority.connect("peer-a", owner.token);
+    const peerB = authority.connect("peer-b", owner.token);
+    let duplicateSettledBeforeInitialization = false;
+    void peerB.finally(() => {
+      duplicateSettledBeforeInitialization = true;
+    }).catch(() => {});
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const reservedBeforeAwait = duplicateSettledBeforeInitialization;
+    persistence.firstHello.resolve();
+    const results = await Promise.allSettled([peerA, peerB]);
+
+    expect(reservedBeforeAwait).toBe(true);
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+    const winner = results[0].status === "fulfilled" ? "peer-a" : "peer-b";
+    const loser = winner === "peer-a" ? "peer-b" : "peer-a";
+    now += 17;
+    await expect(authority.handleInput(loser, { seq: 0, input: idle, interact: false }))
+      .rejects.toThrow(/session/i);
+    await expect(authority.handleInput(winner, { seq: 0, input: idle, interact: false }))
+      .resolves.toMatchObject({ inputAck: 0 });
+    authority.close();
+  });
+
+  it("does not let stale initialization cleanup release a newer token owner", async () => {
+    let now = 0;
+    const persistence = new TwoHelloDeferredPersistence();
+    const owner = await persistence.registerPlayer("Replacement owner");
+    const authority = new BaseTutorialAuthority(persistence, { now: () => now });
+
+    const stale = authority.connect("peer-stale", owner.token);
+    authority.disconnect("peer-stale", true);
+    const replacement = authority.connect("peer-current", owner.token);
+    persistence.firstHello.resolve();
+
+    await expect(stale).rejects.toThrow(/cancelled|ownership/i);
+    await expect(authority.connect("peer-intruder", owner.token)).rejects.toThrow(/connecting/i);
+    persistence.secondHello.resolve();
+    const connected = await replacement;
+    expect(connected.inputAck).toBe(-1);
+    now += 17;
+    await expect(authority.handleInput("peer-current", { seq: 0, input: idle, interact: false }))
+      .resolves.toMatchObject({ inputAck: 0 });
+    authority.close();
+  });
+
   it("derives ordered progress from a server simulation and preserves position across every phase", async () => {
     let now = 0;
     const persistence = new LiveTutorialPersistence();
@@ -136,6 +245,18 @@ describe("BaseTutorialAuthority", () => {
     const resumed = await authority.connect("peer-b", owner.token);
     expect(resumed.playerPosition).toEqual(before);
     expect(resumed.tutorial).toEqual(state.tutorial);
+    expect(resumed.inputAck).toBe(11);
+    now += 17;
+    await expect(authority.handleInput("peer-b", {
+      seq: 12,
+      input: idle,
+      interact: false,
+    })).resolves.toMatchObject({ inputAck: 12 });
+    await expect(authority.handleInput("peer-a", {
+      seq: 12,
+      input: idle,
+      interact: false,
+    })).rejects.toThrow(/session/i);
     authority.close();
   });
 
@@ -144,5 +265,60 @@ describe("BaseTutorialAuthority", () => {
     const account = await persistence.registerPlayer("Offline");
     const authority = new BaseTutorialAuthority(persistence);
     await expect(authority.connect("peer", account.token)).rejects.toThrow(/storage/i);
+  });
+
+  it.each([
+    ["before commit", false],
+    ["after commit", true],
+  ] as const)("retries latched practice evidence after a transient %s failure", async (_label, failAfterCommit) => {
+    let now = 0;
+    const persistence = new FlakyPracticePersistence();
+    persistence.failAfterCommit = failAfterCommit;
+    const owner = await persistence.registerPlayer("Retry practice");
+    await persistence.advanceBaseTutorial(owner.token, "moved", 0);
+    const authority = new BaseTutorialAuthority(persistence, { now: () => now });
+    let current = await authority.connect("peer", owner.token);
+    let seq = 0;
+    let failed = false;
+
+    for (let tick = 0; tick < 180 && !failed; tick += 1) {
+      const target = current.snapshot.bots.find((bot) => bot.id === BASE_TUTORIAL_TARGET_ID)!;
+      const dx = target.position.x - current.playerPosition.x;
+      const dy = target.position.y - current.playerPosition.y;
+      const length = Math.max(1, Math.hypot(dx, dy));
+      now += 17;
+      try {
+        current = await authority.handleInput("peer", {
+          seq: seq++,
+          input: { move: { x: dx / length, y: dy / length }, dash: tick % 45 < 3 },
+          interact: false,
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        failed = true;
+      }
+    }
+
+    expect(failed).toBe(true);
+    expect(current.tutorial.phase).toBe("practice");
+    expect((await persistence.getBase(owner.token))?.tutorial).toEqual(
+      failAfterCommit ? { phase: "fabricator", revision: 2 } : { phase: "practice", revision: 1 },
+    );
+
+    authority.disconnect("peer");
+    const stalled = await authority.connect("peer-resumed", owner.token);
+    expect(stalled.tutorial).toEqual({ phase: "practice", revision: 1 });
+    expect(stalled.snapshot.bots.find((bot) => bot.id === BASE_TUTORIAL_TARGET_ID)?.state).toBe("downed");
+
+    now += 17;
+    const recovered = await authority.handleInput("peer-resumed", {
+      seq: seq++,
+      input: idle,
+      interact: false,
+    });
+    expect(recovered.tutorial).toEqual({ phase: "fabricator", revision: 2 });
+    expect(recovered.snapshot.bots.find((bot) => bot.id === BASE_TUTORIAL_TARGET_ID)?.state).toBe("downed");
+    expect((await persistence.getBase(owner.token))?.tutorial).toEqual({ phase: "fabricator", revision: 2 });
+    authority.close();
   });
 });

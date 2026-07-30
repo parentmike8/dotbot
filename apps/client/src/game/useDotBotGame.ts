@@ -838,6 +838,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     rendererRef.current?.setPlacementSlotsVisible(visible);
   }, []);
 
+  const setMapObjectEnabled = useCallback((objectId: string, enabled: boolean) => {
+    const simulationChanged = sessionRef.current?.setMapObjectEnabled?.(objectId, enabled) ?? false;
+    const rendererChanged = rendererRef.current?.setMapObjectEnabled(objectId, enabled) ?? false;
+    return simulationChanged || rendererChanged;
+  }, []);
+
   const updateJoystick = useCallback((clientX: number, clientY: number) => {
     const state = joystickRef.current;
     const raw = {
@@ -1078,6 +1084,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     setInteractionChannel,
     setBodyAction,
     draftObjects,
+    setMapObjectEnabled,
     setInteractionDotsVisible,
     setPlacementSlotsVisible,
   };

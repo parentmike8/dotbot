@@ -547,7 +547,7 @@ export function createBaseMap(
     h: 76,
     facing: "W",
     solid: true,
-    enabled: tutorial.phase === "fabricator" || tutorial.phase === "doorOpen" || tutorial.phase === "complete",
+    enabled: tutorial.phase === "fabricator" || tutorial.phase === "doorOpen",
   };
   const groundDoorways = tutorialActive
     ? shell.doorways.map((doorway) => doorway.id === "ws-arch"
@@ -576,7 +576,7 @@ export function createBaseMap(
       walls: shell.walls.map((wall) => ({ ...wall })),
       doorways: groundDoorways,
       windows: shell.windows.map((window) => ({ ...window })),
-      objects: [...groundObjects, ...(tutorialConfigured ? [tutorialFabricator] : [])],
+      objects: [...groundObjects, ...(tutorialActive ? [tutorialFabricator] : [])],
       stairs: options.expanded ? [{ ...shell.upper.stairs.ground, rect: { ...shell.upper.stairs.ground.rect } }] : [],
       dotSpawns: [],
     }, ...(options.expanded ? [{
@@ -639,7 +639,7 @@ export function createBaseMap(
     })),
   };
   map.interactionDots = deriveBaseInteractionDots(map);
-  if (tutorialConfigured) {
+  if (tutorialActive) {
     const ground = base.floors[0];
     const standOnAble = createStandabilityCheck(map, base, ground);
     map.interactionDots.push({

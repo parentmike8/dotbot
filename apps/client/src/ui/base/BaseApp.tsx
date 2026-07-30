@@ -16,10 +16,8 @@ import { RECIPES, SECOND_FLOOR_UPGRADE_ID, recipeById, type Recipe } from "@dotb
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { contractDayStamp, contractObjectiveLabel, generateContractOffers } from "@dotbot/game/contracts";
 import {
-  BASE_TUTORIAL_DOOR_ID,
   BASE_TUTORIAL_FABRICATOR_ID,
   BASE_TUTORIAL_FABRICATOR_DOT_ID,
-  BASE_TUTORIAL_TARGET_ID,
   initialBaseTutorialState,
   isBaseTutorialComplete,
   type BaseTutorialState,
@@ -28,11 +26,15 @@ import type { BaseLayout, BaseObjectKind, BaseShellId, ContractDefinition, Loado
 import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import { LocalSession } from "../../game/session/LocalSession";
+import { BaseTutorialSession } from "../../game/session/BaseTutorialSession";
 import { LobbyApp } from "../lobby/LobbyApp";
 import { deviceTokenKey, ensureAccountToken, playerNameKey } from "../identity";
 import "./base.css";
 import { advanceBaseChannel, findBaseTarget, type BaseChannelState, type BaseTarget } from "./baseFlow";
-import { BaseTutorialConnection, type BaseTutorialConnectionState } from "./BaseTutorialConnection";
+import type {
+  BaseTutorialConnectionState,
+  BaseTutorialConnectionStatus,
+} from "./BaseTutorialConnection";
 
 const localLayoutKey = "dotbot.baseLayout";
 const localShellKey = "dotbot.baseShell";
@@ -81,6 +83,7 @@ const offlinePayload: BasePayload = {
 export function BaseApp() {
   const [name, setName] = useState(() => localStorage.getItem(playerNameKey) ?? "");
   const [identityReady, setIdentityReady] = useState(() => Boolean(localStorage.getItem(playerNameKey)));
+  const [baseReady, setBaseReady] = useState(() => !localStorage.getItem(playerNameKey));
   const [base, setBase] = useState<BasePayload>(() => ({
     ...offlinePayload,
     tutorial: { ...initialBaseTutorialState },
@@ -97,6 +100,7 @@ export function BaseApp() {
   const refreshBase = useCallback(async () => {
     const token = localStorage.getItem(deviceTokenKey);
     if (!token) return;
+    setBaseReady(false);
     try {
       const response = await fetch("/api/base", { headers: { "x-device-token": token } });
       if (!response.ok) throw new Error(`Base fetch failed (${response.status})`);
@@ -122,18 +126,26 @@ export function BaseApp() {
         layout: readLocalLayout(),
         shell: readLocalShell(),
       }));
+    } finally {
+      setBaseReady(true);
     }
   }, []);
 
   const acceptTutorialState = useCallback((state: BaseTutorialConnectionState) => {
-    setBase((current) => ({ ...current, tutorial: state.tutorial }));
+    setBase((current) => current.tutorial.phase === state.tutorial.phase
+      && current.tutorial.revision === state.tutorial.revision
+      ? current
+      : { ...current, tutorial: state.tutorial });
     setNotice("");
   }, []);
 
   useEffect(() => {
     if (!identityReady) return;
     const storedName = localStorage.getItem(playerNameKey) ?? name;
-    void ensureAccountToken(storedName).then(refreshBase);
+    void ensureAccountToken(storedName).then(refreshBase).catch(() => {
+      setBaseReady(true);
+      setBase((current) => ({ ...current, storageLinked: false }));
+    });
   }, [identityReady, name, refreshBase]);
 
   const finishIdentity = async (event: FormEvent) => {
@@ -143,6 +155,7 @@ export function BaseApp() {
     localStorage.setItem(playerNameKey, clean);
     setName(clean);
     await ensureAccountToken(clean);
+    setBaseReady(false);
     setIdentityReady(true);
   };
 
@@ -338,6 +351,14 @@ export function BaseApp() {
     }
   }, [base.storageLinked]);
 
+  if (identityReady && !baseReady) {
+    return <BaseLinkState message="LINKING AUTHORITATIVE BASE · MOVEMENT PAUSED" />;
+  }
+
+  if (identityReady && !base.storageLinked) {
+    return <BaseLinkState message="AUTHORITATIVE STORAGE UNAVAILABLE · MOVEMENT PAUSED" />;
+  }
+
   if (deployment && isBaseTutorialComplete(base.tutorial)) {
     return <LobbyApp embedded onReturnToBase={() => {
       setDeployment(false);
@@ -381,6 +402,22 @@ export function BaseApp() {
   );
 }
 
+function BaseLinkState({ message }: { message: string }) {
+  return (
+    <main
+      className="base-shell"
+      aria-label="DotBot persistent base"
+      data-authority="server"
+      data-authority-status="disconnected"
+    >
+      <section className="base-panel identity-panel" role="status" aria-live="polite">
+        <header><span>HOME BAY / LINK</span><strong>BASE PAUSED</strong></header>
+        <p>{message}</p>
+      </section>
+    </main>
+  );
+}
+
 type BaseSessionProps = {
   base: BasePayload;
   identityReady: boolean;
@@ -412,8 +449,14 @@ function BaseSession(props: BaseSessionProps) {
   const sessionExpandedRef = useRef(
     isBaseTutorialComplete(initialTutorialRef.current) && ownsSecondFloor(props.base),
   );
+  const authoritativeTutorialRef = useRef(
+    props.identityReady && props.base.storageLinked && !tutorialComplete,
+  );
+  const tutorialTokenRef = useRef(localStorage.getItem(deviceTokenKey) ?? "");
   const tutorialInteractRef = useRef(false);
-  const tutorialConnectionRef = useRef<BaseTutorialConnection | null>(null);
+  const [authorityStatus, setAuthorityStatus] = useState<BaseTutorialConnectionStatus>(
+    authoritativeTutorialRef.current ? "connecting" : "connected",
+  );
   const map = useMemo(
     () => createBaseMap(
       props.base.layout,
@@ -422,23 +465,36 @@ function BaseSession(props: BaseSessionProps) {
     ),
     [props.base.layout],
   );
-  const session = useMemo(() => new LocalSession({
-    map,
-    config: {
-      ...defaultGameConfig,
-      runDurationMs: Number.MAX_SAFE_INTEGER,
-      damageSpeed: 250,
-      dashSpeed: 760,
-    },
-    playerId: "player",
-    inputObserver: (input) => tutorialConnectionRef.current?.sendInput(input, tutorialInteractRef.current),
-  }), [map]);
+  const session = useMemo(() => authoritativeTutorialRef.current
+    ? new BaseTutorialSession({
+        map,
+        token: tutorialTokenRef.current,
+        interactionIntent: () => tutorialInteractRef.current,
+        onState: props.acceptTutorialState,
+        onConnectionState: (status) => {
+          setAuthorityStatus(status);
+          if (status === "connecting") props.reportTutorialError("BASE LINK CONNECTING · MOVEMENT PAUSED");
+          if (status === "disconnected") props.reportTutorialError("BASE LINK LOST · MOVEMENT PAUSED");
+        },
+        onError: props.reportTutorialError,
+      })
+    : new LocalSession({
+        map,
+        config: {
+          ...defaultGameConfig,
+          runDurationMs: Number.MAX_SAFE_INTEGER,
+          damageSpeed: 250,
+          dashSpeed: 760,
+        },
+        playerId: "player",
+      }), [map]);
   const {
     hostRef,
     snapshot,
     playerId,
     setInteractionChannel,
     draftObjects,
+    setMapObjectEnabled,
     setInteractionDotsVisible,
     setPlacementSlotsVisible,
     joystick,
@@ -459,38 +515,18 @@ function BaseSession(props: BaseSessionProps) {
   }, [draftObjects, props]);
 
   useEffect(() => {
-    if (!props.identityReady || !props.base.storageLinked) return;
-    const token = localStorage.getItem(deviceTokenKey);
-    if (!token) return;
-    const connection = new BaseTutorialConnection(
-      token,
-      props.acceptTutorialState,
-      props.reportTutorialError,
-    );
-    tutorialConnectionRef.current = connection;
-    connection.start();
-    return () => {
-      connection.dispose();
-      if (tutorialConnectionRef.current === connection) tutorialConnectionRef.current = null;
-    };
-  }, [
-    props.acceptTutorialState,
-    props.base.storageLinked,
-    props.identityReady,
-    props.reportTutorialError,
-  ]);
-
-  useEffect(() => {
     const phase = props.base.tutorial.phase;
-    const fabricatorEnabled = phase === "fabricator" || phase === "doorOpen" || phase === "complete";
-    session.setMapObjectEnabled(BASE_TUTORIAL_FABRICATOR_ID, fabricatorEnabled);
-    session.setDoorLocked(BASE_TUTORIAL_DOOR_ID, phase !== "doorOpen" && phase !== "complete");
-    if (phase === "complete") session.removeBot(BASE_TUTORIAL_TARGET_ID);
+    setMapObjectEnabled(
+      BASE_TUTORIAL_FABRICATOR_ID,
+      phase === "fabricator" || phase === "doorOpen",
+    );
     setInteractionDotsVisible(
       phase === "fabricator"
         ? new Set([BASE_TUTORIAL_FABRICATOR_DOT_ID])
         : phase === "complete"
-          ? new Set(map.interactionDots?.map((dot) => dot.id) ?? [])
+          ? new Set(map.interactionDots
+            ?.filter((dot) => dot.id !== BASE_TUTORIAL_FABRICATOR_DOT_ID)
+            .map((dot) => dot.id) ?? [])
           : new Set(),
     );
     setPlacementSlotsVisible(phase === "complete");
@@ -502,7 +538,7 @@ function BaseSession(props: BaseSessionProps) {
     draftObjects,
     map.interactionDots,
     props.base.tutorial.phase,
-    session,
+    setMapObjectEnabled,
     setInteractionDotsVisible,
     setPlacementSlotsVisible,
   ]);
@@ -575,6 +611,8 @@ function BaseSession(props: BaseSessionProps) {
       data-panel={props.panel?.type ?? "none"}
       data-tutorial={props.base.tutorial.phase}
       data-session-stable="true"
+      data-authority={authoritativeTutorialRef.current ? "server" : "local"}
+      data-authority-status={authorityStatus}
     >
       <div ref={hostRef} className="game-canvas" />
       <header className="base-title-block">
@@ -603,6 +641,7 @@ function BaseSession(props: BaseSessionProps) {
             className={`joystick ${joystick.active ? "active" : ""}`}
             role="application"
             aria-label="Movement joystick"
+            aria-disabled={authoritativeTutorialRef.current && authorityStatus !== "connected"}
             {...joystickHandlers}
           >
             <span
@@ -618,7 +657,12 @@ function BaseSession(props: BaseSessionProps) {
               queueDash();
             }}
             style={{ "--dash-progress": dashProgress } as CSSProperties}
-            disabled={!player || player.state !== "alive" || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)}
+            disabled={
+              !player
+              || player.state !== "alive"
+              || (authoritativeTutorialRef.current && authorityStatus !== "connected")
+              || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)
+            }
             aria-label="Dash"
           >
             Dash
@@ -1061,7 +1105,7 @@ function tutorialTargetForPhase(
 ): BaseTarget | null {
   if (!target) return null;
   if (phase === "fabricator") return target.type === "tutorialFabricator" ? target : null;
-  if (phase === "complete") return target;
+  if (phase === "complete") return target.type === "tutorialFabricator" ? null : target;
   return null;
 }
 

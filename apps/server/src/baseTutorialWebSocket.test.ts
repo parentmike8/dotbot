@@ -43,6 +43,16 @@ describe("base tutorial WebSocket evidence path", () => {
     expect(await waitFor("baseWelcome", beforeHello)).toMatchObject({
       tutorial: { phase: "movement", revision: 0 },
       inputAck: -1,
+      fabricatorEnabled: false,
+      snapshot: {
+        bots: expect.arrayContaining([
+          expect.objectContaining({ id: "player", position: { x: 260, y: 640 } }),
+          expect.objectContaining({ id: "base-practice-bot", state: "alive" }),
+        ]),
+        doors: expect.arrayContaining([
+          expect.objectContaining({ doorwayId: "base-intro-door", blocking: true }),
+        ]),
+      },
     });
 
     const beforeSkip = inbox.length;
@@ -106,14 +116,23 @@ describe("base tutorial WebSocket evidence path", () => {
       interact: false,
     } satisfies ClientMessage));
     const beforeClose = await first.waitFor("baseState");
-    expect(beforeClose).toMatchObject({ inputAck: 0 });
+    expect(beforeClose).toMatchObject({
+      inputAck: 0,
+      fabricatorEnabled: false,
+      snapshot: { bots: expect.arrayContaining([expect.objectContaining({ id: "player" })]) },
+    });
     first.socket.close();
     await new Promise<void>((resolve) => first.socket.once("close", () => resolve()));
 
     const resumed = await connect();
     resumed.socket.send(JSON.stringify({ type: "baseHello", token: account.token } satisfies ClientMessage));
     const welcome = await resumed.waitFor("baseWelcome");
-    expect(welcome).toMatchObject({ inputAck: 0 });
+    expect(welcome).toMatchObject({
+      inputAck: 0,
+      playerPosition: beforeClose.type === "baseState" ? beforeClose.playerPosition : undefined,
+      snapshot: beforeClose.type === "baseState" ? beforeClose.snapshot : undefined,
+      fabricatorEnabled: false,
+    });
     resumed.socket.send(JSON.stringify({
       type: "baseInput",
       seq: 1,

@@ -46,6 +46,7 @@ describe("base boot and deployment seams", () => {
     const complete = createBaseMap(starterBaseLayout, "workshop", { tutorial: tutorial("complete", 4) });
     const deployment = complete.interactionDots!.find((dot) => dot.kind === "deployment")!;
     const locker = complete.interactionDots!.find((dot) => dot.kind === "object")!;
+    expect(complete.interactionDots!.some((dot) => dot.targetId === "base-intro-fabricator")).toBe(false);
     expect(findBaseTarget(complete, deployment.position)?.type).toBe("deployment");
     expect(findBaseTarget(complete, locker.position)?.type).toBe("object");
   });

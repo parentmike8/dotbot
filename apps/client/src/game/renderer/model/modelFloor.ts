@@ -60,7 +60,7 @@ export type FloorModel = {
   furniture: Container;
   /** The object art alone, inside `furniture`. */
   objects: Container;
-  objectViews: Map<string, { object: MapObject; view: Graphics }>;
+  objectViews: Map<string, FloorObjectView>;
   /**
    * Ambient moving parts this floor's glyphs tagged — see `modelMotion`.
    *
@@ -75,6 +75,29 @@ export type FloorModel = {
   annotation: Container;
   annotationGfx: Graphics;
 };
+
+export type FloorObjectView = {
+  object: MapObject;
+  /** The object's production ink. */
+  view: Graphics;
+  /** Its object-local contact shadow and ambient occlusion, when the surface has them. */
+  effects?: Graphics[];
+};
+
+/**
+ * Keeps every visible contribution behind the same enabled flag as collision.
+ * Returns whether any authored or rendered state actually changed.
+ */
+export function setFloorObjectViewEnabled(handle: FloorObjectView, enabled: boolean): boolean {
+  const effects = handle.effects ?? [];
+  const changed = handle.object.enabled !== enabled
+    || handle.view.visible !== enabled
+    || effects.some((effect) => effect.visible !== enabled);
+  handle.object.enabled = enabled;
+  handle.view.visible = enabled;
+  for (const effect of effects) effect.visible = enabled;
+  return changed;
+}
 
 
 // ---------------------------------------------------------------------------
@@ -667,7 +690,7 @@ const SCRATCH_PAD: ShadowPad = SHADOW_ALPHA.map(() => new Graphics());
  * objects rebuilt, so the caller can report the cost rather than guess at it.
  */
 export function redrawFloorObjects(
-  objectViews: Map<string, { object: MapObject; view: Graphics }>,
+  objectViews: Map<string, FloorObjectView>,
   viewCentre: Vec2,
   strength: number,
 ): number {
@@ -709,7 +732,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   const stairs = new Container();
   const annotation = new Container();
   const annotationGfx = new Graphics();
-  const objectViews = new Map<string, { object: MapObject; view: Graphics }>();
+  const objectViews = new Map<string, FloorObjectView>();
   const movers: AmbientMover[] = [];
   const stairViews = new Map<string, { stair: StairLink; view: Container }>();
 
@@ -725,8 +748,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
 
   const structurePad = makePad(SHADOW_ALPHA);
   const structureAo = makePad(AO_ALPHA);
-  const objectPad = makePad(SHADOW_ALPHA);
-  const objectAo = makePad(AO_ALPHA);
+  const objectEffects: Graphics[] = [];
 
   const rooms = findRooms(fp, floor);
   drawSlab(slab, fp, plan);
@@ -772,8 +794,6 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   for (const barrier of floor.barriers ?? []) {
     for (const run of capsuleRuns(barrier)) occludeShape(structureAo, pathOutline(run.points, run.thickness), 11);
   }
-  for (const object of floor.objects) occlude(objectAo, object, 7);
-
   drawWalls(structure, structurePad, floor, fp);
   /**
    * Openings that sit on a turning wall get their own rotated Graphics; the rest draw
@@ -826,6 +846,9 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   const flat = floor.objects.filter((object) => FLAT_KINDS.has(object.kind)).sort(byDepth);
   const standing = floor.objects.filter((object) => !FLAT_KINDS.has(object.kind)).sort(byDepth);
   for (const object of [...flat, ...standing]) {
+    const objectPad = makePad(SHADOW_ALPHA);
+    const objectAo = makePad(AO_ALPHA);
+    occlude(objectAo, object, 7);
     const g = new Graphics();
     drawModelObject(g, objectPad, object);
     // Derived from the collider, not from a kind list — that disagreement is the bug
@@ -858,9 +881,12 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
       g.position.set(cx, cy);
       g.rotation = object.angle;
     }
-    g.visible = object.enabled !== false;
+    const effects = [...objectAo, ...objectPad];
+    objectEffects.push(...effects);
     objects.addChild(g);
-    objectViews.set(object.id, { object, view: g });
+    const handle: FloorObjectView = { object, view: g, effects };
+    objectViews.set(object.id, handle);
+    setFloorObjectViewEnabled(handle, object.enabled !== false);
     movers.push(...collectMovers(g, object));
   }
 
@@ -894,7 +920,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
     // rather than under it. Same z-intent as `structure` and `glazing`, one node each.
     ...turned,
   );
-  furniture.addChild(...objectAo, ...objectPad, objects);
+  furniture.addChild(...objectEffects, objects);
   annotation.addChild(annotationGfx);
 
   view.addChild(architecture, furniture, annotation);

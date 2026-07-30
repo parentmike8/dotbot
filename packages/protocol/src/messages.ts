@@ -350,12 +350,18 @@ export type ServerMessage =
       playerPosition: { x: number; y: number };
       /** Last server-accepted input frame; reconnecting clients continue at the next value. */
       inputAck: number;
+      /** Complete authoritative base-introduction frame; the browser never runs a parallel simulation. */
+      snapshot: import("@dotbot/game/types").GameSnapshot;
+      /** Runtime fixture state not represented by GameSnapshot. */
+      fabricatorEnabled: boolean;
     }
   | {
       type: "baseState";
       tutorial: import("@dotbot/game/baseTutorial").BaseTutorialState;
       playerPosition: { x: number; y: number };
       inputAck: number;
+      snapshot: import("@dotbot/game/types").GameSnapshot;
+      fabricatorEnabled: boolean;
     }
   | {
       type: "welcome";
