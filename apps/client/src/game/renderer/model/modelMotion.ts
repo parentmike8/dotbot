@@ -601,8 +601,25 @@ export type TrailMarks = {
   view: Container;
   marks: Graphics[];
   born: number[];
+  /** Geometry and links for the segment currently occupying each pooled mark. */
+  segments: Array<TrailSegment | null>;
+  /** Most recent segment in each independently moving bot's trail. */
+  tails: Map<string, number>;
   /** Ring cursor. The pool recycles oldest-first because the oldest is the faintest. */
   next: number;
+};
+
+type TrailSegment = {
+  from: Vec2;
+  to: Vec2;
+  heading: number;
+  startAcross: Vec2;
+  endAcross: Vec2;
+  startCap: boolean;
+  endCap: boolean;
+  chainId: string;
+  prev: number | null;
+  next: number | null;
 };
 
 /**
@@ -652,22 +669,6 @@ const TRAIL_LIFE_MS = 2_600;
  * has no length of its own — it is exactly as long as the ground the bot covered.
  */
 const TRAIL_HALF_WIDE = 16;
-/**
- * How far each segment runs past its own endpoints, in world units. ZERO, and that is a fix.
- *
- * It was 2, to close any notch on the outside of a bend, and it cost more than it bought: two
- * units of overlap means each segment double-covers its neighbour across the full width of the
- * channel, so every join became a four-unit cross-band at twice the alpha. Along a straight run
- * that is a LADDER — a rung every stride — which is a far louder artefact than the notch it was
- * insuring against.
- *
- * At zero the two butt edges coincide exactly on a straight run and the join is invisible. On a
- * bend a small wedge doubles up on the inside of the turn and a small one is missed on the
- * outside, both a fraction of the channel's width, and the inside one reads as the inside of a
- * corner being more worn — which is true of a real path.
- */
-const SEGMENT_OVERLAP = 0;
-
 /**
  * How far the channel is pushed apart along the light, in world units.
  *
@@ -733,7 +734,14 @@ export function buildTrailMarks(): TrailMarks {
     view.addChild(mark);
     marks.push(mark);
   }
-  return { view, marks, born: new Array(TRAIL_COUNT).fill(-Infinity), next: 0 };
+  return {
+    view,
+    marks,
+    born: new Array(TRAIL_COUNT).fill(-Infinity),
+    segments: new Array<TrailSegment | null>(TRAIL_COUNT).fill(null),
+    tails: new Map(),
+    next: 0,
+  };
 }
 
 /**
@@ -762,37 +770,115 @@ export function divotQuads(
   from: Vec2,
   to: Vec2,
   heading: number,
+  ends?: { startAcross?: Vec2; endAcross?: Vec2 },
 ): { shade: Vec2[]; lit: Vec2[] } {
   const along = { x: Math.cos(heading), y: Math.sin(heading) };
   const across = { x: -along.y, y: along.x };
-  const b = TRAIL_HALF_WIDE;
+  const startAcross = ends?.startAcross ?? {
+    x: across.x * TRAIL_HALF_WIDE,
+    y: across.y * TRAIL_HALF_WIDE,
+  };
+  const endAcross = ends?.endAcross ?? {
+    x: across.x * TRAIL_HALF_WIDE,
+    y: across.y * TRAIL_HALF_WIDE,
+  };
   const lit = litSide();
 
   const channel = (shift: number): Vec2[] => {
     const sx = lit.x * shift;
     const sy = lit.y * shift;
-    // Run a hair past both ends, so a bend does not open a notch on its outside.
-    const ax = from.x - along.x * SEGMENT_OVERLAP + sx;
-    const ay = from.y - along.y * SEGMENT_OVERLAP + sy;
-    const bx = to.x + along.x * SEGMENT_OVERLAP + sx;
-    const by = to.y + along.y * SEGMENT_OVERLAP + sy;
-    const wx = across.x * b;
-    const wy = across.y * b;
     return [
-      { x: ax - wx, y: ay - wy }, { x: bx - wx, y: by - wy },
-      { x: bx + wx, y: by + wy }, { x: ax + wx, y: ay + wy },
+      { x: from.x + sx - startAcross.x, y: from.y + sy - startAcross.y },
+      { x: to.x + sx - endAcross.x, y: to.y + sy - endAcross.y },
+      { x: to.x + sx + endAcross.x, y: to.y + sy + endAcross.y },
+      { x: from.x + sx + startAcross.x, y: from.y + sy + startAcross.y },
     ];
   };
 
   return { shade: channel(-LIP_OFFSET), lit: channel(LIP_OFFSET) };
 }
 
-function divot(g: Graphics, from: Vec2, to: Vec2, heading: number): void {
-  const { shade, lit } = divotQuads(from, to, heading);
+/**
+ * One cross-section shared by the two segments meeting at a turn.
+ *
+ * The old implementation ended every stamp with its own perpendicular edge. On a turn those
+ * two edges rotate apart, exposing the square end of each stamp. A miter is one edge used by
+ * both segments, so there is no cap, gap, or double-covered rung at the join. Very sharp turns
+ * are clamped before the miter can grow into a spike; both neighbours still receive the same
+ * clamped edge and therefore remain continuous.
+ */
+export function trailJoin(incomingHeading: number, outgoingHeading: number): Vec2 {
+  const inNormal = { x: -Math.sin(incomingHeading), y: Math.cos(incomingHeading) };
+  const outNormal = { x: -Math.sin(outgoingHeading), y: Math.cos(outgoingHeading) };
+  const mx = inNormal.x + outNormal.x;
+  const my = inNormal.y + outNormal.y;
+  const magnitude = Math.hypot(mx, my);
+  if (magnitude < 1e-5) {
+    return {
+      x: outNormal.x * TRAIL_HALF_WIDE,
+      y: outNormal.y * TRAIL_HALF_WIDE,
+    };
+  }
+  const unit = { x: mx / magnitude, y: my / magnitude };
+  const projection = Math.max(0.25, unit.x * outNormal.x + unit.y * outNormal.y);
+  const length = Math.min(TRAIL_HALF_WIDE * 1.6, TRAIL_HALF_WIDE / projection);
+  return { x: unit.x * length, y: unit.y * length };
+}
+
+const CAP_STEPS = 6;
+
+function channelPolygon(segment: TrailSegment, shift: number): Vec2[] {
+  const lit = litSide();
+  const sx = lit.x * shift;
+  const sy = lit.y * shift;
+  const shifted = (point: Vec2): Vec2 => ({ x: point.x + sx, y: point.y + sy });
+  const points: Vec2[] = [
+    shifted({
+      x: segment.from.x - segment.startAcross.x,
+      y: segment.from.y - segment.startAcross.y,
+    }),
+    shifted({
+      x: segment.to.x - segment.endAcross.x,
+      y: segment.to.y - segment.endAcross.y,
+    }),
+  ];
+
+  if (segment.endCap) {
+    for (let i = 1; i < CAP_STEPS; i += 1) {
+      const angle = segment.heading - Math.PI / 2 + (Math.PI * i) / CAP_STEPS;
+      points.push(shifted({
+        x: segment.to.x + Math.cos(angle) * TRAIL_HALF_WIDE,
+        y: segment.to.y + Math.sin(angle) * TRAIL_HALF_WIDE,
+      }));
+    }
+  }
+  points.push(shifted({
+    x: segment.to.x + segment.endAcross.x,
+    y: segment.to.y + segment.endAcross.y,
+  }));
+  points.push(shifted({
+    x: segment.from.x + segment.startAcross.x,
+    y: segment.from.y + segment.startAcross.y,
+  }));
+  if (segment.startCap) {
+    for (let i = 1; i < CAP_STEPS; i += 1) {
+      const angle = segment.heading + Math.PI / 2 + (Math.PI * i) / CAP_STEPS;
+      points.push(shifted({
+        x: segment.from.x + Math.cos(angle) * TRAIL_HALF_WIDE,
+        y: segment.from.y + Math.sin(angle) * TRAIL_HALF_WIDE,
+      }));
+    }
+  }
+  return points;
+}
+
+function divot(g: Graphics, segment: TrailSegment): void {
   // Up-light first: the rim that faces away from the sun. Then down-light, whose inner wall
   // turns back into it. Their overlap is the channel's floor and comes out very near untouched.
-  g.poly(shade).fill({ color: 0x000000, alpha: LIP_SHADE });
-  g.poly(lit).fill({ color: 0xffffff, alpha: LIP_LIT });
+  g.poly(channelPolygon(segment, -LIP_OFFSET))
+    .fill({ color: 0x000000, alpha: LIP_SHADE });
+  g.poly(channelPolygon(segment, LIP_OFFSET))
+    .fill({ color: 0xffffff, alpha: LIP_LIT });
 }
 
 /**
@@ -824,13 +910,79 @@ export function stampTrail(
   to: Vec2,
   heading: number,
   nowMs: number,
+  chainId = "default",
 ): void {
   const i = trail.next;
   trail.next = (i + 1) % trail.marks.length;
-  const mark = trail.marks[i];
-  mark.clear();
-  divot(mark, from, to, heading);
+  removeTrailSegment(trail, i);
+
+  const normal = {
+    x: -Math.sin(heading) * TRAIL_HALF_WIDE,
+    y: Math.cos(heading) * TRAIL_HALF_WIDE,
+  };
+  const previousIndex = trail.tails.get(chainId);
+  const previous = previousIndex === undefined ? null : trail.segments[previousIndex];
+  const connects = previous !== null && previousIndex !== undefined
+    && nowMs - trail.born[previousIndex] < TRAIL_LIFE_MS
+    && Math.hypot(previous.to.x - from.x, previous.to.y - from.y) < 0.01;
+  const joinedAcross = connects && previous
+    ? trailJoin(previous.heading, heading)
+    : normal;
+
+  const segment: TrailSegment = {
+    from: { ...from },
+    to: { ...to },
+    heading,
+    startAcross: { ...joinedAcross },
+    endAcross: { ...normal },
+    startCap: !connects,
+    endCap: true,
+    chainId,
+    prev: connects ? previousIndex! : null,
+    next: null,
+  };
+  trail.segments[i] = segment;
+
+  if (connects && previous && previousIndex !== undefined) {
+    previous.endAcross = { ...joinedAcross };
+    previous.endCap = false;
+    previous.next = i;
+    redrawTrailSegment(trail, previousIndex);
+  }
+
+  redrawTrailSegment(trail, i);
+  trail.tails.set(chainId, i);
   trail.born[i] = nowMs;
+}
+
+function redrawTrailSegment(trail: TrailMarks, index: number): void {
+  const mark = trail.marks[index];
+  const segment = trail.segments[index];
+  mark.clear();
+  if (segment) divot(mark, segment);
+}
+
+function removeTrailSegment(trail: TrailMarks, index: number): void {
+  const segment = trail.segments[index];
+  if (!segment) return;
+
+  const previous = segment.prev === null ? null : trail.segments[segment.prev];
+  const next = segment.next === null ? null : trail.segments[segment.next];
+  if (previous && previous.next === index) {
+    previous.next = null;
+    previous.endCap = true;
+    redrawTrailSegment(trail, segment.prev!);
+  }
+  if (next && next.prev === index) {
+    next.prev = null;
+    next.startCap = true;
+    redrawTrailSegment(trail, segment.next!);
+  }
+  if (trail.tails.get(segment.chainId) === index) {
+    trail.tails.delete(segment.chainId);
+  }
+  trail.segments[index] = null;
+  trail.marks[index].clear();
 }
 
 /**
@@ -847,6 +999,7 @@ export function fadeTrail(trail: TrailMarks, nowMs: number): void {
     const mark = trail.marks[i];
     if (age >= 1 || age < 0) {
       mark.visible = false;
+      if (age >= 1) removeTrailSegment(trail, i);
       continue;
     }
     mark.visible = true;

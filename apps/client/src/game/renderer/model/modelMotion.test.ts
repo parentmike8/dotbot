@@ -8,7 +8,8 @@ import { buildOutdoorModel } from "./modelOutdoor";
 import { buildMapArt } from "../mapArt";
 import {
   animateAmbient, buildTrailMarks, collectMovers, divotQuads, driftLeaves, fadeTrail, litSide,
-  movingPart, stampTrail, trailStep, TRAIL_CHANNEL_WIDTH, TRAIL_MARK_MAX_ALPHA, TRAIL_STRIDE,
+  movingPart, stampTrail, trailJoin, trailStep, TRAIL_CHANNEL_WIDTH, TRAIL_MARK_MAX_ALPHA,
+  TRAIL_STRIDE,
   type AmbientMover,
 } from "./modelMotion";
 import { SHADOW_ALPHA, SUN, type ShadowPad } from "./tone";
@@ -442,7 +443,8 @@ describe("ambient motion", () => {
         fadeTrail(trail, 5_000);
         const shown = trail.marks.filter((mark) => mark.visible);
         expect(shown.length).toBeGreaterThan(8);
-        return shown[0].getLocalBounds();
+        // An interior segment: the trail's true ends are rounded, while every join is shared.
+        return shown[Math.floor(shown.length / 2)].getLocalBounds();
       };
 
       const south = box({ x: 1_000, y: 400 }, { x: 1_000, y: 700 });
@@ -468,6 +470,49 @@ describe("ambient motion", () => {
       expect(south.width).toBeLessThan(48);
       expect(east.height).toBeGreaterThanOrEqual(TRAIL_CHANNEL_WIDTH);
       expect(east.height).toBeLessThan(48);
+    });
+
+    it("shares one cross-section at every turn instead of exposing square stamp ends", () => {
+      const point = { x: 500, y: 500 };
+      for (let i = 0; i < 64; i += 1) {
+        const incoming = (i / 64) * Math.PI * 2;
+        // A tight circular turn. The old pair of perpendicular butt ends separated here,
+        // leaving the square corners visible at every stride.
+        const outgoing = incoming + Math.PI / 3;
+        const joint = trailJoin(incoming, outgoing);
+        const previous = divotQuads(
+          {
+            x: point.x - Math.cos(incoming) * TRAIL_STRIDE,
+            y: point.y - Math.sin(incoming) * TRAIL_STRIDE,
+          },
+          point,
+          incoming,
+          { endAcross: joint },
+        );
+        const next = divotQuads(
+          point,
+          {
+            x: point.x + Math.cos(outgoing) * TRAIL_STRIDE,
+            y: point.y + Math.sin(outgoing) * TRAIL_STRIDE,
+          },
+          outgoing,
+          { startAcross: joint },
+        );
+
+        for (const lip of ["shade", "lit"] as const) {
+          expect(previous[lip][1].x).toBeCloseTo(next[lip][0].x, 6);
+          expect(previous[lip][1].y).toBeCloseTo(next[lip][0].y, 6);
+          expect(previous[lip][2].x).toBeCloseTo(next[lip][3].x, 6);
+          expect(previous[lip][2].y).toBeCloseTo(next[lip][3].y, 6);
+        }
+      }
+
+      const trail = buildTrailMarks();
+      stampTrail(trail, { x: 476, y: 500 }, point, 0, 1_000, "player");
+      stampTrail(trail, point, { x: 500, y: 524 }, Math.PI / 2, 1_080, "player");
+      expect(trail.segments[0]?.endAcross).toEqual(trail.segments[1]?.startAcross);
+      expect(trail.segments[0]?.endCap).toBe(false);
+      expect(trail.segments[1]?.startCap).toBe(false);
     });
 
     /**

@@ -1534,7 +1534,7 @@ export class GameRenderer {
           this.map, playerContext, player.position, bot.position, occluders,
         )) continue;
       }
-      stampTrail(this.art.trails, step.from, at, step.heading, nowMs);
+      stampTrail(this.art.trails, step.from, at, step.heading, nowMs, bot.id);
     }
   }
 
