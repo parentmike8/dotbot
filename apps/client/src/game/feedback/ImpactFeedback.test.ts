@@ -107,6 +107,31 @@ describe("impact feedback", () => {
     expect(createAudioContext).not.toHaveBeenCalled();
     expect(statuses).toEqual(["off"]);
   });
+
+  it("renders a clash as a distinct double-strike parry cue", () => {
+    const clashAudio = fakeAudioContext("running");
+    const clashFeedback = new ImpactFeedback(preferences, {
+      createAudioContext: () => clashAudio.context as unknown as AudioContext,
+    });
+
+    clashFeedback.playDashContact("clash", "attacker", false);
+
+    expect(clashAudio.oscillators).toHaveLength(3);
+    expect(clashAudio.oscillators[0].type).toBe("square");
+    expect(clashAudio.oscillators[0].frequency.setValueAtTime).toHaveBeenCalledWith(920, 0);
+    expect(clashAudio.oscillators[1].frequency.setValueAtTime).toHaveBeenCalledWith(1_380, 0.045);
+    expect(clashAudio.oscillators[1].start).toHaveBeenCalledWith(0.045);
+
+    const bumpAudio = fakeAudioContext("running");
+    const bumpFeedback = new ImpactFeedback(preferences, {
+      createAudioContext: () => bumpAudio.context as unknown as AudioContext,
+    });
+    bumpFeedback.playDashContact("bump", "attacker", false);
+
+    expect(bumpAudio.oscillators).toHaveLength(1);
+    expect(bumpAudio.oscillators[0].type).toBe("sine");
+    expect(bumpAudio.oscillators[0].frequency.setValueAtTime).toHaveBeenCalledWith(180, 0);
+  });
 });
 
 type FakeAudioState = AudioContextState | "interrupted";

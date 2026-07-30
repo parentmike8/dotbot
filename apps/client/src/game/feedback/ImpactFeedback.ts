@@ -250,7 +250,7 @@ export class ImpactFeedback {
         && typeof navigator !== "undefined"
         && "vibrate" in navigator
       ) {
-        navigator.vibrate(result === "clash" ? 24 : 10);
+        navigator.vibrate(result === "clash" ? [18, 12, 30] : 10);
       }
     } catch {
       // Contact feedback is optional; combat authority never depends on it.
@@ -392,8 +392,8 @@ export class ImpactFeedback {
   ): void {
     const now = context.currentTime;
     const output = context.createGain();
-    output.gain.setValueAtTime(Math.max(0.0001, 0.2 * intensity), now);
-    output.gain.exponentialRampToValueAtTime(0.0001, now + (result === "clash" ? 0.14 : 0.08));
+    output.gain.setValueAtTime(Math.max(0.0001, (result === "clash" ? 0.28 : 0.2) * intensity), now);
+    output.gain.exponentialRampToValueAtTime(0.0001, now + (result === "clash" ? 0.24 : 0.08));
     const panner = typeof context.createStereoPanner === "function" ? context.createStereoPanner() : null;
     if (panner) {
       panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), now);
@@ -404,25 +404,41 @@ export class ImpactFeedback {
 
     const body = context.createOscillator();
     const bodyGain = context.createGain();
-    body.type = result === "clash" ? "triangle" : "sine";
-    body.frequency.setValueAtTime(result === "clash" ? 520 : 180, now);
-    body.frequency.exponentialRampToValueAtTime(result === "clash" ? 190 : 85, now + 0.07);
-    bodyGain.gain.setValueAtTime(result === "clash" ? 0.75 : 0.55, now);
-    bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+    body.type = result === "clash" ? "square" : "sine";
+    body.frequency.setValueAtTime(result === "clash" ? 920 : 180, now);
+    body.frequency.exponentialRampToValueAtTime(result === "clash" ? 640 : 85, now + 0.045);
+    bodyGain.gain.setValueAtTime(result === "clash" ? 0.68 : 0.55, now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + (result === "clash" ? 0.065 : 0.09));
     body.connect(bodyGain).connect(output);
     body.start(now);
-    body.stop(now + 0.1);
+    body.stop(now + (result === "clash" ? 0.07 : 0.1));
 
     if (result === "clash") {
+      // A second, higher metal strike is the semantic cue: two armed dashes
+      // met and parried. The gap is long enough to read as "clang-clang" on a
+      // phone speaker, unlike the single low body thud used by a failed bump.
+      const counter = context.createOscillator();
+      const counterGain = context.createGain();
+      counter.type = "square";
+      counter.frequency.setValueAtTime(1_380, now + 0.045);
+      counter.frequency.exponentialRampToValueAtTime(980, now + 0.1);
+      counterGain.gain.setValueAtTime(0.0001, now);
+      counterGain.gain.setValueAtTime(0.58, now + 0.045);
+      counterGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.115);
+      counter.connect(counterGain).connect(output);
+      counter.start(now + 0.045);
+      counter.stop(now + 0.12);
+
       const ring = context.createOscillator();
       const ringGain = context.createGain();
       ring.type = "sine";
-      ring.frequency.setValueAtTime(1_250, now);
-      ringGain.gain.setValueAtTime(0.38, now);
-      ringGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+      ring.frequency.setValueAtTime(1_850, now);
+      ring.frequency.exponentialRampToValueAtTime(1_180, now + 0.2);
+      ringGain.gain.setValueAtTime(0.3, now);
+      ringGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
       ring.connect(ringGain).connect(output);
       ring.start(now);
-      ring.stop(now + 0.14);
+      ring.stop(now + 0.23);
     }
   }
 

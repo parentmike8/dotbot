@@ -979,6 +979,85 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it.each([
+    {
+      name: "one target behind the other",
+      targets: [{ x: 156, y: 180 }, { x: 204, y: 180 }],
+    },
+    {
+      name: "both targets abreast of the attacker",
+      targets: [{ x: 156, y: 156 }, { x: 156, y: 204 }],
+    },
+  ])("lets a third player damage a touching hostile pair: $name", async ({ targets }) => {
+    for (const attackerFirst of [false, true]) {
+      const targetSpawns = targets.map((position, index) => enemySpawn({
+        id: `target-${index}`,
+        position,
+        controller: "human",
+        isAmbient: false,
+      }));
+      const attacker = playerSpawn({ position: { x: 100, y: 180 } });
+      const simulation = await makeSimulation(
+        attackerFirst ? [attacker, ...targetSpawns] : [...targetSpawns, attacker],
+      );
+
+      // The targets begin in body contact with one another. That relationship
+      // must not be mistaken for point-blank contact between the attacker and
+      // whichever target its dash reaches first.
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+      simulation.step();
+
+      const events = simulation.drainEvents();
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "hit",
+        byBotId: "player",
+        result: "plateBreak",
+      }));
+      expect(
+        simulation.getSnapshot().bots
+          .filter((bot) => bot.id === "target-0" || bot.id === "target-1")
+          .some((bot) => bot.shields < bot.maxShields),
+      ).toBe(true);
+      simulation.dispose();
+    }
+  });
+
+  it("does not let a touching bystander suppress a third player's otherwise valid hit", async () => {
+    const angles = Array.from({ length: 4 }, (_, index) => (index * Math.PI) / 2);
+    for (const approachAngle of angles) {
+      for (const pairAngle of angles) {
+        const target = { x: 250, y: 180 };
+        const pair = {
+          x: target.x + Math.cos(pairAngle) * 48,
+          y: target.y + Math.sin(pairAngle) * 48,
+        };
+        const attacker = {
+          x: target.x - Math.cos(approachAngle) * 112,
+          y: target.y - Math.sin(approachAngle) * 112,
+        };
+        const move = { x: Math.cos(approachAngle), y: Math.sin(approachAngle) };
+        const simulation = await makeSimulation([
+          enemySpawn({ id: "target", position: target, controller: "human", isAmbient: false }),
+          enemySpawn({ id: "bystander", position: pair, controller: "human", isAmbient: false }),
+          playerSpawn({ position: attacker }),
+        ]);
+
+        simulation.applyInput("player", { move, dash: true });
+        for (let tick = 0; tick < 12; tick += 1) simulation.step();
+        const events = simulation.drainEvents();
+        const hit = events.some(
+          (event) => event.type === "hit" && event.byBotId === "player",
+        );
+        expect(
+          hit,
+          `approach ${approachAngle.toFixed(2)}, pair ${pairAngle.toFixed(2)}; `
+            + `events=${JSON.stringify(events)} snapshot=${JSON.stringify(simulation.getSnapshot().bots)}`,
+        ).toBe(true);
+        simulation.dispose();
+      }
+    }
+  });
+
   it("clashes two plated dashes that both began with clear space", async () => {
     const simulation = await makeSimulation([
       playerSpawn({ position: { x: 100, y: 180 } }),
