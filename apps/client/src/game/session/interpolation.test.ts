@@ -69,4 +69,30 @@ describe("fixed-delay interpolation", () => {
     const own = merged.bots.find(({ id }) => id === "own")!;
     expect(own.shieldSegments).toEqual([1, 1, 1]);
   });
+
+  it("reuses immutable source indexes without changing repeated render samples", () => {
+    const before = structuredClone(samples);
+    const first = sampleTimeline(samples, 4.25, 3);
+    const second = sampleTimeline(samples, 4.25, 3);
+
+    expect(second).toEqual(first);
+    expect(samples).toEqual(before);
+    expect(second?.snapshot).not.toBe(first?.snapshot);
+    expect(second?.snapshot.bots).not.toBe(first?.snapshot.bots);
+  });
+
+  it("keeps radar-ping interpolation identical on the non-empty path", () => {
+    const older = snapshot(0, 0);
+    const newer = snapshot(3, 30);
+    older.bots[0].radarPings = [{ x: 25, y: 40, ageMs: 10 }];
+    newer.bots[0].radarPings = [{ x: 25, y: 40, ageMs: 40 }];
+
+    const sampled = sampleTimeline([
+      { tick: 0, snapshot: older },
+      { tick: 3, snapshot: newer },
+    ], 1.5, 3)!;
+
+    expect(sampled.snapshot.bots[0].radarPings).toEqual([{ x: 25, y: 40, ageMs: 25 }]);
+    expect(sampled.snapshot.bots[0].radarPings).not.toBe(older.bots[0].radarPings);
+  });
 });
