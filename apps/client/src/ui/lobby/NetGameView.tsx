@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import type { NetSession } from "../../game/session/NetSession";
@@ -7,7 +7,7 @@ import { FeedbackControls } from "../FeedbackControls";
 import { BodyPromptView, DownedSelfView } from "../downed/DownedPrompts";
 import { useDownedPrompts } from "../downed/useDownedPrompts";
 import {
-  BayBank, DebugPanel, FloorRail, HoldPicker, PingPicker, RunReadout, SettingsPanel, TouchControls,
+  BayBank, DebugPanel, FloorRail, InventoryPanel, PingPicker, RunReadout, SettingsPanel, TouchControls,
 } from "../hud/Overlay";
 import { hudSkinClass } from "../hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "../hud/hud";
@@ -35,12 +35,12 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
-    selectDownedVerb, plea, useBay, swapBayItem, takeFromBody, setBodyAction,
+    selectDownedVerb, plea, useBay, swapBayItem, dropItem, takeFromBody, setBodyAction,
+    inventoryVisible, toggleInventory, closeInventory,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker,
     worldMapVisible, toggleWorldMap, closeWorldMap, markExterior, chooseExteriorMark, squadMarks,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
   } = useDotBotGame({ session, spectate: true, worldMapEnabled: !connectionMessage });
-  const [swapBay, setSwapBay] = useState<number | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
   const { prompt, self: downed, onVerb } = useDownedPrompts({
@@ -107,25 +107,26 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         <span className="room-chip">Room {roomCode}</span>
       </RunReadout>
 
-      {playing ? (
+      {runResult === null && player ? (
         <BayBank
           player={player}
           slots={session.config.baySlots}
           holdSlots={session.config.holdSlots}
           onUse={useBay}
-          onSwapRequest={setSwapBay}
+          onOpen={toggleInventory}
+          open={inventoryVisible}
         />
       ) : null}
 
-      {swapBay !== null && player?.hold.length ? (
-        <HoldPicker
-          bay={swapBay}
-          hold={player.hold}
-          onClose={() => setSwapBay(null)}
-          onChoose={(holdIndex) => {
-            swapBayItem(swapBay, holdIndex);
-            setSwapBay(null);
-          }}
+      {inventoryVisible && player && runResult === null ? (
+        <InventoryPanel
+          player={player}
+          slots={session.config.baySlots}
+          holdSlots={session.config.holdSlots}
+          onUse={useBay}
+          onSwap={swapBayItem}
+          onDrop={dropItem}
+          onClose={closeInventory}
         />
       ) : null}
 

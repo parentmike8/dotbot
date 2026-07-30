@@ -414,6 +414,7 @@ export class DotBotSimulation {
   private readonly squadHostilityUntil = new Map<string, number>();
   private noiseSeq = 0;
   private mineSeq = 0;
+  private dropSeq = 0;
 
   private constructor(map: MapDocument, config: GameConfig) {
     this.map = map;
@@ -632,6 +633,7 @@ export class DotBotSimulation {
       dash: (current?.dash ?? false) || input.dash,
       useBay: current?.useBay ?? input.useBay,
       swapBay: current?.swapBay ?? input.swapBay,
+      drop: current?.drop ?? input.drop,
       downedVerb: input.downedVerb,
       take: current?.take ?? input.take,
       plea: (current?.plea ?? false) || input.plea,
@@ -989,43 +991,47 @@ export class DotBotSimulation {
         continue;
       }
 
+      const input = this.inputs.get(bot.id);
+      if (input?.drop && !bot.isAmbient) {
+        this.dropItem(bot, input.drop);
+      }
+
       if (bot.state !== "alive") {
-        const input = this.inputs.get(bot.id);
         if (bot.state === "downed" && input?.plea && !bot.isAmbient && bot.pleaCooldownMs <= 0) {
           this.pleaFor(bot);
         }
         // A downed bot may still mark. Watching a rival walk past while you wait for a
         // pickup is exactly when telling your squad where they are matters most.
         if (input?.ping) this.pingFor(bot, input.ping.kind, input.ping.position, input.ping.floorId);
-        if (input?.dash || input?.useBay !== undefined || input?.swapBay || input?.plea || input?.ping) {
-          this.inputs.set(bot.id, { move: zeroVec(), dash: false, plea: false });
+        if (input?.dash || input?.useBay !== undefined || input?.swapBay || input?.drop || input?.plea || input?.ping) {
+          this.inputs.set(bot.id, { move: zeroVec(), dash: false, plea: false, drop: undefined });
         }
         continue;
       }
 
-      const input = this.inputs.get(bot.id) ?? { move: zeroVec(), dash: false };
-      bot.desiredMove = bot.activeSwap ? zeroVec() : input.move;
+      const aliveInput = input ?? { move: zeroVec(), dash: false };
+      bot.desiredMove = bot.activeSwap ? zeroVec() : aliveInput.move;
 
-      if (length(input.move) > 0.05) {
-        bot.lastAim = input.move;
+      if (length(aliveInput.move) > 0.05) {
+        bot.lastAim = aliveInput.move;
       }
 
-      if (input.useBay !== undefined && isSlot(bot.bays, input.useBay)) {
-        this.fireBay(bot, input.useBay);
+      if (aliveInput.useBay !== undefined && isSlot(bot.bays, aliveInput.useBay)) {
+        this.fireBay(bot, aliveInput.useBay);
       }
-      if (input.swapBay && !bot.activeSwap) {
-        const { bayIndex, holdIndex } = input.swapBay;
+      if (aliveInput.swapBay && !bot.activeSwap) {
+        const { bayIndex, holdIndex } = aliveInput.swapBay;
         if (isSlot(bot.bays, bayIndex) && isSlot(bot.hold, holdIndex)) {
           bot.activeSwap = { bayIndex, holdIndex, progressMs: 0 };
           bot.desiredMove = zeroVec();
         }
       }
 
-      if (input.take) {
-        this.takeFromBody(bot, input.take);
+      if (aliveInput.take) {
+        this.takeFromBody(bot, aliveInput.take);
       }
 
-      if (input.dash && !bot.activeSwap) {
+      if (aliveInput.dash && !bot.activeSwap) {
         const overcharged = bot.dashOverchargeCharges > 0;
         if ((overcharged || bot.dashCooldownMs <= 0) && bot.dashActiveMs <= 0) {
           bot.dashActiveMs = this.config.dashDurationMs;
@@ -1038,13 +1044,53 @@ export class DotBotSimulation {
         // A press is consumed on the tick it is considered, fired or not.
         // Pressing during cooldown must never bank a dash for later.
       }
-      if (input.ping) this.pingFor(bot, input.ping.kind, input.ping.position, input.ping.floorId);
-      if (input.dash || input.useBay !== undefined || input.swapBay || input.take || input.plea || input.ping) {
+      if (aliveInput.ping) this.pingFor(bot, aliveInput.ping.kind, aliveInput.ping.position, aliveInput.ping.floorId);
+      if (aliveInput.dash || aliveInput.useBay !== undefined || aliveInput.swapBay || aliveInput.drop || aliveInput.take || aliveInput.plea || aliveInput.ping) {
         this.inputs.set(bot.id, {
-          ...input, dash: false, useBay: undefined, swapBay: undefined, take: undefined, plea: false, ping: undefined,
+          ...aliveInput, dash: false, useBay: undefined, swapBay: undefined, drop: undefined, take: undefined, plea: false, ping: undefined,
         });
       }
     }
+  }
+
+  private dropItem(bot: InternalBot, request: NonNullable<InputCommand["drop"]>): void {
+    if (!Number.isInteger(request.index) || request.index < 0) return;
+    let item: Item | null = null;
+    if (request.from === "bay") {
+      if (!isSlot(bot.bays, request.index)) return;
+      item = bot.bays[request.index];
+      if (!item) return;
+      bot.bays[request.index] = null;
+    } else if (request.from === "hold") {
+      if (!isSlot(bot.hold, request.index)) return;
+      item = bot.hold.splice(request.index, 1)[0] ?? null;
+      if (!item) return;
+    } else {
+      return;
+    }
+
+    // A hold splice can retarget an in-progress swap. Cancel it instead of
+    // letting a stale index exchange a different item.
+    if (bot.activeSwap) {
+      bot.activeSwap = undefined;
+      this.coverages.delete(`swap:${bot.id}`);
+    }
+
+    let id: string;
+    do {
+      id = `runtime-drop-${this.dropSeq}`;
+      this.dropSeq += 1;
+    } while (this.dots.has(id));
+
+    this.dots.set(id, {
+      id,
+      position: { ...bot.position },
+      radius: this.config.dotRadius,
+      item: { ...item },
+      floorId: bot.floorId,
+      active: true,
+      captureProgressMs: 0,
+    });
   }
 
   private fireBay(bot: InternalBot, bayIndex: BayIndex): void {

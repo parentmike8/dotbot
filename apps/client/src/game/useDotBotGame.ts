@@ -80,6 +80,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const dashQueuedRef = useRef(false);
   const useBayQueuedRef = useRef<BayIndex | undefined>(undefined);
   const swapQueuedRef = useRef<{ bayIndex: BayIndex; holdIndex: number } | undefined>(undefined);
+  const dropQueuedRef = useRef<InputCommand["drop"]>(undefined);
   const downedVerbRef = useRef<DownedVerb | undefined>(undefined);
   const takeQueuedRef = useRef<TakeCommand | undefined>(undefined);
   const pleaQueuedRef = useRef(false);
@@ -121,6 +122,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   );
   const [networkDebug, setNetworkDebug] = useState<NetworkDebugStats | null>(null);
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [inventoryVisible, setInventoryVisible] = useState(false);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
   const [feedbackPreferences, setFeedbackPreferences] = useState(loadFeedbackPreferences);
   const [audioStatus, setAudioStatus] = useState<AudioFeedbackStatus>(
@@ -246,6 +248,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             dash: dashQueuedRef.current,
             useBay: useBayQueuedRef.current,
             swapBay: swapQueuedRef.current,
+            drop: dropQueuedRef.current,
             downedVerb: downedVerbRef.current,
             take: takeQueuedRef.current,
             plea: pleaQueuedRef.current,
@@ -255,6 +258,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         dashQueuedRef.current = false;
         useBayQueuedRef.current = undefined;
         swapQueuedRef.current = undefined;
+        dropQueuedRef.current = undefined;
         takeQueuedRef.current = undefined;
         pleaQueuedRef.current = false;
         pingQueuedRef.current = undefined;
@@ -400,6 +404,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           joystickRef.current = emptyJoystick;
           setJoystickView(emptyJoystick);
           setRunResult(result);
+          setInventoryVisible(false);
         }
 
         // Watching begins the moment you go down, not when the run ends: you
@@ -472,6 +477,16 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         event.preventDefault();
         setSettingsVisible((visible) => !visible);
         return;
+      }
+
+      if (event.code === "KeyI") {
+        event.preventDefault();
+        if (!runEndedRef.current && !event.repeat) setInventoryVisible((visible) => !visible);
+        return;
+      }
+
+      if (event.code === "Escape") {
+        setInventoryVisible(false);
       }
 
       if (event.code === "KeyF") {
@@ -596,6 +611,11 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const swapBayItem = useCallback((bayIndex: BayIndex, holdIndex: number) => {
     void feedbackRef.current?.unlock();
     if (!runEndedRef.current) swapQueuedRef.current = { bayIndex, holdIndex };
+  }, []);
+
+  const dropItem = useCallback((from: "bay" | "hold", index: number) => {
+    void feedbackRef.current?.unlock();
+    if (!runEndedRef.current) dropQueuedRef.current = { from, index };
   }, []);
 
   const cycleSpectator = useCallback(() => {
@@ -859,6 +879,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     networkDebug,
     settingsVisible,
     toggleSettings: () => setSettingsVisible((visible) => !visible),
+    inventoryVisible,
+    toggleInventory: () => setInventoryVisible((visible) => !visible),
+    closeInventory: () => setInventoryVisible(false),
     feedbackPreferences,
     audioStatus,
     toggleSound: () => toggleFeedbackPreference("sound"),
@@ -870,6 +893,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     queueDash,
     useBay,
     swapBayItem,
+    dropItem,
     leaveRun,
     selectDownedVerb,
     takeFromBody,

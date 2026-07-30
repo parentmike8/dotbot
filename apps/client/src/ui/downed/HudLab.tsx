@@ -4,7 +4,7 @@ import { downtownMap } from "@dotbot/game/content/downtown";
 import type { CoverageSnapshot, DotBotEntity, Item } from "@dotbot/game/types";
 import { bodyPrompt, downedSelf, type BodyPrompt, type DownedSelf } from "./prompt";
 import { BodyPromptView, DownedSelfView } from "./DownedPrompts";
-import { BayBank, FloorRail, HoldPicker, RunReadout, SettingsPanel } from "../hud/Overlay";
+import { BayBank, FloorRail, InventoryPanel, RunReadout, SettingsPanel, TouchControls } from "../hud/Overlay";
 import { floorColumn } from "../hud/hud";
 import { hudSkinClass } from "../hud/overlaySkins";
 import { FeedbackControls } from "../FeedbackControls";
@@ -169,11 +169,18 @@ const carrying: Item[] = [blueprint, health];
 export function HudLab() {
   const [selected, setSelected] = useState(0);
   const [corners, setCorners] = useState(true);
-  const [panel, setPanel] = useState<"none" | "hold" | "settings">("none");
+  const [panel, setPanel] = useState<"none" | "inventory" | "settings">("none");
   const pose = POSES[selected];
   const { prompt, self } = poseState(pose);
   const noop = () => {};
   const feedback = { sound: true, haptics: false, reducedMotion: false };
+  const inventoryActor = actor({
+    state: pose.bots[0].state,
+    shields: pose.bots[0].shields,
+    shieldSegments: pose.bots[0].shieldSegments,
+    bays: [health, blueprint, null],
+    hold: carrying,
+  });
 
   return (
     <main className="hud-lab">
@@ -189,7 +196,7 @@ export function HudLab() {
       </nav>
       <nav aria-label="Surfaces">
         <button type="button" aria-pressed={corners} onClick={() => setCorners((on) => !on)}>corners</button>
-        <button type="button" aria-pressed={panel === "hold"} onClick={() => setPanel(panel === "hold" ? "none" : "hold")}>hold picker</button>
+        <button type="button" aria-pressed={panel === "inventory"} onClick={() => setPanel(panel === "inventory" ? "none" : "inventory")}>inventory</button>
         <button type="button" aria-pressed={panel === "settings"} onClick={() => setPanel(panel === "settings" ? "none" : "settings")}>settings</button>
       </nav>
       <p className="hud-lab-note">{pose.note}</p>
@@ -201,17 +208,26 @@ export function HudLab() {
               <button type="button" className="restart-button">↻ Restart run</button>
             </RunReadout>
             <BayBank
-              player={actor({ bays: [health, blueprint, null], hold: carrying })}
+              player={inventoryActor}
               slots={defaultGameConfig.baySlots}
               holdSlots={defaultGameConfig.holdSlots}
               onUse={noop}
-              onSwapRequest={() => setPanel("hold")}
+              onOpen={() => setPanel(panel === "inventory" ? "none" : "inventory")}
+              open={panel === "inventory"}
             />
             {column ? <FloorRail column={column} /> : null}
           </>
         ) : null}
-        {panel === "hold" ? (
-          <HoldPicker bay={0} hold={carrying} onChoose={noop} onClose={() => setPanel("none")} />
+        {panel === "inventory" ? (
+          <InventoryPanel
+            player={inventoryActor}
+            slots={defaultGameConfig.baySlots}
+            holdSlots={defaultGameConfig.holdSlots}
+            onUse={noop}
+            onSwap={noop}
+            onDrop={noop}
+            onClose={() => setPanel("none")}
+          />
         ) : null}
         {panel === "settings" ? (
           <SettingsPanel onClose={() => setPanel("none")}>
@@ -227,6 +243,13 @@ export function HudLab() {
         ) : null}
         {self ? <DownedSelfView self={self} onPlea={noop} onLeave={noop} /> : null}
         <BodyPromptView prompt={prompt} onVerb={noop} onTake={noop} onTakeAll={noop} />
+        <TouchControls
+          joystick={{ active: false, knob: { x: 0, y: 0 } }}
+          joystickHandlers={{}}
+          onDash={noop}
+          dashProgress={0.64}
+          dashDisabled={pose.bots[0].state !== "alive"}
+        />
       </div>
     </main>
   );

@@ -77,6 +77,14 @@ export type DownedVerb = "loot" | "revive";
  */
 export type TakeCommand = { fromBotId: string; index: number | "all" };
 
+/**
+ * Drop one authoritative inventory slot.
+ *
+ * The client names a location and nothing more. Item contents, provenance,
+ * position, floor, radius, and runtime id are all derived by the simulation.
+ */
+export type DropCommand = { from: "bay" | "hold"; index: number };
+
 /** Compact persistence/wire codes for powerups. Blueprint cargo is excluded. */
 export type WirePowerupCode = "h" | "r" | "d" | "i";
 export type WireLoadoutCode = WirePowerupCode | "m";
@@ -874,6 +882,7 @@ export type InputCommand = {
   dash: boolean;
   useBay?: BayIndex;
   swapBay?: { bayIndex: BayIndex; holdIndex: number };
+  drop?: DropCommand;
   downedVerb?: DownedVerb;
   take?: TakeCommand;
   plea?: boolean;

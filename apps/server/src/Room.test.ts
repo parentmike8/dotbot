@@ -270,12 +270,96 @@ describe("Room input stream", () => {
     expect(carriesAction({ ...move, dash: true })).toBe(true);
     expect(carriesAction({ ...move, useBay: 0 })).toBe(true);
     expect(carriesAction({ ...move, swapBay: { bayIndex: 0, holdIndex: 0 } })).toBe(true);
+    expect(carriesAction({ ...move, drop: { from: "bay", index: 0 } })).toBe(true);
     expect(carriesAction({ ...move, take: { fromBotId: "enemy", index: "all" } })).toBe(true);
     expect(carriesAction({ ...move, plea: true })).toBe(true);
     // A verb is standing state, not an edge: it repeats every frame while a key is
     // held, so shedding one costs nothing — which is why `ActionEdges` does not
     // name it, and why passing it here would not typecheck.
     expect(carriesAction({ ...move })).toBe(false);
+  });
+
+  it("derives a dropped pickup from server state and includes it in a reconnect baseline", async () => {
+    let clock = 0;
+    const room = new Room("DROP", {
+      countdownMs: 0,
+      persistence: new NoopPersistence(),
+      aiWingmates: false,
+      now: () => clock,
+    });
+    const first = collectingPeer("drop-first");
+    room.join(first.peer, "drop-token", "Dropper", "drop-player", "alpha");
+    room.receive("drop-player", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+    const internals = room as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: {
+        bots: Map<string, { position: { x: number; y: number }; bays: unknown[] }>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+    };
+    const member = internals.members.get("drop-player")!;
+    const authoritative = internals.simulation.bots.get(member.botId)!;
+    const cargo = { kind: "powerup", type: "health", sourceBuildingId: "mercy" } as const;
+    authoritative.bays[0] = cargo;
+    const at = { ...authoritative.position };
+
+    room.receive("drop-player", {
+      type: "input",
+      seq: 1,
+      move: [0, 0],
+      dash: false,
+      drop: {
+        from: "bay",
+        index: 0,
+        item: { kind: "mine" },
+        position: [9999, 9999],
+        floorId: "forged",
+      },
+      frames: [
+        {
+          seq: 1,
+          move: [0, 0],
+          dash: false,
+          drop: {
+            from: "bay",
+            index: 0,
+            item: { kind: "mine" },
+            position: [9999, 9999],
+            floorId: "forged",
+          },
+        },
+        { seq: 2, move: [0, 0], dash: false },
+      ],
+    } as never);
+    clock += 1000 / 60 + 0.01;
+    room.tick(clock);
+    clock += 1000 / 60 + 0.01;
+    room.tick(clock);
+
+    const dropped = internals.simulation.getSnapshot().dots.find((dot) => dot.id.startsWith("runtime-drop-"))!;
+    expect(dropped).toMatchObject({
+      position: at,
+      floorId: "outdoor",
+      item: cargo,
+    });
+    expect(authoritative.bays[0]).toBeNull();
+    clock += 1000 / 60 + 0.01;
+    room.tick(clock);
+    expect(first.messages.filter((message) => message.type === "snap").at(-1)?.dotAdds)
+      .toContainEqual(expect.objectContaining({ id: dropped.id, it: { c: "h", s: "mercy" } }));
+
+    room.disconnect(first.peer.id);
+    const reconnected = collectingPeer("drop-reconnected");
+    expect(room.join(reconnected.peer, "drop-token", "Dropper", "drop-player", "alpha")).not.toBeNull();
+    const start = reconnected.messages.find((message) => message.type === "matchStart");
+    expect(start?.dotBaseline).toContainEqual(expect.objectContaining({
+      id: dropped.id,
+      position: at,
+      it: { c: "h", s: "mercy" },
+      active: true,
+    }));
+    room.dispose();
   });
 
   it("consumes one frame per tick in seq order, acks only applied frames, and sheds stall backlogs", async () => {

@@ -282,6 +282,7 @@ export class Room {
           viewTick: message.viewTick,
           useBay: message.useBay,
           swapBay: message.swapBay,
+          drop: message.drop,
           downedVerb: message.downedVerb,
           take: message.take,
           plea: message.plea,
@@ -464,6 +465,7 @@ export class Room {
       dash: frame.dash,
       useBay: frame.useBay,
       swapBay: frame.swapBay,
+      drop: frame.drop,
       downedVerb: frame.downedVerb,
       take: frame.take,
       plea: frame.plea,
@@ -742,7 +744,7 @@ export class Room {
     member: Member,
     filtered: FullWireSnapshot,
     contexts: ReadonlySet<string>,
-  ): { deltas?: WireDotDelta[]; sync?: WireDotContextSync[] } {
+  ): { deltas?: WireDotDelta[]; adds?: WireDot[]; sync?: WireDotContextSync[] } {
     if (!sameSet(member.dotContexts, contexts)) {
       const affected = new Set([...member.dotContexts, ...contexts]);
       const sync = [...affected].sort().map((context) => {
@@ -756,11 +758,12 @@ export class Room {
     }
 
     const deltas: WireDotDelta[] = [];
+    const adds: WireDot[] = [];
     for (const dot of filtered.dots) {
       const previous = member.dotState.get(dot.id);
       const captureProgressMs = dot.captureProgressMs ?? 0;
       if (!previous) {
-        deltas.push({ id: dot.id, active: dot.active, captureProgressMs });
+        adds.push(dot);
       } else {
         const delta: WireDotDelta = { id: dot.id };
         if (previous.active !== dot.active) delta.active = dot.active;
@@ -769,7 +772,10 @@ export class Room {
       }
       member.dotState.set(dot.id, { active: dot.active, captureProgressMs });
     }
-    return deltas.length ? { deltas } : {};
+    return {
+      ...(deltas.length ? { deltas } : {}),
+      ...(adds.length ? { adds } : {}),
+    };
   }
 
   private resetDotState(member: Member, dots: readonly WireDot[], contexts: ReadonlySet<string>): void {

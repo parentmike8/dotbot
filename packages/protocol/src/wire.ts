@@ -4,7 +4,7 @@ import type { DotBotEntity, DotEntity, GameSnapshot, MineEntity, NoiseEvent, Cov
 import type { SimEvent } from "@dotbot/game/types";
 import type { EntityMeta, FullWireSnapshot, WireBot, WireDot, WireDotContextSync, WireDotDelta, WireMine, WireSnapshot } from "./messages";
 import type { WireSimEvent } from "./messages";
-import { itemFromCode, itemToCode } from "./items";
+import { itemFromWire, itemToWire } from "./items";
 
 const roundPosition = (value: number) => Math.round(value * 100) / 100;
 const roundFloat = (value: number) => Math.round(value * 100) / 100;
@@ -41,13 +41,14 @@ export function toWireSnapshot(snapshot: GameSnapshot): FullWireSnapshot {
 export function toViewerSnapshot(
   wire: FullWireSnapshot,
   ack: number,
-  dots: { deltas?: WireDotDelta[]; sync?: WireDotContextSync[] } = {},
+  dots: { deltas?: WireDotDelta[]; adds?: WireDot[]; sync?: WireDotContextSync[] } = {},
 ): WireSnapshot {
   return {
     tick: wire.tick,
     ack,
     bots: wire.bots,
     ...(dots.deltas?.length ? { dotDeltas: dots.deltas } : {}),
+    ...(dots.adds?.length ? { dotAdds: dots.adds } : {}),
     ...(dots.sync?.length ? { dotSync: dots.sync } : {}),
     ...(wire.mines.length ? { mines: wire.mines } : {}),
     ...(wire.coverages.length ? { coverages: wire.coverages } : {}),
@@ -63,7 +64,7 @@ export function toWireDot(dot: DotEntity): WireDot {
     position: { x: roundPosition(dot.position.x), y: roundPosition(dot.position.y) },
     radius: roundFloat(dot.radius),
     floorId: dot.floorId,
-    it: itemToCode(dot.item),
+    it: itemToWire(dot.item),
     active: dot.active,
     ...(dot.captureProgressMs === 0 ? {} : { captureProgressMs: roundMs(dot.captureProgressMs) }),
   };
@@ -71,9 +72,12 @@ export function toWireDot(dot: DotEntity): WireDot {
 
 export function applyWireDotFrame(
   store: Map<string, WireDot>,
-  frame: Pick<WireSnapshot, "dotDeltas" | "dotSync">,
+  frame: Pick<WireSnapshot, "dotDeltas" | "dotAdds" | "dotSync">,
   contextForFloor: (floorId: string) => string,
 ): void {
+  for (const dot of frame.dotAdds ?? []) {
+    store.set(dot.id, { ...dot, position: { ...dot.position } });
+  }
   for (const sync of frame.dotSync ?? []) {
     for (const [id, dot] of store) {
       if (contextForFloor(dot.floorId) === sync.context) store.delete(id);
@@ -99,14 +103,14 @@ function toWireBot(bot: DotBotEntity): WireBot {
     p: [roundPosition(bot.position.x), roundPosition(bot.position.y)],
   };
 
-  const bays = bot.bays.map((item) => item ? itemToCode(item) : null);
+  const bays = bot.bays.map((item) => item ? itemToWire(item) : null);
   if (bot.facing !== 0) wire.f = roundFloat(bot.facing);
   if (bot.floorId !== OUTDOOR_FLOOR_ID) wire.fl = bot.floorId;
   if (bot.state !== "alive") wire.s = bot.state;
   if (bot.shieldSegments.some((segment) => segment !== 1)) wire.sh = bot.shieldSegments.map(roundFloat);
   if (bot.moving) wire.mv = true;
   if (bays.some((item) => item !== null)) wire.b = bays;
-  if (bot.hold.length) wire.h = bot.hold.map(itemToCode);
+  if (bot.hold.length) wire.h = bot.hold.map(itemToWire);
   if (bot.carriedCount !== 0) wire.c = bot.carriedCount;
   if (bot.searched) wire.sr = true;
   if (bot.pleaded) wire.pl = true;
@@ -137,7 +141,7 @@ export function fromWireSnapshot(
   return {
     timeMs: wire.tick * (1000 / 60),
     bots: wire.bots.map((bot) => fromWireBot(bot, metaIndex)),
-    dots: dots.map(({ it, captureProgressMs = 0, ...dot }) => ({ ...dot, captureProgressMs, item: itemFromCode(it) })),
+    dots: dots.map(({ it, captureProgressMs = 0, ...dot }) => ({ ...dot, captureProgressMs, item: itemFromWire(it) })),
     mines: (wire.mines ?? []).map((mine) => ({
       ...mine,
       position: { ...mine.position },
@@ -181,8 +185,8 @@ function fromWireBot(bot: WireBot, metaIndex: ReadonlyMap<string, EntityMeta>): 
     shields: shieldSegments.reduce((sum, segment) => sum + segment, 0),
     // `b` is omitted when every bay is empty, so its absence still has a length.
     bays: (bot.b ?? Array.from({ length: defaultGameConfig.baySlots }, () => null))
-      .map((code) => code ? itemFromCode(code) : null),
-    hold: (bot.h ?? []).map(itemFromCode),
+      .map((payload) => payload ? itemFromWire(payload) : null),
+    hold: (bot.h ?? []).map(itemFromWire),
     carriedCount: bot.c ?? 0,
     searched: bot.sr === true,
     pleaded: bot.pl === true,
@@ -228,8 +232,8 @@ function toWireRadarPing(ping: RadarPing): RadarPing {
 }
 
 export function toWireEvent(event: SimEvent): WireSimEvent {
-  if (event.type === "looted") return { ...event, items: event.items.map(itemToCode) };
-  if (event.type === "extracted") return { ...event, items: event.items.map(itemToCode) };
+  if (event.type === "looted") return { ...event, items: event.items.map(itemToWire) };
+  if (event.type === "extracted") return { ...event, items: event.items.map(itemToWire) };
   return event;
 }
 
@@ -243,7 +247,7 @@ export function fromWireEvent(event: WireSimEvent): SimEvent {
       tick: event.tick ?? 0,
     };
   }
-  if (event.type === "looted") return { ...event, items: event.items.map(itemFromCode) };
-  if (event.type === "extracted") return { ...event, items: event.items.map(itemFromCode) };
+  if (event.type === "looted") return { ...event, items: event.items.map(itemFromWire) };
+  if (event.type === "extracted") return { ...event, items: event.items.map(itemFromWire) };
   return event;
 }

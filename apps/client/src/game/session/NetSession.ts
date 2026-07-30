@@ -67,6 +67,7 @@ export class NetSession implements GameSession {
   private predictionDashQueued = false;
   private queuedUseBay: BayIndex | undefined;
   private queuedSwapBay: { bayIndex: BayIndex; holdIndex: number } | undefined;
+  private queuedDrop: InputCommand["drop"];
   private stagedDownedVerb: InputCommand["downedVerb"];
   private queuedTake: InputCommand["take"];
   private queuedPlea = false;
@@ -178,6 +179,7 @@ export class NetSession implements GameSession {
     this.predictionDashQueued ||= input.dash;
     if (input.useBay !== undefined && this.queuedUseBay === undefined) this.queuedUseBay = input.useBay;
     if (input.swapBay && !this.queuedSwapBay) this.queuedSwapBay = input.swapBay;
+    if (input.drop && !this.queuedDrop) this.queuedDrop = input.drop;
     if (input.take && !this.queuedTake) this.queuedTake = input.take;
     this.stagedDownedVerb = input.downedVerb;
     this.queuedPlea ||= input.plea ?? false;
@@ -511,6 +513,7 @@ export class NetSession implements GameSession {
     this.predictionDashQueued = false;
     this.queuedUseBay = undefined;
     this.queuedSwapBay = undefined;
+    this.queuedDrop = undefined;
     this.queuedPlea = false;
     this.queuedPing = undefined;
     this.edgeAwaitingFlush = false;
@@ -562,6 +565,7 @@ export class NetSession implements GameSession {
       dash: this.predictionDashQueued,
       useBay: this.queuedUseBay,
       swapBay: this.queuedSwapBay,
+      drop: this.queuedDrop,
       downedVerb: this.stagedDownedVerb,
       take: this.queuedTake,
       plea: this.queuedPlea || undefined,
@@ -570,6 +574,7 @@ export class NetSession implements GameSession {
     this.predictionDashQueued = false;
     this.queuedUseBay = undefined;
     this.queuedSwapBay = undefined;
+    this.queuedDrop = undefined;
     this.queuedTake = undefined;
     this.queuedPlea = false;
     if (this.predictor && this.predictionEnabled) {
@@ -604,6 +609,7 @@ export class NetSession implements GameSession {
       viewTick,
       useBay: input.useBay,
       swapBay: input.swapBay,
+      drop: input.drop,
       downedVerb: input.downedVerb,
       take: input.take,
       plea: input.plea,
@@ -623,6 +629,7 @@ export class NetSession implements GameSession {
       viewTick: top.viewTick,
       useBay: top.useBay,
       swapBay: top.swapBay,
+      drop: top.drop,
       downedVerb: top.downedVerb,
       take: top.take,
       plea: top.plea,

@@ -1,5 +1,5 @@
-import type { BayIndex, DownedVerb, GameConfig, MapDocument, PingKind, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
-import type { WireItemCode } from "./items";
+import type { BayIndex, DownedVerb, DropCommand, GameConfig, MapDocument, PingKind, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
+import type { WireItemCode, WireItemPayload } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
 
@@ -42,8 +42,8 @@ export type WireBot = {
   /** Moving under its own power. Absent means standing. See `DotBotEntity.moving`. */
   mv?: true;
   /** Detailed inventory is present only for the viewer's squad. */
-  b?: (WireItemCode | null)[];
-  h?: WireItemCode[];
+  b?: (WireItemPayload | null)[];
+  h?: WireItemPayload[];
   /** Always present, including privacy-redacted rivals. */
   c?: number;
   /** Searched: this body is open, so `b`/`h` are sent to everyone who can see it. */
@@ -62,7 +62,7 @@ export type WireDot = {
   position: { x: number; y: number };
   radius: number;
   floorId: string;
-  it: WireItemCode;
+  it: WireItemPayload;
   active: boolean;
   captureProgressMs?: number;
 };
@@ -112,6 +112,8 @@ export type WireSnapshot = {
   ack: number;
   bots: WireBot[];
   dotDeltas?: WireDotDelta[];
+  /** Full definitions for runtime dots created after the baseline. */
+  dotAdds?: WireDot[];
   dotSync?: WireDotContextSync[];
   mines?: WireMine[];
   coverages?: import("@dotbot/game/types").CoverageSnapshot[];
@@ -154,12 +156,12 @@ export type WireSimEvent =
     }
   | { type: "downed"; botId: string; byBotId?: string }
   | { type: "searched"; botId: string; byBotId: string }
-  | { type: "looted"; botId: string; byBotId: string; items: WireItemCode[] }
+  | { type: "looted"; botId: string; byBotId: string; items: WireItemPayload[] }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "recruited"; botId: string; byBotId: string; fromSquadId: string; squadId: string }
   | { type: "plea"; botId: string; squadId: string; position: { x: number; y: number }; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
-  | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[] }
+  | { type: "extracted"; botId: string; squadId: string; items: WireItemPayload[] }
   | { type: "mineRotated"; botId: string; mineId: string }
   | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: { x: number; y: number }; floorId: string }
   | {
@@ -187,6 +189,7 @@ export type WireInputFrame = {
   viewTick?: number;
   useBay?: BayIndex;
   swapBay?: { bayIndex: BayIndex; holdIndex: number };
+  drop?: DropCommand;
   downedVerb?: DownedVerb;
   take?: TakeCommand;
   plea?: boolean;
@@ -209,6 +212,7 @@ export type ActionEdges = {
   dash?: boolean;
   useBay?: BayIndex;
   swapBay?: unknown;
+  drop?: unknown;
   take?: unknown;
   plea?: boolean;
   ping?: unknown;
@@ -218,6 +222,7 @@ export function carriesAction(frame: ActionEdges): boolean {
   return frame.dash === true
     || frame.useBay !== undefined
     || frame.swapBay !== undefined
+    || frame.drop !== undefined
     || frame.take !== undefined
     || frame.plea === true
     // A ping is the most obviously one-shot input there is: shedding it loses the mark
@@ -247,6 +252,7 @@ export type ClientMessage =
       viewTick?: number;
       useBay?: BayIndex;
       swapBay?: { bayIndex: BayIndex; holdIndex: number };
+      drop?: DropCommand;
       downedVerb?: DownedVerb;
       take?: TakeCommand;
       plea?: boolean;

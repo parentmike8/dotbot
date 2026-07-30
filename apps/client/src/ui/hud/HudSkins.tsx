@@ -68,7 +68,8 @@ function Stage({ skin }: { skin: SkinId }) {
         slots={defaultGameConfig.baySlots}
         holdSlots={defaultGameConfig.holdSlots}
         onUse={noop}
-        onSwapRequest={noop}
+        onOpen={noop}
+        open={false}
       />
       <TouchControls
         joystick={joystick}

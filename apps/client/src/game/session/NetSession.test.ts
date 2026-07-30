@@ -27,7 +27,12 @@ describe("NetSession item edges", () => {
       (session as unknown as { advancePrediction(ms: number): void }).advancePrediction(ms);
     const tickMs = 1000 / 60;
 
-    session.sendInput({ move: { x: 1, y: 0 }, dash: false, useBay: 2 });
+    session.sendInput({
+      move: { x: 1, y: 0 },
+      dash: false,
+      useBay: 2,
+      drop: { from: "hold", index: 4 },
+    });
     advance(tickMs * 4 + 1);
     session.sendInput({ move: { x: 1, y: 0 }, dash: false });
     advance(tickMs * 2);
@@ -41,6 +46,9 @@ describe("NetSession item edges", () => {
     // redundantly re-sent; every frame carries the staged movement.
     const bayFrameSeqs = new Set(allFrames.filter((frame) => frame.useBay === 2).map((frame) => frame.seq));
     expect([...bayFrameSeqs]).toEqual([1]);
+    const dropFrameSeqs = new Set(allFrames.filter((frame) =>
+      JSON.stringify(frame.drop) === JSON.stringify({ from: "hold", index: 4 })).map((frame) => frame.seq));
+    expect([...dropFrameSeqs]).toEqual([1]);
     const seqs = allFrames.map((frame) => frame.seq as number);
     expect(Math.max(...seqs)).toBe(6);
     expect(allFrames.every((frame) => (frame.move as [number, number])[0] === 1)).toBe(true);

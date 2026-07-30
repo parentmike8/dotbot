@@ -135,6 +135,41 @@ describe("snapshot wire mapping", () => {
     });
   });
 
+  it("round-trips item provenance through bots, dots, and item events", () => {
+    const cargo = { kind: "blueprint", blueprintId: "serverRack", sourceBuildingId: "civic" } as const;
+    const full = toWireSnapshot({
+      ...snapshot,
+      bots: [{ ...bot, bays: [cargo, null, null], hold: [cargo], carriedCount: 2 }],
+      dots: [{
+        id: "runtime-drop-0",
+        position: { x: 100, y: 100 },
+        radius: 10,
+        floorId: "outdoor",
+        item: cargo,
+        active: true,
+        captureProgressMs: 0,
+      }],
+    });
+    expect(full.bots[0].b?.[0]).toEqual({ c: "b:serverRack", s: "civic" });
+    expect(full.bots[0].h?.[0]).toEqual({ c: "b:serverRack", s: "civic" });
+    expect(full.dots[0].it).toEqual({ c: "b:serverRack", s: "civic" });
+
+    const restored = fromWireSnapshot(
+      toViewerSnapshot(full, 0),
+      new Map([[bot.id, toEntityMeta(bot)]]),
+      full.dots,
+    );
+    expect(restored.bots[0].bays[0]).toEqual(cargo);
+    expect(restored.bots[0].hold[0]).toEqual(cargo);
+    expect(restored.dots[0].item).toEqual(cargo);
+    expect(fromWireEvent(toWireEvent({
+      type: "looted",
+      botId: "body",
+      byBotId: "viewer",
+      items: [cargo],
+    }))).toMatchObject({ items: [cargo] });
+  });
+
   it("reconstructs randomized dot state exactly from ordered deltas", () => {
     let seed = 0x1a2b3c4d;
     const random = () => {
@@ -176,6 +211,25 @@ describe("snapshot wire mapping", () => {
       dotSync: [{ context: "outdoor" }, { context: "mercy:F1", dots: [upper] }],
     }, (floorId) => floorId);
     expect([...store.values()]).toEqual([upper]);
+  });
+
+  it("adds runtime dots after the baseline instead of treating them as unknown deltas", () => {
+    const store = new Map<string, WireDot>();
+    applyWireDotFrame(store, {
+      dotAdds: [{
+        id: "runtime-drop-0",
+        position: { x: 10, y: 20 },
+        radius: 10,
+        floorId: "outdoor",
+        it: { c: "h", s: "mercy" },
+        active: true,
+      }],
+    }, (floorId) => floorId);
+    expect(store.get("runtime-drop-0")).toMatchObject({
+      position: { x: 10, y: 20 },
+      it: { c: "h", s: "mercy" },
+      active: true,
+    });
   });
 });
 
