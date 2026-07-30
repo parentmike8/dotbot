@@ -407,13 +407,16 @@ describe("downtown map validation", () => {
      */
     mercy: {},
     /**
-     * Down from 7 with the archive furnished, not up.
+     * Zero, down from six false aisles and one overlap.
      *
-     * Furnishing F2's west strip added one false aisle and the wall rule cleared two —
-     * mine plus a pre-existing pair on either side of a partition. Beacon lost two the
-     * same way. See `wallCrossesGap` in mapQuality.ts: three of these were never routes.
+     * The false aisles were all the same misunderstanding of how furniture goes together:
+     * four desks in a loose 2 x 2 rather than two back-to-back pods, three air handlers with
+     * 18 and 28 unit slots between them rather than one plant bank, and an incident table
+     * whose south side was a 50-unit squeeze against a desk run on a floor whose brief says
+     * the table is approachable from all four sides. The overlap was a break table sitting
+     * in a desk. See civicTower.ts for each.
      */
-    civic: { "false-aisle": 6, "solid-overlap": 1 },
+    civic: {},
     // `disconnected-area: 1` is paid off: a shelf in the F1 lounge sealed the
     // roof stair. See beaconHouse.ts for why that room holds a couch and nothing
     // else. The `stair-unreachable` rule added alongside the fix is what should

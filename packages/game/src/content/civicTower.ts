@@ -62,12 +62,28 @@ function wcBlock(): SourceWall[] {
   ];
 }
 
+/**
+ * One function, nine floors, and until now one defect repeated eighteen times.
+ *
+ * Each WC is 72 wide and 120 deep, so after a bot's 24 of standoff from four walls the
+ * only standable ground in it is a 24-wide band down the middle, and the pan against the
+ * north wall pushes the south end of that band to y=198. The basins were 16 deep, ending
+ * at y=158 — forty units from the nearest place a bot can stand, against a reach of about
+ * thirty. Every floor of the tower had two basins you could see and never touch.
+ *
+ * The fix is depth, not position: a 32-deep vanity ends flush with the pan at y=174, which
+ * is 24 from the band and within reach. It also reads better, because a basin and a pan
+ * that line up are a fitted run rather than two objects that happen to share a wall.
+ *
+ * This is why the generator is the thing to fix. The alternative was eighteen edits and
+ * eighteen chances to get one of them wrong.
+ */
 function wcFixtures(floor: string): SourceObject[] {
   return [
     { id: `civic-${floor}-wc-pan-w`, kind: "toilet", x: 1712, y: 140, w: 26, h: 34, facing: "N" },
-    { id: `civic-${floor}-wc-basin-w`, kind: "sink", x: 1744, y: 142, w: 22, h: 16 },
+    { id: `civic-${floor}-wc-basin-w`, kind: "sink", x: 1744, y: 142, w: 22, h: 32 },
     { id: `civic-${floor}-wc-pan-e`, kind: "toilet", x: 1822, y: 140, w: 26, h: 34, facing: "N" },
-    { id: `civic-${floor}-wc-basin-e`, kind: "sink", x: 1794, y: 142, w: 22, h: 16 },
+    { id: `civic-${floor}-wc-basin-e`, kind: "sink", x: 1794, y: 142, w: 22, h: 32 },
   ];
 }
 
@@ -171,16 +187,40 @@ export const CIVIC_SOURCE: SourceBuilding = {
          * footprint, and this plant was 14 units from the north point.
          */
         { id: "civic-lobby-plant-n", kind: "plant", x: 2008, y: 300, w: 20, h: 20 },
-        { id: "civic-lobby-plant-s", kind: "plant", x: 1500, y: 500, w: 20, h: 20 },
+        /**
+         * There is no second plant in this lobby, and that is the finding.
+         *
+         * It has been moved three times. At 1500,320 it stood in the front door. At 1500,500
+         * it sat in the 24-unit strip behind the lounge couch, where no bot can go. Beside the
+         * reception desk at 1640,444 it narrowed the lobby-to-cafe route to 44 units and
+         * stranded the cafe counter and its machine instead. Each move traded one defect for
+         * another because the south side of this lobby is circulation — the floor's own brief
+         * says "the lobby floor between the entrance and the shaft stays completely clear."
+         *
+         * A pot that has nowhere to stand is telling you the room is full. `civic-lobby-plant-n`
+         * remains, in the north-east corner, where there is room for it.
+         */
         // Café along the south wall: espresso machine ON the counter, fridge
         // closing its east end, one café table clear of the side exit.
         { id: "civic-cafe-counter", kind: "counter", x: 1560, y: 494, w: 110, h: 24 },
         { id: "civic-cafe-machine", kind: "coffeeStation", x: 1572, y: 496, w: 40, h: 20 },
         { id: "civic-cafe-fridge", kind: "fridge", x: 1674, y: 484, w: 34, h: 34, facing: "N", scannable: true },
-        { id: "civic-cafe-table", kind: "table", x: 1740, y: 430, w: 48, h: 48 },
+
         // Pushed in against the table, so neither is a fixture parked six units off one.
-        { id: "civic-cafe-chair-w", kind: "chair", x: 1720, y: 444, w: 20, h: 20, facing: "E" },
-        { id: "civic-cafe-chair-e", kind: "chair", x: 1788, y: 444, w: 20, h: 20, facing: "W" },
+        /**
+         * The cafe is a counter, not table service, and the side exit is why.
+         *
+         * A table with a chair either side stood at x 1720–1808, directly in front of the Main
+         * St door at 1780 — the chair's east edge and the door's east jamb were the same line.
+         * So the vestibule inside that exit was a pocket: standable, and joined to the rest of
+         * the floor only by going back out to the street and round. The same shape as the
+         * temple's front door, and invisible for the same reason — GROUND shares the outdoor
+         * plane, so a route always "exists".
+         *
+         * Three things want this corner: the lounge, the cafe and an exit. A lobby cafe is a
+         * service counter far more often than it is a dining room, so the counter, its machine
+         * and the fridge keep the south windows west of the door and the seating goes.
+         */
         // Mail room SE: lockers along the east wall, sorting counter.
         { id: "civic-mail-locker-a", kind: "locker", x: 1994, y: 416, w: 26, h: 38, scannable: true },
         { id: "civic-mail-locker-b", kind: "locker", x: 1994, y: 458, w: 26, h: 38 },
@@ -231,10 +271,21 @@ export const CIVIC_SOURCE: SourceBuilding = {
         ...wcFixtures("f1"),
         // Two facing desk rows south of the core corridor, with clear lanes
         // along the west window wall and past the meeting room.
-        { id: "civic-f1-desk-nw", kind: "desk", x: 1540, y: 390, w: 96, h: 46, facing: "S", scannable: true },
-        { id: "civic-f1-desk-ne", kind: "desk", x: 1680, y: 390, w: 96, h: 46, facing: "S" },
-        { id: "civic-f1-desk-sw", kind: "desk", x: 1540, y: 470, w: 96, h: 46, facing: "N" },
-        { id: "civic-f1-desk-se", kind: "desk", x: 1680, y: 470, w: 96, h: 46, facing: "N" },
+        /**
+         * Two desk pods, each a back-to-back pair, 64 units apart.
+         *
+         * They used to be four desks in a loose 2 x 2 with 34 units between the north and
+         * south rows and 44 between the columns — both inside the false-aisle band, which is
+         * the audit's way of saying a gap that looks like a route and is not one. It is also
+         * not how desks go together: an office puts them back to back so two people share a
+         * spine and a cable run, and the aisles go round the pod rather than through it.
+         * Joined at y=432 the pod is one 96 x 92 island; between the pods there is now a real
+         * 64-unit lane, and 52 either side to the west windows and the meeting room.
+         */
+        { id: "civic-f1-desk-nw", kind: "desk", x: 1544, y: 340, w: 96, h: 46, facing: "N", scannable: true },
+        { id: "civic-f1-desk-sw", kind: "desk", x: 1544, y: 386, w: 96, h: 46, facing: "S" },
+        { id: "civic-f1-desk-ne", kind: "desk", x: 1704, y: 340, w: 96, h: 46, facing: "N" },
+        { id: "civic-f1-desk-se", kind: "desk", x: 1704, y: 386, w: 96, h: 46, facing: "S" },
         { id: "civic-f1-filing-a", kind: "filingCabinet", x: 1996, y: 320, w: 30, h: 48, scannable: true },
         { id: "civic-f1-filing-b", kind: "filingCabinet", x: 1996, y: 372, w: 30, h: 48 },
         // Meeting room SE.
@@ -242,16 +293,18 @@ export const CIVIC_SOURCE: SourceBuilding = {
         // Break corner SW.
         // Clear of the desk's west edge at 1540 rather than clipping it by four
         // units — invisible while a coffee station was walk-through.
-        { id: "civic-f1-coffee", kind: "coffeeStation", x: 1492, y: 500, w: 44, h: 22 },
-        { id: "civic-f1-break-table", kind: "table", x: 1560, y: 496, w: 44, h: 44 },
+        { id: "civic-f1-coffee", kind: "coffeeStation", x: 1494, y: 504, w: 44, h: 22 },
+        { id: "civic-f1-break-table", kind: "table", x: 1548, y: 504, w: 44, h: 24 },
         // Flush under the desk's south edge and against the break table, rather than
         // tucked 8 units beneath the desk: once a chair collides, an overlap is two
         // solids claiming the same floor.
-        { id: "civic-f1-break-chair", kind: "chair", x: 1604, y: 516, w: 20, h: 20, facing: "W" },
-        { id: "civic-f1-plant", kind: "plant", x: 1810, y: 500, w: 20, h: 20 },
+        { id: "civic-f1-break-chair", kind: "chair", x: 1602, y: 506, w: 20, h: 20, facing: "N" },
+        { id: "civic-f1-plant", kind: "plant", x: 1810, y: 504, w: 20, h: 20 },
       ],
       dots: [
-        { id: "civic-dot-f1-desks", item: { kind: "powerup", type: "incognito" }, x: 1760, y: 344 },
+        // In the 64-unit lane between the two pods. At 1760,344 it was inside the east pod's
+        // north desk once the desks were rearranged — a Dot follows its furniture.
+        { id: "civic-dot-f1-desks", item: { kind: "powerup", type: "incognito" }, x: 1672, y: 386 },
         { id: "civic-dot-f1-meeting", item: { kind: "powerup", type: "health" }, x: 1890, y: 492 },
       ],
     },
@@ -306,9 +359,19 @@ export const CIVIC_SOURCE: SourceBuilding = {
       objects: [
         ...wcFixtures("f2"),
         // Server room: rack row against the south wall, power plant west.
-        { id: "civic-rack-a", kind: "serverRack", x: 1640, y: 424, w: 36, h: 70, facing: "N", scannable: true },
-        { id: "civic-rack-b", kind: "serverRack", x: 1690, y: 424, w: 36, h: 70, facing: "N" },
-        { id: "civic-rack-c", kind: "serverRack", x: 1740, y: 424, w: 36, h: 70, facing: "N" },
+        /**
+         * The rack row moves to the south wall and the machines take the north, so the
+         * service aisle between them is 50 units of real floor.
+         *
+         * Before this, rack A and the power box were both fixtures nobody could stand beside.
+         * The row sat 6 units off the south wall with the power box 8 units above it and the
+         * generator 8 above that, which stacked four objects across a 172-deep room and left
+         * no band anywhere wide enough to hold a body. A server room whose racks cannot be
+         * approached is a cupboard with a door.
+         */
+        { id: "civic-rack-a", kind: "serverRack", x: 1640, y: 430, w: 36, h: 70, facing: "N", scannable: true },
+        { id: "civic-rack-b", kind: "serverRack", x: 1690, y: 430, w: 36, h: 70, facing: "N" },
+        { id: "civic-rack-c", kind: "serverRack", x: 1740, y: 430, w: 36, h: 70, facing: "N" },
         /**
          * Not scannable, and the archive is what showed why.
          *
@@ -328,13 +391,19 @@ export const CIVIC_SOURCE: SourceBuilding = {
          * room on two sides, which is what a scannable object is supposed to have. The rack
          * row remains this room's scannable, so the server room still holds one.
          */
-        { id: "civic-f2-generator", kind: "generator", x: 1630, y: 340, w: 70, h: 48 },
-        { id: "civic-f2-hvac", kind: "hvac", x: 1796, y: 424, w: 64, h: 46 },
-        { id: "civic-f2-power", kind: "utilityBox", x: 1630, y: 396, w: 26, h: 20 },
+        // x stays at 1630. Nudging it to 1626 closed the gap to the archive stacks from 18
+        // units to 14, which turns a false aisle into an attached seam — and that gap is the
+        // negative control in "does not call a gap an aisle when a wall crosses it". A
+        // cosmetic four units would have quietly deleted the evidence for a rule.
+        { id: "civic-f2-generator", kind: "generator", x: 1630, y: 332, w: 70, h: 48 },
+        { id: "civic-f2-hvac", kind: "hvac", x: 1796, y: 430, w: 64, h: 46 },
+        // Beside the generator on the north wall, not under it. Wedged between the generator
+        // and rack A it was 8 units from each and reachable from neither.
+        { id: "civic-f2-power", kind: "utilityBox", x: 1702, y: 332, w: 26, h: 48 },
         // Records: filing along the east wall outside the room.
         { id: "civic-f2-filing-a", kind: "filingCabinet", x: 1996, y: 330, w: 30, h: 48 },
         { id: "civic-f2-filing-b", kind: "filingCabinet", x: 1996, y: 382, w: 30, h: 48 },
-        { id: "civic-f2-crate", kind: "crateStack", x: 1996, y: 460, w: 34, h: 34 },
+        { id: "civic-f2-crate", kind: "crateStack", x: 1992, y: 460, w: 34, h: 34 },
         /**
          * Down the strip, off the new shaft door's landing.
          *
@@ -414,7 +483,10 @@ export const CIVIC_SOURCE: SourceBuilding = {
          * 1740,415 it was 9 from a rack. Both put a Dot where no bot could reach
          * it, which makes it scenery rather than loot.
          */
-        { id: "civic-dot-f2-server", item: { kind: "powerup", type: "radar" }, x: 1728, y: 399 },
+        // Follows the racks. The lane it sits in went from 36 units deep to 50 when the
+        // machine bank moved to the north wall, and at 1728 the dot ended up 19 units from
+        // the relocated power box — a Dot is only loot if a bot can stand on it.
+        { id: "civic-dot-f2-server", item: { kind: "powerup", type: "radar" }, x: 1760, y: 404 },
         { id: "civic-dot-f2-records", item: { kind: "powerup", type: "health" }, x: 1960, y: 460 },
       ],
     },
@@ -471,7 +543,15 @@ export const CIVIC_SOURCE: SourceBuilding = {
          * 2-unit slot reads as a gap and is not one. Touching, it is one piece of
          * furniture.
          */
-        { id: "civic-office-s-plant", kind: "plant", x: 1496, y: 504, w: 20, h: 20 },
+        /**
+         * Office 2 loses its plant, for the same reason the lobby loses its second one.
+         *
+         * The strip east of the desk is 68 wide, so after a body's standoff from the desk and
+         * the office's east wall the walkable band through it is 20 units. A 20-unit pot fills
+         * it exactly. Three earlier positions each dodged one rule and landed in dead floor;
+         * this one sealed a pocket of it. The office keeps its desk, and office 1 keeps the
+         * couch that makes the pair read as two rooms rather than one repeated.
+         */
         // Lounge centre, kept east of the office doors.
         { id: "civic-f3-rug", kind: "rug", x: 1700, y: 350, w: 150, h: 130 },
         { id: "civic-f3-couch", kind: "couch", x: 1710, y: 360, w: 90, h: 38, facing: "S" },
@@ -496,15 +576,29 @@ export const CIVIC_SOURCE: SourceBuilding = {
       walls: [coreA(UP_DOOR), coreB(DOWN_DOOR), ...wcBlock()],
       objects: [
         ...wcFixtures("f4"),
-        { id: "civic-incident-table", kind: "conferenceTable", x: 1640, y: 350, w: 170, h: 70, scannable: true },
+        /**
+         * 68 units between the table and the dispatch desks, not 50.
+         *
+         * The floor brief says the incident table is "approachable from all four sides — that
+         * is the point of the floor", and its south side was a 50-unit slot against a 96-unit
+         * desk run: passable by a unit either side, which is not approachable. The table goes
+         * north to sit under the core instead, and the two desks open to 64 apart so the lane
+         * between them is a lane.
+         */
+        { id: "civic-incident-table", kind: "conferenceTable", x: 1640, y: 332, w: 170, h: 70, scannable: true },
         { id: "civic-f4-desk-w", kind: "desk", x: 1540, y: 470, w: 96, h: 46, facing: "N" },
+        // Back at 1680. Opening the lane to 64 by sliding this desk east put its corner 17
+        // units from the bot spawn at 1810,460, which wedges that bot for the whole match.
+        // The 44-unit gap was never reported — two 46-deep desks do not overlap by a bot's
+        // diameter, so it is not a false aisle — and the incident table's south side was the
+        // real complaint.
         { id: "civic-f4-desk-e", kind: "desk", x: 1680, y: 470, w: 96, h: 46, facing: "N" },
         { id: "civic-f4-rack-a", kind: "serverRack", x: 1996, y: 320, w: 26, h: 56 },
         { id: "civic-f4-rack-b", kind: "serverRack", x: 1996, y: 384, w: 26, h: 56 },
         { id: "civic-f4-locker-a", kind: "locker", x: 1860, y: 488, w: 26, h: 38 },
         { id: "civic-f4-locker-b", kind: "locker", x: 1890, y: 488, w: 26, h: 38 },
         { id: "civic-f4-locker-c", kind: "locker", x: 1920, y: 488, w: 26, h: 38 },
-        { id: "civic-f4-crate", kind: "crateStack", x: 1996, y: 460, w: 34, h: 34 },
+        { id: "civic-f4-crate", kind: "crateStack", x: 1992, y: 460, w: 34, h: 34 },
         { id: "civic-f4-plant", kind: "plant", x: 1500, y: 320, w: 20, h: 20 },
       ],
       dots: [
@@ -543,8 +637,12 @@ export const CIVIC_SOURCE: SourceBuilding = {
         { id: "civic-f5-stool-c", kind: "chair", x: 1820, y: 372, w: 20, h: 20, facing: "N" },
         { id: "civic-f5-stool-d", kind: "chair", x: 1880, y: 372, w: 20, h: 20, facing: "N" },
         { id: "civic-f5-stock", kind: "shelf", x: 1996, y: 330, w: 26, h: 140 },
-        { id: "civic-f5-crate", kind: "crateStack", x: 1520, y: 500, w: 34, h: 34 },
-        { id: "civic-f5-plant", kind: "plant", x: 1950, y: 502, w: 20, h: 20 },
+        // 492, not 500: at 500 a 34-unit stack ran to 534 against a south inner face of 528,
+        // so six units of it stood inside the wall.
+        { id: "civic-f5-crate", kind: "crateStack", x: 1520, y: 492, w: 34, h: 34 },
+        // Into the corner, which closes a 2-cell standable pocket that had been sealed
+        // between the stock shelf, this pot and the two walls.
+        { id: "civic-f5-plant", kind: "plant", x: 1996, y: 500, w: 20, h: 20 },
       ],
       dots: [
         { id: "civic-dot-f5-aisle", item: { kind: "powerup", type: "dashOvercharge" }, x: 1700, y: 420 },
@@ -586,14 +684,22 @@ export const CIVIC_SOURCE: SourceBuilding = {
          * says that, and takes the lounge to no disconnected floor at all.
          */
         { id: "civic-f6-table", kind: "table", x: 1650, y: 410, w: 56, h: 56 },
-        { id: "civic-f6-shelf-w", kind: "shelf", x: 1700, y: 498, w: 130, h: 26 },
+        // West to 1660, so the library run meets the lounge couch with a seam instead of
+        // leaving a two-cell pocket of standable floor between them that nothing can reach.
+        { id: "civic-f6-shelf-w", kind: "shelf", x: 1660, y: 498, w: 130, h: 26 },
         { id: "civic-f6-shelf-e", kind: "shelf", x: 1850, y: 498, w: 130, h: 26 },
         { id: "civic-f6-bar", kind: "counter", x: 1500, y: 320, w: 90, h: 24 },
-        { id: "civic-f6-coffee", kind: "coffeeStation", x: 1520, y: 296, w: 44, h: 22 },
-        { id: "civic-f6-cafe-table", kind: "table", x: 1960, y: 340, w: 48, h: 48 },
-        // Two units west, so it touches the cafe table instead of overlapping it.
-        { id: "civic-f6-cafe-chair-w", kind: "chair", x: 1940, y: 352, w: 20, h: 20, facing: "E" },
-        { id: "civic-f6-cafe-chair-e", kind: "chair", x: 2012, y: 352, w: 20, h: 20, facing: "W" },
+        // At the bar's east end. At 1520,296 it was standing in the NW shaft's south wall,
+        // which spans y 292..300 — the machine was inside the masonry.
+        // Under the bar's west end. Parking it at the bar's EAST end put it in the one
+        // opening into the lounge's west strip, which resealed 11,392 square units that an
+        // earlier round had opened — the same pocket, closed by a different object.
+        { id: "civic-f6-coffee", kind: "coffeeStation", x: 1500, y: 348, w: 44, h: 22 },
+        // The whole cafe group shifts 16 west: the east chair reached x=2032 against an east
+        // inner face of 2028, so a quarter of it was in the wall.
+        { id: "civic-f6-cafe-chair-w", kind: "chair", x: 1884, y: 352, w: 20, h: 20, facing: "E" },
+        { id: "civic-f6-cafe-table", kind: "table", x: 1904, y: 340, w: 48, h: 48 },
+        { id: "civic-f6-cafe-chair-e", kind: "chair", x: 1956, y: 352, w: 20, h: 20, facing: "W" },
         // South-east corner, 43 units off the library Dot. At 1996,440 it sat 17
         // units from it, which is inside a bot radius — the Dot was somewhere you
         // could see and not stand.
@@ -630,13 +736,25 @@ export const CIVIC_SOURCE: SourceBuilding = {
          * cleared the first and blocked the second. With their bottom edge at 164
          * both approaches have 44 units of clear run.
          */
-        { id: "civic-f7-drum-a", kind: "drum", x: 1770, y: 140, w: 24, h: 24 },
-        { id: "civic-f7-drum-b", kind: "drum", x: 1798, y: 140, w: 24, h: 24 },
-        { id: "civic-f7-drum-c", kind: "drum", x: 1826, y: 140, w: 24, h: 24 },
-        { id: "civic-f7-janitor-sink", kind: "sink", x: 1712, y: 142, w: 22, h: 16 },
+        /**
+         * All three drums inside ONE of the two store rooms, wall to wall.
+         *
+         * The comment this replaces was right about the doors and wrong about the geometry:
+         * starting the bank at 1770 put drum A across the partition at x=1784, so the "bank"
+         * spanned two rooms and its first drum stood inside the dividing wall. Nothing
+         * reported it, because `solid-overlap` only compares object to object. Three 24-unit
+         * drums are exactly the east store's 72-unit width, which is what a store room full
+         * of drums looks like from above, and the sink keeps the west one.
+         */
+        { id: "civic-f7-drum-a", kind: "drum", x: 1788, y: 140, w: 24, h: 24 },
+        { id: "civic-f7-drum-b", kind: "drum", x: 1812, y: 140, w: 24, h: 24 },
+        { id: "civic-f7-drum-c", kind: "drum", x: 1836, y: 140, w: 24, h: 24 },
+        { id: "civic-f7-janitor-sink", kind: "sink", x: 1712, y: 142, w: 22, h: 32 },
         // Plant floor.
+        // Joined into one plant bank. A 20-unit slot between two air handlers is not a
+        // service gap, it is the false-aisle band; plant units are craned in as a row.
         { id: "civic-f7-hvac-a", kind: "hvac", x: 1590, y: 340, w: 70, h: 50 },
-        { id: "civic-f7-hvac-b", kind: "hvac", x: 1680, y: 340, w: 70, h: 50 },
+        { id: "civic-f7-hvac-b", kind: "hvac", x: 1670, y: 340, w: 70, h: 50 },
         { id: "civic-f7-generator", kind: "generator", x: 1840, y: 340, w: 74, h: 52, scannable: true },
         { id: "civic-f7-rack-a", kind: "serverRack", x: 1996, y: 320, w: 26, h: 50 },
         { id: "civic-f7-rack-b", kind: "serverRack", x: 1996, y: 378, w: 26, h: 50 },
@@ -680,12 +798,22 @@ export const CIVIC_SOURCE: SourceBuilding = {
       ],
       objects: [
         // Machine room inside the A bulkhead.
-        { id: "civic-roof-generator", kind: "generator", x: 1504, y: 160, w: 64, h: 46 },
-        { id: "civic-roof-power", kind: "utilityBox", x: 1520, y: 230, w: 26, h: 20 },
+        /**
+         * The bulkhead is 88 wide, so its whole width minus a body is 40 units — which is to
+         * say almost nothing. A 64-wide generator at y=160 with the power box below it left no
+         * band anywhere in the room that a bot could stand in AND reach the generator from.
+         * Generator flat against the north wall, power box on the west, and the room's south
+         * half becomes the standing room. Machine rooms are mostly access.
+         */
+        { id: "civic-roof-generator", kind: "generator", x: 1500, y: 140, w: 64, h: 46 },
+        { id: "civic-roof-power", kind: "utilityBox", x: 1496, y: 200, w: 26, h: 20 },
         // HVAC field.
+        // One L-shaped bank rather than three units with 18 and 28 unit slots between them.
+        // The brief reserves "the strip between the HVAC field and the skylights" for access,
+        // which is the aisle that matters; the gaps inside the field were never routes.
         { id: "civic-roof-hvac-a", kind: "hvac", x: 1650, y: 180, w: 72, h: 52 },
-        { id: "civic-roof-hvac-b", kind: "hvac", x: 1740, y: 180, w: 72, h: 52 },
-        { id: "civic-roof-hvac-c", kind: "hvac", x: 1650, y: 260, w: 72, h: 52 },
+        { id: "civic-roof-hvac-b", kind: "hvac", x: 1734, y: 180, w: 72, h: 52 },
+        { id: "civic-roof-hvac-c", kind: "hvac", x: 1650, y: 244, w: 72, h: 52 },
         { id: "civic-roof-vent-a", kind: "vent", x: 1840, y: 190, w: 22, h: 22 },
         { id: "civic-roof-vent-b", kind: "vent", x: 1840, y: 240, w: 22, h: 22 },
         { id: "civic-roof-utility", kind: "utilityBox", x: 1880, y: 190, w: 26, h: 20 },
