@@ -1,7 +1,7 @@
 /**
  * Where is there floor a bot can never stand on?
  *
- * `pnpm --filter @dotbot/game exec tsx src/content/enclosure.probe.ts [downtown|world]`
+ * `pnpm --filter @dotbot/game exec tsx src/content/enclosure.probe.ts`  (both maps, 27 floors)
  *
  * This exists because of a fixture the eyes found and no test could. Mercy's exam rooms
  * put the clinician's worktop in the south-west corner with the stool flush beside it,
@@ -157,7 +157,17 @@ function unreachableFixtures(
 ): string[] {
   const reach = RADIUS + STEP;
   const dead: string[] = [];
+  /**
+   * A fixture wholly inside another is one physical thing, and mapQuality already says so —
+   * "a sink in a worktop, a coffee machine standing on a counter: one physical thing, and the
+   * host already blocks that space". Beacon's kitchen sink sits inside its worktop, and this
+   * check reported it as unreachable: correct about the sink's own rect, and about nothing.
+   * You reach the worktop.
+   */
+  const contained = (a: { x: number; y: number; w: number; h: number }, b: typeof a): boolean =>
+    a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h;
   for (const object of objects) {
+    if (objects.some((host) => host !== object && contained(object, host))) continue;
     const lowCol = Math.max(0, Math.floor((object.x - reach - bounds.x) / STEP));
     const highCol = Math.min(cols - 1, Math.ceil((object.x + object.w + reach - bounds.x) / STEP));
     const lowRow = Math.max(0, Math.floor((object.y - reach - bounds.y) / STEP));

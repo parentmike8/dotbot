@@ -417,12 +417,16 @@ describe("downtown map validation", () => {
      * in a desk. See civicTower.ts for each.
      */
     civic: {},
-    // `disconnected-area: 1` is paid off: a shelf in the F1 lounge sealed the
-    // roof stair. See beaconHouse.ts for why that room holds a couch and nothing
-    // else. The `stair-unreachable` rule added alongside the fix is what should
-    // have caught it — the stranded region was a stair shaft, whose standable area
-    // is always too small to clear MIN_DISCONNECTED_AREA.
-    beacon: { "false-aisle": 5 },
+    /**
+     * Zero, and with it the last of the three legacy buildings' debt.
+     *
+     * All five false aisles were the same thing: two fixtures facing each other across a gap
+     * a body fits through with a few units to spare. A kitchen worktop 22 units off a
+     * breakfast table, a couch 58 off a dining table, a bed 60 off a kitchenette, and two
+     * pairs of roof planters 44 apart. See beaconHouse.ts — the kitchen simply could not hold
+     * both runs, and the terrace's "path" led nowhere.
+     */
+    beacon: {},
   };
 
   it("does not call a gap an aisle when a wall crosses it", () => {

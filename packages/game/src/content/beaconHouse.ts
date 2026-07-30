@@ -105,16 +105,31 @@ export const BEACON_SOURCE: SourceBuilding = {
         { id: "beacon-mail-locker-a", kind: "locker", x: 1584, y: 1042, w: 26, h: 42 },
         { id: "beacon-mail-locker-b", kind: "locker", x: 1614, y: 1042, w: 26, h: 42 },
         { id: "beacon-mail-locker-c", kind: "locker", x: 1644, y: 1042, w: 26, h: 42, scannable: true },
-        { id: "beacon-mail-counter", kind: "counter", x: 1584, y: 1120, w: 22, h: 60 },
+        // South to 1144, which opens a 36-unit band below the locker run. At 1120 the run
+        // was boxed between the north wall, its own neighbours and this counter, so locker A
+        // — the only one of the three with a wall on its far side — could not be reached.
+        { id: "beacon-mail-counter", kind: "counter", x: 1584, y: 1144, w: 22, h: 48 },
         { id: "beacon-parcels", kind: "crateStack", x: 1716, y: 1096, w: 30, h: 30 },
         // Kitchen: worktop run, stove, fridge, breakfast table.
+        /**
+         * A galley along the north wall, and no breakfast table, because the arithmetic says
+         * the room cannot have both.
+         *
+         * The kitchen is 208 x 160 with its door in the south wall at x 1908–1964. A 24-deep
+         * worktop needs 64 of clear floor below it before the next run — that is the
+         * false-aisle rule and it was reporting this pair at 22 — and the door needs a body's
+         * diameter of approach north of it. 24 + 64 + 52 + 48 is 188 units of requirement in
+         * 160 units of room. The table lost, and nothing about it was reachable anyway: the
+         * worktop, the sink and the stove were all fixtures no bot could stand beside, because
+         * the table sat 22 units off the whole run.
+         *
+         * The commons through that door already has a dining table forty units away. Two
+         * eating places in one shared house, forty units apart, was the real redundancy.
+         */
         { id: "beacon-worktop", kind: "counter", x: 1868, y: 1042, w: 140, h: 24 },
         { id: "beacon-kitchen-sink", kind: "sink", x: 1904, y: 1046, w: 26, h: 16 },
         { id: "beacon-stove", kind: "stove", x: 2012, y: 1042, w: 44, h: 26 },
         { id: "beacon-fridge", kind: "fridge", x: 1866, y: 1140, w: 34, h: 46, facing: "E", scannable: true },
-        { id: "beacon-breakfast-table", kind: "table", x: 1912, y: 1088, w: 90, h: 52 },
-        { id: "beacon-breakfast-chair-w", kind: "chair", x: 1890, y: 1100, w: 20, h: 20, facing: "E" },
-        { id: "beacon-breakfast-chair-e", kind: "chair", x: 2004, y: 1100, w: 20, h: 20, facing: "W" },
         // Commons: rug anchors a couch against the south wall; the centre stays
         // open so the lobby, stair, WC and laundry all connect.
         { id: "beacon-commons-rug", kind: "rug", x: 1700, y: 1240, w: 200, h: 140 },
@@ -127,11 +142,24 @@ export const BEACON_SOURCE: SourceBuilding = {
          * chair now stands. At 1254 the gap is 58, so the couch has an approach on its
          * own north side, which is where you would walk to it anyway.
          */
-        { id: "beacon-commons-table", kind: "table", x: 1770, y: 1254, w: 48, h: 48 },
-        { id: "beacon-commons-chair-w", kind: "chair", x: 1746, y: 1266, w: 20, h: 20, facing: "E" },
-        { id: "beacon-commons-chair-e", kind: "chair", x: 1824, y: 1266, w: 20, h: 20, facing: "W" },
+        /**
+         * 44 wide rather than 48, which is the whole fix.
+         *
+         * The couch and this table faced each other across 58 units — a gap a bot fits through
+         * with five units to spare, which is what the false-aisle band is for. Opening it to 64
+         * would push the table into the stair's approach and closing it to 16 would put a
+         * dining table in a couch. But the rule only fires when two fixtures overlap by a
+         * bot's DIAMETER along the other axis, and a 48-wide table inside a 110-wide couch
+         * overlaps by exactly 48. Four units narrower and they are no longer a facing pair —
+         * which is true, because you walk round this table, not between it and the couch.
+         */
+        { id: "beacon-commons-table", kind: "table", x: 1772, y: 1254, w: 44, h: 48 },
+        { id: "beacon-commons-chair-w", kind: "chair", x: 1748, y: 1266, w: 20, h: 20, facing: "E" },
+        { id: "beacon-commons-chair-e", kind: "chair", x: 1820, y: 1266, w: 20, h: 20, facing: "W" },
         { id: "beacon-commons-plant-w", kind: "plant", x: 1676, y: 1386, w: 20, h: 20 },
-        { id: "beacon-commons-plant-e", kind: "plant", x: 2044, y: 1210, w: 20, h: 20 },
+        // The east pot is gone. It stood in the 44-unit band between the kitchen's south wall
+        // and the east shaft's north face — too shallow for a body, so nobody could ever have
+        // been near it. `beacon-commons-plant-w` keeps the commons its greenery.
         // WC.
         { id: "beacon-wc-pan", kind: "toilet", x: 1938, y: 1368, w: 26, h: 34, facing: "S" },
         // East of the door threshold (reaches x=1906) rather than across it, and west of
@@ -236,7 +264,26 @@ export const BEACON_SOURCE: SourceBuilding = {
          * than the fallback.
          */
         { id: "beacon-nw-cabinet", kind: "cabinet", x: 1730, y: 1044, w: 44, h: 20 },
-        { id: "beacon-nw-counter", kind: "counter", x: 1780, y: 1076, w: 22, h: 48 },
+        /**
+         * Down the party wall SOUTH of the bed, not level with it.
+         *
+         * At 1780 x 22 this kitchenette ran to 1802 and the party wall's capsule covers
+         * 1800–1808, so a fifth of the counter stood inside the masonry between two flats.
+         * Pulling it clear leaves 56 units to the bed — inside the false-aisle band — and 64
+         * is not available, because 64 puts it back in the wall.
+         *
+         * Shortening it instead cleared the rule and broke something better hidden: the map
+         * stopped compiling with "No bot-clear blueprint spawn for beacon/beacon:F1/bed",
+         * because the bed's east flank is the only one of its four sides that is not a wall
+         * and the counter is what decides how much of it is open. So the counter goes past the
+         * bed's foot instead, where it faces nothing and leaves the whole east flank clear.
+         * A worktop down the wall from the bed is also just where a studio puts one.
+         *
+         * At y=1140 that meant standing in the flat's own front door, whose span reaches
+         * x=1778 — two units past the counter's west edge. Third position, and this one is
+         * clear of the bed's overlap band, clear of the party wall and clear of the threshold.
+         */
+        { id: "beacon-nw-counter", kind: "counter", x: 1778, y: 1092, w: 22, h: 48 },
         // Down the rug, clear of the bathroom door's south approach at 1624,1136.
         { id: "beacon-nw-chair", kind: "chair", x: 1620, y: 1164, w: 20, h: 20, facing: "E" },
         { id: "beacon-nw-rug", kind: "rug", x: 1596, y: 1128, w: 56, h: 56 },
@@ -255,7 +302,10 @@ export const BEACON_SOURCE: SourceBuilding = {
         { id: "beacon-nw-basin", kind: "sink", x: 1572, y: 1088, w: 22, h: 16 },
         // NE studio: mirrored bath, bed west, dining centre.
         { id: "beacon-ne-bed", kind: "bed", x: 1830, y: 1044, w: 48, h: 92, facing: "N" },
-        { id: "beacon-ne-cabinet", kind: "cabinet", x: 1890, y: 1044, w: 44, h: 24 },
+        // The NE studio's wall cabinet is gone. It was boxed by the bed to the west, the
+        // table 28 units south and the bathroom wall 42 east — a 160-deep studio holding a
+        // 92-deep bed has no room for another north-wall run, and this one could only be
+        // looked at. The flat keeps its bed, table, chair, fridge and bathroom.
         { id: "beacon-ne-table", kind: "table", x: 1888, y: 1096, w: 44, h: 44 },
         /**
          * On the far side of its own dining table, flush to it.
@@ -296,7 +346,8 @@ export const BEACON_SOURCE: SourceBuilding = {
          * the same reason: it has to leave a clear channel down the east side.
          */
         { id: "beacon-lounge-couch", kind: "couch", x: 1856, y: 1300, w: 40, h: 70, facing: "E" },
-        { id: "beacon-lounge-plant", kind: "plant", x: 1858, y: 1382, w: 18, h: 18 },
+        // East of the couch rather than in the 12-unit gap under it.
+        { id: "beacon-lounge-plant", kind: "plant", x: 1912, y: 1382, w: 18, h: 18 },
       ],
       dots: [
         { id: "beacon-dot-lounge", item: { kind: "powerup", type: "health" }, x: 1930, y: 1236 },
@@ -315,10 +366,28 @@ export const BEACON_SOURCE: SourceBuilding = {
       walls: [eastCore(1284)],
       objects: [
         // Garden beds west.
-        { id: "beacon-bed-nw", kind: "planter", x: 1596, y: 1060, w: 36, h: 110 },
-        { id: "beacon-bed-ne", kind: "planter", x: 1676, y: 1060, w: 36, h: 110 },
-        { id: "beacon-bed-sw", kind: "planter", x: 1596, y: 1210, w: 36, h: 110 },
-        { id: "beacon-bed-se", kind: "planter", x: 1676, y: 1210, w: 36, h: 110 },
+        /**
+         * 64 units between the beds, not 44.
+         *
+         * Four raised beds with a 44-unit gap down the middle is a path you can see and not
+         * walk — the false-aisle band exactly, reported twice, and the three standable slivers
+         * the probe found stranded on this terrace were all inside it.
+         *
+         * Widening it to 64 was the wrong repair and the probe said so immediately: a 64-unit
+         * gap between beds 110 long, closed at both ends by the parapet standoff, is a 24-wide
+         * dead-end corridor — 4,992 square units of terrace you can stand in and never reach.
+         * So each pair JOINS into one double-width bed with an 8-unit seam, and the path is the
+         * open deck east of them, where it was all along.
+         *
+         * And each pair is ONE object, not two with a seam. Two 36-wide planters touching are
+         * one raised bed to look at and two rects to the probe, which duly reported that
+         * nobody could stand beside the inner one — true of the rect and meaningless about
+         * the bed. The contract's rule is that the silhouette is the footprint is the
+         * collider; a joined pair breaks it in the only direction that matters here, by
+         * describing one thing as two. Two beds, 64 units of path between them.
+         */
+        { id: "beacon-bed-n", kind: "planter", x: 1596, y: 1060, w: 80, h: 110 },
+        { id: "beacon-bed-s", kind: "planter", x: 1596, y: 1234, w: 80, h: 110 },
         // Potting bench and social corner.
         { id: "beacon-potting", kind: "workbench", x: 1600, y: 1360, w: 110, h: 30, facing: "N", scannable: true },
         { id: "beacon-terrace-bench", kind: "bench", x: 1770, y: 1080, w: 100, h: 22, facing: "S" },
