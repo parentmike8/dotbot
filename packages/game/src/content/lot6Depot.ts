@@ -1,4 +1,5 @@
 import { compileBuilding, type SourceBuilding } from "../mapSource";
+import { STANDARD_DOORWAY_CLEAR_WIDTH } from "../doorwayClearance";
 
 /**
  * Lot 6 Depot — warehouse, SW quadrant of Downtown. Footprint 160,1000 700x460.
@@ -16,7 +17,7 @@ import { compileBuilding, type SourceBuilding } from "../mapSource";
 
 const EXT = 12; // exterior wall thickness
 const INT = 8; // interior partition thickness
-const DOOR = 56; // single leaf
+const DOOR = STANDARD_DOORWAY_CLEAR_WIDTH; // full-size DotBot plus steering margin
 const ROLLUP = 120; // vehicle door
 
 /**
@@ -60,7 +61,7 @@ export const LOT6_SOURCE: SourceBuilding = {
         { kind: "rollup", width: ROLLUP, near: { x: 340, y: 1000 } },
         { kind: "rollup", width: ROLLUP, near: { x: 620, y: 1000 } },
         // Person door into the stair core, beside the second roll-up.
-        { kind: "door", width: DOOR, near: { x: 818, y: 1000 } },
+        { kind: "door", width: DOOR, near: { x: 816, y: 1000 } },
         { kind: "window", width: 36, near: { x: 860, y: 1220 } },
         { kind: "window", width: 36, near: { x: 860, y: 1280 } },
         { kind: "window", width: 36, near: { x: 320, y: 1460 } },

@@ -1,5 +1,6 @@
 import { defaultGameConfig, downtownMap, type DotBotEntity, type InputCommand } from "@dotbot/game";
 import { DASH_CLINCH_TICKS } from "@dotbot/game/config";
+import { findNavigationPath } from "@dotbot/game/navigation";
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import type { MapDocument, Vec2 } from "@dotbot/game/types";
 import { describe, expect, it } from "vitest";
@@ -53,6 +54,48 @@ describe("LitePredictor", () => {
       5,
     );
     expect(predictor.current.position.y).toBeCloseTo(bot.position.y, 5);
+  });
+
+  it("moves a full-size predicted bot through Mercy's standard ward-to-core doorway", () => {
+    const start = { x: 570, y: 300 };
+    const goal = { x: 700, y: 440 };
+    const floorId = "mercy:F1";
+    const path = findNavigationPath(
+      downtownMap,
+      floorId,
+      start,
+      goal,
+      defaultGameConfig.botRadius,
+    );
+    expect(path.length).toBeGreaterThan(1);
+
+    const predictor = new LitePredictor(
+      downtownMap,
+      defaultGameConfig,
+      makeBot({ position: start, floorId }),
+    );
+    let waypoint = 1;
+    for (let tick = 0; tick < 600 && waypoint < path.length; tick += 1) {
+      const position = predictor.current.position;
+      const target = path[waypoint];
+      const dx = target.x - position.x;
+      const dy = target.y - position.y;
+      const distance = Math.hypot(dx, dy);
+      if (distance <= 5) {
+        waypoint += 1;
+        continue;
+      }
+      predictor.step({
+        move: { x: dx / distance, y: dy / distance },
+        dash: false,
+      });
+    }
+
+    expect(waypoint).toBe(path.length);
+    expect(Math.hypot(
+      predictor.current.position.x - goal.x,
+      predictor.current.position.y - goal.y,
+    )).toBeLessThan(8);
   });
 
   it("previews partial ticks smoothly without mutating fixed-step state", () => {

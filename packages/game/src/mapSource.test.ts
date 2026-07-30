@@ -150,6 +150,17 @@ describe("map source", () => {
       expect(floor.windows?.[0].span).toBeDefined();
     });
 
+    it("raises undersized person doors to the shared full-size clearance", () => {
+      const personDoors = floor.doorways.filter((door) => door.opening === "door");
+      expect(personDoors.map((door) => door.width)).toEqual([64, 64]);
+      for (const door of personDoors) {
+        expect(Math.hypot(
+          door.span!.bx - door.span!.ax,
+          door.span!.by - door.span!.ay,
+        )).toBeCloseTo(door.width, 6);
+      }
+    });
+
     it("places an opening at the anchor it was authored near", () => {
       const rollup = floor.doorways.find((door) => door.width === 120)!;
       expect(rollup.x).toBeCloseTo(400, 0);

@@ -1,7 +1,7 @@
 import { compileCityPlan, type CityPlan } from "../cityPlan";
 import { roundhouse, TABLE, TABLE_RADIUS } from "./roundhouse";
 import { signalBox } from "./signalBox";
-import { blobPoly, boxPoly, dots, fenceRun, objects, rhythm, rhythmRule, type RegionParts } from "./regionKit";
+import { blobPoly, boxPoly, dots, fenceRun, objects, patrol, rhythm, rhythmRule, type RegionParts } from "./regionKit";
 import type { MapObject } from "../types";
 
 /**
@@ -363,11 +363,33 @@ export const railYard: RegionParts = {
   botSpawns: [
     // In the 136-unit aisle between the two wagon rakes (y 1084-1148 and 1284-1348),
     // not inside the southern one.
-    { id: "yard-1", name: "Rust", squadId: "rival-11", isAmbient: true, color: "#b06b3a", position: { x: 3600, y: 1216 } },
+    {
+      id: "yard-1", name: "Rust", squadId: "rival-11", faction: "ambient", isAmbient: true, color: "#b06b3a", position: { x: 3600, y: 1216 },
+      patrol: patrol("yard-wagon-rakes", "Inspect both wagon rakes and their loading aisle.", [
+        { x: 3600, y: 1216 }, { x: 4000, y: 1216 }, { x: 4000, y: 1420 }, { x: 3424, y: 1444 }, { x: 3400, y: 1216 },
+      ]),
+    },
     // South-east of the water tank's base, which ends at x 2892 / y 468.
-    { id: "yard-2", name: "Cinder", squadId: "rival-12", isAmbient: true, color: "#8d6e63", position: { x: 2930, y: 520 } },
-    { id: "yard-3", name: "Ash", squadId: "rival-13", isAmbient: true, color: "#6d6a63", position: { x: 2860, y: 1560 }, floorId: "roundhouse:GROUND" },
-    // At the operating floor's east windows. Was on top of the desk chair.
-    { id: "yard-4", name: "Signal", squadId: "rival-14", isAmbient: true, color: "#4a7c8c", position: { x: 3230, y: 470 }, floorId: "box:F1" },
+    {
+      id: "yard-2", name: "Cinder", squadId: "rival-12", faction: "ambient", isAmbient: true, color: "#8d6e63", position: { x: 2930, y: 520 },
+      patrol: patrol("yard-water-works-road", "Guard the water tank and works-road approach.", [
+        { x: 2930, y: 520 }, { x: 3150, y: 520 }, { x: 3150, y: 760 }, { x: 2820, y: 760 }, { x: 2820, y: 600 },
+      ]),
+    },
+    {
+      id: "yard-3", name: "Ash", squadId: "rival-13", faction: "ambient", isAmbient: true, color: "#6d6a63", position: { x: 2860, y: 1560 }, floorId: "roundhouse:GROUND",
+      patrol: patrol("roundhouse-apron", "Walk the roundhouse bay mouths and turntable-side apron.", [
+        { x: 2860, y: 1560 }, { x: 3100, y: 1516 }, { x: 3300, y: 1460 }, { x: 3100, y: 1360 }, { x: 2860, y: 1400 },
+      ]),
+    },
+    // On the box's south approach: the operating floor is deliberately a tight
+    // one-person room, while this loop gives a guard the yard door and works-road
+    // crossing without turning the stair landing into a four-step patrol.
+    {
+      id: "yard-4", name: "Signal", squadId: "rival-14", faction: "ambient", isAmbient: true, color: "#4a7c8c", position: { x: 3140, y: 680 },
+      patrol: patrol("signal-box-south-approach", "Guard the signal-box yard door and works-road crossing.", [
+        { x: 3140, y: 680 }, { x: 3380, y: 680 }, { x: 3380, y: 800 }, { x: 2940, y: 800 }, { x: 2940, y: 680 },
+      ]),
+    },
   ],
 };

@@ -294,22 +294,35 @@ describe("an arbitrary pull direction", () => {
       expect(near.y).toBeGreaterThan(NORTH.y);
     });
 
-    it("never makes an object flatter or taller, only turned", () => {
+    it("carries a distinct distance-based travel magnitude above strength one", () => {
+      const at = { x: 1000 + PARALLAX_HORIZON, y: 1000 };
+      const half = pullToward(at, centre, 0.5);
+      const full = pullToward(at, centre, 1);
+      const boosted = pullToward(at, centre, 2);
+
+      expect(half.scale).toBeGreaterThan(1);
+      expect(full.scale).toBeGreaterThan(half.scale);
+      expect(boosted.scale).toBeGreaterThan(full.scale);
+
+      const box = { x: 0, y: 0, w: 80, h: 80 };
+      expect(topRect(box, LIFT, boosted).w).toBeLessThan(topRect(box, LIFT, full).w);
+      expect(topRect(box, LIFT, full).w).toBeLessThan(topRect(box, LIFT, half).w);
+    });
+
+    it("keeps a bounded readable top while distance adds visible travel", () => {
       /**
-       * The reason this law is safe to land without watching it move. `topRect` shifts by
-       * `cappedLift` along the pull whichever way the pull points, so the exposed band is
-       * the same depth at every camera position — the drawing does not gain or lose a
-       * front face, it relocates one.
+       * Magnitude is allowed to expose more face at the edge of view now; that is the
+       * visible height cue the old unit-vector law lacked. `cappedLift` is still the hard
+       * safety boundary: even the strongest oblique pull keeps a meaningful lid inside
+       * the planted silhouette.
        */
       const box = { x: 0, y: 0, w: 60, h: 60 };
       const area = (r: { w: number; h: number }) => r.w * r.h;
-      const flat = area(topRect(box, LIFT, NORTH));
+      const footprint = area(box);
       for (const at of [{ x: 400, y: 1600 }, { x: 1900, y: 200 }, { x: 1000, y: 1700 }]) {
         const turned = topRect(box, LIFT, pullToward(at, centre, 1));
-        // Within a unit of the same lid area: the shift is the same length, just rotated,
-        // and an oblique shift trades width for height rather than adding either.
-        expect(area(turned)).toBeGreaterThan(flat * 0.82);
-        expect(area(turned)).toBeLessThanOrEqual(area(box));
+        expect(area(turned)).toBeGreaterThanOrEqual(footprint * TOP_FACE_MIN * TOP_FACE_MIN);
+        expect(area(turned)).toBeLessThanOrEqual(footprint);
       }
     });
   });

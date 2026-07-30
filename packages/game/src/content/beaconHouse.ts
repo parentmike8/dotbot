@@ -1,4 +1,5 @@
 import { compileBuilding, type SourceBuilding, type SourceOpening, type SourceWall } from "../mapSource";
+import { STANDARD_DOORWAY_CLEAR_WIDTH } from "../doorwayClearance";
 
 /**
  * Beacon House — residential, SE quadrant of Downtown. Footprint 1560,1020 520x400.
@@ -13,7 +14,7 @@ import { compileBuilding, type SourceBuilding, type SourceOpening, type SourceWa
  */
 
 const INT = 8;
-const DOOR = 56;
+const DOOR = STANDARD_DOORWAY_CLEAR_WIDTH;
 const DOUBLE = 88;
 
 const STAIR_A = { x: 1572, y: 1200, w: 88, h: 160 }; // west core, GROUND↔F1
@@ -245,7 +246,10 @@ export const BEACON_SOURCE: SourceBuilding = {
           id: "beacon-bath-sw",
           thickness: INT,
           path: [{ x: 1668, y: 1336 }, { x: 1756, y: 1336 }, { x: 1756, y: 1408 }],
-          openings: [{ kind: "door", width: DOOR, near: { x: 1722, y: 1336 } }],
+          // This opening terminates at an inside return rather than between two
+          // straight jambs. Its extra 20 units clear the return's round capsule
+          // corner while keeping the center on the room's usable grid line.
+          openings: [{ kind: "door", width: DOOR + 20, near: { x: 1722, y: 1336 } }],
         },
       ],
       objects: [
@@ -297,9 +301,9 @@ export const BEACON_SOURCE: SourceBuilding = {
          * a real bathroom puts its fixtures on one wall anyway.
          */
         { id: "beacon-nw-wc", kind: "toilet", x: 1580, y: 1048, w: 26, h: 34, facing: "N" },
-        // Clear of the bath door's gap, which starts at 1596. Hugging the wall to open the
-        // room put this one in its own threshold — caught by the doorway sweep, not by eye.
-        { id: "beacon-nw-basin", kind: "sink", x: 1572, y: 1088, w: 22, h: 16 },
+        // Clear of the full-size bath door's gap, which starts at 1592. Hugging the wall to
+        // open the room put the old 22-wide basin into its threshold by two units.
+        { id: "beacon-nw-basin", kind: "sink", x: 1572, y: 1088, w: 20, h: 16 },
         // NE studio: mirrored bath, bed west, dining centre.
         { id: "beacon-ne-bed", kind: "bed", x: 1830, y: 1044, w: 48, h: 92, facing: "N" },
         // The NE studio's wall cabinet is gone. It was boxed by the bed to the west, the
@@ -319,14 +323,14 @@ export const BEACON_SOURCE: SourceBuilding = {
         { id: "beacon-ne-fridge", kind: "fridge", x: 1816, y: 1156, w: 30, h: 32, facing: "N" },
         // Mirrored, and on the east wall for the same reason.
         { id: "beacon-ne-wc", kind: "toilet", x: 2034, y: 1048, w: 26, h: 34, facing: "N" },
-        { id: "beacon-ne-basin", kind: "sink", x: 2046, y: 1088, w: 22, h: 16 },
+        { id: "beacon-ne-basin", kind: "sink", x: 2048, y: 1088, w: 20, h: 16 },
         // SW studio: bath SW, bed east.
         { id: "beacon-sw-bed", kind: "bed", x: 1790, y: 1300, w: 48, h: 88, facing: "S", scannable: true },
         { id: "beacon-sw-rug", kind: "rug", x: 1694, y: 1288, w: 80, h: 40 },
         { id: "beacon-sw-chair", kind: "chair", x: 1700, y: 1296, w: 20, h: 20, facing: "E" },
-        // West wall, clearing the door on the room's north side.
-        { id: "beacon-sw-wc", kind: "toilet", x: 1668, y: 1344, w: 26, h: 34, facing: "S" },
-        { id: "beacon-sw-basin", kind: "sink", x: 1672, y: 1384, w: 22, h: 16 },
+        // West wall, below the full-size door's threshold on the room's north side.
+        { id: "beacon-sw-wc", kind: "toilet", x: 1668, y: 1352, w: 26, h: 34, facing: "S" },
+        { id: "beacon-sw-basin", kind: "sink", x: 1672, y: 1390, w: 22, h: 16 },
         // Lounge: reading corner by the south windows; centre left open so the
         // roof stair door stays approachable.
         /**

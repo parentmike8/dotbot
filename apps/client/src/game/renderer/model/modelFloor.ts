@@ -33,7 +33,7 @@ import {
   type Rect,
   type ShadowPad,
 } from "./tone";
-import { pullToward } from "./prism";
+import { objectViewPull } from "./modelParallax";
 import { drawStair, drawStairHead } from "./modelStairs";
 import { capsuleRuns, drawBarrier, drawWallRects } from "./modelWalls";
 
@@ -673,8 +673,7 @@ export function redrawFloorObjects(
 ): number {
   let drawn = 0;
   for (const { object, view } of objectViews.values()) {
-    const centre = { x: object.x + object.w / 2, y: object.y + object.h / 2 };
-    const pull = pullToward(centre, viewCentre, strength);
+    const pull = objectViewPull(object, viewCentre, strength);
     for (const layer of SCRATCH_PAD) layer.clear();
     view.clear();
     withViewPull(pull, () => drawModelObject(view, SCRATCH_PAD, object));

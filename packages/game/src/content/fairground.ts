@@ -1,6 +1,6 @@
 import { compileCityPlan, type CityPlan } from "../cityPlan";
 import { HALL, pavilion } from "./pavilion";
-import { blobPoly, boxPoly, dots, objects, rhythm, rhythmRule, ribbonPoly, type RegionParts } from "./regionKit";
+import { blobPoly, boxPoly, dots, objects, patrol, rhythm, rhythmRule, ribbonPoly, type RegionParts } from "./regionKit";
 import type { MapObject } from "../types";
 
 /**
@@ -443,12 +443,35 @@ export const fairground: RegionParts = {
   ],
   /** See the note on `railYard`'s spawns: a spawn inside a solid never moves. */
   botSpawns: [
-    { id: "fair-1", name: "Tinsel", squadId: "rival-15", isAmbient: true, color: "#c96b9b", position: { x: 1620, y: 2420 } },
+    {
+      id: "fair-1", name: "Tinsel", squadId: "rival-15", faction: "ambient", isAmbient: true, color: "#c96b9b", position: { x: 1620, y: 2420 },
+      patrol: patrol("fair-main-avenue", "Guard the fair's main avenue between the ride fronts.", [
+        { x: 1620, y: 2420 }, { x: 2050, y: 2420 }, { x: 2050, y: 2552 }, { x: 1400, y: 2576 }, { x: 1400, y: 2420 },
+      ]),
+    },
     // South of the helter-skelter's base, which ends at y 2305. Was inside it.
-    { id: "fair-2", name: "Cotton", squadId: "rival-16", isAmbient: true, color: "#d9a05b", position: { x: 620, y: 2350 } },
+    {
+      id: "fair-2", name: "Cotton", squadId: "rival-16", faction: "ambient", isAmbient: true, color: "#d9a05b", position: { x: 620, y: 2350 },
+      patrol: patrol("fair-west-entrance", "Watch the helter-skelter and west fair entrance.", [
+        { x: 620, y: 2350 }, { x: 900, y: 2350 }, { x: 900, y: 2650 }, { x: 520, y: 2650 }, { x: 520, y: 2426 },
+      ]),
+    },
     // Standing AT the bar, not in it: the counter's east face is HALL.x - 176.
-    { id: "fair-3", name: "Bulb", squadId: "rival-17", isAmbient: true, color: "#8c7ab8", position: { x: HALL.x - 130, y: HALL.y + 30 }, floorId: "pavilion:GROUND" },
+    {
+      id: "fair-3", name: "Bulb", squadId: "rival-17", faction: "ambient", isAmbient: true, color: "#8c7ab8", position: { x: HALL.x - 130, y: HALL.y + 30 }, floorId: "pavilion:GROUND",
+      patrol: patrol("pavilion-bar-hall", "Walk the pavilion bar, hall entrance, and room edge.", [
+        { x: HALL.x - 130, y: HALL.y + 30 }, { x: HALL.x + 120, y: HALL.y + 30 },
+        { x: HALL.x + 120, y: HALL.y + 196 }, { x: HALL.x - 20, y: HALL.y + 196 },
+      ]),
+    },
     // Out in the gallery ring. HALL.x + 230 was inside the east box's couch.
-    { id: "fair-4", name: "Reel", squadId: "rival-18", isAmbient: true, color: "#5f8c7a", position: { x: HALL.x + 120, y: HALL.y + 40 }, floorId: "pavilion:F1" },
+    {
+      id: "fair-4", name: "Reel", squadId: "rival-18", faction: "ambient", isAmbient: true, color: "#5f8c7a", position: { x: HALL.x + 120, y: HALL.y + 40 }, floorId: "pavilion:F1",
+      patrol: patrol("pavilion-gallery", "Watch the pavilion gallery perimeter and stair landing.", [
+        { x: HALL.x + 120, y: HALL.y + 40 }, { x: HALL.x + 196, y: HALL.y + 136 },
+        { x: HALL.x + 96, y: HALL.y + 228 }, { x: HALL.x - 132, y: HALL.y + 180 },
+        { x: HALL.x - 180, y: HALL.y + 80 },
+      ]),
+    },
   ],
 };

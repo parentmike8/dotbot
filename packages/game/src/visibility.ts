@@ -225,6 +225,117 @@ export const APERTURE_RANGE = 420;
  */
 export const OUTDOOR_SIGHT = 1200;
 
+/**
+ * Stable gameplay footprint of a tree canopy.
+ *
+ * This comes from the authored tree bounds, not the foliage lobes the renderer
+ * draws or their wind sway. The glyph starts from the same centre and short-side
+ * radius, so cosmetic motion never becomes authoritative.
+ */
+export type TreeCanopy = {
+  treeId: string;
+  x: number;
+  y: number;
+  radius: number;
+};
+
+type TreeCanopyIndex = {
+  canopies: TreeCanopy[];
+  cells: Map<string, TreeCanopy[]>;
+};
+
+const CANOPY_CELL = 128;
+const canopyCache = new WeakMap<MapDocument, TreeCanopyIndex>();
+
+function canopyCell(x: number, y: number): string {
+  return `${x},${y}`;
+}
+
+function treeCanopyIndex(map: MapDocument): TreeCanopyIndex {
+  const cached = canopyCache.get(map);
+  if (cached) return cached;
+
+  const objects = [
+    ...map.outdoor.objects,
+    ...map.buildings.flatMap((building) =>
+      building.floors
+        .filter((floor) => physicsFloorId(map, floor.id) === OUTDOOR_FLOOR_ID)
+        .flatMap((floor) => floor.objects)),
+  ];
+  const canopies = objects
+    .filter((object) => object.kind === "tree")
+    .map((object) => ({
+      treeId: object.id,
+      x: object.x + object.w / 2,
+      y: object.y + object.h / 2,
+      radius: Math.min(object.w, object.h) / 2,
+    }));
+  const cells = new Map<string, TreeCanopy[]>();
+  for (const canopy of canopies) {
+    const left = Math.floor((canopy.x - canopy.radius) / CANOPY_CELL);
+    const right = Math.floor((canopy.x + canopy.radius) / CANOPY_CELL);
+    const top = Math.floor((canopy.y - canopy.radius) / CANOPY_CELL);
+    const bottom = Math.floor((canopy.y + canopy.radius) / CANOPY_CELL);
+    for (let y = top; y <= bottom; y += 1) {
+      for (let x = left; x <= right; x += 1) {
+        const key = canopyCell(x, y);
+        const bucket = cells.get(key);
+        if (bucket) bucket.push(canopy);
+        else cells.set(key, [canopy]);
+      }
+    }
+  }
+  const index = { canopies, cells };
+  canopyCache.set(map, index);
+  return index;
+}
+
+/** Every authored tree canopy on the shared outdoor physics plane. */
+export function treeCanopies(map: MapDocument): readonly TreeCanopy[] {
+  return treeCanopyIndex(map).canopies;
+}
+
+function canopiesAt(map: MapDocument, point: Vec2): readonly TreeCanopy[] {
+  const key = canopyCell(
+    Math.floor(point.x / CANOPY_CELL),
+    Math.floor(point.y / CANOPY_CELL),
+  );
+  return treeCanopyIndex(map).cells.get(key) ?? [];
+}
+
+function canopyContains(canopy: TreeCanopy, point: Vec2): boolean {
+  const dx = point.x - canopy.x;
+  const dy = point.y - canopy.y;
+  return dx * dx + dy * dy <= canopy.radius * canopy.radius;
+}
+
+/**
+ * Whether canopy placement permits a NEW target acquisition.
+ *
+ * This is target eligibility, not line-of-sight: canopies never enter the wall
+ * list or fog polygon. A target centre on or inside an authored crown cannot be
+ * newly acquired by an observer outside every crown containing it. Sharing any
+ * one of overlapping target crowns is enough to acquire.
+ */
+export function canopyAllowsNewTarget(
+  map: MapDocument,
+  observerFloorId: string,
+  observer: Vec2,
+  targetFloorId: string,
+  target: Vec2,
+): boolean {
+  if (physicsFloorId(map, targetFloorId) !== OUTDOOR_FLOOR_ID) return true;
+  if (physicsFloorId(map, observerFloorId) !== OUTDOOR_FLOOR_ID) return true;
+
+  let covered = false;
+  for (const canopy of canopiesAt(map, target)) {
+    if (!canopyContains(canopy, target)) continue;
+    covered = true;
+    if (canopyContains(canopy, observer)) return true;
+  }
+  return !covered;
+}
+
 /** Buildings whose walls should stand in for their footprint, for a viewer here. */
 export function openBuildings(map: MapDocument, position: Vec2): string[] {
   const open: string[] = [];

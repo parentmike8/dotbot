@@ -15,6 +15,7 @@ import {
   buildLeafFall, buildTrailMarks, type AmbientMover, type LeafFall, type TrailMarks,
 } from "./model/modelMotion";
 import { buildWaterSurfaces, type WaterSurface } from "./model/modelWater";
+import type { ParallaxObjectView } from "./model/modelParallax";
 import { SHADOW_ALPHA, V, type ShadowPad } from "./model/tone";
 import { drawDotDisc } from "./dotArt";
 import { DOT_COLOR, INK, OVERLAY_WHITE, WEIGHT } from "./style";
@@ -106,6 +107,8 @@ export type MapArt = {
   outdoorDetail: Container;
   /** Solid outdoor objects. */
   outdoorObjects: Container;
+  /** Addressable outdoor bases and their lifted parts for visible-only parallax redraws. */
+  outdoorObjectViews: Map<string, ParallaxObjectView>;
   /**
    * The fog mask's target, and ONLY that.
    *
@@ -220,7 +223,8 @@ export function buildMapArt(map: MapDocument): MapArt {
   overhead.addChild(outdoors.overhead, leaves.view);
 
   return {
-    root, ground, outdoorDetail, outdoorObjects, foreground, outdoorForeground, overhead,
+    root, ground, outdoorDetail, outdoorObjects, outdoorObjectViews: outdoors.objectViews,
+    foreground, outdoorForeground, overhead,
     buildingsLayer, buildings, water: water.surfaces, movers, leaves, trails,
   };
 }

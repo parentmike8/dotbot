@@ -42,6 +42,7 @@ import { canReviveBody, canTakeFromBody, interactionDotReach, withinDownedCoverR
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, hasRoom, insertItem, removeCarriedAt } from "./inventory";
+import { botSpawnFaction } from "./faction";
 import {
   applyArmourHit,
   contactReach,
@@ -52,10 +53,11 @@ import {
   restoreShieldPlate,
 } from "./shields";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import { hasLineOfSight, seesOutdoors } from "./visibility";
+import { canopyAllowsNewTarget, hasLineOfSight, seesOutdoors } from "./visibility";
 import type {
   BayIndex,
   BotSpawn,
+  BotFactionKind,
   BotState,
   Building,
   Controller,
@@ -73,6 +75,7 @@ import type {
   MineEntity,
   NoiseEvent,
   NoiseKind,
+  PatrolRoute,
   Rect,
   SimEvent,
   Solid,
@@ -173,6 +176,28 @@ const AI_SLOT_ARRIVAL = 6;
 /** Past this a bot is travelling toward a fight, not queueing at one. */
 const AI_SLOT_CLAIM_RANGE = 420;
 
+/** Initial ambient sight acquisition stays within the current combat-scale view. */
+const AI_ACQUISITION_RANGE_PX = 540;
+/**
+ * After contact breaks, commit to the last point actually sensed for three seconds.
+ * At 168 px/s that is at most 504 units: enough to round one nearby corner, not
+ * enough to cross a district on information the bot no longer owns.
+ */
+const AI_LAST_KNOWN_MS = 3_000;
+/**
+ * Then inspect three deterministic points over 4.5 seconds, two bot-widths around
+ * the last-known position. The complete alert therefore expires after 7.5 seconds.
+ */
+const AI_SEARCH_MS = 4_500;
+const AI_SEARCH_STEP_MS = 1_500;
+const AI_SEARCH_RADIUS_PX = 96;
+/**
+ * A rival squad stays escort-hostile for fifteen quiet seconds after its last
+ * authoritative attack. Sight, proximity, pings, and elapsed search do not refresh
+ * this ledger; another server-resolved hostile action does.
+ */
+const ESCORT_HOSTILITY_QUIET_MS = 15_000;
+
 /**
  * How long an AI squadmate keeps acting on a mark.
  *
@@ -207,7 +232,19 @@ const NOISE_LOUDNESS = {
   ping: 0.35,
 } as const;
 
+type AiMode = "patrol" | "engage" | "investigate" | "search" | "escort";
+
+type AiAlert = {
+  targetId: string;
+  targetFactionKey: string;
+  lastKnownPosition: Vec2;
+  lastKnownFloorId: string;
+  lastSensedAtMs: number;
+};
+
 type InternalBot = DotBotEntity & {
+  factionKind: BotFactionKind;
+  patrol?: PatrolRoute;
   spawn: Vec2;
   spawnFloorId: string;
   desiredMove: Vec2;
@@ -255,6 +292,17 @@ type InternalBot = DotBotEntity & {
   dashBlockedTargets: Set<string>;
   aiWanderTarget: Vec2;
   aiRetargetMs: number;
+  /**
+   * The hostile this AI pursued on its previous decision.
+   *
+   * Canopy cover gates only a NEW acquisition. Remembering the chosen hunt here
+   * lets an existing pursuit survive entry under a crown, while any ordinary
+   * non-hunt decision clears the memory and makes a later lock new again.
+   */
+  aiHuntTargetId: string | null;
+  aiMode: AiMode;
+  aiAlert?: AiAlert;
+  aiPatrolIndex: number;
   aiPath: Vec2[];
   /** Where the current leg started, so a waypoint can be retired on progress
    * along the leg rather than on proximity alone. See `waypointRetired`. */
@@ -302,8 +350,7 @@ type InternalDoor = DoorEntity & {
   holdRemainingMs: number;
 };
 
-/** `loot` is a Dot on the ground; `strip` is a body. */
-type AiIntent = "loot" | "hunt" | "revive" | "strip" | "extract" | "investigate" | "escort" | "wander";
+type AiIntent = "hunt" | "revive" | "investigate" | "search" | "escort" | "patrol";
 
 type AiTarget = {
   position: Vec2;
@@ -361,6 +408,10 @@ export class DotBotSimulation {
   /** Which bot, if any, may run A* this tick. See `grantPlanningPermit`. */
   private planPermit: string | null = null;
   private noises: NoiseEvent[] = [];
+  /** Authoritative producer identity; deliberately not replicated with the visual ring. */
+  private readonly noiseSourceById = new Map<string, string>();
+  /** `aggressor faction -> protected squad`, refreshed only by a hostile action. */
+  private readonly squadHostilityUntil = new Map<string, number>();
   private noiseSeq = 0;
   private mineSeq = 0;
 
@@ -491,11 +542,14 @@ export class DotBotSimulation {
     // client predictor runs verbatim. Solver contacts gave unbounded shoves,
     // deep interpenetration, and pushable corpses.
     const shieldSegments = platesForCount(maxShields, shields);
+    const factionKind = botSpawnFaction(spawn);
     const bot: InternalBot = {
       id: spawn.id,
       name: spawn.name,
       squadId: spawn.squadId,
-      isAmbient: spawn.isAmbient ?? false,
+      factionKind,
+      patrol: spawn.patrol,
+      isAmbient: factionKind === "ambient",
       color: spawn.color,
       position: { ...spawn.position },
       radius: this.config.botRadius,
@@ -507,7 +561,7 @@ export class DotBotSimulation {
       shields: plateSum(shieldSegments),
       shieldSegments,
       bays: normalizedBays(spawn, this.config),
-      hold: spawn.isAmbient ? [] : (spawn.hold ?? []).slice(0, this.config.holdSlots),
+      hold: factionKind === "ambient" ? [] : (spawn.hold ?? []).slice(0, this.config.holdSlots),
       carriedCount: 0,
       searched: false,
       pleaded: false,
@@ -535,6 +589,9 @@ export class DotBotSimulation {
       dashBlockedTargets: new Set(),
       aiWanderTarget: { ...spawn.position },
       aiRetargetMs: 0,
+      aiHuntTargetId: null,
+      aiMode: factionKind === "ambient" ? "patrol" : "escort",
+      aiPatrolIndex: spawn.patrol && spawn.patrol.waypoints.length > 1 ? 1 : 0,
       aiPath: [],
       aiPathLegStart: { ...spawn.position },
       aiPathTarget: { ...spawn.position },
@@ -635,6 +692,7 @@ export class DotBotSimulation {
       other.aiAvoidTargets.delete(botId);
       other.contactDwell.delete(botId);
       other.dashBlockedTargets.delete(botId);
+      if (other.aiAlert?.targetId === botId) other.aiAlert = undefined;
     }
   }
 
@@ -743,8 +801,9 @@ export class DotBotSimulation {
 
   private emitNoise(kind: NoiseKind, position: Vec2, floorId: string, loudness: number, source?: InternalBot): void {
     if (source && source.incognitoMs > 0) return;
+    const id = `n${this.noiseSeq++}`;
     this.noises.push({
-      id: `n${this.noiseSeq++}`,
+      id,
       kind,
       position: { ...position },
       floorId,
@@ -752,6 +811,7 @@ export class DotBotSimulation {
       ageMs: 0,
       ttlMs: NOISE_TTL_MS,
     });
+    if (source) this.noiseSourceById.set(id, source.id);
   }
 
   private ageNoises(dtMs: number): void {
@@ -759,24 +819,38 @@ export class DotBotSimulation {
       noise.ageMs += dtMs;
     }
 
-    this.noises = this.noises.filter((noise) => noise.ageMs < noise.ttlMs);
+    this.noises = this.noises.filter((noise) => {
+      const alive = noise.ageMs < noise.ttlMs;
+      if (!alive) this.noiseSourceById.delete(noise.id);
+      return alive;
+    });
   }
 
   private updateDoors(dtMs: number): void {
     for (const door of this.doors.values()) {
       const triggerRadius = door.doorway.triggerRadius ?? DEFAULT_DOOR_TRIGGER_RADIUS;
-      const nearby = [...this.bots.values()].some((bot) =>
+      const nearbyBot = [...this.bots.values()]
+        .filter((bot) =>
         bot.state === "alive" &&
         bot.floorId === door.floorId &&
         distance(bot.position, door.position) <= triggerRadius + bot.radius,
-      );
+        )
+        .sort((left, right) => distance(left.position, door.position) - distance(right.position, door.position)
+          || left.id.localeCompare(right.id))[0];
+      const nearby = nearbyBot !== undefined;
       const durationMs = Math.max(1, door.doorway.openDurationMs ?? DEFAULT_DOOR_OPEN_MS);
       const delta = dtMs / durationMs;
 
       if (door.phase === "closed" && nearby) {
         door.phase = "opening";
         door.holdRemainingMs = door.doorway.holdOpenMs ?? DEFAULT_DOOR_HOLD_MS;
-        this.emitNoise("door", door.position, door.floorId, door.doorway.noiseLoudness ?? DEFAULT_DOOR_NOISE);
+        this.emitNoise(
+          "door",
+          door.position,
+          door.floorId,
+          door.doorway.noiseLoudness ?? DEFAULT_DOOR_NOISE,
+          nearbyBot,
+        );
       }
 
       if (door.phase === "opening") {
@@ -834,6 +908,9 @@ export class DotBotSimulation {
   }
 
   private updateTimers(dtMs: number): void {
+    for (const [key, expiresAt] of this.squadHostilityUntil) {
+      if (expiresAt <= this.timeMs) this.squadHostilityUntil.delete(key);
+    }
     for (const bot of this.bots.values()) {
       bot.dashCooldownMs = Math.max(0, bot.dashCooldownMs - dtMs);
       bot.dashActiveMs = Math.max(0, bot.dashActiveMs - dtMs);
@@ -1029,8 +1106,13 @@ export class DotBotSimulation {
 
   private resolveMines(dtMs: number): void {
     for (const mine of [...this.mines.values()]) {
+      const owner = this.bots.get(mine.placedByBotId);
       const intruders = [...this.bots.values()]
-        .filter((bot) => bot.state === "alive" && bot.squadId !== mine.squadId && bot.floorId === mine.floorId)
+        .filter((bot) =>
+          bot.state === "alive"
+          && bot.floorId === mine.floorId
+          && (owner ? !areFriendly(owner, bot) : bot.squadId !== mine.squadId),
+        )
         .sort((left, right) => distance(left.position, mine.position) - distance(right.position, mine.position) || left.id.localeCompare(right.id));
       const trigger = intruders.find((bot) => distance(bot.position, mine.position) + mine.radius <= bot.radius - 2);
       if (trigger) {
@@ -1060,13 +1142,16 @@ export class DotBotSimulation {
 
   private detonateMine(mine: InternalMine, target: InternalBot): void {
     this.mines.delete(mine.id);
+    const owner = this.bots.get(mine.placedByBotId);
+    if (owner && !this.canDamage(owner, target)) return;
+    if (owner) this.recordHostileAction(owner, target);
     // A mine reads exactly like any other hit: the arc it goes off in takes it, or
     // it reaches the core. One rule, so a mine can never do what a dash cannot.
     const impactAngle = Math.atan2(mine.position.y - target.position.y, mine.position.x - target.position.x);
     const armourHit = applyArmourHit(target.facing, target.shieldSegments, impactAngle);
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
-    this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation);
+    this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation, owner);
 
     if (armourHit.core) {
       this.putBotDown(target, mine.placedByBotId);
@@ -1096,6 +1181,7 @@ export class DotBotSimulation {
     target.shields = 0;
     target.state = "downed";
     target.dashActiveMs = 0;
+    target.aiHuntTargetId = null;
     target.velocity = zeroVec();
     target.knockbackMs = 0;
     this.events.push({ type: "downed", botId: target.id, byBotId });
@@ -1172,12 +1258,14 @@ export class DotBotSimulation {
         // Blacklisted this tick: the objective it has been leaning on is gone, so
         // re-decide rather than spend one more tick walking into the same body.
         const replacement = this.pickBotTarget(bot);
+        this.rememberAiObjective(bot, replacement);
         const routed = this.routeAiTarget(bot, replacement);
         bot.desiredMove = this.steerBotAlongPath(bot, routed);
         if (length(bot.desiredMove) > 0.05) bot.lastAim = bot.desiredMove;
         this.tryAiDash(bot, replacement);
         continue;
       }
+      this.rememberAiObjective(bot, objective);
       const routedTarget = this.routeAiTarget(bot, objective);
       const desired = this.steerBotAlongPath(bot, routedTarget);
       bot.desiredMove = desired;
@@ -1192,6 +1280,30 @@ export class DotBotSimulation {
 
   private sameArena(bot: InternalBot, floorId: string, position: Vec2): boolean {
     return contextKey(this.map, bot.floorId, bot.position) === contextKey(this.map, floorId, position);
+  }
+
+  /**
+   * Keep only the pursuit that actually survived this tick's ordinary priorities.
+   *
+   * This deliberately runs after selection rather than inside `huntTarget`: the
+   * first objective may be rejected as stalled and replaced in the same tick.
+   * Remembering that rejected hunt would turn a later encounter into retention.
+   */
+  private rememberAiObjective(bot: InternalBot, objective: AiTarget): void {
+    bot.aiHuntTargetId = objective.intent === "hunt" && objective.targetId
+      ? objective.targetId
+      : null;
+  }
+
+  /** Canopy applies only when this hostile is not the pursuit already remembered. */
+  private canAcquireHuntTarget(bot: InternalBot, target: InternalBot): boolean {
+    return bot.aiHuntTargetId === target.id || canopyAllowsNewTarget(
+      this.map,
+      bot.floorId,
+      bot.position,
+      target.floorId,
+      target.position,
+    );
   }
 
   /**
@@ -1242,6 +1354,83 @@ export class DotBotSimulation {
     }
     // Different arenas: the only join is a hole in a wall, so ask the merged geometry.
     return seesOutdoors(this.map, bot.floorId, bot.position, floorId, position, occluders);
+  }
+
+  private factionKey(bot: InternalBot): string {
+    return bot.factionKind === "ambient" ? "ambient" : `squad:${bot.squadId}`;
+  }
+
+  private isEscort(bot: InternalBot): boolean {
+    return this.controllers.get(bot.id) === "ai" && bot.factionKind === "squad";
+  }
+
+  private squadHostilityKey(aggressor: InternalBot, protectedSquadId: string): string {
+    return `${this.factionKey(aggressor)}->squad:${protectedSquadId}`;
+  }
+
+  private hasActiveSquadHostility(aggressor: InternalBot, protectedSquadId: string): boolean {
+    return (this.squadHostilityUntil.get(this.squadHostilityKey(aggressor, protectedSquadId)) ?? 0) > this.timeMs;
+  }
+
+  /**
+   * Directional AI hostility, separate from physical faction friendship.
+   *
+   * Human input remains free to attack a different faction. Ambient AI owns only
+   * the faction it legitimately sensed. Escorts may defend against an ambient
+   * aggressor or a rival squad present in the authoritative hostility ledger.
+   */
+  private isHostileForAi(actor: InternalBot, target: InternalBot): boolean {
+    if (areFriendly(actor, target) || target.state !== "alive") return false;
+    if (actor.factionKind === "ambient") {
+      return actor.aiAlert?.targetFactionKey === this.factionKey(target);
+    }
+    if (!this.isEscort(actor)) return true;
+    if (target.factionKind === "ambient") {
+      return target.aiAlert?.targetFactionKey === this.factionKey(actor);
+    }
+    return this.hasActiveSquadHostility(target, actor.squadId);
+  }
+
+  private canDamage(actor: InternalBot, target: InternalBot): boolean {
+    if (areFriendly(actor, target)) return false;
+    if (this.controllers.get(actor.id) === "human") return true;
+    return this.isHostileForAi(actor, target);
+  }
+
+  private acquireAmbientAlert(bot: InternalBot, target: InternalBot, position: Vec2, floorId: string): void {
+    if (bot.factionKind !== "ambient" || target.factionKind === "ambient") return;
+    bot.aiAlert = {
+      targetId: target.id,
+      targetFactionKey: this.factionKey(target),
+      lastKnownPosition: { ...position },
+      lastKnownFloorId: floorId,
+      lastSensedAtMs: this.timeMs,
+    };
+    bot.aiMode = "engage";
+  }
+
+  /**
+   * The only activation path for escort-vs-rival-human hostility.
+   *
+   * A resolved attack refreshes fifteen seconds of squad defence. Mere sight,
+   * distance, target selection, and pings never call this.
+   */
+  private recordHostileAction(source: InternalBot, target: InternalBot): void {
+    if (areFriendly(source, target)) return;
+    if (source.factionKind === "ambient") {
+      // The ambient bot was already acquired before it could attack.
+      return;
+    }
+    if (target.factionKind === "ambient") {
+      // Being struck is an authoritative sensory event, but never lets one
+      // ambient bot reciprocate against another.
+      this.acquireAmbientAlert(target, source, source.position, source.floorId);
+      return;
+    }
+    this.squadHostilityUntil.set(
+      this.squadHostilityKey(source, target.squadId),
+      this.timeMs + ESCORT_HOSTILITY_QUIET_MS,
+    );
   }
 
   /**
@@ -1302,8 +1491,11 @@ export class DotBotSimulation {
     bot.aiStallFrom = { ...bot.position };
     bot.aiPath = [];
     if (objective.targetId === undefined) {
-      // Wander has no target to avoid; the destination itself is the problem.
-      bot.aiWanderTarget = this.pickWanderTarget(bot);
+      // Patrol/search positions are authored or time-bounded rather than target
+      // entities. Skip a blocked patrol point; search will advance on its timer.
+      if (objective.intent === "patrol" && bot.patrol && bot.patrol.waypoints.length > 0) {
+        bot.aiPatrolIndex = (bot.aiPatrolIndex + 1) % bot.patrol.waypoints.length;
+      }
       return true;
     }
     bot.aiAvoidTargets.set(objective.targetId, AI_STALL_AVOID_MS + this.nextRandom() * AI_STALL_AVOID_MS);
@@ -1432,7 +1624,7 @@ export class DotBotSimulation {
     for (const bot of this.bots.values()) {
       if (bot.state !== "alive" || bot.id === target.id) continue;
       if (this.controllers.get(bot.id) !== "ai") continue;
-      if (bot.floorId !== target.floorId || areFriendly(bot, target)) continue;
+      if (bot.floorId !== target.floorId || !this.isHostileForAi(bot, target)) continue;
       if (distance(bot.position, target.position) > AI_SLOT_CLAIM_RANGE) continue;
       claimants.push(bot.id);
     }
@@ -1566,7 +1758,9 @@ export class DotBotSimulation {
     const enemyMark = this.markFor(bot, "enemy");
     if (enemyMark) {
       const rival = [...this.bots.values()]
-        .filter((target) => target.state === "alive" && !areFriendly(bot, target))
+        .filter((target) =>
+          this.isHostileForAi(bot, target)
+          && this.canAcquireHuntTarget(bot, target))
         .filter((target) => distance(target.position, enemyMark.position) < PING_PULL)
         .sort((a, b) => distance(a.position, enemyMark.position) - distance(b.position, enemyMark.position))[0];
       if (rival) return this.huntTarget(bot, rival);
@@ -1579,7 +1773,9 @@ export class DotBotSimulation {
         .filter((candidate) => distance(candidate.position, lootMark.position) < PING_PULL)
         .sort((a, b) => distance(a.position, lootMark.position) - distance(b.position, lootMark.position))[0];
       if (dot) {
-        return makeAiTarget(dot.position, dot.floorId, this.config.botRadius * 0.5, this.config.botRadius * 2, "loot", dot.id);
+        // An escort acknowledges the loot order by moving to it, but never picks
+        // it up. Inventory remains a player decision.
+        return makeAiTarget(dot.position, dot.floorId, PING_ARRIVED, PING_ARRIVED * 1.6, "investigate");
       }
     }
 
@@ -1652,35 +1848,13 @@ export class DotBotSimulation {
       return makeAiTarget(friendlyDowned.position, friendlyDowned.floorId, bot.radius * BODY_CHANNEL_STAND_OFF, bot.radius * 3, "revive", friendlyDowned.id);
     }
 
-    const shouldFlee = carriedCount(bot) > 0 && bot.shields <= 1;
-    const inventoryFull = carriedCount(bot) >= this.config.baySlots + this.config.holdSlots;
-
-    if (!bot.isAmbient && (shouldFlee || inventoryFull)) {
-      const extraction = this.nearestExtractionTarget(bot);
-      if (extraction) {
-        return extraction;
-      }
-    }
-
-    const hostileDowned = rank(
-      [...this.bots.values()].filter(
-        (target) => target.id !== bot.id && target.state === "downed" && !areFriendly(bot, target) && localOrVertical(target) && available(target)
-          && !this.outclaimed(bot, target),
-      ),
-    );
-
-    if (hostileDowned && this.strategicDistance(bot, hostileDowned) < 760) {
-      return makeAiTarget(hostileDowned.position, hostileDowned.floorId, bot.radius * BODY_CHANNEL_STAND_OFF, bot.radius * 3, "strip", hostileDowned.id);
-    }
-
     const visibleHostile = rank(
       [...this.bots.values()].filter(
         (target) =>
-          target.id !== bot.id &&
-          target.state === "alive" &&
-          !areFriendly(bot, target) &&
+          this.isHostileForAi(bot, target) &&
           available(target) &&
-          distance(bot.position, target.position) < 540 &&
+          distance(bot.position, target.position) < AI_ACQUISITION_RANGE_PX &&
+          this.canAcquireHuntTarget(bot, target) &&
           this.canSee(bot, target.floorId, target.position),
       ),
     );
@@ -1689,44 +1863,18 @@ export class DotBotSimulation {
       return this.huntTarget(bot, visibleHostile);
     }
 
-    const dot = rank(
-      [...this.dots.values()].filter(
-        (candidate) => candidate.active && carriedCount(bot) < this.config.baySlots + this.config.holdSlots && localOrVertical(candidate) && available(candidate),
-      ),
-    );
-
-    if (dot && this.strategicDistance(bot, dot) < 820) {
-      // Stop just inside the same visible-overlap boundary used for players,
-      // rather than driving the AI core all the way over the Dot.
-      return makeAiTarget(dot.position, dot.floorId, Math.max(2, interactionDotReach(bot.radius, dot.radius) - 2), bot.radius * 3.2, "loot", dot.id);
-    }
-
-    if (!bot.isAmbient && carriedCount(bot) >= Math.max(2, this.config.baySlots + this.config.holdSlots - 2)) {
-      const extraction = this.nearestExtractionTarget(bot);
-      if (extraction) {
-        return extraction;
-      }
-    }
-
     const strategicHostile = rank(
       [...this.bots.values()].filter(
-        (target) => target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && localOrVertical(target) && available(target),
+        (target) =>
+          this.isHostileForAi(bot, target)
+          && localOrVertical(target)
+          && available(target)
+          && this.canAcquireHuntTarget(bot, target),
       ),
     );
 
     if (strategicHostile && this.strategicDistance(bot, strategicHostile) < 900) {
       return this.huntTarget(bot, strategicHostile);
-    }
-
-    const heard = [...this.noises]
-      .reverse()
-      .find(
-        (noise) =>
-          available(noise) && classifyNoise(this.map, bot.floorId, bot.position, noise.floorId, noise.position, noise.loudness) !== null,
-      );
-
-    if (heard) {
-      return makeAiTarget(heard.position, heard.floorId, 34, bot.radius * 5, "investigate", heard.id);
     }
 
     // Idle AI squadmates keep the first living human controller in view,
@@ -1741,45 +1889,98 @@ export class DotBotSimulation {
       .sort((a, b) => a.id.localeCompare(b.id))[0];
 
     if (squadHuman && available(squadHuman)) {
+      bot.aiMode = "escort";
       return makeAiTarget(squadHuman.position, squadHuman.floorId, bot.radius * 3, bot.radius * 7, "escort", squadHuman.id);
     }
 
-    if (bot.aiRetargetMs <= 0 || distance(bot.position, bot.aiWanderTarget) < 48) {
-      bot.aiWanderTarget = this.pickWanderTarget(bot);
-      bot.aiRetargetMs = 1400 + this.nextRandom() * 1500;
-    }
-
-    return makeAiTarget(bot.aiWanderTarget, bot.floorId, 48, bot.radius * 4, "wander");
+    bot.aiMode = "escort";
+    return makeAiTarget(bot.spawn, bot.spawnFloorId, 48, bot.radius * 4, "escort");
   }
 
   private pickAmbientTarget(bot: InternalBot): AiTarget {
     const available = (target: { id: string }) => !bot.aiAvoidTargets.has(target.id);
-    const hostile = [...this.bots.values()]
+    const visible = [...this.bots.values()]
       .filter((target) =>
-        target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && available(target) &&
-        distance(bot.position, target.position) < 540 &&
-        this.canSee(bot, target.floorId, target.position))
+        target.id !== bot.id
+        && target.state === "alive"
+        && target.factionKind !== "ambient"
+        && available(target)
+        && distance(bot.position, target.position) < AI_ACQUISITION_RANGE_PX
+        && this.canAcquireHuntTarget(bot, target)
+        && this.canSee(bot, target.floorId, target.position))
       .sort((a, b) => distance(bot.position, a.position) - distance(bot.position, b.position))[0];
-    if (hostile) {
-      return this.huntTarget(bot, hostile);
+
+    if (visible) {
+      this.acquireAmbientAlert(bot, visible, visible.position, visible.floorId);
+      return this.huntTarget(bot, visible);
     }
 
-    const heard = [...this.noises].reverse().find((noise) =>
-      available(noise) && classifyNoise(this.map, bot.floorId, bot.position, noise.floorId, noise.position, noise.loudness) !== null);
-    if (heard) return makeAiTarget(heard.position, heard.floorId, 34, bot.radius * 5, "investigate", heard.id);
-
-    const strategic = [...this.bots.values()]
-      .filter((target) => target.id !== bot.id && target.state === "alive" && !areFriendly(bot, target) && available(target))
-      .sort((a, b) => this.strategicDistance(bot, a) - this.strategicDistance(bot, b))[0];
-    if (strategic && this.strategicDistance(bot, strategic) < 900) {
-      return this.huntTarget(bot, strategic);
+    const heard = [...this.noises].reverse().find((noise) => {
+      if (!available(noise)) return false;
+      const sourceId = this.noiseSourceById.get(noise.id);
+      const source = sourceId ? this.bots.get(sourceId) : undefined;
+      return source !== undefined
+        && source.state === "alive"
+        && source.factionKind !== "ambient"
+        && classifyNoise(this.map, bot.floorId, bot.position, noise.floorId, noise.position, noise.loudness) !== null;
+    });
+    if (heard) {
+      const source = this.bots.get(this.noiseSourceById.get(heard.id)!)!;
+      this.acquireAmbientAlert(bot, source, heard.position, heard.floorId);
     }
 
-    if (bot.aiRetargetMs <= 0 || distance(bot.position, bot.aiWanderTarget) < 48) {
-      bot.aiWanderTarget = this.pickWanderTarget(bot);
-      bot.aiRetargetMs = 1400 + this.nextRandom() * 1500;
+    const alert = bot.aiAlert;
+    if (alert) {
+      const elapsed = this.timeMs - alert.lastSensedAtMs;
+      if (elapsed < AI_LAST_KNOWN_MS) {
+        bot.aiMode = "investigate";
+        return makeAiTarget(
+          alert.lastKnownPosition,
+          alert.lastKnownFloorId,
+          44,
+          bot.radius * 5,
+          "investigate",
+        );
+      }
+      if (elapsed < AI_LAST_KNOWN_MS + AI_SEARCH_MS) {
+        const step = Math.floor((elapsed - AI_LAST_KNOWN_MS) / AI_SEARCH_STEP_MS);
+        const angle = ((stableHash(`${bot.id}:${alert.targetId}`) % 360) * Math.PI) / 180
+          + step * (Math.PI * 2 / 3);
+        bot.aiMode = "search";
+        return makeAiTarget(
+          {
+            x: alert.lastKnownPosition.x + Math.cos(angle) * AI_SEARCH_RADIUS_PX,
+            y: alert.lastKnownPosition.y + Math.sin(angle) * AI_SEARCH_RADIUS_PX,
+          },
+          alert.lastKnownFloorId,
+          36,
+          bot.radius * 5,
+          "search",
+        );
+      }
+      bot.aiAlert = undefined;
+      bot.aiPath = [];
+      bot.aiRepathMs = 0;
     }
-    return makeAiTarget(bot.aiWanderTarget, bot.floorId, 48, bot.radius * 4, "wander");
+
+    bot.aiMode = "patrol";
+    const route = bot.patrol;
+    if (!route || route.waypoints.length === 0) {
+      return makeAiTarget(bot.spawn, bot.spawnFloorId, 48, bot.radius * 4, "patrol");
+    }
+    let waypoint = route.waypoints[bot.aiPatrolIndex % route.waypoints.length];
+    const waypointFloor = physicsFloorId(this.map, waypoint.floorId ?? bot.spawnFloorId);
+    if (bot.floorId === waypointFloor && distance(bot.position, waypoint.position) <= 48) {
+      bot.aiPatrolIndex = (bot.aiPatrolIndex + 1) % route.waypoints.length;
+      waypoint = route.waypoints[bot.aiPatrolIndex];
+    }
+    return makeAiTarget(
+      waypoint.position,
+      physicsFloorId(this.map, waypoint.floorId ?? bot.spawnFloorId),
+      44,
+      bot.radius * 4,
+      "patrol",
+    );
   }
 
   private strategicDistance(bot: InternalBot, target: { floorId: string; position: Vec2 }): number {
@@ -1804,29 +2005,6 @@ export class DotBotSimulation {
     }
 
     return score;
-  }
-
-  private nearestExtractionTarget(bot: InternalBot): AiTarget | null {
-    const point = this.map.extractionPoints
-      .filter((candidate) => !bot.aiAvoidTargets.has(candidate.id))
-      .sort((a, b) => {
-        const aCenter = { x: a.rect.x + a.rect.w / 2, y: a.rect.y + a.rect.h / 2 };
-        const bCenter = { x: b.rect.x + b.rect.w / 2, y: b.rect.y + b.rect.h / 2 };
-        return distance(bot.position, aCenter) - distance(bot.position, bCenter);
-      })[0];
-
-    if (!point) {
-      return null;
-    }
-
-    return makeAiTarget(
-      { x: point.rect.x + point.rect.w / 2, y: point.rect.y + point.rect.h / 2 },
-      OUTDOOR_FLOOR_ID,
-      12,
-      bot.radius * 5,
-      "extract",
-      point.id,
-    );
   }
 
   /** Convert a strategic target into the next same-floor navigation target. */
@@ -2032,8 +2210,6 @@ export class DotBotSimulation {
 
         if (target.targetId) {
           bot.aiAvoidTargets.set(target.targetId, 1800 + this.nextRandom() * 1200);
-        } else if (target.intent === "wander") {
-          bot.aiRetargetMs = 0;
         }
 
         // An empty A* result is not permission to steer through geometry — but it
@@ -2104,12 +2280,9 @@ export class DotBotSimulation {
       return null;
     }
 
-    const maximumRadius =
-      target.intent === "loot"
-        ? target.stopDistance
-        : target.intent === "revive" || target.intent === "strip"
-          ? Math.max(target.stopDistance, bot.radius * 1.35)
-          : 0;
+    const maximumRadius = target.intent === "revive"
+      ? Math.max(target.stopDistance, bot.radius * 1.35)
+      : 0;
 
     if (maximumRadius <= 1) {
       return null;
@@ -2162,7 +2335,7 @@ export class DotBotSimulation {
     }
 
     const hostile = this.bots.get(target.targetId);
-    if (!hostile || hostile.state !== "alive" || !this.canPerceive(bot, hostile.floorId, hostile.position)) {
+    if (!hostile || !this.isHostileForAi(bot, hostile) || !this.canPerceive(bot, hostile.floorId, hostile.position)) {
       return;
     }
 
@@ -2701,7 +2874,7 @@ export class DotBotSimulation {
     direction: Vec2,
   ): void {
     const position = scale(add(a.position, b.position), 0.5);
-    this.emitNoise("impact", position, a.floorId, NOISE_LOUDNESS.impact);
+    this.emitNoise("impact", position, a.floorId, NOISE_LOUDNESS.impact, a);
     this.events.push({
       type: "dashContact",
       botId: b.id,
@@ -2728,14 +2901,16 @@ export class DotBotSimulation {
 
         const aDashing = a.dashActiveMs > 0;
         const bDashing = b.dashActiveMs > 0;
+        const aHostile = this.canDamage(a, b);
+        const bHostile = this.canDamage(b, a);
 
         if (aDashing || bDashing) {
           // Dashes are the attack verb: each direction is tested against the
           // victim as the attacker saw them (lag compensated), so a dash
           // through the enemy on screen lands even though the wire is late.
           // A connecting dash STOPS at its target instead of ghosting on.
-          const aConnects = aDashing && this.attackConnects(a, b);
-          const bConnects = bDashing && this.attackConnects(b, a);
+          const aConnects = aHostile && aDashing && this.attackConnects(a, b);
+          const bConnects = bHostile && bDashing && this.attackConnects(b, a);
           const aStartedTouching = a.dashBlockedTargets.has(b.id);
           const bStartedTouching = b.dashBlockedTargets.has(a.id);
           /**
@@ -2773,11 +2948,18 @@ export class DotBotSimulation {
           if (
             aArmed
             && bArmed
+            && aHostile
+            && bHostile
             && (aConnects || bConnects)
             && opposingDashes
             && this.impactMeetsIntactPlate(a, b)
             && this.impactMeetsIntactPlate(b, a)
           ) {
+            // A clash prevents damage, but it is still an authoritative attack
+            // by both committed bodies. Escorts must not interpret a successful
+            // parry as proof that the rival squad stayed neutral.
+            this.recordHostileAction(a, b);
+            this.recordHostileAction(b, a);
             if (aConnects) this.stopDashAtContact(a, b);
             else a.dashActiveMs = 0;
             if (bConnects) this.stopDashAtContact(b, a);
@@ -2798,6 +2980,7 @@ export class DotBotSimulation {
             this.stopDashAtContact(a, b);
             bumped = true;
           } else if (aCanHit) {
+            this.recordHostileAction(a, b);
             if (this.damageBot(b, a)) {
               this.stopDashAtContact(a, b);
             }
@@ -2806,6 +2989,7 @@ export class DotBotSimulation {
             this.stopDashAtContact(b, a);
             bumped = true;
           } else if (bCanHit) {
+            this.recordHostileAction(b, a);
             if (this.damageBot(a, b)) {
               this.stopDashAtContact(b, a);
             }
@@ -2861,15 +3045,21 @@ export class DotBotSimulation {
         }
         const aRam = this.ramSpeedToward(a, b);
         const bRam = this.ramSpeedToward(b, a);
-        if (Math.max(aRam, bRam) < this.config.damageSpeed) {
+        const damagingARam = aHostile ? aRam : 0;
+        const damagingBRam = bHostile ? bRam : 0;
+        if (Math.max(damagingARam, damagingBRam) < this.config.damageSpeed) {
           continue;
         }
 
-        if (aRam > bRam + 20) {
+        if (damagingARam > damagingBRam + 20) {
+          this.recordHostileAction(a, b);
           this.damageBot(b, a);
-        } else if (bRam > aRam + 20) {
+        } else if (damagingBRam > damagingARam + 20) {
+          this.recordHostileAction(b, a);
           this.damageBot(a, b);
         } else {
+          this.recordHostileAction(a, b);
+          this.recordHostileAction(b, a);
           this.damageBot(a, b);
           this.damageBot(b, a);
         }
@@ -2896,9 +3086,15 @@ export class DotBotSimulation {
   /** Applies one hit; returns whether damage actually landed (false while
    * the target is invulnerable or already down). */
   private damageBot(target: InternalBot, source: InternalBot): boolean {
-    if (target.id === source.id || target.state !== "alive" || target.invulnerabilityMs > 0) {
+    if (
+      target.id === source.id
+      || target.state !== "alive"
+      || target.invulnerabilityMs > 0
+      || !this.canDamage(source, target)
+    ) {
       return false;
     }
+    this.recordHostileAction(source, target);
 
     // The hit lands in one plate's arc. A live plate breaks; a broken arc is not
     // there any more, so the hit reaches the core (see shields.ts for the model).
@@ -2917,7 +3113,7 @@ export class DotBotSimulation {
      * one thing a parry must never be.
      */
     source.dashParryGraceMs = 0;
-    this.emitNoise("impact", target.position, target.floorId, NOISE_LOUDNESS.impact);
+    this.emitNoise("impact", target.position, target.floorId, NOISE_LOUDNESS.impact, source);
     const away = { x: -Math.cos(impactAngle), y: -Math.sin(impactAngle) };
     const result = armourHit.core ? "downed" : "plateBreak";
     // A dedicated acknowledgement lets the attacking client correlate its
@@ -2951,7 +3147,9 @@ export class DotBotSimulation {
   }
 
   private resolveDotCapture(dtMs: number): void {
-    const aliveBots = [...this.bots.values()].filter((bot) => bot.state === "alive" && !bot.isAmbient);
+    const aliveBots = [...this.bots.values()].filter(
+      (bot) => bot.state === "alive" && this.controllers.get(bot.id) === "human",
+    );
 
     for (const dot of this.dots.values()) {
       if (!dot.active) {
@@ -3085,9 +3283,12 @@ export class DotBotSimulation {
         continue;
       } else {
         const controller = this.controllers.get(coveringBot.id);
-        // An AI standing over a body strips it and moves on. It cannot finish the
-        // body off, because nothing can.
-        const verb = controller === "human" ? this.inputs.get(coveringBot.id)?.downedVerb : "loot";
+        // Escorts never loot or strip. A rival body remains a player decision.
+        if (controller !== "human") {
+          this.coverages.delete(coverageKey);
+          continue;
+        }
+        const verb = this.inputs.get(coveringBot.id)?.downedVerb;
         if (!verb) {
           this.coverages.delete(coverageKey);
           continue;
@@ -3123,11 +3324,6 @@ export class DotBotSimulation {
         // is what the compound verb used to hide.
         if (kind === "loot") {
           this.searchBody(downed, coveringBot);
-          // An AI does not browse a body. A player gets a picker; an AI sweeps
-          // what fits and walks away, which is the same behaviour it always had.
-          if (this.controllers.get(coveringBot.id) !== "human") {
-            this.takeFromBody(coveringBot, { fromBotId: downed.id, index: "all" });
-          }
         } else {
           this.reviveBot(downed, coveringBot);
         }
@@ -3141,7 +3337,12 @@ export class DotBotSimulation {
     const activeKeys = new Set<string>();
 
     for (const bot of this.bots.values()) {
-      if (bot.isAmbient || bot.state !== "alive" || bot.floorId !== OUTDOOR_FLOOR_ID || carriedCount(bot) <= 0) {
+      if (
+        this.controllers.get(bot.id) !== "human"
+        || bot.state !== "alive"
+        || bot.floorId !== OUTDOOR_FLOOR_ID
+        || carriedCount(bot) <= 0
+      ) {
         continue;
       }
 
@@ -3233,6 +3434,7 @@ export class DotBotSimulation {
       target.squadId = reviver.squadId;
       // Their objective was chosen as a rival's. It is not one any more.
       target.aiPath = [];
+      target.aiHuntTargetId = null;
       target.aiAvoidTargets.clear();
       this.events.push({ type: "recruited", botId: target.id, byBotId: reviver.id, fromSquadId: from, squadId: reviver.squadId });
     }
@@ -3320,7 +3522,13 @@ export class DotBotSimulation {
   }
 }
 
-function areFriendly(a: Pick<DotBotEntity, "squadId">, b: Pick<DotBotEntity, "squadId">): boolean {
+function areFriendly(
+  a: Pick<InternalBot, "factionKind" | "squadId">,
+  b: Pick<InternalBot, "factionKind" | "squadId">,
+): boolean {
+  if (a.factionKind === "ambient" || b.factionKind === "ambient") {
+    return a.factionKind === "ambient" && b.factionKind === "ambient";
+  }
   return a.squadId === b.squadId;
 }
 
@@ -3371,7 +3579,9 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
 }
 
 function normalizedBays(spawn: BotSpawn, config: GameConfig): (import("./types").Item | null)[] {
-  if (spawn.isAmbient) return Array.from({ length: config.baySlots }, () => null);
+  if (botSpawnFaction(spawn) === "ambient") {
+    return Array.from({ length: config.baySlots }, () => null);
+  }
   const provided = spawn.bays?.slice(0, config.baySlots) ?? [{ kind: "powerup", type: "health" } as const];
   return [...provided, ...Array.from({ length: config.baySlots - provided.length }, () => null)];
 }
@@ -3394,7 +3604,7 @@ function makeAiTarget(
     stopDistance,
     slowDistance: Math.max(slowDistance, stopDistance + 1),
     intent,
-    projectionAllowed: intent === "loot" || intent === "revive" || intent === "strip",
+    projectionAllowed: intent === "revive",
     targetId,
   };
 }

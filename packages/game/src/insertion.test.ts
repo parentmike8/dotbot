@@ -56,4 +56,31 @@ describe("insertion assignment", () => {
       .toThrow(/squads \+ 2/);
     expect(() => validateInsertionMap(downtownMap, 3, defaultGameConfig.botRadius)).not.toThrow();
   });
+
+  it("checks insertion clearance against capsule barriers, not only legacy rectangles", () => {
+    const point = downtownMap.insertionPoints[0];
+    const blocked = {
+      ...downtownMap,
+      outdoor: {
+        ...downtownMap.outdoor,
+        barriers: [
+          ...(downtownMap.outdoor.barriers ?? []),
+          {
+            id: "insertion-capsule-regression",
+            solids: [{
+              kind: "capsule" as const,
+              ax: point.position.x,
+              ay: point.position.y,
+              bx: point.position.x,
+              by: point.position.y,
+              r: 4,
+            }],
+          },
+        ],
+      },
+    };
+
+    expect(() => validateInsertionMap(blocked, 3, defaultGameConfig.botRadius))
+      .toThrow(/cannot fit a full squad clear of map solids/);
+  });
 });

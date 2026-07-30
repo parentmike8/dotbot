@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isAmbientBotSpawn } from "./faction";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, deriveBaseInteractionDots, starterBaseLayout, validateBaseLayout } from "./content/base";
@@ -22,8 +23,8 @@ import type { Doorway, MapDocument, MapObject, Rect, StairLink, Vec2 } from "./t
  *
  * The corridor is as wide as the opening and 14 units deep either side: the rule
  * is the THRESHOLD, not the approach. See the downtown test that first used this
- * for why a full approach depth on both sides is the wrong demand — an 88x68 WC
- * with a 56-unit door cannot give it, and requiring it means bathrooms with
+ * for why a full approach depth on both sides is the wrong demand — a compact WC
+ * with a 64-unit door cannot give it, and requiring it means bathrooms with
  * nothing in them. Getting from the gap to somewhere useful is the flood-fill
  * checks' job.
  */
@@ -68,7 +69,7 @@ function doorwayBlockers(map: MapDocument): string[] {
  * Solid objects standing in the APPROACH to a building's outside entrance.
  *
  * `doorwayBlockers` deliberately checks the threshold only, and its comment says
- * why: an 88x68 WC with a 56-unit door cannot give a bot's full approach depth on
+ * why: a compact WC with a 64-unit door cannot give a bot's full approach depth on
  * both sides, so demanding it means bathrooms with nothing in them. That reasoning
  * is sound for a door between two rooms and wrong for the way into a building.
  *
@@ -610,7 +611,7 @@ describe("downtown map validation", () => {
      *
      * A LITTLE way, and the first version got this wrong in a way worth recording. At a
      * bot's radius plus slack — a full 32-unit approach on both sides — it flagged nine
-     * objects, six of them bathroom fixtures. An 88-by-68 WC with a 56-unit door cannot
+     * objects, six of them bathroom fixtures. A compact WC with a 64-unit door cannot
      * give a bot's full approach depth on both sides of its own door; the corridor was
      * most of the room. Demanding it would mean bathrooms with nothing in them.
      *
@@ -769,20 +770,25 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
    * progress: a bot on the signal box's operating floor covers 16 units in three
    * seconds because the room is 300 wide, and that is correct behaviour.
    */
-  it("gets every AI bot moving within three seconds", { timeout: 30_000 }, async () => {
+  it("gets every authored ambient patrol moving within three seconds", { timeout: 30_000 }, async () => {
     const sim = await DotBotSimulation.create({ map, config: defaultGameConfig });
     const from = new Map(sim.getSnapshot().bots.map((bot) => [bot.id, { ...bot.position }]));
+    const ambientIds = new Set(
+      map.botSpawns
+        .filter(isAmbientBotSpawn)
+        .map((spawn) => spawn.id),
+    );
     for (let tick = 0; tick < 180; tick += 1) sim.step();
 
     const travelled = sim
       .getSnapshot()
-      .bots.filter((bot) => bot.id !== "player" && from.has(bot.id))
+      .bots.filter((bot) => ambientIds.has(bot.id) && from.has(bot.id))
       .map((bot) => {
         const start = from.get(bot.id)!;
         return { id: bot.id, moved: Math.hypot(bot.position.x - start.x, bot.position.y - start.y) };
       });
     sim.dispose();
-    // The base shells ship the player alone; there is nothing here to assert.
+    // Base shells and maps without ambient guards have nothing here to assert.
     if (travelled.length === 0) return;
 
     expect(travelled.filter((bot) => bot.moved < 10).map((bot) => bot.id), "these bots never moved at all").toEqual([]);
@@ -1052,8 +1058,8 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
     /**
      * Empty, and it stays empty. Mercy F1's shaft inherited GROUND's west opening, which is
      * the wrong end upstairs — west is the EXIT half on F1, so walking in from the ward put
-     * you on the far half of the flight. Sealed, with the south door widened to a paired leaf
-     * because a 56-wide single leaf left the core with no navigable route into it at all.
+     * you on the far half of the flight. Sealed, with the south door now using the same
+     * full-size standard as every other person doorway.
      */
     const WRONG_SIDE_DEBT: string[] = [];
 

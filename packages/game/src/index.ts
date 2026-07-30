@@ -8,8 +8,19 @@ export { compileCityPlan, CityPlanError, MIN_APPROACH } from "./cityPlan";
 export type { ApproachSpec, CityPlan, PatchSpec, StreetSpec } from "./cityPlan";
 export { assignSquadInsertions, squadPreference, squadSpawnPosition, validateInsertionMap } from "./insertion";
 export type { InsertionAssignment, InsertionMemberPreference, InsertionSquad } from "./insertion";
+export {
+  DOORWAY_STEERING_MARGIN,
+  STANDARD_DOORWAY_CLEAR_WIDTH,
+  doorwayHalfClearance,
+  doorwayNormal,
+  doorwayTraversalPoints,
+  minimumNavigableDoorwayWidth,
+  openingCutGeometry,
+} from "./doorwayClearance";
 export { CONTRACT_ACTIVE_CAP, CONTRACT_OFFER_COUNT, contractDayStamp, contractObjectiveLabel, contractSatisfied, deriveContractTemplates, generateContractOffers } from "./contracts";
 export { downtownMap } from "./content/downtown";
+export { auditPatrolRoutes } from "./patrol";
+export { botSpawnFaction, isAmbientBotSpawn } from "./faction";
 export {
   BASE_OBJECT_KINDS,
   BASE_KIND_ZONES,

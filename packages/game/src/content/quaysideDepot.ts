@@ -1,4 +1,5 @@
 import { compileBuilding, type SourceBuilding } from "../mapSource";
+import { STANDARD_DOORWAY_CLEAR_WIDTH } from "../doorwayClearance";
 import { arcPoints, thickenPath } from "../geometry";
 import { OUTDOOR_FLOOR_ID } from "../types";
 import type { MapDocument } from "../types";
@@ -66,7 +67,7 @@ export const QUAY_SOURCE: SourceBuilding = {
       },
       shellOpenings: [
         { kind: "rollup", width: 130, near: { x: 520, y: 200 } },
-        { kind: "door", width: 56, near: { x: 800, y: 200 } },
+        { kind: "door", width: STANDARD_DOORWAY_CLEAR_WIDTH, near: { x: 800, y: 200 } },
         { kind: "window", width: 90, near: { x: 240, y: 420 } },
         { kind: "window", width: 90, near: { x: 240, y: 560 } },
         { kind: "archway", width: 96, near: { x: 980, y: 520 } },
@@ -82,7 +83,7 @@ export const QUAY_SOURCE: SourceBuilding = {
            * wedged-fixture audit rule exists to catch.
            */
           path: [{ x: 700, y: 207 }, { x: 973, y: 420 }],
-          openings: [{ kind: "door", width: 60, near: { x: 820, y: 340 } }],
+          openings: [{ kind: "door", width: STANDARD_DOORWAY_CLEAR_WIDTH, near: { x: 820, y: 340 } }],
         },
         {
           id: "shed-screen",

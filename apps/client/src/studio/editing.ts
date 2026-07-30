@@ -5,6 +5,7 @@ import {
   type OutdoorSourceEdit,
 } from "@dotbot/game/outdoorSource";
 import { BUILDING_SOURCES } from "@dotbot/game/content/sources";
+import { STANDARD_DOORWAY_CLEAR_WIDTH } from "@dotbot/game/doorwayClearance";
 import type {
   Building,
   MapDocument,
@@ -618,7 +619,7 @@ export const DOT_TRAY = [
 ] as const;
 
 export const OPENING_TRAY: Array<{ label: string; opening: Omit<SourceOpening, "near"> }> = [
-  { label: "Door", opening: { kind: "door", width: 56 } },
+  { label: "Door", opening: { kind: "door", width: STANDARD_DOORWAY_CLEAR_WIDTH } },
   { label: "Double door", opening: { kind: "door", width: 88 } },
   { label: "Roll-up", opening: { kind: "rollup", width: 120 } },
   { label: "Archway", opening: { kind: "archway", width: 96 } },

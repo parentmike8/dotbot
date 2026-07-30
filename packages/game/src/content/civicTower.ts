@@ -1,4 +1,5 @@
 import { compileBuilding, type SourceBuilding, type SourceObject, type SourceOpening, type SourceWall } from "../mapSource";
+import { STANDARD_DOORWAY_CLEAR_WIDTH } from "../doorwayClearance";
 
 /**
  * Civic Tower — office, NE quadrant of Downtown. Footprint 1480,120 560x420.
@@ -12,12 +13,14 @@ import { compileBuilding, type SourceBuilding, type SourceObject, type SourceOpe
  */
 
 const INT = 8;
-const DOOR = 56;
+const DOOR = STANDARD_DOORWAY_CLEAR_WIDTH;
 const DOUBLE = 88;
 
 const STAIR_A = { x: 1492, y: 132, w: 88, h: 160 }; // NW shaft
 const STAIR_B = { x: 1940, y: 132, w: 88, h: 160 }; // NE shaft
-const UP_DOOR = 264; // door on the south half of a shaft run
+// Four units off the return wall: a round capsule corner is part of the jamb,
+// so centring a 64-clear opening exactly one half-width from it loses clearance.
+const UP_DOOR = 260; // door on the south half of a shaft run
 const DOWN_DOOR = 168; // door on the north half
 
 function glazing(x: number, y: number, width = 44): SourceOpening {
@@ -453,8 +456,8 @@ export const CIVIC_SOURCE: SourceBuilding = {
          * A withdrawals cabinet against the west wall, in the blind slot between windows.
          *
          * It went on the north wall first, west of the new shaft door, and the doorway
-         * audit caught it at once: the door at x 1538 is 56 wide, so it spans 1510 to 1566
-         * and there are only 18 units of wall west of it. Nothing 30 units long fits beside
+         * audit caught it at once: the door at x 1538 is 64 wide, so it spans 1506 to 1570
+         * and there are only 14 units of wall west of it. Nothing 30 units long fits beside
          * that door, which is worth knowing rather than working around — the landing has to
          * stay clear, and the whole reason this strip is reachable is that door.
          *

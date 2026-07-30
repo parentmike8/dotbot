@@ -1,4 +1,5 @@
 import { compileBuilding, type SourceBuilding, type SourceOpening } from "../mapSource";
+import { STANDARD_DOORWAY_CLEAR_WIDTH } from "../doorwayClearance";
 
 /**
  * Mercy Clinic — hospital, NW quadrant of Downtown. Footprint 200,140 620x440.
@@ -13,7 +14,7 @@ import { compileBuilding, type SourceBuilding, type SourceOpening } from "../map
  */
 
 const INT = 8; // interior partition thickness
-const DOOR = 56; // single leaf
+const DOOR = STANDARD_DOORWAY_CLEAR_WIDTH; // full-size DotBot plus one steering cell per side
 const DOUBLE = 88; // paired leaf
 
 /** A glazed band on the shell, anchored on the elevation it belongs to. */
@@ -156,8 +157,8 @@ export const MERCY_SOURCE: SourceBuilding = {
         { id: "mercy-dispensing", kind: "counter", x: 716, y: 154, w: 56, h: 24 },
         { id: "mercy-pharmacy-shelf-a", kind: "shelf", x: 684, y: 190, w: 24, h: 108, scannable: true },
         { id: "mercy-pharmacy-shelf-b", kind: "shelf", x: 780, y: 168, w: 24, h: 108 },
-        // Corridor: one crash cart, nothing else — it is a lane.
-        { id: "mercy-crash-cart", kind: "medicalCart", x: 770, y: 332, w: 30, h: 22 },
+        // Corridor: one crash cart, east of the pharmacy door's full-size threshold.
+        { id: "mercy-crash-cart", kind: "medicalCart", x: 774, y: 332, w: 30, h: 22 },
         /**
          * Waiting hall: reception beside the entrance's walking line, seating in an L.
          *
@@ -259,22 +260,9 @@ export const MERCY_SOURCE: SourceBuilding = {
           id: "mercy-core-south",
           thickness: INT,
           path: [{ x: 600, y: 484 }, { x: 808, y: 484 }],
-          /**
-           * A paired leaf, not a single one, and the reason is measured rather than
-           * stylistic. A 56-wide opening in an 8-thick wall compiles to two capsules whose
-           * end caps eat 4 units each, so the widest clear standing point on the threshold
-           * is 28 from anything — exactly a bot's radius plus four. `findNavigationPath`
-           * will not thread 4 units of margin, so with this as a single leaf the stair core
-           * had NO PATH into it at radius 24 from either side, and the AI would never have
-           * used these stairs. It passed every existing check: the doorway rules ask whether
-           * the walking line is clear of objects, which it is.
-           *
-           * Every 56-wide door in the world measures the same 28. Some thread and some do
-           * not, depending on where the navigator's grid happens to fall, which is worse
-           * than a clean failure — filed as its own task rather than widened here, because
-           * it is a world-wide constant and not a Mercy decision.
-           */
-          openings: [{ kind: "door", width: DOUBLE, near: { x: 750, y: 484 } }],
+          // Standard again: the compiler-wide doorway rule replaces the temporary
+          // paired-leaf workaround that was needed when a person door was only 56 clear.
+          openings: [{ kind: "door", width: DOOR, near: { x: 750, y: 484 } }],
         },
         /**
          * The shaft's west end is closed on F1, and this is task #76.
@@ -298,7 +286,7 @@ export const MERCY_SOURCE: SourceBuilding = {
           id: "mercy-supply",
           thickness: INT,
           path: [{ x: 212, y: 434 }, { x: 384, y: 434 }, { x: 384, y: 568 }],
-          openings: [{ kind: "door", width: DOOR, near: { x: 350, y: 434 } }],
+          openings: [{ kind: "door", width: DOOR, near: { x: 348, y: 434 } }],
         },
         // Staff WC beside it, sharing the supply room's east wall.
         {

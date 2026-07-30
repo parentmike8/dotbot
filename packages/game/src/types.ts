@@ -750,15 +750,39 @@ export type OutdoorPlan = {
   dotSpawns: DotSpawn[];
 };
 
+export type BotFactionKind = "ambient" | "squad";
+
+export type PatrolWaypoint = {
+  position: Vec2;
+  /** Omit for the spawn's authored floor. */
+  floorId?: string;
+};
+
+export type PatrolRoute = {
+  id: string;
+  /** Plain-language responsibility this loop expresses in the world. */
+  purpose: string;
+  /** Ordered, naturally looping production navigation targets. */
+  waypoints: PatrolWaypoint[];
+};
+
 export type BotSpawn = {
   id: string;
   name: string;
   squadId: string;
+  /**
+   * Explicit gameplay faction. `isAmbient` remains on snapshots for presentation
+   * and wire compatibility; simulation hostility never infers faction from an id
+   * or display name.
+   */
+  faction?: BotFactionKind;
   isAmbient?: boolean;
   controller?: Controller;
   color: string;
   position: Vec2;
   floorId?: string;
+  /** Ambient-only authored world responsibility. Escorts never receive one. */
+  patrol?: PatrolRoute;
   state?: BotState;
   maxShields?: number;
   shields?: number;
