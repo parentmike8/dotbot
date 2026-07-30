@@ -246,6 +246,28 @@ describe("escort hostility, orders, and inventory contract", () => {
     sim.dispose();
   });
 
+  it("treats a parried rival dash as an authoritative hostile action", async () => {
+    const sim = await simulation([
+      player("player", "alpha", { x: 300, y: 300 }),
+      player("escort", "alpha", { x: 300, y: 380 }, "ai"),
+      player("rival", "bravo", { x: 396, y: 300 }),
+    ]);
+
+    sim.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    sim.applyInput("rival", { move: { x: -1, y: 0 }, dash: true });
+    let clashed = false;
+    for (let tick = 0; tick < 12 && !clashed; tick += 1) {
+      sim.step();
+      clashed = sim.drainEvents().some(
+        (event) => event.type === "dashContact" && event.result === "clash",
+      );
+    }
+
+    expect(clashed).toBe(true);
+    expect(objective(sim, "escort")).toMatchObject({ intent: "hunt", targetId: "rival" });
+    sim.dispose();
+  });
+
   it("scopes human hostility to the attacked squad and expires it only after the quiet timeout", async () => {
     const sim = await simulation([
       player("alpha-player", "alpha", { x: 300, y: 300 }),

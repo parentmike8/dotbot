@@ -1,4 +1,5 @@
 import { defaultGameConfig } from "./config";
+import { isAmbientBotSpawn } from "./faction";
 import { physicsFloorId } from "./mapModel";
 import { findNavigationPath } from "./navigation";
 import { OUTDOOR_FLOOR_ID } from "./types";
@@ -27,10 +28,6 @@ function distance(a: Vec2, b: Vec2): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function ambient(spawn: BotSpawn): boolean {
-  return spawn.faction === "ambient" || (spawn.faction === undefined && spawn.isAmbient === true);
-}
-
 /**
  * Audit authored patrols against the same production collision/navigation used
  * by live bots. A route is a closed loop: the last waypoint must navigate back
@@ -43,7 +40,7 @@ export function auditPatrolRoutes(
   const issues: PatrolAuditIssue[] = [];
 
   for (const spawn of map.botSpawns) {
-    const isAmbient = ambient(spawn);
+    const isAmbient = isAmbientBotSpawn(spawn);
     const route = spawn.patrol;
 
     if (!isAmbient && route) {

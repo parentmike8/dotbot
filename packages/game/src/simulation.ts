@@ -42,6 +42,7 @@ import { canReviveBody, canTakeFromBody, interactionDotReach, withinDownedCoverR
 import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, hasRoom, insertItem, removeCarriedAt } from "./inventory";
+import { botSpawnFaction } from "./faction";
 import {
   applyArmourHit,
   contactReach,
@@ -541,7 +542,7 @@ export class DotBotSimulation {
     // client predictor runs verbatim. Solver contacts gave unbounded shoves,
     // deep interpenetration, and pushable corpses.
     const shieldSegments = platesForCount(maxShields, shields);
-    const factionKind = spawn.faction ?? (spawn.isAmbient ? "ambient" : "squad");
+    const factionKind = botSpawnFaction(spawn);
     const bot: InternalBot = {
       id: spawn.id,
       name: spawn.name,
@@ -2954,6 +2955,11 @@ export class DotBotSimulation {
             && this.impactMeetsIntactPlate(a, b)
             && this.impactMeetsIntactPlate(b, a)
           ) {
+            // A clash prevents damage, but it is still an authoritative attack
+            // by both committed bodies. Escorts must not interpret a successful
+            // parry as proof that the rival squad stayed neutral.
+            this.recordHostileAction(a, b);
+            this.recordHostileAction(b, a);
             if (aConnects) this.stopDashAtContact(a, b);
             else a.dashActiveMs = 0;
             if (bConnects) this.stopDashAtContact(b, a);
@@ -3573,7 +3579,7 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
 }
 
 function normalizedBays(spawn: BotSpawn, config: GameConfig): (import("./types").Item | null)[] {
-  if ((spawn.faction ?? (spawn.isAmbient ? "ambient" : "squad")) === "ambient") {
+  if (botSpawnFaction(spawn) === "ambient") {
     return Array.from({ length: config.baySlots }, () => null);
   }
   const provided = spawn.bays?.slice(0, config.baySlots) ?? [{ kind: "powerup", type: "health" } as const];

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isAmbientBotSpawn } from "./faction";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
 import { BASE_GROUND_SLOT_DEFS, BASE_SHELL_IDS, BASE_SLOT_DEFS, BASE_UPPER_SLOT_DEFS, createBaseMap, deriveBaseInteractionDots, starterBaseLayout, validateBaseLayout } from "./content/base";
@@ -774,7 +775,7 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
     const from = new Map(sim.getSnapshot().bots.map((bot) => [bot.id, { ...bot.position }]));
     const ambientIds = new Set(
       map.botSpawns
-        .filter((spawn) => spawn.faction === "ambient" || (spawn.faction === undefined && spawn.isAmbient))
+        .filter(isAmbientBotSpawn)
         .map((spawn) => spawn.id),
     );
     for (let tick = 0; tick < 180; tick += 1) sim.step();

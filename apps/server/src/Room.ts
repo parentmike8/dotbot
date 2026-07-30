@@ -4,6 +4,7 @@ import { downtownMap } from "@dotbot/game/content/downtown";
 import { buildingContaining, buildingOfFloor, physicsFloorId } from "@dotbot/game/mapModel";
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import { assignSquadInsertions, squadSpawnPosition, validateInsertionMap } from "@dotbot/game/insertion";
+import { isAmbientBotSpawn } from "@dotbot/game/faction";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, InsertionPoint, SimEvent } from "@dotbot/game/types";
 import { carriesAction, filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot, visiblePhysicsFloors } from "@dotbot/protocol";
 import { LOBBY_SQUADS } from "@dotbot/protocol";
@@ -610,7 +611,7 @@ export class Room {
         "ai",
       );
     }
-    for (const spawn of downtownMap.botSpawns.filter((candidate) => candidate.isAmbient)) {
+    for (const spawn of downtownMap.botSpawns.filter(isAmbientBotSpawn)) {
       simulation.spawnBot(spawn, "ai");
     }
 
