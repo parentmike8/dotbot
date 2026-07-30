@@ -57,6 +57,8 @@ type Member = LobbyMember & {
   dotState: Map<string, { active: boolean; captureProgressMs: number }>;
   /** Last private clip, retained only so a downed victim can resume after handoff. */
   lastKillCam: KillCamClip | null;
+  /** Exact replay still owning this victim's input surface. */
+  activeKillCamId: string | null;
 };
 
 export type RoomBandwidthHealth = {
@@ -230,6 +232,7 @@ export class Room {
       dotContexts: new Set(),
       dotState: new Map(),
       lastKillCam: null,
+      activeKillCamId: null,
     };
     this.members.set(member.playerId, member);
     this.memberByToken.set(token, member);
@@ -277,6 +280,9 @@ export class Room {
       }
       case "leaveRun":
         this.leaveRun(member);
+        return;
+      case "killCamDone":
+        if (member.activeKillCamId === message.clipId) member.activeKillCamId = null;
         return;
       case "input": {
         if (this.phase !== "live" || !member.inRun) return;
@@ -484,8 +490,20 @@ export class Room {
         floorId: frame.ping.floorId,
       } : undefined,
     };
-    member.heldInput = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
-    return input;
+    const applied = member.activeKillCamId
+      ? {
+          move: { x: 0, y: 0 },
+          dash: false,
+          ...(input.plea ? { plea: true } : {}),
+        }
+      : input;
+    member.heldInput = {
+      move: applied.move,
+      dash: false,
+      downedVerb: applied.downedVerb,
+      plea: false,
+    };
+    return applied;
   }
 
   /**
@@ -715,7 +733,7 @@ export class Room {
       intel: this.matchIntel.get(member.playerId),
     });
     const own = snapshot.bots.find((bot) => bot.id === member.botId);
-    if (own?.state === "downed" && member.lastKillCam) {
+    if (own?.state === "downed" && member.lastKillCam && member.activeKillCamId === member.lastKillCam.id) {
       this.sendStream(member, { type: "killCam", clip: toWireKillCamClip(member.lastKillCam) });
     }
     if (member.runOver) member.peer?.send(member.runOver);
@@ -926,7 +944,10 @@ export class Room {
     for (const event of events) {
       if (event.type === "revived" || event.type === "recruited") {
         const revived = [...this.members.values()].find((member) => member.botId === event.botId);
-        if (revived) revived.lastKillCam = null;
+        if (revived) {
+          revived.lastKillCam = null;
+          revived.activeKillCamId = null;
+        }
         continue;
       }
       if (event.type !== "downed") continue;
@@ -943,6 +964,9 @@ export class Room {
       const clip = this.killCamHistory.createClip(event.botId, event.byBotId, cause);
       if (!clip) continue;
       member.lastKillCam = clip;
+      member.activeKillCamId = clip.id;
+      member.inputQueue = [];
+      member.heldInput = { move: { x: 0, y: 0 }, dash: false };
       if (member.streaming && member.peer) this.sendStream(member, { type: "killCam", clip: toWireKillCamClip(clip) });
     }
   }
@@ -953,6 +977,7 @@ export class Room {
     member.heldInput = { move: { x: 0, y: 0 }, dash: false };
     member.runOver = message;
     member.lastKillCam = null;
+    member.activeKillCamId = null;
     if (member.persistenceEligible) this.matchOutcomes.set(member.playerId, message.reason);
     const persistenceRequired = Boolean(this.matchId && member.persistenceEligible && this.persistence.live);
     const persistenceWrite = this.persistRunOutcome(member, message, cargo)

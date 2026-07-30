@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { defaultGameConfig } from "@dotbot/game/config";
+import type { InputCommand } from "@dotbot/game/types";
 import { NetSession } from "./NetSession";
 import { toWireKillCamClip, type ClientMessage, type DeliveryClass, type KillCamClip } from "@dotbot/protocol";
 import type { GameTransport, GameTransportHandlers } from "../transport/GameTransport";
@@ -130,6 +131,71 @@ describe("NetSession item edges", () => {
     receive({ type: "killCam", clip: toWireKillCamClip(clip) });
     expect(session.drainKillCams()).toEqual([clip]);
     expect(session.drainKillCams()).toEqual([]);
+  });
+
+  it("activates the replay gate on receipt and scrubs staged plus already-buffered actions", () => {
+    const sent: ClientMessage[] = [];
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    Object.assign(session as unknown as object, {
+      transport: { send: (message: ClientMessage) => sent.push(message) },
+      mapValue: downtownMap,
+      configValue: defaultGameConfig,
+      playerIdValue: "victim",
+      tickHz: 60,
+      handshakeReady: true,
+    });
+    session.sendInput({
+      move: { x: 1, y: 0 },
+      dash: true,
+      useBay: 2,
+      swapBay: { bayIndex: 0, holdIndex: 0 },
+      drop: { from: "hold", index: 0, revision: 4, expected: { kind: "mine" } },
+      take: { fromBotId: "body", index: "all" },
+      ping: { kind: "enemy", position: { x: 10, y: 20 } },
+    });
+    (session as unknown as { advancePrediction(ms: number): void }).advancePrediction(1000 / 60 + 1);
+    const internals = session as unknown as {
+      replayActive: boolean;
+      pendingInputs: Array<{ input: Record<string, unknown> }>;
+      predictionDashQueued: boolean;
+      queuedUseBay?: number;
+      queuedDrop?: InputCommand["drop"];
+    };
+
+    const clip = {
+      id: "victim-60",
+      victimId: "victim",
+      cause: { kind: "mine", tick: 60, position: { x: 10, y: 20 }, direction: { x: 1, y: 0 } },
+      startTick: 0,
+      deathTick: 60,
+      tickHz: 60,
+      frames: [{
+        tick: 60,
+        victim: { id: "victim", position: { x: 10, y: 20 }, facing: 0, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" },
+        blockingDoorIds: [],
+      }],
+    } satisfies KillCamClip;
+    (session as unknown as { receive(message: unknown): void }).receive({
+      type: "killCam",
+      clip: toWireKillCamClip({ ...clip, id: "other-60", victimId: "other" }),
+    });
+    expect(internals.replayActive).toBe(false);
+    expect(session.drainKillCams()).toEqual([]);
+
+    (session as unknown as { receive(message: unknown): void })
+      .receive({ type: "killCam", clip: toWireKillCamClip(clip) });
+
+    expect(internals.replayActive).toBe(true);
+    expect(internals.predictionDashQueued).toBe(false);
+    expect(internals.queuedUseBay).toBeUndefined();
+    expect(internals.queuedDrop).toBeUndefined();
+    expect(internals.pendingInputs.map(({ input }) => input)).toEqual([{
+      move: { x: 0, y: 0 },
+      dash: false,
+    }]);
+
+    session.setReplayActive(false);
+    expect(sent.at(-1)).toEqual({ type: "killCamDone", clipId: clip.id });
   });
 
   it("keeps networking and plea live during replay while suppressing movement, actions, and prediction", () => {

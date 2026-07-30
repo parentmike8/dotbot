@@ -65,11 +65,12 @@ export class KillCamHistory {
     for (const frame of selected) {
       const victim = frame.bots.get(victimId);
       if (!victim) continue;
-      const blockingDoorIds = frame.doors
-        .filter((door) =>
-          door.blocking
-          && door.floorId === physicsFloorId(this.map, victim.floorId)
-          && distance(door.position, victim.position) <= DOOR_CAPTURE_RANGE)
+      const nearbyBlockingDoors = frame.doors.filter((door) =>
+        door.blocking
+        && door.floorId === physicsFloorId(this.map, victim.floorId)
+        && distance(door.position, victim.position) <= DOOR_CAPTURE_RANGE);
+      const blockingDoorIds = nearbyBlockingDoors
+        .filter((door) => historicallyVisibleDoor(this.map, victim, door, nearbyBlockingDoors))
         .map((door) => door.id)
         .sort();
       const source = cause.kind === "mine" || cause.kind === "environment" || !sourceBotId
@@ -113,6 +114,19 @@ export class KillCamHistory {
     }
     return bytes;
   }
+}
+
+function historicallyVisibleDoor(
+  map: MapDocument,
+  victim: HistoryActor,
+  door: DoorEntity,
+  nearbyBlockingDoors: readonly DoorEntity[],
+): boolean {
+  const victimContext = contextKey(map, victim.floorId, victim.position);
+  const otherDoorOccluders = nearbyBlockingDoors
+    .filter((candidate) => candidate.id !== door.id)
+    .map(doorEntityCollisionRect);
+  return hasLineOfSight(map, victimContext, victim.position, door.position, otherDoorOccluders);
 }
 
 function copyActor(bot: GameSnapshot["bots"][number]): HistoryActor {

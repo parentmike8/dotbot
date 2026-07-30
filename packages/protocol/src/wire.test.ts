@@ -385,6 +385,7 @@ function exhaustClient(message: ClientMessage): string {
     case "joinSquad": return message.squadId;
     case "startMatch": return message.type;
     case "leaveRun": return message.type;
+    case "killCamDone": return message.clipId;
     case "input": return String(message.seq);
     case "ping": return String(message.cts);
     default: return assertNever(message);
@@ -411,6 +412,7 @@ function exhaustServer(message: ServerMessage): string {
 describe("message exhaustiveness", () => {
   it("covers every discriminant", () => {
     expect(exhaustClient({ type: "startMatch" })).toBe("startMatch");
+    expect(exhaustClient({ type: "killCamDone", clipId: "victim-60" })).toBe("victim-60");
     expect(exhaustServer({ type: "err", code: "bad", msg: "bad" })).toBe("bad");
   });
 });

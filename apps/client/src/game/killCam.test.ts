@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { KillCamClip } from "@dotbot/protocol";
-import { KillCamPlayback, killCamSnapshot } from "./killCam";
+import { KillCamPlayback, killCamCameraTarget, killCamSnapshot, liveStateEndsKillCam } from "./killCam";
 
 const clip: KillCamClip = {
   id: "victim-60",
@@ -87,5 +87,32 @@ describe("KillCamPlayback", () => {
       position: mineClip.cause.position,
     })]);
     expect(JSON.stringify(atImpact.mines)).not.toContain("killer");
+  });
+
+  it("blends into source framing on the replay clock instead of snapping when the killer appears", () => {
+    const atAdmission = killCamCameraTarget(clip.frames[1], clip);
+    expect(atAdmission).toEqual(clip.frames[1].victim.position);
+
+    const playback = new KillCamPlayback(clip);
+    playback.advance(3_000);
+    const midway = playback.sample();
+    const target = killCamCameraTarget(midway, clip);
+    const impactMidpoint = {
+      x: (midway.victim.position.x + midway.source!.position.x) / 2,
+      y: (midway.victim.position.y + midway.source!.position.y) / 2,
+    };
+    expect(target.x).toBeGreaterThan(midway.victim.position.x);
+    expect(target.x).toBeLessThan(impactMidpoint.x);
+    expect(killCamCameraTarget(clip.frames[2], clip)).toEqual({
+      x: (clip.frames[2].victim.position.x + clip.frames[2].source!.position.x) / 2,
+      y: (clip.frames[2].victim.position.y + clip.frames[2].source!.position.y) / 2,
+    });
+  });
+
+  it("ignores a stale pre-death alive snapshot but ends after an actual revive", () => {
+    expect(liveStateEndsKillCam(false, "alive", false)).toBe(false);
+    expect(liveStateEndsKillCam(true, "downed", false)).toBe(false);
+    expect(liveStateEndsKillCam(true, "alive", false)).toBe(true);
+    expect(liveStateEndsKillCam(false, "alive", true)).toBe(true);
   });
 });

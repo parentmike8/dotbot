@@ -63,6 +63,7 @@ export class NetSession implements GameSession {
   private events: SimEvent[] = [];
   private killCams: KillCamClip[] = [];
   private replayActive = false;
+  private activeKillCamId: string | null = null;
   private seq = 0;
   private pendingInputs: PendingInput[] = [];
   private predictionInput: InputCommand = { move: { x: 0, y: 0 }, dash: false };
@@ -179,7 +180,6 @@ export class NetSession implements GameSession {
   sendInput(input: InputCommand): void {
     if (this.replayActive) {
       this.predictionInput = { move: { x: 0, y: 0 }, dash: false };
-      this.stagedDownedVerb = input.downedVerb;
       this.queuedPlea ||= input.plea ?? false;
       return;
     }
@@ -318,18 +318,29 @@ export class NetSession implements GameSession {
 
   setReplayActive(active: boolean): void {
     this.replayActive = active;
-    if (!active) return;
+    if (!active) {
+      if (this.activeKillCamId) {
+        this.send({ type: "killCamDone", clipId: this.activeKillCamId });
+        this.activeKillCamId = null;
+      }
+      return;
+    }
     this.predictionInput = { move: { x: 0, y: 0 }, dash: false };
     this.predictionDashQueued = false;
     this.queuedUseBay = undefined;
     this.queuedSwapBay = undefined;
     this.queuedDrop = undefined;
+    this.stagedDownedVerb = undefined;
     this.queuedTake = undefined;
     this.queuedPing = undefined;
-    this.pendingInputs = this.pendingInputs.map((pending) => pending.input.drop
-      ? { ...pending, input: { ...pending.input, drop: undefined } }
-      : pending);
-    this.edgeAwaitingFlush = this.pendingInputs.some(({ input }) => carriesAction(input));
+    this.edgeAwaitingFlush = false;
+    // Rebuild rather than deleting individual action fields. This strips every
+    // already-buffered gameplay action, including inventory drops, while
+    // retaining the one downed action that must remain available during replay.
+    this.pendingInputs = this.pendingInputs.map((pending) => ({
+      ...pending,
+      input: replaySafeInput(pending.input),
+    }));
   }
 
   getRunState(): RunState {
@@ -446,11 +457,13 @@ export class NetSession implements GameSession {
         // The server addresses this message only to its victim. Replace an
         // older queued clip for the same down so reconnect resend is idempotent.
         {
-          // Receipt is the first authoritative replay boundary. The render
-          // hook drains this clip after advancing networking, so waiting for
-          // the UI to activate replay would still ship staged/resend drops.
-          this.setReplayActive(true);
           const clip = fromWireKillCamClip(message.clip);
+          if (this.playerIdValue && clip.victimId !== this.playerIdValue) return;
+          this.activeKillCamId = clip.id;
+          // Receipt is the first authoritative replay boundary. Waiting for
+          // React to drain the clip leaves one display frame in which staged or
+          // redundant gameplay actions can still be cut and sent.
+          this.setReplayActive(true);
           this.killCams = this.killCams.filter((queued) => queued.id !== clip.id);
           this.killCams.push(clip);
         }
@@ -889,6 +902,14 @@ export class NetSession implements GameSession {
       });
     }
   }
+}
+
+function replaySafeInput(input: InputCommand): InputCommand {
+  return {
+    move: { x: 0, y: 0 },
+    dash: false,
+    ...(input.plea ? { plea: true } : {}),
+  };
 }
 
 function pushBounded(values: number[], value: number, maximum: number): void {
