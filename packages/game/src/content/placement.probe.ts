@@ -39,6 +39,7 @@ import { findNavigationPath } from "../navigation";
 import { objectCollisionRects, physicsFloorId } from "../mapModel";
 import { solidBounds } from "../geometry";
 import { defaultGameConfig } from "../config";
+import { DOORWAY_STEERING_MARGIN } from "../doorwayClearance";
 import { worldMap } from "./world";
 import type { Building, FloorPlan, Rect, Solid, Vec2 } from "../types";
 
@@ -47,17 +48,17 @@ const RADIUS = defaultGameConfig.botRadius;
 /**
  * Margin below which the tightest point on a route CANNOT be a doorway.
  *
- * 4 units, and it is derived rather than chosen. The narrowest opening authored anywhere in
- * the world is 56 units (`DOOR`, a single leaf), which admits a bot of radius 28 — four more
- * than a real one. So a route with 4 or more units of margin may be limited by architecture,
- * and a route with less than 4 is limited by something that is not a door. That something is
+ * Eight units, and it is derived rather than chosen. The standard opening is 64 units clear,
+ * which admits a bot of radius 32 — the shared doorway steering margin beyond a real one.
+ * So a route with 8 or more units of margin may be limited by architecture, and a route
+ * with less than 8 is limited by something that is not a door. That something is
  * furniture, and it is the only case worth reporting.
  *
  * THIS IS THE THIRD VERSION OF THIS THRESHOLD and the first that is not an artifact. Version
- * one flagged raw margin under 6 and returned 53 routes, most of them describing a 56-wide
+ * one flagged raw margin under 6 and returned 53 routes, most of them describing a person
  * door working as intended. Version two compared each route against its own ENTRY door and
  * ranked by the shortfall — which put lot6:GROUND top at "33 lost" and was wrong, because
- * that route enters by a 120-wide rollup and then passes through the stair core's 56-wide
+ * that route enters by a 120-wide rollup and then passes through the stair core's standard
  * door. Comparing against the entrance cannot see a narrower door further along. Comparing
  * against the narrowest door that exists anywhere needs no route analysis at all.
  *
@@ -65,7 +66,7 @@ const RADIUS = defaultGameConfig.botRadius;
  * the only thing that caught versions one and two was reading the map source behind the top
  * finding. Ranked output is not evidence.
  */
-const TIGHT = 4;
+const TIGHT = DOORWAY_STEERING_MARGIN;
 
 /** How much fatter than a bot the search will try before it stops caring. */
 const GENEROUS = RADIUS * 2;
@@ -117,7 +118,7 @@ function widestBot(map: typeof worldMap, floorId: string, start: Vec2, goal: Vec
    * A quarter unit, not one unit.
    *
    * `low` converges from below, so a tolerance of 1 reports a true margin of 4 as anything in
-   * 3..4 — which straddles the threshold and put a plain 56-wide door back in the findings.
+   * either side of the threshold and put a standard door back in the findings.
    * The threshold is derived from a real door width, so the measurement has to be finer than
    * the thing it is compared against.
    */
@@ -199,9 +200,9 @@ for (const building of worldMap.buildings as Building[]) {
         /**
          * Tighter than its own front door, which is the only version of this worth reporting.
          *
-         * Raw margin is not the signal: the world's commonest doorway is 56 units, so a bot
-         * of radius 28 is the widest thing that will ever come through one and EVERY route
-         * behind it reads as 4 spare no matter how open the room is. That made the first run
+         * Raw margin is not the signal: the world's commonest doorway is 64 units, so a bot
+         * of radius 32 is the widest thing that will ever come through one and EVERY route
+         * behind it reads as 8 spare no matter how open the room is. That made the first run
          * report 53 tight routes, most of them describing a door I authored on purpose.
          *
          * A route narrower than the opening it starts at is different in kind: something

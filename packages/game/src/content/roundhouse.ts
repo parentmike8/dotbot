@@ -1,4 +1,5 @@
 import { compileBuilding, type SourceBuilding } from "../mapSource";
+import { STANDARD_DOORWAY_CLEAR_WIDTH } from "../doorwayClearance";
 import { radial, sectorPoly } from "./regionKit";
 
 /**
@@ -89,7 +90,9 @@ export const ROUNDHOUSE_SOURCE: SourceBuilding = {
         })),
         // The fitters' door out the back, so the shed is not a dead end when the table is
         // held against you.
-        { kind: "door" as const, width: 60, near: radial(TABLE, Math.PI * 0.62, OUTER) },
+        // A curved wall's neighbouring chord leans fractionally into the tangent
+        // aperture, so this one carries two geometry units beyond the straight-wall rule.
+        { kind: "door" as const, width: STANDARD_DOORWAY_CLEAR_WIDTH + 2, near: radial(TABLE, Math.PI * 0.62, OUTER) },
         // Daylight over the shop end and over the far bay, on the outer wall.
         { kind: "window" as const, width: 92, near: radial(TABLE, Math.PI * 0.82, OUTER) },
         { kind: "window" as const, width: 92, near: radial(TABLE, Math.PI * 0.28, OUTER) },

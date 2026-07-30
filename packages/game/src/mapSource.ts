@@ -8,6 +8,7 @@ import {
   splitPathByGaps,
   thickenPath,
 } from "./geometry";
+import { openingCutGeometry } from "./doorwayClearance";
 import { isSolidObject } from "./mapModel";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type {
@@ -68,6 +69,10 @@ export type OpeningKind = "door" | "rollup" | "archway" | "window";
 
 export type SourceOpening = {
   kind: OpeningKind;
+  /**
+   * Requested clear width. Passable openings compile no narrower than the
+   * full-size DotBot doorway rule in `doorwayClearance.ts`.
+   */
   width: number;
   /** Anchor: the opening lands at the point on the wall nearest here. */
   near?: Vec2;
@@ -245,16 +250,33 @@ function compileWall(wall: SourceWall): CompiledWall {
 
   const spans = openings.map((opening) => {
     const centre = Math.max(0, Math.min(total, openingArc(path, opening, closed)));
-    return { opening, from: centre - opening.width / 2, to: centre + opening.width / 2, centre };
+    const cut = CUTS.has(opening.kind)
+      ? openingCutGeometry(opening.width, wall.thickness)
+      : null;
+    const clearWidth = cut?.clearWidth ?? opening.width;
+    return {
+      opening,
+      clearWidth,
+      cut,
+      from: centre - clearWidth / 2,
+      to: centre + clearWidth / 2,
+      centre,
+    };
   });
 
   const cuts = spans.filter((span) => CUTS.has(span.opening.kind));
 
   /**
    * The wall survives between the openings, pulled back from each jamb by a cap
-   * radius so the clear width is exactly the width that was authored.
+   * radius so the clear width is exactly the compiled width (the authored width,
+   * or the full-size minimum when the authored value was smaller).
    */
-  const runs = splitPathByGaps(path, cuts, closed, wall.thickness / 2);
+  const runs = splitPathByGaps(
+    path,
+    cuts,
+    closed,
+    cuts[0]?.cut?.jambInset ?? wall.thickness / 2,
+  );
 
   const solids: Solid[] = runs.flatMap((run) => thickenPath(run, wall.thickness));
 
@@ -267,7 +289,7 @@ function compileWall(wall: SourceWall): CompiledWall {
       id: `${wall.id}-d${index}`,
       x: middle.at.x,
       y: middle.at.y,
-      width: span.opening.width,
+      width: span.clearWidth,
       // `dir` describes the run the opening sits in, kept for the axis-aligned
       // fast path; `span` carries the truth for a wall at any angle.
       dir: horizontal ? "h" : "v",

@@ -1,4 +1,5 @@
-import { collectSolidRects } from "./collision";
+import { collectSolids } from "./collision";
+import { pointToSolidDistanceSquared } from "./geometry";
 import { OUTDOOR_FLOOR_ID } from "./types";
 import type { InsertionPoint, MapDocument, Vec2 } from "./types";
 
@@ -108,13 +109,13 @@ export function validateInsertionMap(map: MapDocument, squadCount: number, botRa
   }
   for (const point of map.insertionPoints) {
     const floorId = point.floorId ?? OUTDOOR_FLOOR_ID;
-    const solids = collectSolidRects(map, floorId);
+    const solids = collectSolids(map, floorId);
     const positions = [0, 1, 2].map((index) => squadSpawnPosition(point, index, botRadius));
     for (const position of positions) {
       if (position.x < botRadius || position.y < botRadius || position.x > map.width - botRadius || position.y > map.height - botRadius) {
         throw new Error(`Insertion ${point.id} cannot fit a full squad inside map bounds.`);
       }
-      if (solids.some((rect) => circleIntersectsRect(position, botRadius, rect))) {
+      if (solids.some((solid) => pointToSolidDistanceSquared(position, solid) < botRadius * botRadius)) {
         throw new Error(`Insertion ${point.id} cannot fit a full squad clear of map solids.`);
       }
     }
@@ -131,12 +132,6 @@ function meetsSpacing(points: Vec2[], minSpacing: number): boolean {
     }
   }
   return true;
-}
-
-function circleIntersectsRect(center: Vec2, radius: number, rect: { x: number; y: number; w: number; h: number }): boolean {
-  const dx = center.x - Math.max(rect.x, Math.min(center.x, rect.x + rect.w));
-  const dy = center.y - Math.max(rect.y, Math.min(center.y, rect.y + rect.h));
-  return dx * dx + dy * dy < radius * radius;
 }
 
 function hashUnit(value: string): number {

@@ -49,7 +49,10 @@ shipped game server.
 
 Grid snapping is 0, 2, 4, 8 or 16 world units. Openings snap to the wall the
 anchor lands nearest, matching `compileBuilding`'s `near` semantics — Studio never
-computes arc length, and neither should an author.
+computes arc length, and neither should an author. The standard person door is
+derived from the full-size DotBot: diameter plus one 8-unit steering cell on each
+side, currently 64 units clear. Wall thickness is additional geometry at the
+jambs and never reduces that clear width.
 
 ## What the tool does not decide
 
