@@ -42,7 +42,19 @@ export function cappedLift(depth: number, lift: number): number {
  * floor still does not. Objects have this pull nailed to north, which is what makes
  * their height read as a static south face rather than as height.
  */
-export const NORTH: Vec2 = { x: 0, y: -1 };
+export type ViewPull = Vec2 & {
+  /**
+   * How much of the authored apparent height the view is allowed to expose.
+   *
+   * One is the resting drawing. Values above one are camera parallax, capped again by
+   * `cappedLift` so a top face can never be consumed. Keeping magnitude separate from
+   * direction avoids the old double-scaling trap where a half-length vector was applied
+   * once in `awayness` and again while moving the vertex.
+   */
+  scale: number;
+};
+
+export const NORTH: ViewPull = { x: 0, y: -1, scale: 1 };
 
 function dot(a: Vec2, b: Vec2): number {
   return a.x * b.x + a.y * b.y;
@@ -59,28 +71,35 @@ export const PARALLAX_HORIZON = 620;
 /**
  * Which way an object's top slides, given where the camera is.
  *
- * The magnitude is deliberately NOT a parameter. It stays the object's own lift, so this
- * cannot make anything look taller, shorter, or flatter than it does today — only turn
- * which side of it you see. That is the most conservative form the effect can take, and
- * it is the reason this could be landed without watching it move: the amount of drawing
- * is identical, and no object can lose its height cue by standing under the camera.
+ * Direction and magnitude are separate.
  *
- * Two laws were measured and rejected first. Reusing the building constant
- * (`storeyShadowLift * PARALLAX_PER_UNIT`) gives an object 500 units off-axis a slide of
- * 1.55 units against a lift of 11 — 14%, invisible, all cost and no effect, because a
- * building's lift scales with storey count and `LIFT` stops at 11. And scaling the pull
- * VECTOR double-scales, because `awayness` shrinks with its length and `topFace`
- * multiplies by it again, so half a pull moves a quarter as far.
+ * The earlier pass returned a unit vector at every non-zero strength. Distance changed
+ * only its angle, while every top still travelled its small authored lift. At play zoom,
+ * 0.5, 1 and every value above 1 therefore looked effectively the same. `scale` carries
+ * the missing magnitude now: one is the resting drawing, and distance plus strength add
+ * bounded apparent travel on top. `topRect` and `topFace` still apply `cappedLift`, so a
+ * solid never loses the lit top that tells the player where its cover footprint is.
+ *
+ * Do not encode magnitude in the vector length. That double-scales polygons because
+ * `awayness` sees the shortened vector and the vertex displacement multiplies by it
+ * again. A named scalar keeps half strength half strength.
  *
  * The interpolation is on the ANGLE, not the vector. Blending `NORTH` toward the away
  * direction componentwise gives exactly zero when an object is due south at half
  * strength — a real position, not a corner case — and a zero pull has no direction to
  * normalise. Rotating along the shortest arc is always unit length and never degenerate.
  *
- * `strength` is the one tunable: 0 is today's fixed north exactly, 1 rotates fully to
- * away-from-camera at the horizon.
+ * `strength` is the debug/production tunable: 0 is today's fixed north exactly, 1
+ * rotates fully away at the horizon, and values above 1 keep direction stable while
+ * increasing the bounded travel. `magnitudeGain` lets solid cover stay conservative
+ * while tall landmarks and elevated parts lean further.
  */
-export function pullToward(centre: Vec2, viewCentre: Vec2, strength: number): Vec2 {
+export function pullToward(
+  centre: Vec2,
+  viewCentre: Vec2,
+  strength: number,
+  magnitudeGain = 0.55,
+): ViewPull {
   const dx = centre.x - viewCentre.x;
   const dy = centre.y - viewCentre.y;
   const distance = Math.hypot(dx, dy);
@@ -93,9 +112,27 @@ export function pullToward(centre: Vec2, viewCentre: Vec2, strength: number): Ve
   while (delta > Math.PI) delta -= Math.PI * 2;
   while (delta < -Math.PI) delta += Math.PI * 2;
 
-  const reach = Math.min(1, distance / PARALLAX_HORIZON) * Math.min(1, strength);
+  const distanceShare = Math.min(1, distance / PARALLAX_HORIZON);
+  const reach = distanceShare * Math.min(1, strength);
   const angle = northAngle + delta * reach;
-  return { x: Math.cos(angle), y: Math.sin(angle) };
+  return {
+    x: Math.cos(angle),
+    y: Math.sin(angle),
+    scale: 1 + distanceShare * Math.max(0, strength) * Math.max(0, magnitudeGain),
+  };
+}
+
+/** Unit direction from any public pull, preserving the useful zero-vector flat case. */
+export function pullDirection(pull: Vec2): Vec2 {
+  const length = Math.hypot(pull.x, pull.y);
+  if (length < EPSILON) return { x: 0, y: 0 };
+  return { x: pull.x / length, y: pull.y / length };
+}
+
+/** Resting callers pass a plain Vec2; only a camera pull carries extra travel. */
+export function pullScale(pull: Vec2): number {
+  const asked = (pull as Partial<ViewPull>).scale;
+  return Number.isFinite(asked) ? Math.max(0, asked as number) : 1;
 }
 
 /**
@@ -238,9 +275,10 @@ function rectDepth(r: Rect, pull: Vec2): number {
  * had to be.
  */
 export function topRect(r: Rect, lift: number, pull: Vec2 = NORTH): Rect {
-  const shift = cappedLift(rectDepth(r, pull), lift);
-  const dx = pull.x * shift;
-  const dy = pull.y * shift;
+  const direction = pullDirection(pull);
+  const shift = cappedLift(rectDepth(r, direction), lift * pullScale(pull));
+  const dx = direction.x * shift;
+  const dy = direction.y * shift;
   const x = Math.max(r.x, r.x + dx);
   const y = Math.max(r.y, r.y + dy);
   return {
@@ -253,13 +291,14 @@ export function topRect(r: Rect, lift: number, pull: Vec2 = NORTH): Rect {
 
 export function topFace(points: Vec2[], lift: number, pull: Vec2 = NORTH): Vec2[] {
   if (points.length < 3) return points.map((point) => ({ ...point }));
+  const direction = pullDirection(pull);
   const count = points.length;
   const normals = points.map((_, index) => edgeNormal(points, index));
   return points.map((point, index) => {
-    const share = awayness(normals[(index - 1 + count) % count], normals[index], pull);
+    const share = awayness(normals[(index - 1 + count) % count], normals[index], direction);
     if (share <= 0) return { ...point };
-    const depth = depthAlong(points, point, pull);
-    const distance = cappedLift(depth, lift) * share;
-    return { x: point.x + pull.x * distance, y: point.y + pull.y * distance };
+    const depth = depthAlong(points, point, direction);
+    const distance = cappedLift(depth, lift * pullScale(pull)) * share;
+    return { x: point.x + direction.x * distance, y: point.y + direction.y * distance };
   });
 }

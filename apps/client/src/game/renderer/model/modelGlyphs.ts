@@ -2,7 +2,7 @@ import type { Graphics } from "pixi.js";
 import type { Facing, MapObject, Vec2 } from "@dotbot/game/types";
 import { treeTrunkRadius } from "@dotbot/game/mapModel";
 import { landmarkGlyphs } from "./modelLandmarks";
-import { movingPart } from "./modelMotion";
+import { elevatedPart, movingPart } from "./modelMotion";
 import { cappedLift } from "./prism";
 import {
   contact,
@@ -850,9 +850,16 @@ function foliageMass(
   cy: number,
   radius: number,
   seed: string,
-  spread = 1,
-  lifted = LIFT.mass,
+  options: {
+    spread?: number;
+    lifted?: number;
+    /** A planted sink for a crown whose visible mass is reparented overhead. */
+    shadowTarget?: Graphics;
+  } = {},
 ): void {
+  const spread = options.spread ?? 1;
+  const lifted = options.lifted ?? LIFT.mass;
+  const shadowTarget = options.shadowTarget ?? g;
   const steps = 26;
 
   /**
@@ -897,7 +904,8 @@ function foliageMass(
     x: cx + (point.x - cx) * 1.03 + radius * 0.15,
     y: cy + (point.y - cy) * 1.03 + radius * 0.19,
   }));
-  g.poly(shadow.map((point) => ({ x: point.x, y: point.y }))).fill({ color: 0x000000, alpha: 0.17 });
+  shadowTarget.poly(shadow.map((point) => ({ x: point.x, y: point.y })))
+    .fill({ color: 0x000000, alpha: 0.17 });
 
   /**
    * NO `volumeShape`. The extrusion is what made a tree read as a rock.
@@ -916,11 +924,11 @@ function foliageMass(
    * canopy sitting proud of its own shaded underside, with no edge anywhere for the eye to read
    * as a cut face.
    *
-   * WHAT THIS GIVES UP, stated rather than hidden: the canopy is out of the prism system again,
-   * so it has no top face for object parallax to pull. That mattered less than it sounds —
-   * outdoor objects are not in the parallax pass at all (task #81), so nothing was pulling it.
-   * When #81 lands, foliage needs its lobe offset driven by `viewPull` rather than nailed
-   * north-west; it does NOT need an extruded polygon back.
+   * WHAT THIS GIVES UP, stated rather than hidden: the canopy is out of the prism system,
+   * so it has no top face for object parallax to reshape. The outdoor parallax pass instead
+   * moves the whole authored canopy group a bounded distance away from the camera centre
+   * while its trunk and ground shadow remain planted. It does NOT need an extruded polygon
+   * back.
    */
   const lift = cappedLift(radius * 2, Math.min(lifted, 4 + radius * 0.14));
   const blob = (scale: number, dx: number, dy: number): Vec2[] => outline.map((point) => ({
@@ -1122,8 +1130,6 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
    */
   const trunkAt = { x: cx, y: cy + radius * 0.06 };
   const trunkR = treeTrunkRadius(o);
-  cylinder(g, trunkAt.x, trunkAt.y, trunkR, MAT.woodDark, 3);
-
   /**
    * The canopy leans about the trunk it grows out of, not about the object's centre.
    *
@@ -1133,7 +1139,11 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
    * contradict the collider.
    */
   const crown = movingPart(g, "sway", trunkAt);
-  foliageMass(crown, cx, cy, radius * 0.96, o.id);
+  // The decorative canopy shadow belongs to the planted view. Keeping it out of the
+  // reparented crown prevents either wind sway or camera parallax from sliding a mark
+  // that is supposed to lie on the ground.
+  foliageMass(crown, cx, cy, radius * 0.96, o.id, { shadowTarget: g });
+  cylinder(g, trunkAt.x, trunkAt.y, trunkR, MAT.woodDark, 3);
 
   /**
    * NO TRUNK ON TOP OF THE LEAVES. Reported, and right: "seeing the top of the trunk like
@@ -1146,8 +1156,9 @@ function treeGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
    * which is a worse lie than the one it was fixing: it says *object* where the truth is
    * *tree*.
    *
-   * So the trunk goes back UNDER the canopy — drawn into `g` above, before the crown — and the
-   * collider is signalled the way a real canopy signals it: the crown PARTS over the bole. A
+   * So the trunk stays UNDER the canopy — in the planted view while the crown is on the
+   * overhead layer — and the collider is signalled the way a real canopy signals it: the crown
+   * PARTS over the bole. A
    * dark thinning at the centre of the mass, no ring and no edge, so you read a gap in the
    * leaves with something dark below rather than a disc laid on top. A hint rather than a
    * diagram, which is the right strength for a 5-unit solid inside a 100-unit thing you can
@@ -1304,6 +1315,7 @@ function lampPostGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   };
   const up = aim[o.facing ?? "S"];
   const across = { x: -up.y, y: up.x };
+  const raised = elevatedPart(g, "lamp-head");
 
   /** A point in the lamp's own frame: `along` up the arm, `off` across it. */
   const at = (along: number, off: number): Vec2 => ({
@@ -1351,7 +1363,7 @@ function lampPostGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
    * the reference's curved mast arm does and what stops it reading as a straight stick.
    */
   const sweep = base * 0.34;
-  g.poly([
+  raised.poly([
     at(0, base * 0.3).x, at(0, base * 0.3).y,
     at(armLen * 0.55, sweep + base * 0.2).x, at(armLen * 0.55, sweep + base * 0.2).y,
     at(headAt, sweep * 0.5 + base * 0.13).x, at(headAt, sweep * 0.5 + base * 0.13).y,
@@ -1380,8 +1392,8 @@ function lampPostGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
     const point = at(along, off + hub);
     head.push(point.x, point.y);
   }
-  g.poly(head).fill({ color: MAT.steelLit.top });
-  g.poly(head).stroke({ color: MAT.steelDeep.top, width: 1 });
+  raised.poly(head).fill({ color: MAT.steelLit.top });
+  raised.poly(head).stroke({ color: MAT.steelDeep.top, width: 1 });
   // A lens catch light on the NORTH-WEST half of the housing, because the light does not turn
   // when the arm does. This is the one part of the head that must stay keyed to `SUN`.
   const lens: number[] = [];
@@ -1391,7 +1403,7 @@ function lampPostGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
     point.y -= SUN.y * base * 0.24;
     lens.push(point.x, point.y);
   }
-  g.poly(lens).fill({ color: shade(MAT.steelLit.top, 1.07) });
+  raised.poly(lens).fill({ color: shade(MAT.steelLit.top, 1.07) });
 }
 
 function benchGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
@@ -1451,7 +1463,7 @@ function planterGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
       across ? soil.y + soil.h / 2 : soil.y + soil.h * t,
       thickness * 0.5,
       `${o.id}-${i}`,
-      0.96,
+      { spread: 0.96 },
     );
   }
 }

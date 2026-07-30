@@ -47,6 +47,10 @@ import {
 import { DOT_COLOR, INK, RIVAL_RED, SQUAD_CYAN, WEIGHT } from "./style";
 import { visibilityFogStyle } from "./visibilityStyle";
 import { redrawFloorObjects } from "./model/modelFloor";
+import {
+  parseObjectParallaxStrength,
+  redrawOutdoorObjects,
+} from "./model/modelParallax";
 import { animateAmbient, driftLeaves, fadeTrail, stampTrail, trailStep } from "./model/modelMotion";
 import { driftWater } from "./model/modelWater";
 import { GRD } from "./model/modelGround";
@@ -75,32 +79,17 @@ const PEEK_RANGE = 200;
 const PARALLAX_REDRAW_STEP = 24;
 
 /**
- * How strongly an object's top turns toward the camera. `0` is off, `1` is fully
- * away-from-camera at the horizon.
+ * Shared production/lab strength. `0` is an exact off switch; the shipped value is 1;
+ * the lab preserves 0.5 and 2 as genuinely different review points.
  *
- * DEFAULT ZERO, deliberately, and not because the plumbing is unfinished — it is tested
- * and measured. It is off because one drawing question is still open and it cannot be
- * settled from a test.
- *
- * `volume` fills a rectangle's whole footprint with `mat.front` and then paints the top
- * face over it, so whichever band is left exposed comes out in the SOUTH face's tone
- * regardless of which side it is on. Turn the pull far enough and an object at the edge
- * of view shows a dark band on its north side — a shadow on the lit side, which is
- * wrong. `volumeShape` does not have the problem: it shades each face by its own normal.
- *
- * Making them agree means giving `volume` per-band shading, and the two primitives
- * currently disagree about the south face already (`mat.front` is `shade(top, 0.68)`;
- * `faceLight` south is `shade(top, 0.537)`), so reconciling them changes the tone of
- * every box in the game. That is a decision about the drawing language, not about
- * parallax, and it wants somebody looking at it.
- *
- * Until then: `?parallax=0.5` turns it on for a look without shipping it to anyone.
+ * The face-light blocker described here previously is resolved in `tone.volume`: every
+ * exposed band is shaded by its own normal now. The remaining safety rule lives in
+ * `modelParallax`: footprints, shadows and collision stay planted while only elevated
+ * geometry changes.
  */
 const PARALLAX_STRENGTH = (() => {
-  if (typeof window === "undefined") return 0;
-  const asked = new URLSearchParams(window.location.search).get("parallax");
-  const value = asked === null ? Number.NaN : Number(asked);
-  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  if (typeof window === "undefined") return 1;
+  return parseObjectParallaxStrength(window.location.search);
 })();
 
 export type InteractionChannelVisual = {
@@ -1169,31 +1158,48 @@ export class GameRenderer {
    * parallax this way rather than by rebuilding the roof at a new offset.
    */
   /**
-   * Turn the objects on the floor you are standing on to face the camera.
+   * Turn visible outdoor objects and objects on the active floor toward the camera.
    *
    * A building slides its whole mass with a container transform and never redraws. An
    * object cannot: its top face changes SHAPE, not position — the exposed band moves
    * around the perimeter — so this is a geometry rebuild, and the cost is the reason it
    * is fenced in on three sides.
    *
-   * Only the active floor, because only one floor is drawn at a time. Only the objects,
-   * because the slab, the walls, the shadows and the ambient occlusion do not care where
-   * the camera is — a shadow lies on the floor and the floor does not move.
+   * Outdoors are clipped to the visible world bounds. Indoors remain limited to the
+   * active floor because only one floor is drawn at a time. Only elevated object geometry
+   * is rebuilt: slabs, walls, contact footprints, shadows and ambient occlusion stay put.
    *
    * And only when the camera has actually gone somewhere. `PARALLAX_REDRAW_STEP` is the
    * throttle: a camera drifting a unit at a time turns no object's pull by anything an
    * eye could see, and rebuilding for it would spend the whole budget on nothing.
    *
-   * Worst floor in Downtown is 31 objects, so a rebuild is 31 `Graphics` — measurable
-   * with `?netgraph`, which reports frame p50/p90/p99 and the long-frame count.
+   * The canvas `data-parallax-stats` attribute exposes the last outdoor candidate/redraw
+   * counts and duration for production measurements.
    */
   private updateObjectParallax(viewCenter: Vec2, activeFloorId: string | undefined): void {
-    if (PARALLAX_STRENGTH <= 0 || !activeFloorId) return;
+    if (PARALLAX_STRENGTH <= 0) return;
     const moved = Math.hypot(viewCenter.x - this.lastParallaxCentre.x, viewCenter.y - this.lastParallaxCentre.y);
     if (moved < PARALLAX_REDRAW_STEP && activeFloorId === this.lastParallaxFloorId) return;
     this.lastParallaxCentre = { x: viewCenter.x, y: viewCenter.y };
     this.lastParallaxFloorId = activeFloorId;
 
+    const outdoorStats = redrawOutdoorObjects(
+      this.art.outdoorObjectViews,
+      viewCenter,
+      PARALLAX_STRENGTH,
+      this.visibleWorldBounds(),
+    );
+    if (typeof window !== "undefined") {
+      const stats = {
+        strength: PARALLAX_STRENGTH,
+        cameraStep: PARALLAX_REDRAW_STEP,
+        outdoor: outdoorStats,
+      };
+      (window as unknown as { objectParallaxStats?: unknown }).objectParallaxStats = stats;
+      this.app.canvas.dataset.parallaxStats = JSON.stringify(stats);
+    }
+
+    if (!activeFloorId) return;
     for (const art of this.art.buildings) {
       for (const floorView of art.floors) {
         if (floorView.floor.id !== activeFloorId) continue;

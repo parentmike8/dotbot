@@ -7,6 +7,7 @@ import { drawRegions } from "./modelGround";
 import { isAcross, outwardBand, perimeterEntrances } from "./entrances";
 import { drawModelObject } from "./modelGlyphs";
 import { collectMovers, liftParts, type AmbientMover } from "./modelMotion";
+import type { ParallaxObjectView } from "./modelParallax";
 import {
   AO_ALPHA,
   contact,
@@ -77,11 +78,18 @@ export type OutdoorModel = {
    */
   movers: AmbientMover[];
   /**
-   * Canopies and trunks, lifted off their glyphs onto a layer that draws ABOVE BOTS.
+   * One planted base plus one elevated group per authored outdoor object.
+   *
+   * Keeping both on one handle prevents a reparented canopy from being left behind
+   * when the object's base geometry is rebuilt for a new camera position.
+   */
+  objectViews: Map<string, ParallaxObjectView>;
+  /**
+   * Canopies and other elevated parts, lifted onto a layer that draws ABOVE BOTS.
    *
    * Reported from play: "the player doesn't go under the tree canopy but they should." A
    * canopy is passable — the collider is the trunk — so a bot beneath it has to be covered by
-   * it, and only `MapArt.foreground` draws after the bots.
+   * it, and only `MapArt.overhead` draws after the bots.
    */
   overhead: Container;
 };
@@ -645,6 +653,7 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   const passable: Graphics[] = [];
   const movers: AmbientMover[] = [];
   const overhead = new Container();
+  const objectViews = new Map<string, ParallaxObjectView>();
   for (const object of [...map.outdoor.objects].sort((a, b) => a.y + a.h - (b.y + b.h))) {
     const g = new Graphics();
     drawModelObject(g, pad, object);
@@ -660,7 +669,10 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
      * true today and deprecated. Lifting them makes the whole mechanism a sibling layer,
      * which is the shape pixi wants anyway.
      */
-    for (const part of liftParts(g)) overhead.addChild(part);
+    const elevated = new Container();
+    for (const part of liftParts(g)) elevated.addChild(part);
+    if (elevated.children.length > 0) overhead.addChild(elevated);
+    objectViews.set(object.id, { object, view: g, elevated });
     if (!isSolidObject(object) && !SURFACE_KINDS.has(object.kind)) {
       markPassable(g, { x: object.x, y: object.y, w: object.w, h: object.h });
     }
@@ -677,7 +689,7 @@ export function buildOutdoorModel(map: MapDocument): OutdoorModel {
   // passable dressing or no solid fixtures outdoors.
   if (passable.length) detail.addChild(...passable);
   if (solid.length) objects.addChild(...solid);
-  return { ground, detail, objects, movers, overhead };
+  return { ground, detail, objects, movers, objectViews, overhead };
 }
 
 /** Kerb rise, exported so building entrances can meet the sidewalk correctly. */

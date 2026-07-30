@@ -100,11 +100,25 @@ function partOf(g: Graphics, label: string): Graphics {
  * beneath it must be covered by it, and the only layer that can do that is the one built for
  * exactly this ("marks that must cover a bot passing behind them").
  *
- * Creation order is the draw order and it matters: a tree makes its canopy first and its trunk
- * second, so the trunk still lands on top of the leaves.
+ * Creation order is preserved inside the lifted group. The outdoor builder reparents that
+ * group to the overhead layer as one authored unit, while the trunk remains in the planted
+ * object view.
  */
 export function liftParts(g: Graphics): Graphics[] {
   return [...(parts.get(g)?.values() ?? [])];
+}
+
+/**
+ * A static piece that is physically above a bot and may lean with object parallax.
+ *
+ * It shares the same ownership registry as ambient parts so a redraw clears and reuses
+ * the existing Graphics even after the outdoor builder has reparented it. Unlike a
+ * `movingPart`, it is absent from `collectMovers`; camera parallax moves the authored
+ * elevated group, not this part's own transform.
+ */
+export function elevatedPart(g: Graphics, name: string): Graphics {
+  if (typeof (g as { addChild?: unknown }).addChild !== "function") return g;
+  return partOf(g, `elevated:${name}`);
 }
 
 export function movingPart(g: Graphics, kind: AmbientKind, about: Vec2): Graphics {

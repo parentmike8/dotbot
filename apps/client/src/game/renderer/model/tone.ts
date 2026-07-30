@@ -51,7 +51,7 @@
 import type { Graphics } from "pixi.js";
 import { edgeNormal, insetPolygon } from "@dotbot/game/geometry";
 import type { Vec2 } from "@dotbot/game/types";
-import { cappedLift, NORTH, topFace, topRect } from "./prism";
+import { cappedLift, NORTH, pullDirection, pullScale, topFace, topRect } from "./prism";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -727,11 +727,31 @@ export function contactShape(pad: ShadowPad, points: Vec2[], lift: number): void
   }
 }
 
-/** An extruded cylinder: top ellipse plus a shaded south crescent. */
-export function cylinder(g: Graphics, cx: number, cy: number, radius: number, mat: Material, lift: number): void {
-  g.circle(cx, cy + lift * 0.5, radius).fill({ color: mat.front });
-  g.circle(cx, cy, radius).fill({ color: mat.top });
-  g.circle(cx, cy, radius - 0.45).stroke({ color: mat.edge, width: EDGE_WIDTH });
+/**
+ * An extruded cylinder: planted base plus an elevated lid.
+ *
+ * The shaded base stays in its resting position because it is the contact silhouette.
+ * Only the lid takes the view delta. At the resting north pull the delta is zero, so this
+ * is pixel-identical to the old cylinder; camera parallax can then lean a tank, mast or
+ * trunk without sliding its ground contact or cast shadow.
+ */
+export function cylinder(
+  g: Graphics,
+  cx: number,
+  cy: number,
+  radius: number,
+  mat: Material,
+  lift: number,
+  pull: Vec2 = viewPull,
+): void {
+  const direction = pullDirection(pull);
+  const resting = lift * 0.5;
+  const travel = resting * pullScale(pull);
+  const topX = cx + direction.x * travel - NORTH.x * resting;
+  const topY = cy + direction.y * travel - NORTH.y * resting;
+  g.circle(cx, cy + resting, radius).fill({ color: mat.front });
+  g.circle(topX, topY, radius).fill({ color: mat.top });
+  g.circle(topX, topY, radius - 0.45).stroke({ color: mat.edge, width: EDGE_WIDTH });
 }
 
 /** Flat surface detail: no height, no shadow, just a value change on a top face. */

@@ -1,8 +1,15 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
 import type { MapDocument, Rect, Vec2 } from "@dotbot/game/types";
+import { objectSolids } from "@dotbot/game/collision";
 import { groundAt, isSoftGround } from "@dotbot/game/ground";
 import { buildMapArt, type MapArt } from "../game/renderer/mapArt";
+import { redrawFloorObjects } from "../game/renderer/model/modelFloor";
+import {
+  parseObjectParallaxStrength,
+  redrawOutdoorObjects,
+  type ParallaxRedrawStats,
+} from "../game/renderer/model/modelParallax";
 import {
   animateAmbient, driftLeaves, fadeTrail, stampTrail, trailStep,
 } from "../game/renderer/model/modelMotion";
@@ -26,6 +33,8 @@ import { selectMapDocument } from "../mapSelection";
  *   ?worlds&pick=yard        one region, filling the view
  *   ?worlds&shots=1          write a PNG per region to tmp/lab/
  *   ?worlds&map=downtown     any map `mapSelection` knows
+ *   ?worlds&parallax=0.5     exact object-parallax review strength (0, .5, 1, 2)
+ *   ?worlds&footprints=1     authoritative object collision footprints
  */
 
 /**
@@ -145,6 +154,76 @@ function floorFrames(map: MapDocument): Array<{ id: string; title: string; rect:
     }
   }
   return frames;
+}
+
+type LabParallaxStats = {
+  strength: number;
+  outdoor: ParallaxRedrawStats;
+  interiorRedrawn: number;
+  durationMs: number;
+};
+
+/** Apply the same object pass the game uses, from the centre of this deterministic crop. */
+function applyFrameParallax(
+  art: MapArt,
+  frame: { rect: Rect; floorId?: string },
+  strength: number,
+): LabParallaxStats {
+  const started = performance.now();
+  const centre = {
+    x: frame.rect.x + frame.rect.w / 2,
+    y: frame.rect.y + frame.rect.h / 2,
+  };
+  const outdoor = redrawOutdoorObjects(art.outdoorObjectViews, centre, strength, frame.rect);
+  let interiorRedrawn = 0;
+  if (frame.floorId && strength > 0) {
+    for (const building of art.buildings) {
+      for (const floor of building.floors) {
+        if (floor.floor.id === frame.floorId) {
+          interiorRedrawn += redrawFloorObjects(floor.objectViews, centre, strength);
+        }
+      }
+    }
+  }
+  return {
+    strength,
+    outdoor,
+    interiorRedrawn,
+    durationMs: performance.now() - started,
+  };
+}
+
+/** Authoritative object colliders, drawn only when the lab asks for footprint truth. */
+function buildFootprintOverlay(
+  map: MapDocument,
+  floorId: string | undefined,
+): Graphics {
+  const g = new Graphics();
+  const objects = floorId
+    ? map.buildings.flatMap((building) => building.floors)
+      .find((floor) => floor.id === floorId)?.objects ?? []
+    : map.outdoor.objects;
+  for (const object of objects) {
+    for (const solid of objectSolids(object)) {
+      if (solid.kind === "rect") {
+        g.rect(solid.x, solid.y, solid.w, solid.h)
+          .fill({ color: 0x00a7b5, alpha: 0.12 })
+          .stroke({ color: 0x006973, alpha: 0.9, width: 1.5 });
+      } else if (solid.kind === "capsule") {
+        g.moveTo(solid.ax, solid.ay).lineTo(solid.bx, solid.by)
+          .stroke({ color: 0x00a7b5, alpha: 0.16, width: solid.r * 2 });
+        g.moveTo(solid.ax, solid.ay).lineTo(solid.bx, solid.by)
+          .stroke({ color: 0x006973, alpha: 0.9, width: 1.5 });
+        g.circle(solid.ax, solid.ay, solid.r).stroke({ color: 0x006973, alpha: 0.9, width: 1.5 });
+        g.circle(solid.bx, solid.by, solid.r).stroke({ color: 0x006973, alpha: 0.9, width: 1.5 });
+      } else {
+        g.poly(solid.points)
+          .fill({ color: 0x00a7b5, alpha: 0.12 })
+          .stroke({ color: 0x006973, alpha: 0.9, width: 1.5 });
+      }
+    }
+  }
+  return g;
 }
 
 /**
@@ -267,14 +346,15 @@ export function WorldLab() {
        * and a ride whose canopy is parked both look identical at t=0.
        *
        * Two shots at different `t` values is the whole verification — the same crop, the
-       * same geometry, one number changed. Default 0, which keeps every existing shot in the
-       * sheet byte-identical to what it was.
+       * same geometry, one number changed. Default 0 keeps the ambient pose at rest; object
+       * parallax has its own explicit `parallax=` stamp and control.
        *
        * NOT `at`. That name is taken, by `selectMapDocument` → `spawnAt`, where it names an
        * arrival point to start the player at — so `?at=30000` would have quietly asked for
        * an insertion point called "30000" as well as setting the clock.
        */
       const clockMs = Math.max(0, Number(params.get("t") ?? 0)) || 0;
+      const parallaxStrength = parseObjectParallaxStrength(window.location.search);
       animateAmbient(art.movers, clockMs, false);
 
       /**
@@ -307,6 +387,10 @@ export function WorldLab() {
        * and `?solo` showed three grey shadows and no trees.
        */
       stage.addChild(art.root, art.overhead);
+      let footprintOverlay = params.get("footprints") === "1"
+        ? buildFootprintOverlay(map, undefined)
+        : null;
+      if (footprintOverlay) stage.addChild(footprintOverlay);
       created.stage.addChild(stage);
 
       /**
@@ -341,6 +425,12 @@ export function WorldLab() {
             floor.view.visible = floorId === null ? floor.floor.label === "GROUND" : floor.floor.id === floorId;
           }
         }
+        if (footprintOverlay) {
+          footprintOverlay.removeFromParent();
+          footprintOverlay.destroy();
+          footprintOverlay = buildFootprintOverlay(map, floorId ?? undefined);
+          stage.addChild(footprintOverlay);
+        }
       };
 
       /** Fit a world rect to the canvas, with a little air round it. */
@@ -372,8 +462,10 @@ export function WorldLab() {
          * writes a full-resolution PNG that can be opened and compared properly.
          */
         const wanted = pick ? allFrames.filter((frame) => frame.id === pick) : allFrames;
+        const parallaxStats: LabParallaxStats[] = [];
         for (const shot of wanted) {
           showFloor(shot.floorId ?? null);
+          parallaxStats.push(applyFrameParallax(art, shot, parallaxStrength));
           // The frame's own rect stands in for the camera's visible bounds: a still has no
           // camera, and leaves that spawned off the whole sheet would put none in the crop.
           driftLeaves(art.leaves, art.movers, clockMs, shot.rect, false);
@@ -386,22 +478,33 @@ export function WorldLab() {
           frame(shot.rect, width, height);
           created.render();
           const png = created.canvas.toDataURL("image/png");
+          const parallaxStamp = params.has("parallax")
+            ? `-p${String(parallaxStrength).replace(".", "-")}`
+            : "";
           const response = await fetch("/__lab/shot", {
             method: "POST",
             headers: { "content-type": "application/json" },
             // Stamped with the clock when the clock is set, so a motion review writes its
             // own files instead of overwriting the review sheet with one moment of it.
-            body: JSON.stringify({ name: `map-${shot.id}${clockMs ? `-t${clockMs}` : ""}`, png }),
+            body: JSON.stringify({
+              name: `map-${shot.id}${clockMs ? `-t${clockMs}` : ""}${parallaxStamp}`,
+              png,
+            }),
           });
           const body = await response.json() as { ok?: boolean; error?: string };
           results.push(`${shot.id}: ${body.ok ? "ok" : `FAILED ${body.error ?? ""}`}`);
         }
         (window as unknown as { worldShots?: string[] }).worldShots = results;
+        (window as unknown as { worldParallaxStats?: LabParallaxStats[] }).worldParallaxStats = parallaxStats;
+        host.dataset.parallaxStats = JSON.stringify(parallaxStats);
         return;
       }
 
       const chosen = allFrames.find((candidate) => candidate.id === pick) ?? allFrames[0];
       showFloor(chosen.floorId ?? null);
+      const parallaxStats = applyFrameParallax(art, chosen, parallaxStrength);
+      (window as unknown as { worldParallaxStats?: LabParallaxStats }).worldParallaxStats = parallaxStats;
+      host.dataset.parallaxStats = JSON.stringify(parallaxStats);
       driftLeaves(art.leaves, art.movers, clockMs, chosen.rect, false);
       if (walk) walkTheCrop(art, map, chosen.rect, clockMs);
       const draw = (): void => {
@@ -458,5 +561,59 @@ export function WorldLab() {
     };
   }, []);
 
-  return <div ref={hostRef} style={{ position: "fixed", inset: 0, overflow: "hidden", background: "#6e7378" }} />;
+  const strength = parseObjectParallaxStrength(window.location.search);
+  const footprints = new URLSearchParams(window.location.search).get("footprints") === "1";
+  const hrefAt = (value: number): string => {
+    const params = new URLSearchParams(window.location.search);
+    params.set("parallax", String(value));
+    return `?${params.toString()}`;
+  };
+  return (
+    <>
+      <div ref={hostRef} style={{ position: "fixed", inset: 0, overflow: "hidden", background: "#6e7378" }} />
+      <nav
+        aria-label="Object parallax strength"
+        style={{
+          position: "fixed", left: 12, top: 12, display: "flex", gap: 5, padding: 6,
+          borderRadius: 5, background: "rgba(20,23,26,0.86)", font: "11px system-ui",
+        }}
+      >
+        <span style={{ color: "#f4f5f6", padding: "3px 5px" }}>Parallax</span>
+        {[0, 0.5, 1, 2].map((value) => (
+          <a
+            key={value}
+            href={hrefAt(value)}
+            aria-current={strength === value ? "true" : undefined}
+            style={{
+              color: strength === value ? "#17191c" : "#f4f5f6",
+              background: strength === value ? "#f4f5f6" : "#474d52",
+              borderRadius: 3,
+              padding: "3px 7px",
+              textDecoration: "none",
+            }}
+          >
+            {value}
+          </a>
+        ))}
+        <a
+          href={(() => {
+            const params = new URLSearchParams(window.location.search);
+            if (footprints) params.delete("footprints");
+            else params.set("footprints", "1");
+            return `?${params.toString()}`;
+          })()}
+          aria-current={footprints ? "true" : undefined}
+          style={{
+            color: footprints ? "#17191c" : "#f4f5f6",
+            background: footprints ? "#8fdbe0" : "#474d52",
+            borderRadius: 3,
+            padding: "3px 7px",
+            textDecoration: "none",
+          }}
+        >
+          footprints
+        </a>
+      </nav>
+    </>
+  );
 }
