@@ -27,6 +27,7 @@ import { CLICK_PING_KIND, collectPings, type LiveMark } from "./pings";
 import type { NetworkDebugStats } from "./session/netgraph";
 import { WORLD_MAP_PING_FLOOR } from "./worldMap/worldMap";
 import type { EntityMeta, KillCamClip } from "@dotbot/protocol";
+import { initialHudOverlays, transitionHudOverlay, type HudOverlayEvent } from "./hudOverlayLifecycle";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
 
@@ -139,6 +140,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const [networkDebug, setNetworkDebug] = useState<NetworkDebugStats | null>(null);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [inventoryVisible, setInventoryVisible] = useState(false);
+  const hudOverlaysRef = useRef(initialHudOverlays);
   const [joystickView, setJoystickView] = useState(emptyJoystick);
   const [feedbackPreferences, setFeedbackPreferences] = useState(loadFeedbackPreferences);
   const [audioStatus, setAudioStatus] = useState<AudioFeedbackStatus>(
@@ -156,10 +158,19 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     resetJoystick();
   }, [resetJoystick]);
 
+  const applyHudOverlayEvent = useCallback((event: HudOverlayEvent) => {
+    const next = transitionHudOverlay(hudOverlaysRef.current, event);
+    hudOverlaysRef.current = next;
+    worldMapOpenRef.current = next.worldMap;
+    setWorldMapVisible(next.worldMap);
+    setSettingsVisible(next.settings);
+    setInventoryVisible(next.inventory);
+    if (!next.worldMap) setPingPicker(null);
+  }, []);
+
   const setWorldMapOpen = useCallback((visible: boolean) => {
     const nextVisible = visible && worldMapEnabledRef.current;
-    worldMapOpenRef.current = nextVisible;
-    setWorldMapVisible(nextVisible);
+    applyHudOverlayEvent(nextVisible ? "openWorldMap" : "closeWorldMap");
     setPingPicker(null);
     if (nextVisible) {
       clearMovementInput();
@@ -175,9 +186,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         window.clearTimeout(longPressRef.current);
         longPressRef.current = null;
       }
-      setSettingsVisible(false);
     }
-  }, [clearMovementInput]);
+  }, [applyHudOverlayEvent, clearMovementInput]);
 
   useEffect(() => {
     let disposed = false;
@@ -284,6 +294,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         for (const clip of session.drainKillCams?.() ?? []) {
           if (clip.victimId !== session.playerId) continue;
           killCamPlaybackRef.current = new KillCamPlayback(clip);
+          dropQueuedRef.current = undefined;
+          applyHudOverlayEvent("startReplay");
           session.setReplayActive?.(true);
         }
         const frameEvents = session.drainEvents();
@@ -413,6 +425,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           killCamPlaybackRef.current.skip();
           killCamPlaybackRef.current = null;
           session.setReplayActive?.(false);
+          applyHudOverlayEvent("endReplay");
           setKillCam(null);
         }
         if (currentPlayer) playerSquadId = currentPlayer.squadId;
@@ -433,7 +446,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           joystickRef.current = emptyJoystick;
           setJoystickView(emptyJoystick);
           setRunResult(result);
-          setInventoryVisible(false);
+          applyHudOverlayEvent("closeInventory");
         }
 
         // Watching begins the moment you go down, not when the run ends: you
@@ -460,6 +473,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           if (playback.finished) {
             killCamPlaybackRef.current = null;
             session.setReplayActive?.(false);
+            applyHudOverlayEvent("endReplay");
             setKillCam(null);
           } else {
             const replayFrame = playback.sample();
@@ -558,18 +572,20 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
       if (event.code === "KeyL") {
         event.preventDefault();
-        setSettingsVisible((visible) => !visible);
+        applyHudOverlayEvent(hudOverlaysRef.current.settings ? "closeSettings" : "openSettings");
         return;
       }
 
       if (event.code === "KeyI") {
         event.preventDefault();
-        if (!runEndedRef.current && !event.repeat) setInventoryVisible((visible) => !visible);
+        if (!runEndedRef.current && !event.repeat) {
+          applyHudOverlayEvent(hudOverlaysRef.current.inventory ? "closeInventory" : "openInventory");
+        }
         return;
       }
 
       if (event.code === "Escape") {
-        setInventoryVisible(false);
+        applyHudOverlayEvent("closeInventory");
       }
 
       if (event.code === "KeyF") {
@@ -603,6 +619,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           killCamPlaybackRef.current.skip();
           killCamPlaybackRef.current = null;
           sessionRef.current?.setReplayActive?.(false);
+          applyHudOverlayEvent("endReplay");
           setKillCam(null);
         } else if (runEndedRef.current && spectateEnabled) {
           spectateCycleQueuedRef.current = true;
@@ -684,7 +701,15 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       feedbackRef.current = null;
       sessionRef.current = null;
     };
-  }, [clearMovementInput, providedSession, requestedMap, resetJoystick, setWorldMapOpen, spectateEnabled]);
+  }, [
+    applyHudOverlayEvent,
+    clearMovementInput,
+    providedSession,
+    requestedMap,
+    resetJoystick,
+    setWorldMapOpen,
+    spectateEnabled,
+  ]);
 
   const queueDash = useCallback(() => {
     void feedbackRef.current?.unlock();
@@ -704,10 +729,17 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     if (!runEndedRef.current) swapQueuedRef.current = { bayIndex, holdIndex };
   }, []);
 
-  const dropItem = useCallback((from: "bay" | "hold", index: number) => {
+  const dropItem = useCallback((from: "bay" | "hold", index: number, expected: Item, revision: number) => {
     void feedbackRef.current?.unlock();
-    if (!runEndedRef.current) dropQueuedRef.current = { from, index };
+    if (!runEndedRef.current && !hudOverlaysRef.current.replay && !hudOverlaysRef.current.reconnecting) {
+      dropQueuedRef.current = { from, index, expected: { ...expected }, revision };
+    }
   }, []);
+
+  const setConnectionBlocked = useCallback((blocked: boolean) => {
+    dropQueuedRef.current = undefined;
+    applyHudOverlayEvent(blocked ? "startReconnect" : "endReconnect");
+  }, [applyHudOverlayEvent]);
 
   const cycleSpectator = useCallback(() => {
     if (runEndedRef.current && spectateEnabled) {
@@ -719,16 +751,18 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     killCamPlaybackRef.current?.skip();
     killCamPlaybackRef.current = null;
     sessionRef.current?.setReplayActive?.(false);
+    applyHudOverlayEvent("endReplay");
     setKillCam(null);
     sessionRef.current?.leaveRun();
-  }, []);
+  }, [applyHudOverlayEvent]);
 
   const skipKillCam = useCallback(() => {
     killCamPlaybackRef.current?.skip();
     killCamPlaybackRef.current = null;
     sessionRef.current?.setReplayActive?.(false);
+    applyHudOverlayEvent("endReplay");
     setKillCam(null);
-  }, []);
+  }, [applyHudOverlayEvent]);
 
   /**
    * `undefined` clears it. A verb is standing state — the simulation reads it every
@@ -981,10 +1015,11 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     debugVisible,
     networkDebug,
     settingsVisible,
-    toggleSettings: () => setSettingsVisible((visible) => !visible),
+    toggleSettings: () => applyHudOverlayEvent(hudOverlaysRef.current.settings ? "closeSettings" : "openSettings"),
     inventoryVisible,
-    toggleInventory: () => setInventoryVisible((visible) => !visible),
-    closeInventory: () => setInventoryVisible(false),
+    toggleInventory: () => applyHudOverlayEvent(hudOverlaysRef.current.inventory ? "closeInventory" : "openInventory"),
+    closeInventory: () => applyHudOverlayEvent("closeInventory"),
+    setConnectionBlocked,
     feedbackPreferences,
     audioStatus,
     toggleSound: () => toggleFeedbackPreference("sound"),

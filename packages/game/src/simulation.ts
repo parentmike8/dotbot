@@ -243,6 +243,7 @@ type AiAlert = {
 };
 
 type InternalBot = DotBotEntity & {
+  inventoryRevision: number;
   factionKind: BotFactionKind;
   patrol?: PatrolRoute;
   spawn: Vec2;
@@ -333,7 +334,7 @@ type InternalBot = DotBotEntity & {
   pleaCooldownMs: number;
   pingCooldownMs: number;
   radarPingElapsedMs: number;
-  activeSwap?: { bayIndex: BayIndex; holdIndex: number; progressMs: number };
+  activeSwap?: { bayIndex: BayIndex; holdIndex: number; inventoryRevision: number; progressMs: number };
 };
 
 type InternalDot = DotEntity;
@@ -563,6 +564,7 @@ export class DotBotSimulation {
       shieldSegments,
       bays: normalizedBays(spawn, this.config),
       hold: factionKind === "ambient" ? [] : (spawn.hold ?? []).slice(0, this.config.holdSlots),
+      inventoryRevision: 0,
       carriedCount: 0,
       searched: false,
       pleaded: false,
@@ -992,9 +994,7 @@ export class DotBotSimulation {
       }
 
       const input = this.inputs.get(bot.id);
-      if (input?.drop && !bot.isAmbient) {
-        this.dropItem(bot, input.drop);
-      }
+      const dropped = input?.drop && !bot.isAmbient ? this.dropItem(bot, input.drop) : false;
 
       if (bot.state !== "alive") {
         if (bot.state === "downed" && input?.plea && !bot.isAmbient && bot.pleaCooldownMs <= 0) {
@@ -1016,18 +1016,18 @@ export class DotBotSimulation {
         bot.lastAim = aliveInput.move;
       }
 
-      if (aliveInput.useBay !== undefined && isSlot(bot.bays, aliveInput.useBay)) {
+      if (!dropped && aliveInput.useBay !== undefined && isSlot(bot.bays, aliveInput.useBay)) {
         this.fireBay(bot, aliveInput.useBay);
       }
-      if (aliveInput.swapBay && !bot.activeSwap) {
+      if (!dropped && aliveInput.swapBay && !bot.activeSwap) {
         const { bayIndex, holdIndex } = aliveInput.swapBay;
         if (isSlot(bot.bays, bayIndex) && isSlot(bot.hold, holdIndex)) {
-          bot.activeSwap = { bayIndex, holdIndex, progressMs: 0 };
+          bot.activeSwap = { bayIndex, holdIndex, inventoryRevision: bot.inventoryRevision, progressMs: 0 };
           bot.desiredMove = zeroVec();
         }
       }
 
-      if (aliveInput.take) {
+      if (!dropped && aliveInput.take) {
         this.takeFromBody(bot, aliveInput.take);
       }
 
@@ -1053,21 +1053,28 @@ export class DotBotSimulation {
     }
   }
 
-  private dropItem(bot: InternalBot, request: NonNullable<InputCommand["drop"]>): void {
-    if (!Number.isInteger(request.index) || request.index < 0) return;
+  private dropItem(bot: InternalBot, request: NonNullable<InputCommand["drop"]>): boolean {
+    if (
+      !Number.isInteger(request.index)
+      || request.index < 0
+      || !Number.isInteger(request.revision)
+      || request.revision !== bot.inventoryRevision
+    ) return false;
     let item: Item | null = null;
     if (request.from === "bay") {
-      if (!isSlot(bot.bays, request.index)) return;
+      if (!isSlot(bot.bays, request.index)) return false;
       item = bot.bays[request.index];
-      if (!item) return;
+      if (!item || !sameItem(item, request.expected)) return false;
       bot.bays[request.index] = null;
     } else if (request.from === "hold") {
-      if (!isSlot(bot.hold, request.index)) return;
-      item = bot.hold.splice(request.index, 1)[0] ?? null;
-      if (!item) return;
+      if (!isSlot(bot.hold, request.index)) return false;
+      item = bot.hold[request.index] ?? null;
+      if (!item || !sameItem(item, request.expected)) return false;
+      bot.hold.splice(request.index, 1);
     } else {
-      return;
+      return false;
     }
+    bot.inventoryRevision += 1;
 
     // A hold splice can retarget an in-progress swap. Cancel it instead of
     // letting a stale index exchange a different item.
@@ -1090,13 +1097,16 @@ export class DotBotSimulation {
       floorId: bot.floorId,
       active: true,
       captureProgressMs: 0,
+      runtime: true,
     });
+    return true;
   }
 
   private fireBay(bot: InternalBot, bayIndex: BayIndex): void {
     const item = bot.bays[bayIndex];
     if (!item || item.kind === "blueprint") return;
     bot.bays[bayIndex] = null;
+    bot.inventoryRevision += 1;
     if (item.kind === "mine") {
       this.placeMine(bot);
       return;
@@ -3256,7 +3266,9 @@ export class DotBotSimulation {
       if (dot.captureProgressMs >= this.config.dotCaptureDurationMs) {
         const inserted = insertItem(coveringBot, { ...dot.item }, this.config.holdSlots);
         if (inserted) {
-          dot.active = false;
+          coveringBot.inventoryRevision += 1;
+          if (dot.runtime) this.dots.delete(dot.id);
+          else dot.active = false;
           this.events.push({ type: "dotCaptured", botId: coveringBot.id, dotId: dot.id });
         } else {
           dot.captureProgressMs = 0;
@@ -3451,7 +3463,7 @@ export class DotBotSimulation {
     for (const bot of this.bots.values()) {
       const swap = bot.activeSwap;
       const key = `swap:${bot.id}`;
-      if (!swap || bot.state !== "alive") {
+      if (!swap || bot.state !== "alive" || swap.inventoryRevision !== bot.inventoryRevision) {
         this.coverages.delete(key);
         bot.activeSwap = undefined;
         continue;
@@ -3475,6 +3487,7 @@ export class DotBotSimulation {
           bot.bays[swap.bayIndex] = held;
           if (bayItem) bot.hold[swap.holdIndex] = bayItem;
           else bot.hold.splice(swap.holdIndex, 1);
+          bot.inventoryRevision += 1;
         }
         bot.activeSwap = undefined;
         this.coverages.delete(key);
@@ -3577,6 +3590,8 @@ export class DotBotSimulation {
     }
 
     if (taken.length > 0) {
+      taker.inventoryRevision += 1;
+      body.inventoryRevision += 1;
       this.events.push({ type: "looted", botId: body.id, byBotId: taker.id, items: taken });
     }
     return taken;
@@ -3611,6 +3626,15 @@ function isSlot(slots: unknown[], index: number): boolean {
   return Number.isInteger(index) && index >= 0 && index < slots.length;
 }
 
+function sameItem(left: Item, right: unknown): boolean {
+  if (!right || typeof right !== "object") return false;
+  const candidate = right as Partial<Item>;
+  if (left.kind !== candidate.kind || left.sourceBuildingId !== candidate.sourceBuildingId) return false;
+  if (left.kind === "powerup") return candidate.kind === "powerup" && left.type === candidate.type;
+  if (left.kind === "blueprint") return candidate.kind === "blueprint" && left.blueprintId === candidate.blueprintId;
+  return candidate.kind === "mine";
+}
+
 function toBotSnapshot(bot: InternalBot): DotBotEntity {
   return {
     id: bot.id,
@@ -3631,6 +3655,7 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     shieldSegments: [...bot.shieldSegments],
     bays: bot.bays.map((item) => item && { ...item }),
     hold: bot.hold.map((item) => ({ ...item })),
+    inventoryRevision: bot.inventoryRevision,
     carriedCount: carriedCount(bot),
     searched: bot.searched,
     pleaded: bot.pleaded,

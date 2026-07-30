@@ -80,10 +80,16 @@ export type TakeCommand = { fromBotId: string; index: number | "all" };
 /**
  * Drop one authoritative inventory slot.
  *
- * The client names a location and nothing more. Item contents, provenance,
- * position, floor, radius, and runtime id are all derived by the simulation.
+ * The location is accepted only while the authoritative inventory revision and
+ * expected item still match. Item contents, position, floor, radius, and
+ * runtime id are always derived by the simulation.
  */
-export type DropCommand = { from: "bay" | "hold"; index: number };
+export type DropCommand = {
+  from: "bay" | "hold";
+  index: number;
+  revision: number;
+  expected: Item;
+};
 
 /** Compact persistence/wire codes for powerups. Blueprint cargo is excluded. */
 export type WirePowerupCode = "h" | "r" | "d" | "i";
@@ -824,6 +830,8 @@ export type DotBotEntity = GameEntity & {
   shieldSegments: number[];
   bays: (Item | null)[];
   hold: Item[];
+  /** Increments after every authoritative inventory mutation. */
+  inventoryRevision?: number;
   /** Total carried items, authoritative even when a remote inventory is privacy-redacted. */
   carriedCount: number;
   /**
@@ -860,6 +868,8 @@ export type DotEntity = GameEntity & {
   active: boolean;
   capturedBy?: string;
   captureProgressMs: number;
+  /** Created during the run rather than authored in map data. */
+  runtime?: true;
 };
 
 export type DoorPhase = "closed" | "opening" | "open" | "closing";

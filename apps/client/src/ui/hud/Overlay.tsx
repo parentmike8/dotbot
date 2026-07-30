@@ -88,6 +88,7 @@ export function BayBank({
   onUse,
   onOpen,
   open,
+  disabled = false,
 }: {
   player: DotBotEntity | undefined;
   slots: number;
@@ -95,6 +96,7 @@ export function BayBank({
   onUse: (index: number) => void;
   onOpen: () => void;
   open: boolean;
+  disabled?: boolean;
 }) {
   const canAct = player?.state === "alive";
   const openButton = useRef<HTMLButtonElement>(null);
@@ -127,6 +129,7 @@ export function BayBank({
               type="button"
               className="inventory-open"
               onClick={onOpen}
+              disabled={disabled}
               aria-expanded={open}
               aria-controls="inventory-panel"
             >Open</button>
@@ -161,7 +164,7 @@ export function InventoryPanel({
   holdSlots: number;
   onUse: (bayIndex: number) => void;
   onSwap: (bayIndex: number, holdIndex: number) => void;
-  onDrop: (from: "bay" | "hold", index: number) => void;
+  onDrop: (from: "bay" | "hold", index: number, item: Item, revision: number) => void;
   onClose: () => void;
 }) {
   const panel = useRef<HTMLElement>(null);
@@ -172,6 +175,10 @@ export function InventoryPanel({
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    setSelectedHold(null);
+  }, [player.inventoryRevision]);
 
   useEffect(() => {
     panel.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
@@ -225,7 +232,7 @@ export function InventoryPanel({
                 >Swap</button>
                 <button
                   type="button"
-                  onClick={() => onDrop("bay", index)}
+                  onClick={() => item && onDrop("bay", index, item, player.inventoryRevision ?? 0)}
                   disabled={!item}
                   aria-label={item ? `Drop ${itemLabel(item)} from bay ${index + 1}` : `Bay ${index + 1} is empty`}
                 >Drop</button>
@@ -267,7 +274,11 @@ export function InventoryPanel({
                 <button
                   type="button"
                   className="inventory-drop"
-                  onClick={() => onDrop("hold", index)}
+                  onClick={() => {
+                    if (!item) return;
+                    onDrop("hold", index, item, player.inventoryRevision ?? 0);
+                    setSelectedHold(null);
+                  }}
                   disabled={!item}
                   aria-label={item ? `Drop ${itemLabel(item)} from hold slot ${index + 1}` : `Hold slot ${index + 1} is empty`}
                 >Drop</button>

@@ -323,6 +323,7 @@ export class NetSession implements GameSession {
     this.predictionDashQueued = false;
     this.queuedUseBay = undefined;
     this.queuedSwapBay = undefined;
+    this.queuedDrop = undefined;
     this.queuedTake = undefined;
     this.queuedPing = undefined;
   }

@@ -375,7 +375,10 @@ describe("Room input stream", () => {
     expect(carriesAction({ ...move, dash: true })).toBe(true);
     expect(carriesAction({ ...move, useBay: 0 })).toBe(true);
     expect(carriesAction({ ...move, swapBay: { bayIndex: 0, holdIndex: 0 } })).toBe(true);
-    expect(carriesAction({ ...move, drop: { from: "bay", index: 0 } })).toBe(true);
+    expect(carriesAction({
+      ...move,
+      drop: { from: "bay", index: 0, revision: 0, expected: { kind: "mine" } },
+    })).toBe(true);
     expect(carriesAction({ ...move, take: { fromBotId: "enemy", index: "all" } })).toBe(true);
     expect(carriesAction({ ...move, plea: true })).toBe(true);
     // A verb is standing state, not an edge: it repeats every frame while a key is
@@ -399,7 +402,12 @@ describe("Room input stream", () => {
     const internals = room as unknown as {
       members: Map<string, { botId: string }>;
       simulation: {
-        bots: Map<string, { position: { x: number; y: number }; bays: unknown[] }>;
+        bots: Map<string, {
+          position: { x: number; y: number };
+          bays: unknown[];
+          inventoryRevision: number;
+        }>;
+        dots: Map<string, unknown>;
         getSnapshot(): import("@dotbot/game/types").GameSnapshot;
       };
     };
@@ -417,6 +425,8 @@ describe("Room input stream", () => {
       drop: {
         from: "bay",
         index: 0,
+        revision: 0,
+        expected: cargo,
         item: { kind: "mine" },
         position: [9999, 9999],
         floorId: "forged",
@@ -429,6 +439,8 @@ describe("Room input stream", () => {
           drop: {
             from: "bay",
             index: 0,
+            revision: 0,
+            expected: cargo,
             item: { kind: "mine" },
             position: [9999, 9999],
             floorId: "forged",
@@ -449,10 +461,18 @@ describe("Room input stream", () => {
       item: cargo,
     });
     expect(authoritative.bays[0]).toBeNull();
-    clock += 1000 / 60 + 0.01;
-    room.tick(clock);
-    expect(first.messages.filter((message) => message.type === "snap").at(-1)?.dotAdds)
-      .toContainEqual(expect.objectContaining({ id: dropped.id, it: { c: "h", s: "mercy" } }));
+    for (let tick = 0; tick < 5; tick += 1) {
+      clock += 1000 / 60 + 0.01;
+      room.tick(clock);
+    }
+    const runtimeFrames = first.messages
+      .filter((message) => message.type === "snap")
+      .filter((message) => message.runtimeDots?.some((dot) => dot.id === dropped.id));
+    // Discard the first latest-state frame conceptually. The later frame must
+    // independently carry the complete active runtime set.
+    expect(runtimeFrames.length).toBeGreaterThanOrEqual(2);
+    expect(runtimeFrames.at(-1)?.runtimeDots)
+      .toContainEqual(expect.objectContaining({ id: dropped.id, it: "h", src: "mercy", rt: true }));
 
     room.disconnect(first.peer.id);
     const reconnected = collectingPeer("drop-reconnected");
@@ -461,9 +481,19 @@ describe("Room input stream", () => {
     expect(start?.dotBaseline).toContainEqual(expect.objectContaining({
       id: dropped.id,
       position: at,
-      it: { c: "h", s: "mercy" },
+      it: "h",
+      src: "mercy",
       active: true,
     }));
+
+    // Retired runtime definitions are physically collected and therefore
+    // cannot accumulate in a reconnect baseline forever.
+    internals.simulation.dots.delete(dropped.id);
+    room.disconnect(reconnected.peer.id);
+    const afterGc = collectingPeer("drop-after-gc");
+    expect(room.join(afterGc.peer, "drop-token", "Dropper", "drop-player", "alpha")).not.toBeNull();
+    expect(afterGc.messages.find((message) => message.type === "matchStart")?.dotBaseline)
+      .not.toContainEqual(expect.objectContaining({ id: dropped.id }));
     room.dispose();
   });
 

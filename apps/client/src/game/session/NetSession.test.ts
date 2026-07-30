@@ -31,7 +31,7 @@ describe("NetSession item edges", () => {
       move: { x: 1, y: 0 },
       dash: false,
       useBay: 2,
-      drop: { from: "hold", index: 4 },
+      drop: { from: "hold", index: 4, revision: 8, expected: { kind: "mine" } },
     });
     advance(tickMs * 4 + 1);
     session.sendInput({ move: { x: 1, y: 0 }, dash: false });
@@ -47,7 +47,12 @@ describe("NetSession item edges", () => {
     const bayFrameSeqs = new Set(allFrames.filter((frame) => frame.useBay === 2).map((frame) => frame.seq));
     expect([...bayFrameSeqs]).toEqual([1]);
     const dropFrameSeqs = new Set(allFrames.filter((frame) =>
-      JSON.stringify(frame.drop) === JSON.stringify({ from: "hold", index: 4 })).map((frame) => frame.seq));
+      JSON.stringify(frame.drop) === JSON.stringify({
+        from: "hold",
+        index: 4,
+        revision: 8,
+        expected: { kind: "mine" },
+      })).map((frame) => frame.seq));
     expect([...dropFrameSeqs]).toEqual([1]);
     const seqs = allFrames.map((frame) => frame.seq as number);
     expect(Math.max(...seqs)).toBe(6);
@@ -140,11 +145,17 @@ describe("NetSession item edges", () => {
       predictionEnabled: true,
       predictor: { step: predictorStep },
     });
+    session.sendInput({
+      move: { x: 0, y: 0 },
+      dash: false,
+      drop: { from: "hold", index: 0, revision: 3, expected: { kind: "mine" } },
+    });
     session.setReplayActive(true);
     session.sendInput({
       move: { x: 1, y: 0 },
       dash: true,
       useBay: 2,
+      drop: { from: "bay", index: 0, revision: 3, expected: { kind: "mine" } },
       plea: true,
       ping: { kind: "enemy", position: { x: 10, y: 20 } },
     });
@@ -154,6 +165,7 @@ describe("NetSession item edges", () => {
     const frame = (sent.find((message) => message.type === "input")?.frames as Array<Record<string, unknown>>)[0];
     expect(frame).toMatchObject({ move: [0, 0], dash: false, plea: true });
     expect(frame.useBay).toBeUndefined();
+    expect(frame.drop).toBeUndefined();
     expect(frame.ping).toBeUndefined();
     expect(predictorStep).not.toHaveBeenCalled();
 

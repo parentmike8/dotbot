@@ -37,7 +37,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
     killCam, skipKillCam, selectDownedVerb, plea, useBay, swapBayItem, dropItem, takeFromBody, setBodyAction,
-    inventoryVisible, toggleInventory, closeInventory,
+    inventoryVisible, toggleInventory, closeInventory, setConnectionBlocked,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker,
     worldMapVisible, toggleWorldMap, closeWorldMap, markExterior, chooseExteriorMark, squadMarks,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
@@ -62,8 +62,8 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   );
 
   useEffect(() => {
-    if (connectionMessage && worldMapVisible) closeWorldMap();
-  }, [closeWorldMap, connectionMessage, worldMapVisible]);
+    setConnectionBlocked(Boolean(connectionMessage));
+  }, [connectionMessage, setConnectionBlocked]);
 
   return (
     <main
@@ -118,10 +118,11 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
           onUse={useBay}
           onOpen={toggleInventory}
           open={inventoryVisible}
+          disabled={Boolean(connectionMessage) || Boolean(killCam)}
         />
       ) : null}
 
-      {inventoryVisible && player && runResult === null ? (
+      {inventoryVisible && player && runResult === null && !connectionMessage && !killCam ? (
         <InventoryPanel
           player={player}
           slots={session.config.baySlots}
@@ -133,7 +134,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         />
       ) : null}
 
-      {settingsVisible ? (
+      {settingsVisible && !connectionMessage && !killCam ? (
         <SettingsPanel onClose={toggleSettings}>
           <FeedbackControls
             preferences={feedbackPreferences}

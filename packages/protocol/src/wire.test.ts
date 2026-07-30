@@ -150,9 +150,18 @@ describe("snapshot wire mapping", () => {
         captureProgressMs: 0,
       }],
     });
-    expect(full.bots[0].b?.[0]).toEqual({ c: "b:serverRack", s: "civic" });
-    expect(full.bots[0].h?.[0]).toEqual({ c: "b:serverRack", s: "civic" });
-    expect(full.dots[0].it).toEqual({ c: "b:serverRack", s: "civic" });
+    expect(full.bots[0].b?.[0]).toBe("b:serverRack");
+    expect(full.bots[0].h?.[0]).toBe("b:serverRack");
+    expect(full.bots[0].bs?.[0]).toBe("civic");
+    expect(full.bots[0].hs?.[0]).toBe("civic");
+    expect(full.dots[0].it).toBe("b:serverRack");
+    expect(full.dots[0].src).toBe("civic");
+
+    // An older decoder knows only the original scalar fields. Optional
+    // provenance sidecars must never make its startsWith-based decoder crash.
+    expect(() => full.bots[0].b?.filter(Boolean).map((code) => itemFromCode(code!)))
+      .not.toThrow();
+    expect(() => itemFromCode(full.dots[0].it)).not.toThrow();
 
     const restored = fromWireSnapshot(
       toViewerSnapshot(full, 0),
@@ -213,23 +222,30 @@ describe("snapshot wire mapping", () => {
     expect([...store.values()]).toEqual([upper]);
   });
 
-  it("adds runtime dots after the baseline instead of treating them as unknown deltas", () => {
+  it("converges runtime dots after the first lossy add frame is discarded", () => {
     const store = new Map<string, WireDot>();
-    applyWireDotFrame(store, {
-      dotAdds: [{
-        id: "runtime-drop-0",
-        position: { x: 10, y: 20 },
-        radius: 10,
-        floorId: "outdoor",
-        it: { c: "h", s: "mercy" },
-        active: true,
-      }],
-    }, (floorId) => floorId);
+    const runtime = {
+      id: "runtime-drop-0",
+      position: { x: 10, y: 20 },
+      radius: 10,
+      floorId: "outdoor",
+      it: "h",
+      src: "mercy",
+      active: true,
+      rt: true,
+    } satisfies WireDot;
+
+    // The first latest-state snapshot is intentionally discarded.
+    applyWireDotFrame(store, { runtimeDots: [runtime] }, (floorId) => floorId);
     expect(store.get("runtime-drop-0")).toMatchObject({
       position: { x: 10, y: 20 },
-      it: { c: "h", s: "mercy" },
+      it: "h",
+      src: "mercy",
       active: true,
     });
+
+    applyWireDotFrame(store, { runtimeDots: [] }, (floorId) => floorId);
+    expect(store.has("runtime-drop-0")).toBe(false);
   });
 });
 

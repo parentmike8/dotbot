@@ -8,13 +8,19 @@ import { DotBotSimulation, waypointRetired } from "./simulation";
 import { buildContactShape, contactDistance, makeContactShape } from "./bodyContact";
 import { contactReach } from "./shields";
 import { hasLineOfSight } from "./visibility";
-import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, InputCommand, MapDocument, Vec2, WallSegment } from "./types";
+import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, InputCommand, Item, MapDocument, Vec2, WallSegment } from "./types";
 
 const healthItem = { kind: "powerup", type: "health" } as const;
 const radarItem = { kind: "powerup", type: "radar" } as const;
 const overchargeItem = { kind: "powerup", type: "dashOvercharge" } as const;
 const incognitoItem = { kind: "powerup", type: "incognito" } as const;
 const mineItem = { kind: "mine" } as const;
+const drop = (
+  from: "bay" | "hold",
+  index: number,
+  revision: number,
+  expected: Item = from === "bay" ? healthItem : radarItem,
+) => ({ from, index, revision, expected });
 /** `count` health items, then empties out to however many bays the game has. */
 const testBays = (count: number) =>
   Array.from({ length: defaultGameConfig.baySlots }, (_, index) => index < count ? healthItem : null);
@@ -329,8 +335,7 @@ describe("DotBotSimulation", () => {
       move: { x: 0, y: 0 },
       dash: false,
       drop: {
-        from: "bay",
-        index: 0,
+        ...drop("bay", 0, 0, cargo),
         // A hostile client may add fields at the JSON boundary. They are not
         // part of DropCommand and must never become authoritative.
         item: mineItem,
@@ -353,7 +358,7 @@ describe("DotBotSimulation", () => {
       active: true,
     });
 
-    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: { from: "hold", index: 0 } });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: drop("hold", 0, 1) } as InputCommand);
     simulation.step();
     snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "player")?.hold).toEqual([]);
@@ -369,14 +374,55 @@ describe("DotBotSimulation", () => {
       playerSpawn({ id: "racer-b", squadId: "crew-3", position: { x: 128, y: 180 } }),
     ]);
 
-    simulation.applyInput("dropper", { move: { x: 0, y: 0 }, dash: false, drop: { from: "bay", index: 0 } });
+    simulation.applyInput("dropper", { move: { x: 0, y: 0 }, dash: false, drop: drop("bay", 0, 0, cargo) } as InputCommand);
     runTicks(simulation, 12);
 
     const snapshot = simulation.getSnapshot();
     const racers = snapshot.bots.filter((bot) => bot.id.startsWith("racer-"));
     expect(racers.flatMap((bot) => [...bot.bays.filter(Boolean), ...bot.hold])).toEqual([cargo]);
     expect(snapshot.bots.find((bot) => bot.id === "dropper")?.bays.filter(Boolean)).toEqual([]);
-    expect(snapshot.dots.find((dot) => dot.id.startsWith("runtime-drop-"))?.active).toBe(false);
+    expect(snapshot.dots.find((dot) => dot.id.startsWith("runtime-drop-"))).toBeUndefined();
+    simulation.dispose();
+  });
+
+  it("accepts a drop precondition exactly once and rejects a stale shifted hold index", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ bays: [healthItem, null, null], hold: [radarItem, overchargeItem] }),
+    ]);
+    const first = drop("hold", 0, 0);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: first } as InputCommand);
+    simulation.step();
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: first } as InputCommand);
+    simulation.step();
+
+    const player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(player.inventoryRevision).toBe(1);
+    expect(player.hold).toEqual([overchargeItem]);
+    expect(simulation.getSnapshot().dots.filter((dot) => dot.id.startsWith("runtime-drop-"))).toHaveLength(1);
+    simulation.dispose();
+  });
+
+  it("gives a valid drop authoritative precedence over a same-frame swap", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ bays: [healthItem, null, null], hold: [radarItem] }),
+    ]);
+    simulation.applyInput("player", {
+      move: { x: 0, y: 0 },
+      dash: false,
+      drop: drop("hold", 0, 0),
+      swapBay: { bayIndex: 0, holdIndex: 0 },
+    } as InputCommand);
+    simulation.step();
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.bots.find((bot) => bot.id === "player")).toMatchObject({
+      bays: [healthItem, null, null],
+      hold: [],
+      inventoryRevision: 1,
+    });
+    expect(snapshot.coverages.some((coverage) => coverage.kind === "swap")).toBe(false);
+    expect(snapshot.dots.filter((dot) => dot.id.startsWith("runtime-drop-"))).toHaveLength(1);
     simulation.dispose();
   });
 
@@ -399,6 +445,8 @@ describe("DotBotSimulation", () => {
       { from: "hold", index: -1 },
       { from: "hold", index: 99 },
       { from: "forged", index: 0 },
+      { from: "bay", index: 0, revision: 0, expected: mineItem },
+      { from: "bay", index: 0, revision: 0, expected: null },
     ]) {
       simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop } as InputCommand);
       simulation.step();
@@ -425,7 +473,7 @@ describe("DotBotSimulation", () => {
     simulation.step();
     const before = simulation.getSnapshot().coverages.find((coverage) => coverage.kind === "extract")!;
 
-    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: { from: "bay", index: 0 } });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, drop: drop("bay", 0, 0) } as InputCommand);
     simulation.step();
     const after = simulation.getSnapshot().coverages.find((coverage) => coverage.kind === "extract")!;
     expect(after.progressMs).toBeGreaterThan(before.progressMs);

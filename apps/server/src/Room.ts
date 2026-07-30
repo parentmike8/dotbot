@@ -757,22 +757,24 @@ export class Room {
     member: Member,
     filtered: FullWireSnapshot,
     contexts: ReadonlySet<string>,
-  ): { deltas?: WireDotDelta[]; adds?: WireDot[]; sync?: WireDotContextSync[] } {
+  ): { deltas?: WireDotDelta[]; adds?: WireDot[]; runtimeDots: WireDot[]; sync?: WireDotContextSync[] } {
+    const runtimeDots = filtered.dots.filter((dot) => dot.rt);
+    const authoredDots = filtered.dots.filter((dot) => !dot.rt);
     if (!sameSet(member.dotContexts, contexts)) {
       const affected = new Set([...member.dotContexts, ...contexts]);
       const sync = [...affected].sort().map((context) => {
         const dots = contexts.has(context)
-          ? filtered.dots.filter((dot) => physicsFloorId(downtownMap, dot.floorId) === context)
+          ? authoredDots.filter((dot) => physicsFloorId(downtownMap, dot.floorId) === context)
           : [];
         return { context, ...(dots.length ? { dots } : {}) };
       });
-      this.resetDotState(member, filtered.dots, contexts);
-      return { sync };
+      this.resetDotState(member, authoredDots, contexts);
+      return { sync, runtimeDots };
     }
 
     const deltas: WireDotDelta[] = [];
     const adds: WireDot[] = [];
-    for (const dot of filtered.dots) {
+    for (const dot of authoredDots) {
       const previous = member.dotState.get(dot.id);
       const captureProgressMs = dot.captureProgressMs ?? 0;
       if (!previous) {
@@ -788,6 +790,7 @@ export class Room {
     return {
       ...(deltas.length ? { deltas } : {}),
       ...(adds.length ? { adds } : {}),
+      runtimeDots,
     };
   }
 

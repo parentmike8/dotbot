@@ -1,5 +1,5 @@
 import type { BayIndex, DownedVerb, DropCommand, GameConfig, MapDocument, PingKind, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
-import type { WireItemCode, WireItemPayload } from "./items";
+import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
 
@@ -42,8 +42,13 @@ export type WireBot = {
   /** Moving under its own power. Absent means standing. See `DotBotEntity.moving`. */
   mv?: true;
   /** Detailed inventory is present only for the viewer's squad. */
-  b?: (WireItemPayload | null)[];
-  h?: WireItemPayload[];
+  b?: (WireItemCode | null)[];
+  h?: WireItemCode[];
+  /** Optional provenance sidecars aligned with `b` and `h`. */
+  bs?: (string | null)[];
+  hs?: (string | null)[];
+  /** Authoritative inventory mutation revision. */
+  ir?: number;
   /** Always present, including privacy-redacted rivals. */
   c?: number;
   /** Searched: this body is open, so `b`/`h` are sent to everyone who can see it. */
@@ -62,7 +67,11 @@ export type WireDot = {
   position: { x: number; y: number };
   radius: number;
   floorId: string;
-  it: WireItemPayload;
+  it: WireItemCode;
+  /** Optional item provenance sidecar. */
+  src?: string;
+  /** Runtime rather than authored map definition. */
+  rt?: true;
   active: boolean;
   captureProgressMs?: number;
 };
@@ -114,6 +123,8 @@ export type WireSnapshot = {
   dotDeltas?: WireDotDelta[];
   /** Full definitions for runtime dots created after the baseline. */
   dotAdds?: WireDot[];
+  /** Complete current runtime-dot set, repeated in every latest snapshot. */
+  runtimeDots?: WireDot[];
   dotSync?: WireDotContextSync[];
   mines?: WireMine[];
   coverages?: import("@dotbot/game/types").CoverageSnapshot[];
@@ -219,12 +230,12 @@ export type WireSimEvent =
     }
   | { type: "downed"; botId: string; byBotId?: string; cause?: import("@dotbot/game/types").DownCause }
   | { type: "searched"; botId: string; byBotId: string }
-  | { type: "looted"; botId: string; byBotId: string; items: WireItemPayload[] }
+  | { type: "looted"; botId: string; byBotId: string; items: WireItemCode[]; itemSources?: (string | null)[] }
   | { type: "revived"; botId: string; byBotId: string }
   | { type: "recruited"; botId: string; byBotId: string; fromSquadId: string; squadId: string }
   | { type: "plea"; botId: string; squadId: string; position: { x: number; y: number }; floorId: string }
   | { type: "dotCaptured"; botId: string; dotId: string }
-  | { type: "extracted"; botId: string; squadId: string; items: WireItemPayload[] }
+  | { type: "extracted"; botId: string; squadId: string; items: WireItemCode[]; itemSources?: (string | null)[] }
   | { type: "mineRotated"; botId: string; mineId: string }
   | { type: "mineSensor"; botId: string; squadId: string; mineId: string; position: { x: number; y: number }; floorId: string }
   | {
