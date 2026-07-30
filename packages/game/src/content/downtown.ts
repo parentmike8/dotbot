@@ -241,14 +241,21 @@ function outdoorPlan(): OutdoorPlan {
 
     // -- Main St, north footway --------------------------------------------
     ...rhythm(180, MAP_W - 180, 200, MAIN_N_GAPS).map((x) => tree(x, MAIN_N_FURNITURE, STREET_TREE_R)),
-    // Lamps on the half-beat, so the two rhythms interleave rather than stack.
-    ...rhythm(280, MAP_W - 180, 200, MAIN_N_GAPS).map((x) => obj("lampPost", x - 9, MAIN_N_KERB - 22, 18, 18)),
+    /**
+     * Lamps on the half-beat, so the two rhythms interleave rather than stack.
+     *
+     * `facing` is the direction the MAST ARM reaches, and on a street lamp that is always over
+     * the carriageway — reported on sight when every post leaned the same way: "the ones on the
+     * north side should face south and vice versa". These are on the north footway, so south.
+     */
+    ...rhythm(280, MAP_W - 180, 200, MAIN_N_GAPS).map((x) => obj("lampPost", x - 9, MAIN_N_KERB - 22, 18, 18, { facing: "S" })),
     obj("hydrant", 640, MAIN_N_KERB - 18, 14, 14),
     obj("hydrant", 1960, MAIN_N_KERB - 18, 14, 14),
 
     // -- Main St, south footway --------------------------------------------
     ...rhythm(200, MAP_W - 180, 200, MAIN_S_GAPS).map((x) => tree(x, MAIN_S_FURNITURE, STREET_TREE_R)),
-    ...rhythm(300, MAP_W - 180, 200, MAIN_S_GAPS).map((x) => obj("lampPost", x - 9, MAIN_S_KERB + 4, 18, 18)),
+    // South footway, so the arm reaches north over Main St.
+    ...rhythm(300, MAP_W - 180, 200, MAIN_S_GAPS).map((x) => obj("lampPost", x - 9, MAIN_S_KERB + 4, 18, 18, { facing: "N" })),
     obj("hydrant", 900, MAIN_S_KERB + 4, 14, 14),
 
     /**
@@ -277,8 +284,9 @@ function outdoorPlan(): OutdoorPlan {
     ...rhythm(200, 600, 200).map((y) => tree(AVE_W_KERB - FURNITURE_OFFSET, y, STREET_TREE_R)),
     ...rhythm(1020, 1420, 200).map((y) => tree(AVE_W_KERB - FURNITURE_OFFSET, y, STREET_TREE_R)),
     ...rhythm(1080, 1400, 160).map((y) => tree(AVE_E_KERB + FURNITURE_OFFSET, y, STREET_TREE_R)),
-    obj("lampPost", AVE_W_KERB - 27, 420, 18, 18),
-    obj("lampPost", AVE_E_KERB + 9, 1180, 18, 18),
+    // Third Ave runs north-south, so its arms reach east and west across it.
+    obj("lampPost", AVE_W_KERB - 27, 420, 18, 18, { facing: "E" }),
+    obj("lampPost", AVE_E_KERB + 9, 1180, 18, 18, { facing: "W" }),
 
     // -- Mercy Clinic: Main St entrance ------------------------------------
     // Benches face the street from the forecourt edge, flanking the walk.
@@ -344,7 +352,7 @@ function outdoorPlan(): OutdoorPlan {
     obj("car", 2252, 376, 114, 46, { facing: "W" }),
     obj("car", 2252, 448, 114, 46, { facing: "W" }),
     obj("planter", 2060, 100, 40, 200),
-    obj("lampPost", 2120, 340, 18, 18),
+    obj("lampPost", 2120, 340, 18, 18, { facing: "W" }),
 
     // -- Lot 6 Depot: yard ---------------------------------------------------
     /**
@@ -364,12 +372,12 @@ function outdoorPlan(): OutdoorPlan {
     obj("drum", 908, 1030, 24, 24),
     obj("pallet", 880, 1320, 48, 36),
     obj("pallet", 936, 1320, 48, 36),
-    obj("lampPost", 1000, 1300, 18, 18),
+    obj("lampPost", 1000, 1300, 18, 18, { facing: "N" }),
     // Staff parking along the back, out of the loading route.
     obj("parkingStall", 200, 1490, 110, 46),
     obj("parkingStall", 320, 1490, 110, 46),
     obj("car", 208, 1494, 100, 40, { facing: "E" }),
-    obj("lampPost", 620, 1500, 18, 18),
+    obj("lampPost", 620, 1500, 18, 18, { facing: "N" }),
 
     // -- Beacon House: Main St frontage ------------------------------------
     obj("bench", 1716, 880, 100, 22, { facing: "N" }),

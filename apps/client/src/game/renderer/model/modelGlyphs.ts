@@ -1239,26 +1239,46 @@ function carGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
 }
 
 /**
- * A street lamp, identified by its SHADOW rather than by its plan.
+ * A street lamp: a slim post, a swept ARM, and an oval head at the end of it.
  *
- * Reported from play: "what are these things on either side of the road? They're strange and
- * not clear at all what they are." They were an 18-unit dark disc with a pale pip on it, which
- * is the honest plan of a pole and says nothing. `modelLandmarks` states the rule this fell
- * foul of — A SUBJECT WHOSE PLAN IS NOT ITS IDENTITY CANNOT BE DRAWN HERE — and a lamp post
- * from directly overhead is a dot. The old version had the right parts (flange, mast, head
- * offset toward the light) at a scale where the whole assembly was 18 units across, so the
- * offset was five units and invisible.
+ * Reported twice. First "what are these things on either side of the road? They're strange and
+ * not clear at all what they are", then — with reference photos — "still don't think they read
+ * as lamp posts." Both fair, and the second round is where the proportions got fixed.
  *
- * The way you actually identify a lamp post from above is its shadow: a long thin mast lying
- * across the pavement with a blob on the end. That is available here and was not being used —
- * the light direction is global and known (`SUN`), so the shadow needs no per-object data, and
- * `contactRound` was throwing a round smudge instead. A NO-LIGHT-POOL decision goes with it:
- * this world is lit by daylight from the north-west, and a pool of lamplight on a daylit street
- * is a night-time cue in a daytime scene.
+ * The reference is a modern mast-arm street light, and what makes it recognisable from above is
+ * a hierarchy the previous version had INVERTED:
  *
- * The head and its arm overhang the authored rect by a few units. That is the same licence the
- * tree canopy takes and for the same reason: a luminaire is eight metres up, so nothing about
- * it is solid at ground level, and the collider stays the pole's own footprint.
+ *  - THE HEAD IS THE BIGGEST THING. The old glyph's base flange was 16 units across and its
+ *    head was 7 — a pole wearing a pip. A luminaire housing is far wider than the mast it hangs
+ *    off, and from overhead it is the element you actually see.
+ *  - THE HEAD RUNS ALONG THE ARM. It was an axis-aligned `ellipse`, so it stayed a round blob
+ *    whichever way the arm went. An oval whose long axis follows the arm is what turns three
+ *    marks into one object.
+ *  - THE POST IS THIN. A slim disc, with only a small flange at the foot.
+ *
+ * The arm is drawn tapered and swept, so it reads as a member carrying a weight at its end
+ * rather than as a stick glued between two shapes.
+ *
+ * AND IT CASTS A MAST SHADOW, which is how an aerial photograph identifies one: a long thin
+ * shadow with a blob on the end. The light direction is global and known, so this needs no
+ * per-object data. Built as a POLYGON laid out along `SUN` and passed at a small lift, because
+ * `contactShape` offsets whatever it is handed by `SUN * lift` — giving it a disc and a big
+ * lift is exactly what produced a detached fuzzy smudge and no mast at all.
+ *
+ * TWO DECISIONS, both deliberate.
+ *
+ * No light pool. It is the obvious overhead cue and it is wrong here: this world is lit by
+ * daylight from the north-west, and lamplight on a daylit street is a night cue in a day scene.
+ *
+ * The arm reaches NORTH-WEST rather than over the road, so half the posts lean away from the
+ * carriageway. The offset is the HEIGHT cue, not a compass direction — every lifted top face in
+ * this language slides north-west, and a head offset south-east would read as below ground.
+ * Aiming each arm at its own road needs `facing` authored per post: a content change, filed
+ * with #59.
+ *
+ * The arm and head overhang the authored rect. Same licence the tree canopy takes, for the same
+ * reason: a luminaire is eight metres up, so nothing about it is solid at ground level and the
+ * collider stays the post's own footprint.
  */
 function lampPostGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   const cx = o.x + o.w / 2;
@@ -1266,57 +1286,112 @@ function lampPostGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {
   const base = Math.min(o.w, o.h) / 2;
 
   /**
-   * The mast shadow: a tapered bar from the foot of the pole, out along the light, with the
-   * luminaire's own shadow at the far end.
+   * THE ARM REACHES OVER THE ROAD, from `facing`.
    *
-   * Passed at a small lift on purpose. `contactShape` offsets whatever it is given by
-   * `SUN * lift`, so the length has to be built into the POLYGON — handing it a disc and a big
-   * lift is what produced a detached fuzzy blob and no mast at all. A small lift here buys the
-   * layered penumbra without moving the shape off the pole's foot.
+   * It used to reach north-west on every post, on the reasoning that a north-west offset is how
+   * this language draws height and a south offset would read as below ground. Overruled on
+   * sight, and correctly: "not right to have them all facing like this. You should see them go
+   * north south on this road, and the ones on the north side should face south and vice versa."
+   *
+   * A mast arm hangs over the carriageway — that is the whole point of the shape, and a row of
+   * them all leaning the same way reads as a mistake no matter what it is compensating for. The
+   * height cue moves onto the SHADOW instead, which is where an aerial photograph puts it
+   * anyway: the shadow still runs south-east along `SUN` whichever way the arm points, so the
+   * head having a shadow away from itself is what says the head is up in the air.
    */
-  const reach = base * 3.6;
-  const arm = { x: SUN.x * reach, y: SUN.y * reach };
-  const across = { x: -SUN.y, y: SUN.x };
-  const mastHalf = base * 0.28;
-  const headHalf = base * 0.72;
-  contactShape(pad, [
-    { x: cx + across.x * mastHalf, y: cy + across.y * mastHalf },
-    { x: cx + arm.x + across.x * headHalf, y: cy + arm.y + across.y * headHalf },
-    { x: cx + arm.x * 1.22, y: cy + arm.y * 1.22 },
-    { x: cx + arm.x - across.x * headHalf, y: cy + arm.y - across.y * headHalf },
-    { x: cx - across.x * mastHalf, y: cy - across.y * mastHalf },
-  ], 3);
+  const aim: Record<Facing, Vec2> = {
+    N: { x: 0, y: -1 }, S: { x: 0, y: 1 }, E: { x: 1, y: 0 }, W: { x: -1, y: 0 },
+  };
+  const up = aim[o.facing ?? "S"];
+  const across = { x: -up.y, y: up.x };
 
-  // Base flange and mast, both dead centre on the collider.
-  cylinder(g, cx, cy, base * 0.9, MAT.steelDeep, 3);
-  cylinder(g, cx, cy, base * 0.42, MAT.steelDark, 4);
+  /** A point in the lamp's own frame: `along` up the arm, `off` across it. */
+  const at = (along: number, off: number): Vec2 => ({
+    x: cx + up.x * along + across.x * off,
+    y: cy + up.y * along + across.y * off,
+  });
+
+  const armLen = base * 2.3;
+  const headAt = base * 3.0;
+  const headLong = base * 1.15;
+  const headWide = base * 0.52;
 
   /**
-   * The arm and head, drawn OPPOSITE the shadow.
+   * The shadow follows the LIGHT, not the arm.
    *
-   * Height is a north-west displacement in this language — a top-down camera sees the top of a
-   * tall thing offset toward the light — so the luminaire, being the highest part, sits furthest
-   * that way. Drawn as a visible arm rather than a floating pip: the bar is what makes the head
-   * read as attached to the pole instead of as a second small object beside it.
+   * This is the part that survives the arm being aimed at the road, and it is now carrying the
+   * height on its own: the mast lies south-east along `SUN`, and the head's shadow falls at the
+   * head's own offset PLUS that same throw. So a post whose arm points north still has its
+   * shadow going south-east, with a blob out at the corner — which is exactly the mark that
+   * identifies a lamp post from above.
+   *
+   * Built as a polygon and passed at a small lift, because `contactShape` offsets whatever it is
+   * given by `SUN * lift`: handing it a disc and a big lift is what produced a detached fuzzy
+   * smudge and no mast at all.
    */
-  const hx = cx - arm.x * 0.62;
-  const hy = cy - arm.y * 0.62;
-  const armHalf = base * 0.26;
-  const bar = [
-    cx + across.x * armHalf, cy + across.y * armHalf,
-    hx + across.x * armHalf, hy + across.y * armHalf,
-    hx - across.x * armHalf, hy - across.y * armHalf,
-    cx - across.x * armHalf, cy - across.y * armHalf,
+  const throwLen = base * 2.6;
+  const cast = { x: SUN.x * throwLen, y: SUN.y * throwLen };
+  const lateral = { x: -SUN.y, y: SUN.x };
+  const headShadow = {
+    x: cx + up.x * headAt + cast.x,
+    y: cy + up.y * headAt + cast.y,
+  };
+  contactShape(pad, [
+    { x: cx + lateral.x * base * 0.3, y: cy + lateral.y * base * 0.3 },
+    { x: headShadow.x + lateral.x * headWide * 0.8, y: headShadow.y + lateral.y * headWide * 0.8 },
+    { x: headShadow.x + cast.x * 0.34, y: headShadow.y + cast.y * 0.34 },
+    { x: headShadow.x - lateral.x * headWide * 0.8, y: headShadow.y - lateral.y * headWide * 0.8 },
+    { x: cx - lateral.x * base * 0.3, y: cy - lateral.y * base * 0.3 },
+  ], 3);
+
+  /**
+   * The arm first, so the post and the head both sit ON it.
+   *
+   * Tapered from the post out to the head, and swept a little across the axis, which is what
+   * the reference's curved mast arm does and what stops it reading as a straight stick.
+   */
+  const sweep = base * 0.34;
+  g.poly([
+    at(0, base * 0.3).x, at(0, base * 0.3).y,
+    at(armLen * 0.55, sweep + base * 0.2).x, at(armLen * 0.55, sweep + base * 0.2).y,
+    at(headAt, sweep * 0.5 + base * 0.13).x, at(headAt, sweep * 0.5 + base * 0.13).y,
+    at(headAt, sweep * 0.5 - base * 0.13).x, at(headAt, sweep * 0.5 - base * 0.13).y,
+    at(armLen * 0.55, sweep - base * 0.2).x, at(armLen * 0.55, sweep - base * 0.2).y,
+    at(0, -base * 0.3).x, at(0, -base * 0.3).y,
+  ]).fill({ color: MAT.steelDark.top });
+
+  // The post: a slim mast on a small flange, dead centre on the collider.
+  cylinder(g, cx, cy, base * 0.52, MAT.steelDeep, 2.5);
+  cylinder(g, cx, cy, base * 0.3, MAT.steel, 4);
+
+  /**
+   * The head, as an oval polygon running ALONG the arm — the element that carries the whole
+   * reading. Blunt at the mast end and tapered at the tip, like the reference housing.
+   */
+  const hub = sweep * 0.5;
+  const head: number[] = [];
+  const ring: Array<[number, number]> = [
+    [headAt - headLong, 0], [headAt - headLong * 0.72, headWide * 0.78],
+    [headAt, headWide], [headAt + headLong * 0.72, headWide * 0.72],
+    [headAt + headLong, 0], [headAt + headLong * 0.72, -headWide * 0.72],
+    [headAt, -headWide], [headAt - headLong * 0.72, -headWide * 0.78],
   ];
-  g.poly(bar).fill({ color: MAT.steelDark.top });
-  // An edge on the arm. Two units of bare fill on a mid-grey pavement is a hairline; the
-  // outline is what makes it a member joining two things rather than a smudge between them.
-  g.poly(bar).stroke({ color: MAT.steelDeep.top, width: 0.8 });
-  g.ellipse(hx, hy, base * 0.78, base * 0.56).fill({ color: MAT.steelLit.top });
-  g.ellipse(hx, hy, base * 0.78, base * 0.56).stroke({ color: MAT.steelDeep.top, width: 0.9 });
-  // A catch light on the lens, so the head reads as glass rather than as a white blob.
-  g.ellipse(hx - base * 0.2, hy - base * 0.16, base * 0.3, base * 0.2)
-    .fill({ color: shade(MAT.steelLit.top, 1.1) });
+  for (const [along, off] of ring) {
+    const point = at(along, off + hub);
+    head.push(point.x, point.y);
+  }
+  g.poly(head).fill({ color: MAT.steelLit.top });
+  g.poly(head).stroke({ color: MAT.steelDeep.top, width: 1 });
+  // A lens catch light on the NORTH-WEST half of the housing, because the light does not turn
+  // when the arm does. This is the one part of the head that must stay keyed to `SUN`.
+  const lens: number[] = [];
+  for (const [along, off] of ring) {
+    const point = at(headAt + (along - headAt) * 0.58, off * 0.55 + hub);
+    point.x -= SUN.x * base * 0.24;
+    point.y -= SUN.y * base * 0.24;
+    lens.push(point.x, point.y);
+  }
+  g.poly(lens).fill({ color: shade(MAT.steelLit.top, 1.07) });
 }
 
 function benchGlyph(g: Graphics, pad: ShadowPad, o: MapObject): void {

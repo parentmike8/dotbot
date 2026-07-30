@@ -171,9 +171,9 @@ const yardObjects: MapObject[] = [
 
   // Lamps down the works road, matching Downtown's spacing so one street reads as one.
   ...rhythm(W0 + 100, W1 - 100, 200, [[LEAD_X - 90, LEAD_X + 140]])
-    .map((x) => obj("lampPost", x - 9, WORKS_N_KERB - 22, 18, 18)),
+    .map((x) => obj("lampPost", x - 9, WORKS_N_KERB - 22, 18, 18, { facing: "S" })),
   ...rhythm(W0 + 200, W1 - 100, 200, [[LEAD_X - 90, LEAD_X + 140]])
-    .map((x) => obj("lampPost", x - 9, WORKS_S_KERB + 4, 18, 18)),
+    .map((x) => obj("lampPost", x - 9, WORKS_S_KERB + 4, 18, 18, { facing: "N" })),
   /**
    * One sign on the works road, outside the box — and BESIDE its door, not in front of it.
    *

@@ -269,8 +269,10 @@ const fairObjects: MapObject[] = [
   // The north festoon line breaks for the pavilion: on the plain rhythm a lamp post stood
   // 15 units in front of the hall's south archway, which is the single most common way an
   // otherwise fine street ruins a building. The south line has no building to dodge.
-  ...rhythm(240, 2300, 190, [[1620, 1900]]).map((x) => obj("lampPost", x, 2244, 18, 18)),
-  ...rhythm(340, 2300, 190).map((x) => obj("lampPost", x, 2452, 18, 18)),
+  // `facing` is the direction the mast arm reaches, and it always reaches over the way it
+  // lights — so the north line points south down the midway and the south line points north.
+  ...rhythm(240, 2300, 190, [[1620, 1900]]).map((x) => obj("lampPost", x, 2244, 18, 18, { facing: "S" })),
+  ...rhythm(340, 2300, 190).map((x) => obj("lampPost", x, 2452, 18, 18, { facing: "N" })),
   /**
    * One sign on the queueing ground outside the pavilion's north arch, BESIDE the
    * arch rather than in front of it or under the nearby tree line.
