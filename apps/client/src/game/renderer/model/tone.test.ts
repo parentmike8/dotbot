@@ -8,7 +8,10 @@ import {
   SHADOW_ALPHA,
   blockShadowRings,
   faceLight,
+  materialEdgeWidth,
+  materialTopSurface,
   shade,
+  topSurfaceStops,
   volume,
 } from "./tone";
 
@@ -67,6 +70,35 @@ const NORTH = { x: 0, y: -1 };
 const SOUTH = { x: 0, y: 1 };
 const EAST = { x: 1, y: 0 };
 const BOX: Rect = { x: 100, y: 200, w: 60, h: 40 };
+
+describe("material depth", () => {
+  it("reuses one bounded top-surface style through repeated redraws", () => {
+    const first = materialTopSurface(MAT.canvas);
+    for (let redraw = 0; redraw < 50; redraw += 1) {
+      expect(materialTopSurface(MAT.canvas)).toBe(first);
+    }
+  });
+
+  it("keeps the brightest value toward the one light and falls off before the edge", () => {
+    for (const mat of [MAT.steel, MAT.wood, MAT.stone, MAT.canvas]) {
+      const stops = topSurfaceStops(mat);
+      expect(stops.map((stop) => stop.offset)).toEqual([0, 0.48, 1]);
+      expect(stops[0].color).toBeGreaterThanOrEqual(stops[1].color);
+      expect(stops[2].color).toBeLessThan(stops[1].color);
+      expect(stops[2].color).not.toBe(mat.edge);
+    }
+  });
+
+  it("varies edge weight by material without allowing a missing collision edge", () => {
+    const weights = [MAT.canvas, MAT.steel, MAT.rock].map(materialEdgeWidth);
+    expect(new Set(weights).size).toBe(3);
+    for (const mat of Object.values(MAT)) {
+      expect(materialEdgeWidth(mat)).toBeGreaterThanOrEqual(0.6);
+      expect(mat.edge).toBeLessThan(mat.front);
+      expect(mat.edge).toBeLessThan(mat.top);
+    }
+  });
+});
 
 describe("a solid's faces are lit by their own normals", () => {
   /**

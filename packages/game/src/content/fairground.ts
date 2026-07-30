@@ -34,12 +34,12 @@ import type { MapObject } from "../types";
  * It said everything here is derelict so everything here is genuinely still, and called
  * that a virtue. It is not. Rule 4 is a ban on freezing a moving thing into a still mark,
  * not a preference for still subjects, and reading it the other way is why a chairoplane
- * was deleted instead of given swinging seats. **Motion is wanted here** — the carousel
- * and the waltzer should turn, slowly and unevenly, because WIND moving a ride nobody
+ * was deleted instead of given swinging seats. **Motion is wanted here** — the carousel,
+ * swing ride and waltzer should turn, slowly and unevenly, because WIND moving rides nobody
  * maintains is a better derelict story than a ride welded solid. See `docs/world-motion.md`.
  *
  * What the four attractions on the site DO have in common is that their plan names them —
- * a striped disc, a dished platform, a spiral, a two-peaked tent — and that is a rule
+ * a striped disc, an airborne chair ring, a dished platform, a two-peaked tent — and that is a rule
  * about a strictly overhead camera, which is a different thing entirely. A ferris wheel
  * fails it because a vertical wheel from above is a line however fast it spins.
  */
@@ -206,7 +206,7 @@ const { roads, surfaces, regions } = compileCityPlan(cityPlan);
 const KIOSK_GAPS: Array<[number, number]> = [
   [1040, 1330], // the carousel
   [1490, 2050], // the pavilion
-  [420, 720], // the helter-skelter
+  [420, 720], // the swing ride
 ];
 
 const fairObjects: MapObject[] = [
@@ -218,16 +218,13 @@ const fairObjects: MapObject[] = [
   obj.authored("carousel-1015-1965", "carousel", 1015, 1965, 330, 330),
 
   /**
-   * The helter-skelter, where the chairoplane used to stand.
+   * The chairoplane, restored at the promenade's west end.
    *
-   * The same site and the same footprint, because the site was never the problem: a
-   * chairoplane's identity is that its seats fly OUT, and a derelict fair has nothing
-   * in motion, so four attempts at it produced "a circle with squares in it". A spiral
-   * is a plan you cannot mistake, and a tower at the promenade's west end gives that
-   * end something to be — it was the one stretch of midway with no vertical accent on
-   * it at all.
+   * Its earlier pale squares were too small to read as seats and, worse, were frozen.
+   * The current glyph gives every chair a back and short suspension and moves the
+   * whole airborne ring, so motion supplies the identity without inventing a side view.
    */
-  obj.authored("helter-skelter-405-1995", "helterSkelter", 405, 1995, 310, 310),
+  obj.authored("swing-ride-405-1995", "swingRide", 405, 1995, 310, 310),
 
   /**
    * The waltzer, south of the midway where the growth has already reached it. Its dish
@@ -449,10 +446,10 @@ export const fairground: RegionParts = {
         { x: 1620, y: 2420 }, { x: 2050, y: 2420 }, { x: 2050, y: 2552 }, { x: 1400, y: 2576 }, { x: 1400, y: 2420 },
       ]),
     },
-    // South of the helter-skelter's base, which ends at y 2305. Was inside it.
+    // South of the swing ride's base, which ends at y 2305. Was inside it.
     {
       id: "fair-2", name: "Cotton", squadId: "rival-16", faction: "ambient", isAmbient: true, color: "#d9a05b", position: { x: 620, y: 2350 },
-      patrol: patrol("fair-west-entrance", "Watch the helter-skelter and west fair entrance.", [
+      patrol: patrol("fair-west-entrance", "Watch the swing ride and west fair entrance.", [
         { x: 620, y: 2350 }, { x: 900, y: 2350 }, { x: 900, y: 2650 }, { x: 520, y: 2650 }, { x: 520, y: 2426 },
       ]),
     },

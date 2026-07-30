@@ -8,10 +8,11 @@ import { buildOutdoorModel } from "./modelOutdoor";
 import { buildMapArt } from "../mapArt";
 import {
   animateAmbient, buildTrailMarks, collectMovers, divotQuads, driftLeaves, fadeTrail, litSide,
-  movingPart, stampTrail, trailJoin, trailStep, TRAIL_CHANNEL_WIDTH, TRAIL_MARK_MAX_ALPHA,
+  liftParts, movingPart, stampTrail, trailJoin, trailStep, TRAIL_CHANNEL_WIDTH, TRAIL_MARK_MAX_ALPHA,
   TRAIL_STRIDE,
   type AmbientMover,
 } from "./modelMotion";
+import { redrawParallaxObject } from "./modelParallax";
 import { SHADOW_ALPHA, SUN, type ShadowPad } from "./tone";
 
 /**
@@ -28,9 +29,9 @@ import { SHADOW_ALPHA, SUN, type ShadowPad } from "./tone";
  * register with its own shadows — and the lab's still shots stop being trustworthy.
  *
  * WHY THE RIDES ARE DRAWN OBJECT BY OBJECT AND DOWNTOWN IS BUILT WHOLE: the fairground's
- * helter-skelter and big top fill with a `FillGradient`, which builds itself against a real
+ * swing ride and big top fill with a `FillGradient`, which builds itself against a real
  * canvas, and `src/test/browserGlobals.ts` deliberately does not pretend to be a DOM. So
- * the two rides go through `drawModelObject` — the same entry point the builder uses — and
+ * the rides go through `drawModelObject` — the same entry point the builder uses — and
  * downtown, which has no gradient glyph, carries the builder-wiring and the sway coverage.
  */
 describe("ambient motion", () => {
@@ -44,8 +45,23 @@ describe("ambient motion", () => {
   };
 
   const rides = worldMap.outdoor.objects.filter(
-    (o) => o.kind === "carousel" || o.kind === "waltzer",
+    (o) => o.kind === "carousel" || o.kind === "swingRide" || o.kind === "waltzer",
   );
+  const ride = (kind: "swingRide" | "waltzer"): MapObject =>
+    worldMap.outdoor.objects.find((o) => o.kind === kind)!;
+
+  const drawnCircles = (g: Graphics): Array<{ x: number; y: number; radius: number }> =>
+    g.context.instructions.flatMap((instruction) => {
+      const data = instruction.data as {
+        path?: { instructions?: Array<{ action: string; data: unknown[] }> };
+      };
+      return (data.path?.instructions ?? [])
+        .filter((pathInstruction) => pathInstruction.action === "circle")
+        .map((pathInstruction) => {
+          const [x, y, radius] = pathInstruction.data as number[];
+          return { x, y, radius };
+        });
+    });
 
   const object = (over: Partial<MapObject> = {}): MapObject => ({
     id: "test-thing", kind: "tree", x: 100, y: 200, w: 80, h: 80, ...over,
@@ -65,15 +81,78 @@ describe("ambient motion", () => {
   });
 
   it("gives the world's rides a turning part each", () => {
-    // The carousel and the waltzer. If a third ride arrives this number moves, and the
+    // Carousel, swing ride and waltzer. If another ride arrives this number moves, and the
     // point of asserting it is that a ride arriving WITHOUT motion should be noticed.
-    expect(rides).toHaveLength(2);
+    expect(rides).toHaveLength(3);
     const spins = rides.flatMap((ride) => drawn(ride).movers);
-    expect(spins).toHaveLength(2);
+    expect(spins).toHaveLength(3);
     for (const spin of spins) expect(spin.kind).toBe("spin");
-    // Opposite directions: two rides in one region turning the same way at the same speed
-    // read as one object drawn twice.
-    expect(Math.sign(spins[0].drift)).not.toBe(Math.sign(spins[1].drift));
+    // There is a reverse among the three, and their magnitudes differ.
+    expect(new Set(spins.map((spin) => Math.sign(spin.drift)))).toEqual(new Set([-1, 1]));
+    expect(new Set(spins.map((spin) => Math.abs(spin.drift))).size).toBe(3);
+  });
+
+  it("keeps the swing canopy and its north-west light out of the rotating part", () => {
+    const swing = ride("swingRide");
+    const { view, movers } = drawn(swing);
+    const staticCanopy = liftParts(view).find((part) => part.label === "elevated:swing-canopy");
+    const [spin] = movers;
+
+    expect(staticCanopy).toBeDefined();
+    expect(spin.view.label).toBe("ambient:spin");
+    animateAmbient(movers, 30_000, false);
+    expect(spin.view.rotation).not.toBe(0);
+    expect(staticCanopy!.rotation).toBe(0);
+
+    // A canopy-scale circle in the rotating part would rotate its gradient and give
+    // this ride a private sun. Only links, chairs and chair backs may turn.
+    const canopyRadius = Math.min(swing.w, swing.h) * 0.17;
+    expect(drawnCircles(spin.view as Graphics)
+      .some((circle) => circle.radius >= canopyRadius * 0.9)).toBe(false);
+  });
+
+  it("reuses both swing layers through repeated parallax redraws", () => {
+    const swing = ride("swingRide");
+    const { view } = drawn(swing);
+    const elevated = new Container();
+    const original = liftParts(view);
+    for (const part of original) elevated.addChild(part);
+
+    expect(original.map((part) => part.label)).toEqual([
+      "elevated:swing-canopy",
+      "ambient:spin",
+    ]);
+    for (let step = 0; step < 12; step += 1) {
+      redrawParallaxObject(
+        { object: swing, view, elevated },
+        { x: swing.x - 320 + step * 17, y: swing.y - 210 + step * 11 },
+        1,
+      );
+    }
+
+    const redrawn = liftParts(view);
+    expect(redrawn).toEqual(original);
+    expect(elevated.children).toEqual(original);
+    for (const part of redrawn) {
+      expect(part.context.instructions.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("uses rotation-invariant value geometry inside every moving waltzer car", () => {
+    const { movers } = drawn(ride("waltzer"));
+    const [spin] = movers;
+    const circles = drawnCircles(spin.view as Graphics);
+    const centreCounts = new Map<string, number>();
+    for (const circle of circles) {
+      const key = `${circle.x.toFixed(4)},${circle.y.toFixed(4)}`;
+      centreCounts.set(key, (centreCounts.get(key) ?? 0) + 1);
+    }
+
+    expect(circles.length).toBeGreaterThan(0);
+    // An off-centre circle is a directional catch-light. Because this Graphics rotates,
+    // that light would orbit each car. Concentric discs may encode mass; seats and trim
+    // may rotate as geometry, but light direction may not.
+    expect([...centreCounts.values()].every((count) => count >= 2)).toBe(true);
   });
 
   it("turns a ride slowly, unevenly, and never backwards", () => {

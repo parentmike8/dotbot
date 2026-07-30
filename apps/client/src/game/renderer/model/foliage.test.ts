@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import type { MapObject } from "@dotbot/game/types";
 import { drawModelObject } from "./modelGlyphs";
+import { canopyValueRamp } from "./foliageValues";
 import { MAT, SHADOW_ALPHA, shade, type ShadowPad } from "./tone";
 
 /**
@@ -54,6 +55,15 @@ const pad = (): ShadowPad => SHADOW_ALPHA.map(() => recorder().g) as ShadowPad;
 const trees = downtownMap.outdoor.objects.filter((o) => o.kind === "tree");
 
 describe("a canopy is foliage, not stone", () => {
+  it("opens the value range for a forest crown without adding a second geometry rule", () => {
+    const street = canopyValueRamp(30);
+    const forest = canopyValueRamp(60);
+    expect(forest.under).toBeLessThan(street.under);
+    expect(forest.crown).toBeGreaterThan(street.crown);
+    expect(forest.rimShade).toBeLessThan(street.rimShade);
+    expect(forest.rimLight).toBeGreaterThan(street.rimLight);
+  });
+
   it("has trees to check", () => {
     expect(trees.length).toBeGreaterThan(20);
   });

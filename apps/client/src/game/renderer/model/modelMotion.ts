@@ -35,7 +35,7 @@ import { jitter, MAT, shade, SUN } from "./tone";
  *
  * One transform per part per frame, and NOTHING is redrawn. No `g.clear()`, because that
  * re-tessellates the geometry — the one thing on this subject that would genuinely cost.
- * The world's heaviest map has two rides and ~106 pieces of vegetation, so a full frame of
+ * The world's heaviest map has three rides and ~106 pieces of vegetation, so a full frame of
  * ambient motion is ~108 transforms and about as many `Math.sin` calls.
  */
 
@@ -181,9 +181,15 @@ export function collectMovers(view: Container, o: MapObject): AmbientMover[] {
       about: { x: child.pivot.x, y: child.pivot.y },
       phase: jitter(o.id, 3),
       reach: Math.min(o.w, o.h) / 2,
-      // Two rides in one region turning the same way at the same speed read as one
-      // object twice. The waltzer is the heavier of the two and it turns the other way.
-      drift: kind === "spin" ? (o.kind === "waltzer" ? -SPIN.slow : SPIN.creep) : 0,
+      // Three rides in one region turning at the same pace read as one object repeated.
+      // The waltzer is the heavy reverse; the open chair ring is the most wind-responsive.
+      drift: kind === "spin"
+        ? o.kind === "waltzer"
+          ? -SPIN.slow
+          : o.kind === "swingRide"
+            ? SPIN.chair
+            : SPIN.creep
+        : 0,
     });
   }
   return movers;
@@ -199,6 +205,7 @@ export function collectMovers(view: Container, o: MapObject): AmbientMover[] {
  */
 const SPIN = {
   creep: (Math.PI * 2) / 150_000,
+  chair: (Math.PI * 2) / 118_000,
   slow: (Math.PI * 2) / 205_000,
 } as const;
 

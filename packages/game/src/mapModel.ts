@@ -189,6 +189,7 @@ const SOLID_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "waterTank",
   "coalingTower",
   "carousel",
+  "swingRide",
   "waltzer",
   "helterSkelter",
   "bigTop",
@@ -314,6 +315,7 @@ export function stadiumAxis(object: Rect): { ax: number; ay: number; bx: number;
  */
 export const ROUND_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "carousel",
+  "swingRide",
   "waltzer",
   "helterSkelter",
   "turntable",

@@ -48,7 +48,7 @@
  *     all wanted — see `docs/world-motion.md`, which owns the how.
  */
 
-import type { Graphics } from "pixi.js";
+import { FillGradient, type Graphics } from "pixi.js";
 import { edgeNormal, insetPolygon } from "@dotbot/game/geometry";
 import type { Vec2 } from "@dotbot/game/types";
 import { cappedLift, NORTH, pullDirection, pullScale, topFace, topRect } from "./prism";
@@ -123,14 +123,32 @@ export type Material = {
   edge: number;
   /** North-edge catch light. */
   lit: number;
+  /**
+   * The material's closed collision edge.
+   *
+   * A stone rim and a canvas hem should not have the same pen laid round them, but
+   * neither may opt out: the contract's dark closed edge is how a player predicts
+   * collision. This varies the weight without changing that meaning.
+   */
+  edgeWidth?: number;
+  /** How much a lit top falls away toward its edge. Lower is a rounder/harder read. */
+  surfaceFalloff?: number;
 };
 
-function material(top: number, frontK = 0.68, edgeK = 0.44): Material {
+function material(
+  top: number,
+  frontK = 0.68,
+  edgeK = 0.44,
+  edgeWidth = 0.9,
+  surfaceFalloff = 0.86,
+): Material {
   return {
     top,
     front: shade(top, frontK),
     edge: shade(top, edgeK),
     lit: shade(top, 1.09),
+    edgeWidth,
+    surfaceFalloff,
   };
 }
 
@@ -140,21 +158,21 @@ function material(top: number, frontK = 0.68, edgeK = 0.44): Material {
  * a steel rack and a shipping crate stop looking like the same object.
  */
 export const MAT = {
-  steelLit: material(0xdcdfe2),
-  steel: material(0xbabfc4),
-  steelDark: material(0x8f959b),
-  steelDeep: material(0x666c72),
-  painted: material(0xa2a8ae),
-  paintedDark: material(0x7d838a),
-  wood: material(0xc6c1b8),
-  woodDark: material(0x9f9a90),
-  fibre: material(0xd3cfc7),
-  rubber: material(0x43474c),
+  steelLit: material(0xdcdfe2, 0.68, 0.4, 0.78, 0.8),
+  steel: material(0xbabfc4, 0.68, 0.4, 0.82, 0.8),
+  steelDark: material(0x8f959b, 0.68, 0.38, 0.92, 0.8),
+  steelDeep: material(0x666c72, 0.68, 0.36, 1.02, 0.78),
+  painted: material(0xa2a8ae, 0.68, 0.45, 0.78, 0.84),
+  paintedDark: material(0x7d838a, 0.68, 0.42, 0.88, 0.82),
+  wood: material(0xc6c1b8, 0.7, 0.5, 0.76, 0.9),
+  woodDark: material(0x9f9a90, 0.7, 0.47, 0.82, 0.88),
+  fibre: material(0xd3cfc7, 0.72, 0.54, 0.68, 0.92),
+  rubber: material(0x43474c, 0.66, 0.34, 1.04, 0.76),
   /** The bot-world product: cores read as bright discs on a dark deck. */
-  core: material(0xe6e9ec),
-  plateStock: material(0xb5bac0),
-  board: material(0xc7cbcf),
-  foliage: material(0xb7bcb9),
+  core: material(0xe6e9ec, 0.68, 0.38, 0.78, 0.78),
+  plateStock: material(0xb5bac0, 0.68, 0.4, 0.82, 0.8),
+  board: material(0xc7cbcf, 0.7, 0.5, 0.72, 0.9),
+  foliage: material(0xb7bcb9, 0.68, 0.52, 0.62, 0.88),
   /**
    * The materials a world outside a city is built from.
    *
@@ -169,18 +187,18 @@ export const MAT = {
    * end, and a rail region drawn in mid-grey iron on pale ballast came out as one
    * flat field.
    */
-  stone: material(0xc6c7c2),
-  stoneWorn: material(0xb9bab4),
+  stone: material(0xc6c7c2, 0.64, 0.38, 1.14, 0.83),
+  stoneWorn: material(0xb9bab4, 0.64, 0.4, 1.08, 0.86),
   /** Adobe, mud brick, lime render. Warm, and brighter than cut stone. */
-  adobe: material(0xd2ccbf),
+  adobe: material(0xd2ccbf, 0.69, 0.47, 0.92, 0.9),
   /** Weathered boulder and outcrop. */
-  rock: material(0xb4b6b2),
+  rock: material(0xb4b6b2, 0.62, 0.36, 1.22, 0.8),
   /** Wet or shaded rock, and the inside of a cave mouth. */
-  rockDark: material(0x8e918d),
+  rockDark: material(0x8e918d, 0.6, 0.34, 1.2, 0.78),
   /** Rusted iron: a rail, a tank, corrugated sheet. */
-  iron: material(0x7d7b76),
+  iron: material(0x7d7b76, 0.62, 0.33, 1.06, 0.76),
   /** Canvas and painted timber gone chalky in the sun — a fairground's own material. */
-  canvas: material(0xd7d3cb),
+  canvas: material(0xd7d3cb, 0.74, 0.55, 0.66, 0.92),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -521,7 +539,93 @@ const BAND = {
   west: faceLight({ x: -1, y: 0 }),
 };
 
-const EDGE_WIDTH = 0.9;
+const DEFAULT_EDGE_WIDTH = 0.9;
+
+export type SurfaceStop = { offset: number; color: number };
+
+/**
+ * The shared value falloff of a lit material top.
+ *
+ * Pure on purpose: the renderer caches the Pixi gradient below, while tests can
+ * mutation-check the actual value rule without needing to inspect a GPU texture.
+ * The highlight sits north-west of centre under the one light; the boundary falls
+ * back toward the material's own top value rather than becoming a second outline.
+ */
+export function topSurfaceStops(mat: Material): SurfaceStop[] {
+  const falloff = mat.surfaceFalloff ?? 0.86;
+  return [
+    { offset: 0, color: shade(mat.lit, 1.035) },
+    { offset: 0.48, color: mat.top },
+    { offset: 1, color: shade(mat.top, falloff) },
+  ];
+}
+
+/** Material-specific collision edge, with the old 0.9px pen as the fallback. */
+export function materialEdgeWidth(mat: Material): number {
+  return mat.edgeWidth ?? DEFAULT_EDGE_WIDTH;
+}
+
+/**
+ * Cached because object parallax redraws geometry after camera steps.
+ *
+ * A new FillGradient allocates a texture; creating one per object rebuild would
+ * turn a value treatment into a frame-time leak. `textureSpace: "local"` lets the
+ * same small style stretch over any top face, so one per material is sufficient.
+ */
+const TOP_GRADIENTS = new Map<string, FillGradient>();
+const SIDE_GRADIENTS = new Map<string, FillGradient>();
+const TOP_SOLIDS = new Map<number, { color: number }>();
+
+export function materialTopSurface(mat: Material): FillGradient | { color: number } {
+  // Unit tests intentionally run without a pretend DOM. The pure stop rule above
+  // carries the gradient assertions; geometry tests get the same middle value.
+  // Cache that fallback as well so redraw-lifecycle tests assert the same bounded
+  // allocation rule the browser uses.
+  if (typeof document === "undefined") {
+    const existing = TOP_SOLIDS.get(mat.top);
+    if (existing) return existing;
+    const created = { color: mat.top };
+    TOP_SOLIDS.set(mat.top, created);
+    return created;
+  }
+  const stops = topSurfaceStops(mat);
+  const key = stops.map((stop) => `${stop.offset}:${stop.color}`).join("|");
+  const existing = TOP_GRADIENTS.get(key);
+  if (existing) return existing;
+  const created = new FillGradient({
+    type: "radial",
+    center: { x: 0.34, y: 0.3 },
+    innerRadius: 0,
+    outerCenter: { x: 0.5, y: 0.5 },
+    outerRadius: 0.72,
+    textureSpace: "local",
+    colorStops: stops,
+  });
+  TOP_GRADIENTS.set(key, created);
+  return created;
+}
+
+/** A cylinder's planted body wraps around the light rather than reading as a disc. */
+function roundSide(mat: Material): FillGradient | { color: number } {
+  if (typeof document === "undefined") return { color: mat.front };
+  const key = `${mat.top}:${mat.front}:${mat.edge}`;
+  const existing = SIDE_GRADIENTS.get(key);
+  if (existing) return existing;
+  const created = new FillGradient({
+    type: "linear",
+    start: { x: 0, y: 0 },
+    end: { x: 1, y: 0 },
+    textureSpace: "local",
+    colorStops: [
+      { offset: 0, color: shade(mat.front, 0.76) },
+      { offset: 0.32, color: shade(mat.top, 0.96) },
+      { offset: 0.68, color: mat.front },
+      { offset: 1, color: shade(mat.front, 0.7) },
+    ],
+  });
+  SIDE_GRADIENTS.set(key, created);
+  return created;
+}
 
 /**
  * Width of the north-edge catch light.
@@ -596,26 +700,27 @@ export function volume(
   if (radius > 0) {
     g.roundRect(r.x, r.y, r.w, r.h, radius).fill({ color: base });
     if (secondFace) g.rect(secondFace.x, r.y, secondFace.w, r.h).fill({ color: secondFace.color });
-    g.roundRect(top.x, top.y, top.w, top.h, radius).fill({ color: mat.top });
+    g.roundRect(top.x, top.y, top.w, top.h, radius).fill(materialTopSurface(mat));
   } else {
     g.rect(r.x, r.y, r.w, r.h).fill({ color: base });
     if (secondFace) g.rect(secondFace.x, r.y, secondFace.w, r.h).fill({ color: secondFace.color });
-    g.rect(top.x, top.y, top.w, top.h).fill({ color: mat.top });
+    g.rect(top.x, top.y, top.w, top.h).fill(materialTopSurface(mat));
   }
 
   // North-edge catch light: the cue that sells thickness at play zoom.
-  if (lift >= LIFT.seat && r.w > EDGE_WIDTH * 2 + 6) {
-    g.rect(r.x + EDGE_WIDTH, r.y + EDGE_WIDTH, r.w - EDGE_WIDTH * 2, CATCH_WIDTH)
+  const edgeWidth = materialEdgeWidth(mat);
+  if (lift >= LIFT.seat && r.w > edgeWidth * 2 + 6) {
+    g.rect(r.x + edgeWidth, r.y + edgeWidth, r.w - edgeWidth * 2, CATCH_WIDTH)
       .fill({ color: mat.lit });
   }
 
-  const inset = EDGE_WIDTH / 2;
+  const inset = edgeWidth / 2;
   if (radius > 0) {
-    g.roundRect(r.x + inset, r.y + inset, r.w - EDGE_WIDTH, r.h - EDGE_WIDTH, radius)
-      .stroke({ color: mat.edge, width: EDGE_WIDTH });
+    g.roundRect(r.x + inset, r.y + inset, r.w - edgeWidth, r.h - edgeWidth, radius)
+      .stroke({ color: mat.edge, width: edgeWidth });
   } else {
-    g.rect(r.x + inset, r.y + inset, r.w - EDGE_WIDTH, r.h - EDGE_WIDTH)
-      .stroke({ color: mat.edge, width: EDGE_WIDTH });
+    g.rect(r.x + inset, r.y + inset, r.w - edgeWidth, r.h - edgeWidth)
+      .stroke({ color: mat.edge, width: edgeWidth });
   }
 
   return top;
@@ -674,7 +779,7 @@ export function volumeShape(
     fillPolygon(g, [ta, tb, b, a], shade(mat.top, faceLight(normal)));
   }
 
-  fillPolygon(g, top, mat.top);
+  g.poly(top.map((point) => ({ x: point.x, y: point.y }))).fill(materialTopSurface(mat));
 
   /**
    * Catch light along the faces that turn toward the light, held clear of the
@@ -685,7 +790,8 @@ export function volumeShape(
    * shape, which the 0.9 dark outline could not cover. The ring it runs on is
    * inset far enough that the outline stays the outermost thing drawn.
    */
-  const litRing = insetPolygon(top, EDGE_WIDTH + CATCH_WIDTH / 2);
+  const edgeWidth = materialEdgeWidth(mat);
+  const litRing = insetPolygon(top, edgeWidth + CATCH_WIDTH / 2);
   for (let index = 0; index < count; index += 1) {
     if (normals[index].y >= -0.35) continue;
     const a = litRing[index];
@@ -695,8 +801,8 @@ export function volumeShape(
 
   // Inset like `volume`'s, so the dark ring lands inside the collider instead of
   // straddling it. What the drawing promises is impassable is exactly what is.
-  g.poly(insetPolygon(points, EDGE_WIDTH / 2).map((point) => ({ x: point.x, y: point.y })))
-    .stroke({ color: mat.edge, width: EDGE_WIDTH });
+  g.poly(insetPolygon(points, edgeWidth / 2).map((point) => ({ x: point.x, y: point.y })))
+    .stroke({ color: mat.edge, width: edgeWidth });
 
   return top;
 }
@@ -749,9 +855,10 @@ export function cylinder(
   const travel = resting * pullScale(pull);
   const topX = cx + direction.x * travel - NORTH.x * resting;
   const topY = cy + direction.y * travel - NORTH.y * resting;
-  g.circle(cx, cy + resting, radius).fill({ color: mat.front });
-  g.circle(topX, topY, radius).fill({ color: mat.top });
-  g.circle(topX, topY, radius - 0.45).stroke({ color: mat.edge, width: EDGE_WIDTH });
+  g.circle(cx, cy + resting, radius).fill(roundSide(mat));
+  g.circle(topX, topY, radius).fill(materialTopSurface(mat));
+  const edgeWidth = materialEdgeWidth(mat);
+  g.circle(topX, topY, radius - edgeWidth / 2).stroke({ color: mat.edge, width: edgeWidth });
 }
 
 /** Flat surface detail: no height, no shadow, just a value change on a top face. */

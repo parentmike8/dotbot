@@ -26,6 +26,7 @@ import {
   type Rect,
   type ShadowPad,
 } from "./tone";
+import { canopyValueRamp } from "./foliageValues";
 
 /**
  * Volumetric object glyphs.
@@ -895,9 +896,10 @@ function foliageMass(
    * So it tops out where the thicket does and the range is WIDER instead of lower — 0.58 to
    * 1.12 rather than 0.5 to 0.88. A canopy that absorbs light still has a lit crown.
    */
-  const under = shade(MAT.foliage.top, 0.6);
-  const body = shade(MAT.foliage.top, 0.84);
-  const lit = MAT.foliage.top;
+  const ramp = canopyValueRamp(radius);
+  const under = shade(MAT.foliage.top, ramp.under);
+  const body = shade(MAT.foliage.top, ramp.body);
+  const lit = shade(MAT.foliage.top, ramp.crown);
 
   // Cast shadow on the ground, thrown south-east, before the mass that throws it.
   const shadow = outline.map((point) => ({
@@ -951,7 +953,7 @@ function foliageMass(
    * from directly overhead, and nothing else in this world is lit that way, so the trees were
    * the one subject with their own private sun.
    */
-  const masses = Math.max(5, Math.round(radius / 13));
+  const masses = Math.min(7, Math.max(5, Math.round(radius / 13)));
   for (let i = 0; i < masses; i += 1) {
     const a = (i / masses) * Math.PI * 2 + jitter(seed, i + 20) * 0.8;
     const d = radius * (0.3 + jitter(seed, i + 30) * 0.34);
@@ -992,8 +994,14 @@ function foliageMass(
      * each lobe protrudes and reads better than a uniform stubble anyway.
      */
     const at = radius * spread * (0.86 + jitter(seed, i + 60) * 0.16);
+    const facesLight = Math.cos(a) * -0.33 + Math.sin(a) * -0.94 > -0.05;
     g.circle(cx + Math.cos(a) * at, cy + Math.sin(a) * at, radius * (0.09 + jitter(seed, i + 70) * 0.07))
-      .fill({ color: jitter(seed, i + 80) > 0.55 ? body : under });
+      .fill({
+        color: shade(
+          MAT.foliage.top,
+          facesLight && jitter(seed, i + 80) > 0.42 ? ramp.rimLight : ramp.rimShade,
+        ),
+      });
   }
 }
 
