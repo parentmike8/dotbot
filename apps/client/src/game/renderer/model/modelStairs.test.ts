@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { Graphics } from "pixi.js";
 import type { Rect, StairLink } from "@dotbot/game/types";
 import { stairHalves } from "@dotbot/game/mapModel";
+import { worldMap } from "@dotbot/game/content/world";
+import { buildFloorModel } from "./modelFloor";
 import { drawStair, drawStairHead } from "./modelStairs";
 import { SHADOW_ALPHA, type ShadowPad } from "./tone";
 
@@ -234,6 +236,37 @@ describe("a roof stair, from the two places it is looked at", () => {
           }
         }
       }
+    }
+  });
+});
+
+/**
+ * A wall that ends on a flight has to be DRAWN on it.
+ *
+ * Reported on sight: "the top barrier is not visible on the stairs in the observatory".
+ * The barrier was in the data and in the collider the whole time — the observatory's F1 cap
+ * is a capsule spanning y 2700..2708 and the flight it caps is y 2700..2820, so the cap sat
+ * wholly inside the stair rect and the treads painted over every pixel of it. Its GROUND
+ * twin was invisible for the same reason, and so was any wall anywhere that ends on a
+ * flight.
+ *
+ * The fix is z-order, not geometry: the flight belongs with the slab and the paint, under
+ * the structure built on top of them. This pins that, because the failure is silent — the
+ * wall is still there, still solid, still stopping you, and only invisible.
+ */
+describe("a flight is floor, not furniture", () => {
+  const observatory = worldMap.buildings.find((building) => building.id === "observatory")!;
+
+  it("draws the stair layer inside architecture, under the walls", () => {
+    for (const floor of observatory.floors) {
+      const model = buildFloorModel(observatory, floor);
+      // Inside `architecture`, not a sibling drawn after all of it.
+      expect(model.stairs.parent, floor.id).toBe(model.architecture);
+      expect(model.view.children, floor.id).not.toContain(model.stairs);
+      // And with the structure still to come after it, which is what puts a wall on top.
+      const at = model.architecture.children.indexOf(model.stairs);
+      expect(at, floor.id).toBeGreaterThanOrEqual(0);
+      expect(at, floor.id).toBeLessThan(model.architecture.children.length - 1);
     }
   });
 });

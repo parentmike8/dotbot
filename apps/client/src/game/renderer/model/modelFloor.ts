@@ -861,6 +861,22 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   architecture.addChild(
     groundStack,
     ...structureAo, ...structurePad,
+    /**
+     * THE FLIGHT GOES UNDER THE WALLS, because a wall at the head of a flight stands ON it.
+     *
+     * The stairs used to be a sibling drawn after all of `architecture`, so any wall that
+     * crossed a stair rect was painted over by the treads. Reported on sight: "the top
+     * barrier is not visible on the stairs in the observatory". The barrier was there, in
+     * the data and in the collider — the observatory's F1 cap is a capsule spanning y
+     * 2700..2708 and the flight it caps is y 2700..2820, so the cap sat wholly inside the
+     * rect and every pixel of it was overdrawn. Its GROUND twin was invisible for the same
+     * reason, and so is every wall anywhere in the world that ends on a flight.
+     *
+     * The flight is floor, not furniture: it belongs with the slab and the paint, under the
+     * structure that is built on top of them. Ordering it that way makes the barrier appear
+     * everywhere at once rather than nudging one building's cap out from under its stair.
+     */
+    stairs,
     structure, glazing,
     // After the flat layers, so a turned curtain or window reads as sitting in the wall
     // rather than under it. Same z-intent as `structure` and `glazing`, one node each.
@@ -869,7 +885,7 @@ export function buildFloorModel(building: Building, floor: FloorPlan): FloorMode
   furniture.addChild(...objectAo, ...objectPad, objects);
   annotation.addChild(annotationGfx);
 
-  view.addChild(architecture, stairs, furniture, annotation);
+  view.addChild(architecture, furniture, annotation);
   return {
     view,
     architecture,
