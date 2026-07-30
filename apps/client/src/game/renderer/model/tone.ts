@@ -574,11 +574,20 @@ export function materialEdgeWidth(mat: Material): number {
  */
 const TOP_GRADIENTS = new Map<string, FillGradient>();
 const SIDE_GRADIENTS = new Map<string, FillGradient>();
+const TOP_SOLIDS = new Map<number, { color: number }>();
 
-function topSurface(mat: Material): FillGradient | { color: number } {
+export function materialTopSurface(mat: Material): FillGradient | { color: number } {
   // Unit tests intentionally run without a pretend DOM. The pure stop rule above
   // carries the gradient assertions; geometry tests get the same middle value.
-  if (typeof document === "undefined") return { color: mat.top };
+  // Cache that fallback as well so redraw-lifecycle tests assert the same bounded
+  // allocation rule the browser uses.
+  if (typeof document === "undefined") {
+    const existing = TOP_SOLIDS.get(mat.top);
+    if (existing) return existing;
+    const created = { color: mat.top };
+    TOP_SOLIDS.set(mat.top, created);
+    return created;
+  }
   const stops = topSurfaceStops(mat);
   const key = stops.map((stop) => `${stop.offset}:${stop.color}`).join("|");
   const existing = TOP_GRADIENTS.get(key);
@@ -691,11 +700,11 @@ export function volume(
   if (radius > 0) {
     g.roundRect(r.x, r.y, r.w, r.h, radius).fill({ color: base });
     if (secondFace) g.rect(secondFace.x, r.y, secondFace.w, r.h).fill({ color: secondFace.color });
-    g.roundRect(top.x, top.y, top.w, top.h, radius).fill(topSurface(mat));
+    g.roundRect(top.x, top.y, top.w, top.h, radius).fill(materialTopSurface(mat));
   } else {
     g.rect(r.x, r.y, r.w, r.h).fill({ color: base });
     if (secondFace) g.rect(secondFace.x, r.y, secondFace.w, r.h).fill({ color: secondFace.color });
-    g.rect(top.x, top.y, top.w, top.h).fill(topSurface(mat));
+    g.rect(top.x, top.y, top.w, top.h).fill(materialTopSurface(mat));
   }
 
   // North-edge catch light: the cue that sells thickness at play zoom.
@@ -770,7 +779,7 @@ export function volumeShape(
     fillPolygon(g, [ta, tb, b, a], shade(mat.top, faceLight(normal)));
   }
 
-  g.poly(top.map((point) => ({ x: point.x, y: point.y }))).fill(topSurface(mat));
+  g.poly(top.map((point) => ({ x: point.x, y: point.y }))).fill(materialTopSurface(mat));
 
   /**
    * Catch light along the faces that turn toward the light, held clear of the
@@ -847,7 +856,7 @@ export function cylinder(
   const topX = cx + direction.x * travel - NORTH.x * resting;
   const topY = cy + direction.y * travel - NORTH.y * resting;
   g.circle(cx, cy + resting, radius).fill(roundSide(mat));
-  g.circle(topX, topY, radius).fill(topSurface(mat));
+  g.circle(topX, topY, radius).fill(materialTopSurface(mat));
   const edgeWidth = materialEdgeWidth(mat);
   g.circle(topX, topY, radius - edgeWidth / 2).stroke({ color: mat.edge, width: edgeWidth });
 }

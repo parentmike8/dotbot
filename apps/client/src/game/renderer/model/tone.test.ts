@@ -9,6 +9,7 @@ import {
   blockShadowRings,
   faceLight,
   materialEdgeWidth,
+  materialTopSurface,
   shade,
   topSurfaceStops,
   volume,
@@ -71,6 +72,13 @@ const EAST = { x: 1, y: 0 };
 const BOX: Rect = { x: 100, y: 200, w: 60, h: 40 };
 
 describe("material depth", () => {
+  it("reuses one bounded top-surface style through repeated redraws", () => {
+    const first = materialTopSurface(MAT.canvas);
+    for (let redraw = 0; redraw < 50; redraw += 1) {
+      expect(materialTopSurface(MAT.canvas)).toBe(first);
+    }
+  });
+
   it("keeps the brightest value toward the one light and falls off before the edge", () => {
     for (const mat of [MAT.steel, MAT.wood, MAT.stone, MAT.canvas]) {
       const stops = topSurfaceStops(mat);

@@ -2,7 +2,7 @@ import { FillGradient, type Graphics } from "pixi.js";
 import type { MapObject, Vec2 } from "@dotbot/game/types";
 import { stadiumAxis } from "@dotbot/game/mapModel";
 import { drawWater, GRD, fillPoly } from "./modelGround";
-import { movingPart } from "./modelMotion";
+import { elevatedPart, movingPart } from "./modelMotion";
 import {
   contact,
   contactBlock,
@@ -14,6 +14,7 @@ import {
   jitter,
   LIFT,
   MAT,
+  materialTopSurface,
   shade,
   volume,
   volumeShape,
@@ -567,26 +568,22 @@ const swingRideGlyph: LandmarkFn = (g, pad, o) => {
   contactRound(pad, cx, cy, radius, LIFT.tower);
   cylinder(g, cx, cy, radius, MAT.iron, LIFT.mass);
 
-  const ride = movingPart(g, "spin", { x: cx, y: cy });
+  /**
+   * The canopy is high enough to parallax, but it does not rotate.
+   *
+   * Its material-top gradient encodes the world's north-west light. Putting that
+   * gradient in `ambient:spin` made the highlight orbit as a private sun, and
+   * allocating it inline leaked one texture every camera-step redraw because
+   * `Graphics.clear()` only clears geometry. The shared material surface is
+   * bounded; this static layer may translate with parallax but never rotates.
+   */
+  const canopyLayer = elevatedPart(g, "swing-canopy");
   const canopy = radius * 0.34;
-  ride.circle(cx, cy, canopy).fill(typeof document === "undefined"
-    ? { color: MAT.canvas.top }
-    : new FillGradient({
-      type: "radial",
-      center: { x: 0.36, y: 0.32 },
-      innerRadius: 0,
-      outerCenter: { x: 0.5, y: 0.5 },
-      outerRadius: 0.54,
-      textureSpace: "local",
-      colorStops: [
-        { offset: 0, color: MAT.canvas.lit },
-        { offset: 0.54, color: MAT.canvas.top },
-        { offset: 1, color: shade(MAT.canvas.top, 0.72) },
-      ],
-    }));
-  ride.circle(cx, cy, canopy).stroke({ color: MAT.canvas.edge, width: 1 });
-  ride.circle(cx, cy, radius * 0.08).fill({ color: MAT.iron.edge });
+  canopyLayer.circle(cx, cy, canopy).fill(materialTopSurface(MAT.canvas));
+  canopyLayer.circle(cx, cy, canopy).stroke({ color: MAT.canvas.edge, width: 1 });
+  canopyLayer.circle(cx, cy, radius * 0.08).fill({ color: MAT.iron.edge });
 
+  const ride = movingPart(g, "spin", { x: cx, y: cy });
   const seats = 10;
   const ring = radius * 0.72;
   const seatWidth = radius * 0.24;
@@ -598,30 +595,43 @@ const swingRideGlyph: LandmarkFn = (g, pad, o) => {
     const tangent = { x: -radial.y, y: radial.x };
     const px = cx + radial.x * ring;
     const py = cy + radial.y * ring;
-    const corners = (width: number, depth: number, inward = 0): Vec2[] => {
+    const corners = (
+      rearWidth: number,
+      frontWidth: number,
+      depth: number,
+      inward = 0,
+    ): Vec2[] => {
       const at = { x: px - radial.x * inward, y: py - radial.y * inward };
       return [
-        { x: at.x - tangent.x * width / 2 - radial.x * depth / 2, y: at.y - tangent.y * width / 2 - radial.y * depth / 2 },
-        { x: at.x + tangent.x * width / 2 - radial.x * depth / 2, y: at.y + tangent.y * width / 2 - radial.y * depth / 2 },
-        { x: at.x + tangent.x * width / 2 + radial.x * depth / 2, y: at.y + tangent.y * width / 2 + radial.y * depth / 2 },
-        { x: at.x - tangent.x * width / 2 + radial.x * depth / 2, y: at.y - tangent.y * width / 2 + radial.y * depth / 2 },
+        { x: at.x - tangent.x * rearWidth / 2 - radial.x * depth / 2, y: at.y - tangent.y * rearWidth / 2 - radial.y * depth / 2 },
+        { x: at.x + tangent.x * rearWidth / 2 - radial.x * depth / 2, y: at.y + tangent.y * rearWidth / 2 - radial.y * depth / 2 },
+        { x: at.x + tangent.x * frontWidth / 2 + radial.x * depth / 2, y: at.y + tangent.y * frontWidth / 2 + radial.y * depth / 2 },
+        { x: at.x - tangent.x * frontWidth / 2 + radial.x * depth / 2, y: at.y - tangent.y * frontWidth / 2 + radial.y * depth / 2 },
       ];
     };
 
-    const link = ring - canopy - seatDepth;
     for (const side of [-0.32, 0.32]) {
       ride.moveTo(
         cx + radial.x * canopy + tangent.x * seatWidth * side,
         cy + radial.y * canopy + tangent.y * seatWidth * side,
       ).lineTo(
-        cx + radial.x * (canopy + link * 0.72) + tangent.x * seatWidth * side,
-        cy + radial.y * (canopy + link * 0.72) + tangent.y * seatWidth * side,
-      ).stroke({ color: shade(MAT.iron.top, 0.78), width: 1.1 });
+        px - radial.x * seatDepth * 0.48 + tangent.x * seatWidth * side,
+        py - radial.y * seatDepth * 0.48 + tangent.y * seatWidth * side,
+      ).stroke({ color: shade(MAT.iron.top, 0.72), width: 1.35 });
     }
-    fillPoly(ride, corners(seatWidth, seatDepth), MAT.canvas.edge);
-    fillPoly(ride, corners(seatWidth * 0.86, seatDepth * 0.72, seatDepth * 0.02), shade(MAT.canvas.top, 0.94));
-    const back = corners(seatWidth * 0.9, seatDepth * 0.28, -seatDepth * 0.36);
-    fillPoly(ride, back, shade(MAT.canvas.top, 0.7));
+    fillPoly(ride, corners(seatWidth, seatWidth * 0.72, seatDepth), MAT.canvas.edge);
+    fillPoly(
+      ride,
+      corners(seatWidth * 0.82, seatWidth * 0.56, seatDepth * 0.68, -seatDepth * 0.01),
+      shade(MAT.canvas.top, 0.94),
+    );
+    const back = corners(
+      seatWidth * 0.96,
+      seatWidth * 0.86,
+      seatDepth * 0.26,
+      seatDepth * 0.42,
+    );
+    fillPoly(ride, back, shade(MAT.canvas.edge, 1.03));
   }
 };
 
@@ -838,14 +848,20 @@ const waltzerGlyph: LandmarkFn = (g, pad, o) => {
     const size = radius * 0.2;
     const px = cx + Math.cos(a) * d;
     const py = cy + Math.sin(a) * d;
-    // A car, not a washer: a mass with its own catch light on the lit side, rather than
-    // a disc with a darker disc inside it, which is a ring however the values run.
-    //
-    // The catch light is offset the same way on every car, so it goes round with them
-    // rather than staying north-west. On seven small discs at this speed that is under a
-    // pixel of error and it buys the cars a top, which is worth more.
-    cars.circle(px, py, size).fill({ color: shade(MAT.canvas.top, 0.68) });
-    cars.circle(px - size * 0.16, py - size * 0.2, size * 0.72).fill({ color: MAT.canvas.top });
+    // A car, not a washer and not a moving light cue: the pale circular shell carries
+    // the mass, while a centred transverse seat names its physical orientation. The
+    // seat legitimately turns with the car; no north-west highlight orbits with it.
+    cars.circle(px, py, size).fill({ color: shade(MAT.canvas.top, 0.84) });
+    const tangent = { x: -Math.sin(a), y: Math.cos(a) };
+    const radial = { x: Math.cos(a), y: Math.sin(a) };
+    const halfWidth = size * 0.58;
+    const halfDepth = size * 0.22;
+    fillPoly(cars, [
+      { x: px - tangent.x * halfWidth - radial.x * halfDepth, y: py - tangent.y * halfWidth - radial.y * halfDepth },
+      { x: px + tangent.x * halfWidth - radial.x * halfDepth, y: py + tangent.y * halfWidth - radial.y * halfDepth },
+      { x: px + tangent.x * halfWidth + radial.x * halfDepth, y: py + tangent.y * halfWidth + radial.y * halfDepth },
+      { x: px - tangent.x * halfWidth + radial.x * halfDepth, y: py - tangent.y * halfWidth + radial.y * halfDepth },
+    ], shade(MAT.canvas.edge, 1.04));
     cars.circle(px, py, size).stroke({ color: MAT.canvas.edge, width: 0.9 });
   }
 };
