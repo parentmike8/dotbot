@@ -1,5 +1,4 @@
 import { Application, Container, Graphics } from "pixi.js";
-import { collectSolids } from "@dotbot/game/collision";
 import { defaultGameConfig } from "@dotbot/game/config";
 import type { SourceBuilding, SourceWall } from "@dotbot/game/mapSource";
 import type { MapDocument, Rect, Solid, Vec2 } from "@dotbot/game/types";
@@ -7,6 +6,11 @@ import { buildMapArt, type MapArt } from "../game/renderer/mapArt";
 import { parseObjectParallaxStrength } from "../game/renderer/model/modelParallax";
 import { handlesFor, outdoorHandles, pick, type Handle } from "./editing";
 import { StudioParallax } from "./parallax";
+import {
+  destroyStudioMapArt,
+  replaceStudioMapArt,
+  studioOverlaySolids,
+} from "./presentation";
 import { screenToWorld, snapToGrid, wallNear } from "./viewport";
 
 /**
@@ -125,6 +129,10 @@ export class StudioCanvas {
     this.disposed = true;
     this.observer?.disconnect();
     this.observer = null;
+    if (this.art) {
+      destroyStudioMapArt(this.world, this.art);
+      this.art = null;
+    }
     try {
       this.app.destroy(true);
     } catch {
@@ -305,12 +313,12 @@ export class StudioCanvas {
       : view.area ? outdoorHandles(view.map, view.area) : [];
 
     if (rebuild) {
-      if (this.art) {
-        this.world.removeChild(this.art.root);
-        this.art.root.destroy({ children: true });
-      }
-      this.art = buildMapArt(view.map);
-      this.world.addChildAt(this.art.root, 0);
+      this.art = replaceStudioMapArt(
+        this.world,
+        this.overlay,
+        this.art,
+        buildMapArt(view.map),
+      );
       this.showFloor(view);
       this.parallax.invalidate();
       this.updateParallax();
@@ -341,12 +349,12 @@ export class StudioCanvas {
     if (!view) return;
 
     if (view.showCollision || view.showClearance) {
-      const solids = collectSolids(view.map, view.floor ?? "outdoor");
-      if (view.showClearance) {
-        for (const solid of solids) this.drawSolid(g, solid, defaultGameConfig.botRadius, 0xfbbf24, 0.12);
+      const overlays = studioOverlaySolids(view);
+      for (const solid of overlays.clearance) {
+        this.drawSolid(g, solid, defaultGameConfig.botRadius, 0xfbbf24, 0.12);
       }
-      if (view.showCollision) {
-        for (const solid of solids) this.drawSolid(g, solid, 0, 0xef4444, 0.2);
+      for (const solid of overlays.collision) {
+        this.drawSolid(g, solid, 0, 0xef4444, 0.2);
       }
     }
 
