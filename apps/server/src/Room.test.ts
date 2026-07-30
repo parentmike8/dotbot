@@ -66,6 +66,43 @@ describe("Room lobby squads", () => {
     room.dispose();
   });
 
+  it("mirrors recruited bot squads into member interest and client metadata", async () => {
+    const room = new Room("RECR", {
+      countdownMs: 0,
+      persistence: new NoopPersistence(),
+      aiWingmates: false,
+    });
+    const alpha = collectingPeer("recruit-alpha");
+    const bravo = collectingPeer("recruit-bravo");
+    room.join(alpha.peer, "recruit-token-a", "Alpha", "recruit-a", "alpha");
+    room.join(bravo.peer, "recruit-token-b", "Bravo", "recruit-b", "bravo");
+    room.receive("recruit-a", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+
+    const internals = room as unknown as {
+      members: Map<string, { botId: string; squadId: string }>;
+      simulation: {
+        bots: Map<string, { squadId: string }>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+      syncMemberSquads(snapshot: import("@dotbot/game/types").GameSnapshot): void;
+    };
+    const recruited = internals.members.get("recruit-b")!;
+    internals.simulation.bots.get(recruited.botId)!.squadId = "alpha";
+    internals.syncMemberSquads(internals.simulation.getSnapshot());
+
+    expect(recruited.squadId).toBe("alpha");
+    for (const peer of [alpha, bravo]) {
+      expect(peer.messages.filter((message) => message.type === "meta").at(-1))
+        .toMatchObject({
+          type: "meta",
+          add: [expect.objectContaining({ id: recruited.botId, squadId: "alpha" })],
+          remove: [],
+        });
+    }
+    room.dispose();
+  });
+
   it("carries a disconnected lobby member into the live handoff window, then gives the bot to AI", async () => {
     class HandoffPersistence extends NoopPersistence {
       readonly outcomes: Array<{ playerId: string; outcome: string }> = [];

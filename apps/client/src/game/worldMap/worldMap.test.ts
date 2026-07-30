@@ -58,6 +58,10 @@ const marks: LiveMark[] = [
     id: "inside", kind: "enemy", position: { x: 310, y: 410 },
     floorId: "civic:F7", placedAtMs: 0, botId: "viewer",
   },
+  {
+    id: "rival-outside", kind: "enemy", position: { x: 700, y: 800 },
+    floorId: OUTDOOR_FLOOR_ID, placedAtMs: 0, botId: "hidden-rival",
+  },
 ];
 
 describe("exterior world map knowledge", () => {

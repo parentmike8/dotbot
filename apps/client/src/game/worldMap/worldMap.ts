@@ -79,7 +79,12 @@ export function mapMarkers(
         isViewer: bot.id === viewerId,
       })),
     pings: marks
-      .filter((mark) => physicsFloorId(map, mark.floorId) === OUTDOOR_FLOOR_ID)
+      .filter((mark) => {
+        const owner = snapshot.bots.find((bot) => bot.id === mark.botId);
+        return owner?.squadId === viewer.squadId
+          && !owner.isAmbient
+          && physicsFloorId(map, mark.floorId) === OUTDOOR_FLOOR_ID;
+      })
       .map((mark) => ({ ...mark, position: { ...mark.position } })),
   };
 }

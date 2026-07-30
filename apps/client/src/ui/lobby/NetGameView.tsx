@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { clamp01 } from "@dotbot/game/math";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import type { NetSession } from "../../game/session/NetSession";
@@ -39,7 +39,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker,
     worldMapVisible, toggleWorldMap, closeWorldMap, markExterior, chooseExteriorMark, squadMarks,
     feedbackPreferences, audioStatus, toggleSound, toggleHaptics, toggleReducedMotion, testSound,
-  } = useDotBotGame({ session, spectate: true });
+  } = useDotBotGame({ session, spectate: true, worldMapEnabled: !connectionMessage });
   const [swapBay, setSwapBay] = useState<number | null>(null);
   const player = snapshot?.bots.find((bot) => bot.id === session.playerId);
   const remainingRunMs = Math.max(0, session.config.runDurationMs - (snapshot?.timeMs ?? 0));
@@ -59,6 +59,10 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
     () => squadDownCounts(events, (botId) => session.getEntityMeta(botId), session.playerId),
     [events, session],
   );
+
+  useEffect(() => {
+    if (connectionMessage && worldMapVisible) closeWorldMap();
+  }, [closeWorldMap, connectionMessage, worldMapVisible]);
 
   return (
     <main
@@ -92,7 +96,14 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         rivals={rivalsAlive(snapshot?.bots, player?.squadId)}
         onSettings={toggleSettings}
       >
-        <button type="button" className="map-button" onClick={toggleWorldMap}>Map <kbd>M</kbd></button>
+        <button
+          type="button"
+          className="map-button"
+          onClick={toggleWorldMap}
+          disabled={Boolean(connectionMessage)}
+        >
+          Map <kbd>M</kbd>
+        </button>
         <span className="room-chip">Room {roomCode}</span>
       </RunReadout>
 
@@ -133,7 +144,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
 
       {column && !worldMapVisible ? <FloorRail column={column} /> : null}
 
-      {worldMapVisible && snapshot ? (
+      {worldMapVisible && snapshot && !connectionMessage ? (
         <WorldMapOverlay
           map={map}
           snapshot={snapshot}

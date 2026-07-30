@@ -79,6 +79,10 @@ export class WorldMapCanvas {
     this.ready = true;
     this.fit();
     this.observer = new ResizeObserver(() => {
+      this.app.renderer.resize(
+        Math.max(1, host.clientWidth),
+        Math.max(1, host.clientHeight),
+      );
       this.recalculateFit(false);
       this.renderNow();
     });

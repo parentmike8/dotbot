@@ -1765,6 +1765,7 @@ export class DotBotSimulation {
       const rival = [...this.bots.values()]
         .filter((target) =>
           this.isHostileForAi(bot, target)
+          && target.floorId === enemyMark.floorId
           && this.canAcquireHuntTarget(bot, target))
         .filter((target) => distance(target.position, enemyMark.position) < PING_PULL)
         .sort((a, b) => distance(a.position, enemyMark.position) - distance(b.position, enemyMark.position))[0];
@@ -1774,7 +1775,7 @@ export class DotBotSimulation {
     const lootMark = this.markFor(bot, "loot");
     if (lootMark) {
       const dot = [...this.dots.values()]
-        .filter((candidate) => candidate.active)
+        .filter((candidate) => candidate.active && candidate.floorId === lootMark.floorId)
         .filter((candidate) => distance(candidate.position, lootMark.position) < PING_PULL)
         .sort((a, b) => distance(a.position, lootMark.position) - distance(b.position, lootMark.position))[0];
       if (dot) {

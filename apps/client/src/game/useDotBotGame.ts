@@ -62,12 +62,15 @@ type UseDotBotGameOptions = {
   session?: GameSession;
   map?: MapDocument;
   spectate?: boolean;
+  worldMapEnabled?: boolean;
 };
 
 export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const providedSession = options.session;
   const requestedMap = options.map ?? downtownMap;
   const spectateEnabled = options.spectate ?? false;
+  const worldMapEnabledRef = useRef(options.worldMapEnabled ?? true);
+  worldMapEnabledRef.current = options.worldMapEnabled ?? true;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<GameSession | null>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
@@ -136,16 +139,24 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   }, [resetJoystick]);
 
   const setWorldMapOpen = useCallback((visible: boolean) => {
-    worldMapOpenRef.current = visible;
-    setWorldMapVisible(visible);
+    const nextVisible = visible && worldMapEnabledRef.current;
+    worldMapOpenRef.current = nextVisible;
+    setWorldMapVisible(nextVisible);
     setPingPicker(null);
-    if (visible) {
+    if (nextVisible) {
       clearMovementInput();
       dashQueuedRef.current = false;
       useBayQueuedRef.current = undefined;
       swapQueuedRef.current = undefined;
+      downedVerbRef.current = undefined;
       takeQueuedRef.current = undefined;
       pleaQueuedRef.current = false;
+      pingQueuedRef.current = undefined;
+      spectateCycleQueuedRef.current = false;
+      if (longPressRef.current !== null) {
+        window.clearTimeout(longPressRef.current);
+        longPressRef.current = null;
+      }
       setSettingsVisible(false);
     }
   }, [clearMovementInput]);
@@ -250,6 +261,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
         const frameEvents = session.drainEvents();
+        const framePlayer = nextSnapshot?.bots.find((bot) => bot.id === session.playerId);
+        if (framePlayer && playerSquadId !== null && framePlayer.squadId !== playerSquadId) {
+          marksRef.current = [];
+          rendererRef.current?.setSquadMarks([]);
+        }
+        if (framePlayer) playerSquadId = framePlayer.squadId;
         const uiEvents = frameEvents.filter((event) => event.type !== "hit");
         if (uiEvents.length > 0) setEvents((current) => [...current, ...uiEvents]);
 
@@ -366,7 +383,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         }
 
         const currentPlayer = nextSnapshot.bots.find((bot) => bot.id === session.playerId);
-        if (currentPlayer) playerSquadId = currentPlayer.squadId;
         const runState = session.getRunState();
 
         if (!runEndedRef.current && runState.phase === "over") {
