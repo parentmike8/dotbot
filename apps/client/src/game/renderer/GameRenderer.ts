@@ -17,7 +17,7 @@ import {
 } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, Rect, SimEvent, Vec2 } from "@dotbot/game/types";
-import type { MatchIntel } from "@dotbot/protocol";
+import type { KillCamClip, MatchIntel } from "@dotbot/protocol";
 import { CORE_REACH } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
 import { buildMapArt, makeWorldLabel, type MapArt } from "./mapArt";
@@ -96,6 +96,12 @@ export type InteractionChannelVisual = {
   position: Vec2;
   radius: number;
   progress: number;
+};
+
+export type KillCamRender = {
+  clip: KillCamClip;
+  progress: number;
+  cameraTarget: Vec2;
 };
 
 type DraftAnimation = {
@@ -232,6 +238,7 @@ export class GameRenderer {
   private lastParallaxFloorId: string | undefined = undefined;
   private lastCameraAt = performance.now();
   private reducedMotion = false;
+  private replayCameraActive = false;
   private readonly pleaSignals = new Map<string, { event: Extract<SimEvent, { type: "plea" }>; startedAt: number }>();
   private readonly mineSignals = new Map<string, { event: Extract<SimEvent, { type: "mineSensor" }>; startedAt: number }>();
   private readonly impactFlashes: QueuedPredictedImpact[] = [];
@@ -495,9 +502,16 @@ export class GameRenderer {
     this.mineSignals.set(event.mineId, { event, startedAt: this.lastTimeMs });
   }
 
-  render(snapshot: GameSnapshot, playerId: string, preserveMissingViewer = false, interactionChannel: InteractionChannelVisual | null = null, intel?: MatchIntel): number {
+  render(
+    snapshot: GameSnapshot,
+    playerId: string,
+    preserveMissingViewer = false,
+    interactionChannel: InteractionChannelVisual | null = null,
+    intel?: MatchIntel,
+    killCam?: KillCamRender,
+  ): number {
     const nowMs = performance.now();
-    snapshot = applyPredictedImpactOverlays(snapshot, this.impactFlashes, nowMs);
+    if (!killCam) snapshot = applyPredictedImpactOverlays(snapshot, this.impactFlashes, nowMs);
     this.lastTimeMs = snapshot.timeMs;
     this.updateDraftAnimations(nowMs);
     const overview = preserveMissingViewer;
@@ -505,7 +519,11 @@ export class GameRenderer {
     const player = overview ? undefined : currentPlayer ?? snapshot.bots[0];
     if (currentPlayer) this.lastViewer = currentPlayer;
     const center = player?.position ?? { x: this.map.width / 2, y: this.map.height / 2 };
-    const camera = this.getCamera(center, (player?.dashActiveMs ?? 0) > 0);
+    const camera = this.getCamera(
+      killCam?.cameraTarget ?? center,
+      killCam ? false : (player?.dashActiveMs ?? 0) > 0,
+      killCam !== undefined,
+    );
 
     this.worldLayer.scale.set(camera.scale);
     this.worldLayer.position.set(camera.x, camera.y);
@@ -532,28 +550,31 @@ export class GameRenderer {
     this.maskedGfx.clear();
     this.dynamicGfx.clear();
     this.screenGfx.clear();
+    this.impactLayer.visible = killCam === undefined;
+    this.art.trails.view.visible = killCam === undefined;
     this.drawExtractionPulse(snapshot, player?.squadId);
     this.drawDots(snapshot, player?.squadId, playerContext);
     this.drawMines(snapshot, playerContext);
     this.drawSignalIntel(snapshot, intel, playerContext);
     this.drawBots(snapshot, playerId, playerContext);
+    if (killCam) this.drawKillCamImpact(killCam);
     // AFTER the bots, not with the other ambient passes above, and for one concrete reason:
     // `drawBots` is what advances each bot's smoothed display position, and a mark has to land
     // under the body where it is actually drawn rather than a frame behind it.
-    this.updateTrails(snapshot, player ?? null, playerContext, nowMs);
+    if (!killCam) this.updateTrails(snapshot, player ?? null, playerContext, nowMs);
     if (interactionChannel) {
       this.drawProgressRing(this.dynamicGfx, interactionChannel.position, interactionChannel.radius, interactionChannel.progress, INK.opening, 3);
     }
-    if (currentPlayer) this.drawRadarPings(currentPlayer);
+    if (currentPlayer && !killCam) this.drawRadarPings(currentPlayer);
 
-    if (player) {
+    if (player && !killCam) {
       this.drawNoises(snapshot, player);
       this.drawPleaSignals(player);
       this.drawMineSignals(player);
       this.drawSquadMarks(player, nowMs, camera);
       this.drawSquadmateArrows(snapshot, player, camera);
     }
-    this.drawImpactFlashes(snapshot, nowMs);
+    if (!killCam) this.drawImpactFlashes(snapshot, nowMs);
 
     // The Application ticker is intentionally disabled: scene mutation and
     // GPU submission happen in this one ordered frame, never a refresh apart.
@@ -1085,12 +1106,27 @@ export class GameRenderer {
     return advanceDisplayPosition(view, player.position, performance.now());
   }
 
-  private getCamera(target: Vec2, dashing: boolean): { x: number; y: number; scale: number; center: Vec2 } {
+  private getCamera(target: Vec2, dashing: boolean, replay = false): { x: number; y: number; scale: number; center: Vec2 } {
     const now = performance.now();
     const elapsed = Math.max(0, Math.min(100, now - this.lastCameraAt));
     this.lastCameraAt = now;
 
-    if (this.lastCameraTarget && elapsed > 0) {
+    if (replay) {
+      this.replayCameraActive = true;
+      this.cameraVelocity = { x: 0, y: 0 };
+      this.cameraImpulse = { x: 0, y: 0 };
+      this.cameraCenter = { ...target };
+    } else if (this.replayCameraActive) {
+      // Keep the last replay centre and let the ordinary camera ease toward
+      // the current squad/body view. Clear lead and impact impulse so the
+      // handoff cannot kick in the direction of an old death.
+      this.replayCameraActive = false;
+      this.lastCameraTarget = { ...target };
+      this.cameraVelocity = { x: 0, y: 0 };
+      this.cameraImpulse = { x: 0, y: 0 };
+    }
+
+    if (!replay && this.lastCameraTarget && elapsed > 0) {
       const targetDelta = {
         x: target.x - this.lastCameraTarget.x,
         y: target.y - this.lastCameraTarget.y,
@@ -1106,7 +1142,7 @@ export class GameRenderer {
     }
     this.lastCameraTarget = { ...target };
 
-    const lookAhead = this.reducedMotion
+    const lookAhead = replay || this.reducedMotion
       ? { x: 0, y: 0 }
       : clampVector({
         x: this.cameraVelocity.x * (dashing ? 0.06 : 0.022),
@@ -1117,11 +1153,13 @@ export class GameRenderer {
       y: target.y + lookAhead.y + this.cameraImpulse.y,
     };
     if (!this.cameraCenter) this.cameraCenter = { ...desired };
-    const alpha = 1 - Math.exp(-elapsed / (dashing ? 62 : 105));
-    this.cameraCenter = {
-      x: this.cameraCenter.x + (desired.x - this.cameraCenter.x) * alpha,
-      y: this.cameraCenter.y + (desired.y - this.cameraCenter.y) * alpha,
-    };
+    if (!replay) {
+      const alpha = 1 - Math.exp(-elapsed / (dashing ? 62 : 105));
+      this.cameraCenter = {
+        x: this.cameraCenter.x + (desired.x - this.cameraCenter.x) * alpha,
+        y: this.cameraCenter.y + (desired.y - this.cameraCenter.y) * alpha,
+      };
+    }
     const impulseDecay = Math.exp(-elapsed / 58);
     this.cameraImpulse = {
       x: this.cameraImpulse.x * impulseDecay,
@@ -1734,6 +1772,26 @@ export class GameRenderer {
       return SQUAD_CYAN;
     }
     return bot.isAmbient ? AMBIENT_GREY : RIVAL_RED;
+  }
+
+  private drawKillCamImpact({ clip, progress }: KillCamRender): void {
+    if (progress < 0.82) return;
+    const reveal = clamp01((progress - 0.82) / 0.18);
+    const { position, direction, kind } = clip.cause;
+    const radius = 8 + reveal * 18;
+    const color = kind === "mine" ? 0xe8590c : INK.structure;
+    this.dynamicGfx.circle(position.x, position.y, radius)
+      .stroke({ color, width: 3, alpha: 0.35 + reveal * 0.6 });
+    this.dynamicGfx
+      .moveTo(position.x - direction.x * 28, position.y - direction.y * 28)
+      .lineTo(position.x - direction.x * 7, position.y - direction.y * 7)
+      .stroke({ color, width: 3, alpha: reveal });
+    if (kind === "mine") {
+      this.dynamicGfx
+        .moveTo(position.x - 6, position.y - 6).lineTo(position.x + 6, position.y + 6)
+        .moveTo(position.x + 6, position.y - 6).lineTo(position.x - 6, position.y + 6)
+        .stroke({ color, width: 2.5, alpha: reveal });
+    }
   }
 
   // --- Noise rings -----------------------------------------------------------

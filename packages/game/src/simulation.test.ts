@@ -507,6 +507,16 @@ describe("DotBotSimulation", () => {
     plateless.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
     plateless.step();
     expect(plateless.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
+    expect(plateless.drainEvents()).toContainEqual(expect.objectContaining({
+      type: "downed",
+      botId: "enemy",
+      byBotId: "player",
+      cause: expect.objectContaining({
+        kind: "mine",
+        tick: 1,
+        position: { x: 100, y: 180 },
+      }),
+    }));
     plateless.dispose();
   });
 
@@ -1529,6 +1539,12 @@ describe("DotBotSimulation", () => {
       byBotId: "player",
       result: "downed",
     }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "downed",
+      botId: "enemy",
+      byBotId: "player",
+      cause: expect.objectContaining({ kind: "dash" }),
+    }));
     expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")!.state).toBe("downed");
     simulation.dispose();
   });
@@ -2523,7 +2539,7 @@ describe("DotBotSimulation", () => {
 
     expect(simulation.drainEvents()).toEqual(
       expect.arrayContaining([
-        { type: "downed", botId: "enemy", byBotId: "player" },
+        expect.objectContaining({ type: "downed", botId: "enemy", byBotId: "player" }),
         { type: "looted", botId: "lootable", byBotId: "player", items: [healthItem, healthItem] },
         { type: "revived", botId: "downed-ally", byBotId: "player" },
       ]),

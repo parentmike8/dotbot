@@ -3,7 +3,7 @@ import type { ServerMessage } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence } from "./db";
 import type { BaseObjectKind } from "@dotbot/game/types";
 import { Room, type RoomPeer } from "./Room";
-import { carriesAction } from "@dotbot/protocol";
+import { carriesAction, fromWireKillCamClip } from "@dotbot/protocol";
 import { buildingContaining, buildingOfFloor } from "@dotbot/game/mapModel";
 import { downtownMap } from "@dotbot/game/content/downtown";
 
@@ -255,6 +255,111 @@ describe("Room owner-private match intel", () => {
     room.receive("no-intel-player", { type: "startMatch" });
     await waitFor(() => room.phase === "live");
     expect(peer.messages.find((message) => message.type === "matchStart")?.intel).toBeUndefined();
+    room.dispose();
+  });
+});
+
+describe("Room victim-private kill cam", () => {
+  it("delivers only to the victim, resends after reconnect, clears on revive, and replaces on a repeated down", async () => {
+    const room = new Room("KCAM", {
+      countdownMs: 0,
+      persistence: new NoopPersistence(),
+      aiWingmates: false,
+    });
+    const victim = collectingPeer("killcam-victim");
+    const rival = collectingPeer("killcam-rival");
+    room.join(victim.peer, "killcam-token-victim", "Victim", "killcam-player-victim", "alpha");
+    room.join(rival.peer, "killcam-token-rival", "Rival", "killcam-player-rival", "bravo");
+    room.receive("killcam-player-victim", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+
+    type MutableBot = import("@dotbot/game/types").DotBotEntity;
+    const internals = room as unknown as {
+      members: Map<string, { botId: string; lastKillCam: import("@dotbot/protocol").KillCamClip | null }>;
+      simulation: {
+        bots: Map<string, MutableBot>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+      killCamHistory: { record(snapshot: import("@dotbot/game/types").GameSnapshot): void };
+      processKillCamEvents(
+        events: import("@dotbot/game/types").SimEvent[],
+        snapshot: import("@dotbot/game/types").GameSnapshot,
+      ): void;
+    };
+    const victimMember = internals.members.get("killcam-player-victim")!;
+    const rivalMember = internals.members.get("killcam-player-rival")!;
+    const victimBot = internals.simulation.bots.get(victimMember.botId)!;
+    const rivalBot = internals.simulation.bots.get(rivalMember.botId)!;
+    victimBot.position = { x: 500, y: 500 };
+    rivalBot.position = { x: 560, y: 500 };
+    victimBot.floorId = "outdoor";
+    rivalBot.floorId = "outdoor";
+
+    const before = structuredClone(internals.simulation.getSnapshot());
+    before.debug.tickCount = 120;
+    internals.killCamHistory.record(before);
+    victimBot.state = "downed";
+    victimBot.shields = 0;
+    victimBot.shieldSegments = victimBot.shieldSegments.map(() => 0);
+    const death = structuredClone(internals.simulation.getSnapshot());
+    death.debug.tickCount = 123;
+    internals.killCamHistory.record(death);
+    internals.processKillCamEvents([{
+      type: "downed",
+      botId: victimMember.botId,
+      byBotId: rivalMember.botId,
+      cause: {
+        kind: "dash",
+        tick: 123,
+        position: { x: 524, y: 500 },
+        direction: { x: -1, y: 0 },
+      },
+    }], death);
+
+    const first = victim.messages.filter((message) => message.type === "killCam");
+    expect(first).toHaveLength(1);
+    expect(fromWireKillCamClip(first[0].clip)).toMatchObject({
+      id: `${victimMember.botId}-123`,
+      victimId: victimMember.botId,
+      sourceBotId: rivalMember.botId,
+    });
+    expect(rival.messages.some((message) => message.type === "killCam")).toBe(false);
+
+    room.disconnect(victim.peer.id);
+    const refreshed = collectingPeer("killcam-victim-refreshed");
+    expect(room.join(
+      refreshed.peer,
+      "killcam-token-victim",
+      "Victim",
+      "killcam-player-victim",
+      "alpha",
+    )).not.toBeNull();
+    expect(refreshed.messages.filter((message) => message.type === "killCam")).toHaveLength(1);
+
+    internals.processKillCamEvents([{
+      type: "revived",
+      botId: victimMember.botId,
+      byBotId: rivalMember.botId,
+    }], death);
+    expect(victimMember.lastKillCam).toBeNull();
+
+    const secondDeath = structuredClone(death);
+    secondDeath.debug.tickCount = 126;
+    internals.killCamHistory.record(secondDeath);
+    internals.processKillCamEvents([{
+      type: "downed",
+      botId: victimMember.botId,
+      byBotId: rivalMember.botId,
+      cause: {
+        kind: "ram",
+        tick: 126,
+        position: { x: 524, y: 500 },
+        direction: { x: -1, y: 0 },
+      },
+    }], secondDeath);
+    const repeatedWire = refreshed.messages.filter((message) => message.type === "killCam").at(-1)?.clip;
+    expect(repeatedWire && fromWireKillCamClip(repeatedWire))
+      .toMatchObject({ id: `${victimMember.botId}-126`, cause: { kind: "ram" } });
     room.dispose();
   });
 });

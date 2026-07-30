@@ -140,6 +140,21 @@ export type MineEntity = GameEntity & {
 export type HitResult = "plateBreak" | "downed";
 export type DashContactResult = "bump" | "clash";
 
+/**
+ * The authoritative reason a bot went down.
+ *
+ * This is deliberately source-neutral. A mine can identify its device and
+ * impact without handing the victim the remote owner's location; future world
+ * hazards can do the same without pretending to be a bot attack.
+ */
+export type DownCause = {
+  kind: "dash" | "ram" | "mine" | "environment";
+  tick: number;
+  position: Vec2;
+  /** Points away from the impact source. */
+  direction: Vec2;
+};
+
 export type SimEvent =
   | {
       type: "hit";
@@ -164,7 +179,7 @@ export type SimEvent =
       direction: Vec2;
       tick: number;
     }
-  | { type: "downed"; botId: string; byBotId?: string }
+  | { type: "downed"; botId: string; byBotId?: string; cause?: DownCause }
   /** A loot channel finished: this body is open, and everyone can see it is. */
   | { type: "searched"; botId: string; byBotId: string }
   /** Items actually left this body. One event per take, `items` is what moved. */

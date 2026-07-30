@@ -6,11 +6,12 @@ import { DotBotSimulation } from "@dotbot/game/simulation";
 import { assignSquadInsertions, squadSpawnPosition, validateInsertionMap } from "@dotbot/game/insertion";
 import { isAmbientBotSpawn } from "@dotbot/game/faction";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, InsertionPoint, SimEvent } from "@dotbot/game/types";
-import { carriesAction, filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toViewerSnapshot, toWireEvent, toWireSnapshot, visiblePhysicsFloors } from "@dotbot/protocol";
+import { carriesAction, filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toViewerSnapshot, toWireEvent, toWireKillCamClip, toWireSnapshot, visiblePhysicsFloors } from "@dotbot/protocol";
 import { LOBBY_SQUADS } from "@dotbot/protocol";
-import type { ClientMessage, DeliveryClass, FullWireSnapshot, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta, WireInputFrame } from "@dotbot/protocol";
+import type { ClientMessage, DeliveryClass, FullWireSnapshot, KillCamClip, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta, WireInputFrame } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type RunManifest } from "./db";
+import { KillCamHistory } from "./killCam";
 
 export interface RoomPeer {
   readonly id: string;
@@ -54,6 +55,8 @@ type Member = LobbyMember & {
   insertionName: string | null;
   dotContexts: Set<string>;
   dotState: Map<string, { active: boolean; captureProgressMs: number }>;
+  /** Last private clip, retained only so a downed victim can resume after handoff. */
+  lastKillCam: KillCamClip | null;
 };
 
 export type RoomBandwidthHealth = {
@@ -112,6 +115,7 @@ export class Room {
   private readonly connectionHandoffMs: number;
   private readonly matchIntel = new Map<string, MatchIntel>();
   private latestServerTick = 0;
+  private readonly killCamHistory = new KillCamHistory(downtownMap);
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
@@ -225,6 +229,7 @@ export class Room {
       insertionName: null,
       dotContexts: new Set(),
       dotState: new Map(),
+      lastKillCam: null,
     };
     this.members.set(member.playerId, member);
     this.memberByToken.set(token, member);
@@ -375,6 +380,10 @@ export class Room {
       this.latestServerTick = snapshot.debug.tickCount;
       const events = this.simulation.drainEvents();
       this.syncMemberSquads(snapshot);
+      if (snapshot.debug.tickCount % 3 === 0 || events.some((event) => event.type === "downed")) {
+        this.killCamHistory.record(snapshot);
+      }
+      this.processKillCamEvents(events, snapshot);
       this.processRunEvents(events);
       if (events.length > 0) this.broadcastEvents(events, snapshot);
 
@@ -705,6 +714,10 @@ export class Room {
       dotBaseline: filtered.dots,
       intel: this.matchIntel.get(member.playerId),
     });
+    const own = snapshot.bots.find((bot) => bot.id === member.botId);
+    if (own?.state === "downed" && member.lastKillCam) {
+      this.sendStream(member, { type: "killCam", clip: toWireKillCamClip(member.lastKillCam) });
+    }
     if (member.runOver) member.peer?.send(member.runOver);
   }
 
@@ -906,11 +919,37 @@ export class Room {
     }
   }
 
+  private processKillCamEvents(events: SimEvent[], snapshot: GameSnapshot): void {
+    for (const event of events) {
+      if (event.type === "revived" || event.type === "recruited") {
+        const revived = [...this.members.values()].find((member) => member.botId === event.botId);
+        if (revived) revived.lastKillCam = null;
+        continue;
+      }
+      if (event.type !== "downed") continue;
+      const member = [...this.members.values()].find((candidate) => candidate.botId === event.botId);
+      if (!member?.inRun) continue;
+      const victim = snapshot.bots.find((bot) => bot.id === event.botId);
+      if (!victim) continue;
+      const cause = event.cause ?? {
+        kind: "environment" as const,
+        tick: snapshot.debug.tickCount,
+        position: { ...victim.position },
+        direction: { x: 0, y: 0 },
+      };
+      const clip = this.killCamHistory.createClip(event.botId, event.byBotId, cause);
+      if (!clip) continue;
+      member.lastKillCam = clip;
+      if (member.streaming && member.peer) this.sendStream(member, { type: "killCam", clip: toWireKillCamClip(clip) });
+    }
+  }
+
   private sendRunOver(member: Member, message: Extract<ServerMessage, { type: "runOver" }>, cargo: import("@dotbot/game/types").Item[] = []): void {
     member.inRun = false;
     member.inputQueue = [];
     member.heldInput = { move: { x: 0, y: 0 }, dash: false };
     member.runOver = message;
+    member.lastKillCam = null;
     if (member.persistenceEligible) this.matchOutcomes.set(member.playerId, message.reason);
     const persistenceRequired = Boolean(this.matchId && member.persistenceEligible && this.persistence.live);
     const persistenceWrite = this.persistRunOutcome(member, message, cargo)
