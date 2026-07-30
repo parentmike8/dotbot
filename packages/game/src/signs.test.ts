@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
+import { defaultGameConfig } from "./config";
+import { BASE_SHELL_IDS, createBaseMap, starterBaseLayout } from "./content/base";
 import { downtownMap } from "./content/downtown";
-import { buildingContaining } from "./mapModel";
+import { quaysideMap } from "./content/quaysideDepot";
+import { worldMap } from "./content/world";
+import { buildingContaining, SURFACE_KINDS } from "./mapModel";
+import { findNavigationPath } from "./navigation";
 import { SIGN_FULL_RANGE, SIGN_READ_RANGE, signReadingAt, signText, signsOnFloor } from "./signs";
 import { OUTDOOR_FLOOR_ID } from "./types";
-import type { MapObject } from "./types";
+import type { MapDocument, MapObject } from "./types";
 
 /**
  * A sign says what the map says, and it says it when you are near.
  *
- * The lit-model language had no way to put text in the world at all — building names
- * are baked into the art, one label per footprint, and nothing else can speak. These
- * are the two properties that make signs the general mechanic for it rather than a
- * one-off caption: the words are DERIVED, and reading is PROXIMITY.
+ * The old lit-model language painted one building name across each footprint and each
+ * extraction name beside its pad. These are the two properties that make signs the
+ * replacement rather than another caption: the words are DERIVED, and reading is
+ * PROXIMITY.
  */
 
 const signs = () => signsOnFloor(downtownMap, OUTDOOR_FLOOR_ID);
@@ -26,8 +31,8 @@ describe("what a sign says", () => {
      * which is most of them.
      */
     const readings = signs().map((sign) => signText(downtownMap, sign));
-    expect(readings.length).toBe(4);
-    const named = readings.filter((reading) => reading.title !== "DOWNTOWN");
+    const buildingNames = new Set(downtownMap.buildings.map((building) => building.name));
+    const named = readings.filter((reading) => buildingNames.has(reading.title));
     expect(named.length, `signs that found a building: ${readings.map((r) => r.title).join(", ")}`).toBe(4);
     expect(new Set(named.map((reading) => reading.title)).size, "each sign should name a different building").toBe(4);
     for (const reading of named) {
@@ -58,9 +63,10 @@ describe("what a sign says", () => {
      * Asserted as geometry rather than as a pixel: stepping from the sign in the open
      * direction must leave the building, and stepping the other way must enter it.
      */
+    const buildingNames = new Set(downtownMap.buildings.map((building) => building.name));
     for (const sign of signs()) {
       const { title, open } = signText(downtownMap, sign);
-      if (title === "DOWNTOWN") continue;
+      if (!buildingNames.has(title)) continue;
       expect(Math.hypot(open.x, open.y)).toBeCloseTo(1, 6);
       const centre = { x: sign.x + sign.w / 2, y: sign.y + sign.h / 2 };
       const STEP = 48;
@@ -88,6 +94,115 @@ describe("what a sign says", () => {
       if (!sign) continue;
       expect(signText(downtownMap, sign).detail).toBe(`${storeys} ${storeys === 1 ? "FLOOR" : "FLOORS"}`);
     }
+  });
+
+  it("names an adjacent extraction and explains the square", () => {
+    const extractionNames = new Set(downtownMap.extractionPoints.map((point) => point.name));
+    const readings = signs().map((sign) => signText(downtownMap, sign));
+    const extractionSigns = readings.filter((reading) => extractionNames.has(reading.title));
+    expect(extractionSigns.map((reading) => reading.title).sort())
+      .toEqual([...extractionNames].sort());
+    expect(extractionSigns.every((reading) => reading.detail === "EXTRACTION")).toBe(true);
+  });
+
+  it("gives every world building and extraction exactly one physical sign", () => {
+    const readings = signsOnFloor(worldMap, OUTDOOR_FLOOR_ID)
+      .map((sign) => signText(worldMap, sign));
+    const titles = readings.map((reading) => reading.title);
+    const expected = [
+      ...worldMap.buildings.map((building) => building.name),
+      ...worldMap.extractionPoints.map((point) => point.name),
+    ];
+    expect(titles.sort()).toEqual(expected.sort());
+  });
+
+  it("covers the standalone non-rectangular review map too", () => {
+    const readings = signsOnFloor(quaysideMap, OUTDOOR_FLOOR_ID)
+      .map((sign) => signText(quaysideMap, sign));
+    expect(readings.map((reading) => reading.title).sort()).toEqual([
+      quaysideMap.buildings[0].name,
+      quaysideMap.extractionPoints[0].name,
+    ].sort());
+  });
+
+  it.each(BASE_SHELL_IDS)("replaces the %s base caption with a readable entrance sign", (shellId) => {
+    const map = createBaseMap(starterBaseLayout, shellId);
+    const readings = signsOnFloor(map, OUTDOOR_FLOOR_ID).map((sign) => signText(map, sign));
+    expect(readings).toEqual([expect.objectContaining({ title: "YOUR BASE" })]);
+  });
+
+  it("leaves a full-size route within reading range of every sign", () => {
+    const maps: MapDocument[] = [
+      worldMap,
+      quaysideMap,
+      ...BASE_SHELL_IDS.map((shellId) => createBaseMap(starterBaseLayout, shellId)),
+    ];
+    for (const map of maps) {
+      const spawn = map.botSpawns.find((candidate) => candidate.controller === "human") ?? map.botSpawns[0];
+      for (const sign of signsOnFloor(map, OUTDOOR_FLOOR_ID)) {
+        const { title } = signText(map, sign);
+        const centre = { x: sign.x + sign.w / 2, y: sign.y + sign.h / 2 };
+        const reach = SIGN_FULL_RANGE - defaultGameConfig.botRadius;
+        const directions = [
+          { x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 },
+          { x: 0.707, y: -0.707 }, { x: 0.707, y: 0.707 },
+          { x: -0.707, y: 0.707 }, { x: -0.707, y: -0.707 },
+        ];
+        const reachable = directions.some((direction) => findNavigationPath(
+          map,
+          OUTDOOR_FLOOR_ID,
+          spawn.position,
+          {
+            x: centre.x + direction.x * reach,
+            y: centre.y + direction.y * reach,
+          },
+          defaultGameConfig.botRadius,
+        ).length > 0);
+        expect(
+          reachable,
+          `${map.id}/${sign.id} ${title} at ${sign.x},${sign.y} has no full-size route within reading range`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("keeps every outdoor sign visually clear of other map objects", () => {
+    /**
+     * Navigable is not the same as visible. A sign can leave enough room for a bot
+     * while still sitting under a tree crown or behind a piece of entrance furniture.
+     * The temple sign did exactly that: its plate overlapped an 88 x 88 tree beside
+     * the south approach, so the path audit stayed green while the sign disappeared.
+     */
+    const maps: MapDocument[] = [
+      worldMap,
+      quaysideMap,
+      ...BASE_SHELL_IDS.map((shellId) => createBaseMap(starterBaseLayout, shellId)),
+    ];
+    const VISUAL_GAP = 16;
+    const overlaps = (sign: MapObject, object: MapObject) => (
+      sign.x < object.x + object.w + VISUAL_GAP
+      && sign.x + sign.w > object.x - VISUAL_GAP
+      && sign.y < object.y + object.h + VISUAL_GAP
+      && sign.y + sign.h > object.y - VISUAL_GAP
+    );
+    const obstructed: string[] = [];
+    for (const map of maps) {
+      const outdoorObjects = map.outdoor.objects ?? [];
+      for (const sign of outdoorObjects.filter((object) => object.kind === "sign")) {
+        const obstruction = outdoorObjects.find((object) => (
+          object.id !== sign.id
+          && !SURFACE_KINDS.has(object.kind)
+          && overlaps(sign, object)
+        ));
+        if (obstruction) {
+          obstructed.push(
+            `${map.id}/${sign.id} at ${sign.x},${sign.y} is too close to `
+            + `${obstruction.id} (${obstruction.kind}) at ${obstruction.x},${obstruction.y}`,
+          );
+        }
+      }
+    }
+    expect(obstructed).toEqual([]);
   });
 });
 
@@ -142,6 +257,6 @@ describe("when a sign is legible", () => {
   it("only sees signs on the floor being walked", () => {
     // Signs are per-floor, so an indoor sign cannot be read from the street above it.
     expect(signsOnFloor(downtownMap, "civic:F4").every((sign) => sign.kind === "sign")).toBe(true);
-    expect(signsOnFloor(downtownMap, OUTDOOR_FLOOR_ID).length).toBe(4);
+    expect(signsOnFloor(downtownMap, OUTDOOR_FLOOR_ID).length).toBe(7);
   });
 });

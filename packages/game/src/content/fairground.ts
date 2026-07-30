@@ -273,14 +273,14 @@ const fairObjects: MapObject[] = [
   ...rhythm(340, 2300, 190).map((x) => obj("lampPost", x, 2452, 18, 18)),
   /**
    * One sign on the queueing ground outside the pavilion's north arch, BESIDE the
-   * arch rather than in front of it.
+   * arch rather than in front of it or under the nearby tree line.
    *
    * It was at HALL.x - 22, which is the archway's own centre line — a 44-wide sign
    * squarely in the middle of a 110-wide opening, leaving two 33-unit slots for a
    * 48-wide bot. Reported from play: "the sign at the north entrance doesn't let me
    * get there." What it reads is derived from the building nearest it.
    */
-  obj("sign", HALL.x + 96, 1636, 44, 12),
+  obj("sign", HALL.x - 172, 1636, 44, 12),
 
   // -- The gate and the car park ------------------------------------------
   obj("bollard", DRIVE_W_KERB - 24, 1980, 18, 18),
@@ -350,6 +350,12 @@ const fairObjects: MapObject[] = [
   ...rhythm(300, 860, 224).map((x) => obj("tree", x, 2960, 98, 98)),
   obj("log", 420, 2680, 190, 44, { facing: "E" }),
   obj("thicket", 1000, 2900, 150, 132),
+
+  /**
+   * Midway extraction sign on the pad's east side. North and south are the promenade's
+   * two long walking lanes, so neither is an acceptable place for a solid plate.
+   */
+  obj("sign", 1018, 2348, 44, 12),
 ];
 
 export const fairground: RegionParts = {

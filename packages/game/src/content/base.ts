@@ -508,6 +508,17 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
     const kind = layout[slot.id];
     return kind ? [materializeObject(slot, kind)] : [];
   }) : [];
+  const baseSign: MapObject = {
+    id: `base-${shell.id}-sign`,
+    kind: "sign",
+    // Inside and beside the sealed deployment strip: readable before leaving, never
+    // in the channel itself. The strip cannot be crossed on foot.
+    x: shell.deployment.x + shell.deployment.w + 24,
+    y: shell.deployment.y + (shell.deployment.h - 12) / 2,
+    w: 44,
+    h: 12,
+    facing: "N",
+  };
   const base: Building = {
     id: "player-base",
     kind: "warehouse",
@@ -543,7 +554,7 @@ export function createBaseMap(layout: BaseLayout, shellId: BaseShellId = DEFAULT
       roads: [],
       parks: [],
       walls: sheetEdgeWalls(),
-      objects: [],
+      objects: [baseSign],
       dotSpawns: [],
     },
     buildings: [base],

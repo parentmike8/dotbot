@@ -255,6 +255,17 @@ const yardObjects: MapObject[] = [
   // South of the shed's outer arc. At y 1690 its east end was 7 units inside the
   // roundhouse's wall, which a bounding-box check reports as fine.
   obj("log", 2620, 1724, 210, 46, { facing: "E" }),
+
+  /**
+   * Roundhouse sign, beside the east bay rather than across it. Its radial position is
+   * inside the table apron and outside the shed's inner arc, leaving the bay road clear.
+   */
+  obj("sign", 3150, 1268, 44, 12),
+  /**
+   * Turntable extraction sign on the north-east shoulder. The lead is the table's only
+   * route back to the yard and runs west of it, so the plate cannot narrow that passage.
+   */
+  obj("sign", 3050, 1138, 44, 12),
 ];
 
 export const railYard: RegionParts = {

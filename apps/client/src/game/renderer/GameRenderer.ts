@@ -200,9 +200,9 @@ export class GameRenderer {
    * What the sign nearest the viewer says, drawn in the world.
    *
    * In `worldLayer`, not on the screen: the contract's objection to UI is that it is
-   * not part of the place, and every other caption in this game — building names,
-   * stair tags, extraction points — is world text at world scale. A sign that answered
-   * in a screen-space bubble would be the only floating panel in the world.
+   * not part of the place. Stair and interaction tags are world text at world scale,
+   * and location names now exist only through these physical signs. A sign that
+   * answered in a screen-space bubble would be the only floating panel in the world.
    */
   private readonly signLayer = new Container();
   private readonly signTitle: Text;
@@ -256,11 +256,11 @@ export class GameRenderer {
     /**
      * Structural ink, not label ink.
      *
-     * `INK.fixture` is what the building captions use, and it is tuned for a name
-     * lying over paper-white slab at map scale. A sign is read at play zoom, standing
-     * on a mid-grey footway, and play could not read it at all: "FYI can't read the
-     * text here." The detail line under it was legible in `INK.opening`, which is the
-     * clue — go darker, not bigger.
+     * The old footprint captions used `INK.fixture`, tuned for a name lying over
+     * paper-white slab at map scale. A sign is read at play zoom, standing on a
+     * mid-grey footway, and play could not read it at all: "FYI can't read the text
+     * here." The detail line under it was legible in `INK.opening`, which is the clue
+     * — go darker, not bigger.
      */
     this.signTitle = makeWorldLabel(CAPTION.signTitle);
     this.signDetail = makeWorldLabel(CAPTION.signDetail);
@@ -1191,7 +1191,6 @@ export class GameRenderer {
     this.art.outdoorDetail.alpha = indoors ? 0.25 : 1;
     this.art.outdoorObjects.alpha = indoors ? 0.35 : 1;
     this.art.outdoorForeground.alpha = indoors ? 0.35 : 1;
-    this.art.labels.alpha = indoors ? 0.45 : 1;
 
     const activeBuilding =
       player === null
@@ -1295,11 +1294,6 @@ export class GameRenderer {
       view.roof.alpha = (indoors ? 0.35 : 1) * (1 - opened);
       view.entranceMarks.visible = !standsOverMe && !isActive;
       view.entranceMarks.alpha = indoors ? 0.35 : 1;
-      // The name goes with the building. Leaving "OBSERVATORY" floating over the undercroft
-      // was half the confusion in the report — a label with nothing under it reads as a room
-      // you are standing in.
-      view.label.visible = !standsOverMe;
-      view.label.alpha = isActive ? 0 : 1;
     }
   }
 

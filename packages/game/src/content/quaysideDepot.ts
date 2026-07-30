@@ -161,6 +161,10 @@ export const quaysideMap: MapDocument = {
       { id: "quay-bollard-a", kind: "bollard", x: 700, y: 1080, w: 18, h: 18 },
       { id: "quay-bollard-b", kind: "bollard", x: 820, y: 1100, w: 18, h: 18 },
       { id: "quay-dumpster", kind: "dumpster", x: 1000, y: 760, w: 70, h: 44 },
+      // Beside the north person door, not across either freight opening.
+      { id: "quay-building-sign", kind: "sign", x: 850, y: 160, w: 44, h: 12 },
+      // East of the pad, leaving its north-south quay route untouched.
+      { id: "quay-extraction-sign", kind: "sign", x: 910, y: 1120, w: 44, h: 12 },
     ],
     dotSpawns: [],
   },
