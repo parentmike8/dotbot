@@ -169,8 +169,16 @@ export const LOT6_SOURCE: SourceBuilding = {
         { id: "lot6-cage-a", kind: "shelf", x: 420, y: 1060, w: 26, h: 220 },
         { id: "lot6-cage-b", kind: "shelf", x: 520, y: 1060, w: 26, h: 220 },
         { id: "lot6-cage-c", kind: "shelf", x: 620, y: 1060, w: 26, h: 220 },
-        { id: "lot6-cage-crate-a", kind: "crateStack", x: 700, y: 1320, w: 34, h: 34 },
-        { id: "lot6-cage-crate-b", kind: "crateStack", x: 740, y: 1380, w: 34, h: 34 },
+        /**
+         * Stacked at the foot of cage run C, not adrift in the east bay.
+         *
+         * At 700,1320 and 740,1380 these two stood diagonally 40 and 60 units apart in the
+         * middle of the basement's open east half, relating to nothing — the only thing on this
+         * floor that read as dropped rather than placed. Overflow in a cage store goes at the
+         * end of an aisle, where it is still on the run it belongs to and still out of the way.
+         */
+        { id: "lot6-cage-crate-a", kind: "crateStack", x: 620, y: 1290, w: 34, h: 34 },
+        { id: "lot6-cage-crate-b", kind: "crateStack", x: 620, y: 1330, w: 34, h: 34 },
         // Locker wall and maintenance bench along the south.
         { id: "lot6-cellar-locker-a", kind: "locker", x: 420, y: 1400, w: 26, h: 38, scannable: true },
         { id: "lot6-cellar-locker-b", kind: "locker", x: 450, y: 1400, w: 26, h: 38 },
