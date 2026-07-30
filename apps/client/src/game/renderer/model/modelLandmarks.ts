@@ -1,7 +1,7 @@
 import { FillGradient, type Graphics } from "pixi.js";
 import type { MapObject, Vec2 } from "@dotbot/game/types";
 import { stadiumAxis } from "@dotbot/game/mapModel";
-import { GRD, fillPoly } from "./modelGround";
+import { drawWater, GRD, fillPoly } from "./modelGround";
 import { movingPart } from "./modelMotion";
 import {
   contact,
@@ -73,6 +73,13 @@ function centre(o: MapObject): Vec2 {
 
 function inset(r: Rect, by: number): Rect {
   return { x: r.x + by, y: r.y + by, w: r.w - by * 2, h: r.h - by * 2 };
+}
+
+function circlePoly(cx: number, cy: number, radius: number, steps = 32): Vec2[] {
+  return Array.from({ length: steps }, (_, index) => {
+    const angle = (index / steps) * Math.PI * 2;
+    return { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius };
+  });
 }
 
 /** True when the object is longer east-west than north-south. */
@@ -438,14 +445,22 @@ const waterTankGlyph: LandmarkFn = (g, pad, o) => {
  */
 const coalingTowerGlyph: LandmarkFn = (g, pad, o) => {
   const r = rect(o);
+  const stageLift = LIFT.tower + 10;
   // The whole pad, not one layer of it: handed a single Graphics the block form paints a
   // hard black slab, and the stage came out flat as paper on the ballast.
-  contact(pad, r, LIFT.tower);
-  const top = volume(g, r, MAT.stoneWorn, LIFT.tower);
+  contact(pad, r, stageLift);
+  const top = volume(g, r, MAT.stoneWorn, stageLift);
 
   // The bunker's own division: two bins over the track, which is what a coaling
   // stage is, plus the hoist housing on the north end where it catches the light.
   const across = acrossAxis(o);
+  const buttressDepth = Math.max(5, Math.min(top.w, top.h) * 0.08);
+  for (const side of [0.08, 0.84]) {
+    const buttress = across
+      ? { x: top.x + top.w * side, y: top.y + 2, w: top.w * 0.08, h: top.h - 4 }
+      : { x: top.x + 2, y: top.y + top.h * side, w: top.w - 4, h: top.h * 0.08 };
+    inlay(g, buttress, shade(MAT.stoneWorn.top, side < 0.5 ? 1.06 : 0.77));
+  }
   inlay(g, across
     ? { x: top.x + top.w / 2 - 1.5, y: top.y + 2, w: 3, h: top.h - 4 }
     : { x: top.x + 2, y: top.y + top.h / 2 - 1.5, w: top.w - 4, h: 3 },
@@ -453,8 +468,8 @@ const coalingTowerGlyph: LandmarkFn = (g, pad, o) => {
   const hoist = across
     ? { x: top.x + top.w * 0.06, y: top.y + top.h * 0.16, w: top.w * 0.22, h: top.h * 0.68 }
     : { x: top.x + top.w * 0.16, y: top.y + top.h * 0.06, w: top.w * 0.68, h: top.h * 0.22 };
-  inlay(g, hoist, shade(MAT.iron.top, 1.06));
-  inlay(g, inset(hoist, 2), MAT.iron.front);
+  const hoistTop = volume(g, hoist, MAT.iron, buttressDepth, 1);
+  inlay(g, inset(hoistTop, 2), shade(MAT.iron.top, 0.78));
 
   // The chute mouth: the darkest hole on the sheet, and the thing that says coal.
   const chute = across
@@ -539,6 +554,78 @@ const carouselGlyph: LandmarkFn = (g, pad, o) => {
 };
 
 /**
+ * A chairoplane whose moving ring supplies the read its old frozen dots could not.
+ *
+ * The seats are deliberately large enough to carry a back and a pair of short
+ * suspension links at play zoom. One missing chair gives the rotating ring a mark
+ * the eye can track. Everything stays inside the circular deck, so the authored
+ * disc remains both silhouette and collider.
+ */
+const swingRideGlyph: LandmarkFn = (g, pad, o) => {
+  const { x: cx, y: cy } = centre(o);
+  const radius = Math.min(o.w, o.h) / 2 - 0.5;
+  contactRound(pad, cx, cy, radius, LIFT.tower);
+  cylinder(g, cx, cy, radius, MAT.iron, LIFT.mass);
+
+  const ride = movingPart(g, "spin", { x: cx, y: cy });
+  const canopy = radius * 0.34;
+  ride.circle(cx, cy, canopy).fill(typeof document === "undefined"
+    ? { color: MAT.canvas.top }
+    : new FillGradient({
+      type: "radial",
+      center: { x: 0.36, y: 0.32 },
+      innerRadius: 0,
+      outerCenter: { x: 0.5, y: 0.5 },
+      outerRadius: 0.54,
+      textureSpace: "local",
+      colorStops: [
+        { offset: 0, color: MAT.canvas.lit },
+        { offset: 0.54, color: MAT.canvas.top },
+        { offset: 1, color: shade(MAT.canvas.top, 0.72) },
+      ],
+    }));
+  ride.circle(cx, cy, canopy).stroke({ color: MAT.canvas.edge, width: 1 });
+  ride.circle(cx, cy, radius * 0.08).fill({ color: MAT.iron.edge });
+
+  const seats = 10;
+  const ring = radius * 0.72;
+  const seatWidth = radius * 0.24;
+  const seatDepth = radius * 0.15;
+  for (let index = 0; index < seats; index += 1) {
+    if (index === 7) continue;
+    const angle = (index / seats) * Math.PI * 2 + 0.16;
+    const radial = { x: Math.cos(angle), y: Math.sin(angle) };
+    const tangent = { x: -radial.y, y: radial.x };
+    const px = cx + radial.x * ring;
+    const py = cy + radial.y * ring;
+    const corners = (width: number, depth: number, inward = 0): Vec2[] => {
+      const at = { x: px - radial.x * inward, y: py - radial.y * inward };
+      return [
+        { x: at.x - tangent.x * width / 2 - radial.x * depth / 2, y: at.y - tangent.y * width / 2 - radial.y * depth / 2 },
+        { x: at.x + tangent.x * width / 2 - radial.x * depth / 2, y: at.y + tangent.y * width / 2 - radial.y * depth / 2 },
+        { x: at.x + tangent.x * width / 2 + radial.x * depth / 2, y: at.y + tangent.y * width / 2 + radial.y * depth / 2 },
+        { x: at.x - tangent.x * width / 2 + radial.x * depth / 2, y: at.y - tangent.y * width / 2 + radial.y * depth / 2 },
+      ];
+    };
+
+    const link = ring - canopy - seatDepth;
+    for (const side of [-0.32, 0.32]) {
+      ride.moveTo(
+        cx + radial.x * canopy + tangent.x * seatWidth * side,
+        cy + radial.y * canopy + tangent.y * seatWidth * side,
+      ).lineTo(
+        cx + radial.x * (canopy + link * 0.72) + tangent.x * seatWidth * side,
+        cy + radial.y * (canopy + link * 0.72) + tangent.y * seatWidth * side,
+      ).stroke({ color: shade(MAT.iron.top, 0.78), width: 1.1 });
+    }
+    fillPoly(ride, corners(seatWidth, seatDepth), MAT.canvas.edge);
+    fillPoly(ride, corners(seatWidth * 0.86, seatDepth * 0.72, seatDepth * 0.02), shade(MAT.canvas.top, 0.94));
+    const back = corners(seatWidth * 0.9, seatDepth * 0.28, -seatDepth * 0.36);
+    fillPoly(ride, back, shade(MAT.canvas.top, 0.7));
+  }
+};
+
+/**
  * A helter-skelter: a timber tower with its slide spiralling down round it.
  *
  * The one fairground form whose PLAN is unmistakably itself. A spiral is the single
@@ -547,9 +634,9 @@ const carouselGlyph: LandmarkFn = (g, pad, o) => {
  * made of marks that all share a centre. A spiral crosses every radius exactly once,
  * so there is no ring of coincident ends for the eye to read as a clock face.
  *
- * It replaced a chairoplane on this site, which had failed four times because a ride
- * at rest has no motion to draw. Nothing about a helter-skelter needs to be moving:
- * the slide is the structure.
+ * It briefly replaced the chairoplane on the fairground site. That was the wrong
+ * resolution to frozen seats and the animated ride is restored there, but this glyph
+ * remains valid for any map that authors a helter-skelter: the slide is the structure.
  */
 const helterSkelterGlyph: LandmarkFn = (g, pad, o) => {
   const { x: cx, y: cy } = centre(o);
@@ -735,10 +822,13 @@ const waltzerGlyph: LandmarkFn = (g, pad, o) => {
   // The dish, as a recess: dark near wall, lit far wall, the same inversion water uses.
   g.circle(cx, cy, radius * 0.72).fill({ color: shade(MAT.painted.top, 0.6) });
   g.circle(cx + radius * 0.04, cy + radius * 0.06, radius * 0.68).fill({ color: shade(MAT.painted.top, 0.88) });
-  // Standing water in the bottom of it.
-  g.circle(cx, cy + radius * 0.04, radius * 0.42).fill({ color: GRD.deep });
-  g.circle(cx - radius * 0.1, cy - radius * 0.04, radius * 0.16)
-    .fill({ color: shade(GRD.shallow, 1.3), alpha: 0.3 });
+  // Standing water in the bottom of it, using the world's shared recess language.
+  drawWater(
+    g,
+    circlePoly(cx, cy + radius * 0.04, radius * 0.42),
+    `${o.id}-dish-water`,
+    Math.max(4, radius * 0.045),
+  );
 
   // Cars round the inside of the rim, tipped where they came to rest.
   const cars = movingPart(g, "spin", { x: cx, y: cy });
@@ -1181,6 +1271,7 @@ export const landmarkGlyphs: Partial<Record<MapObject["kind"], LandmarkFn>> = {
   waterTank: waterTankGlyph,
   coalingTower: coalingTowerGlyph,
   carousel: carouselGlyph,
+  swingRide: swingRideGlyph,
   waltzer: waltzerGlyph,
   helterSkelter: helterSkelterGlyph,
   bigTop: bigTopGlyph,

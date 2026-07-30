@@ -62,6 +62,7 @@ type ObjectParallaxProfile = {
 const TALL_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "waterTank",
   "coalingTower",
+  "swingRide",
   "helterSkelter",
   "bigTop",
   "stele",

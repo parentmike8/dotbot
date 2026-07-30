@@ -15,6 +15,7 @@ import {
   buildLeafFall, buildTrailMarks, type AmbientMover, type LeafFall, type TrailMarks,
 } from "./model/modelMotion";
 import { buildWaterSurfaces, type WaterSurface } from "./model/modelWater";
+import { buildSurfaceGrain, surfaceGrainEnabled } from "./model/modelGrain";
 import type { ParallaxObjectView } from "./model/modelParallax";
 import { SHADOW_ALPHA, V, type ShadowPad } from "./model/tone";
 import { drawDotDisc } from "./dotArt";
@@ -157,7 +158,10 @@ const LABEL_FONT = "system-ui, -apple-system, Segoe UI, sans-serif";
 // Entry point
 // ---------------------------------------------------------------------------
 
-export function buildMapArt(map: MapDocument): MapArt {
+export function buildMapArt(
+  map: MapDocument,
+  options: { surfaceGrain?: boolean } = {},
+): MapArt {
   const root = new Container();
   const foreground = new Container();
   const outdoorForeground = new Container();
@@ -206,6 +210,14 @@ export function buildMapArt(map: MapDocument): MapArt {
     ...buildings.flatMap((art) => art.floors.flatMap((floor) => floor.movers)),
   ];
   root.addChild(ground, outdoorDetail, outdoorObjects, buildingsLayer);
+  const grainEnabled = options.surfaceGrain
+    ?? (typeof globalThis.location === "undefined"
+      ? false
+      : surfaceGrainEnabled(globalThis.location.search));
+  if (grainEnabled) {
+    const grain = buildSurfaceGrain(map.width, map.height);
+    if (grain) root.addChild(grain);
+  }
   /**
    * CANOPIES AND LEAVES DRAW ABOVE THE BOTS, on the one layer built for that.
    *

@@ -28,9 +28,9 @@ import { SHADOW_ALPHA, SUN, type ShadowPad } from "./tone";
  * register with its own shadows — and the lab's still shots stop being trustworthy.
  *
  * WHY THE RIDES ARE DRAWN OBJECT BY OBJECT AND DOWNTOWN IS BUILT WHOLE: the fairground's
- * helter-skelter and big top fill with a `FillGradient`, which builds itself against a real
+ * swing ride and big top fill with a `FillGradient`, which builds itself against a real
  * canvas, and `src/test/browserGlobals.ts` deliberately does not pretend to be a DOM. So
- * the two rides go through `drawModelObject` — the same entry point the builder uses — and
+ * the rides go through `drawModelObject` — the same entry point the builder uses — and
  * downtown, which has no gradient glyph, carries the builder-wiring and the sway coverage.
  */
 describe("ambient motion", () => {
@@ -44,7 +44,7 @@ describe("ambient motion", () => {
   };
 
   const rides = worldMap.outdoor.objects.filter(
-    (o) => o.kind === "carousel" || o.kind === "waltzer",
+    (o) => o.kind === "carousel" || o.kind === "swingRide" || o.kind === "waltzer",
   );
 
   const object = (over: Partial<MapObject> = {}): MapObject => ({
@@ -65,15 +65,15 @@ describe("ambient motion", () => {
   });
 
   it("gives the world's rides a turning part each", () => {
-    // The carousel and the waltzer. If a third ride arrives this number moves, and the
+    // Carousel, swing ride and waltzer. If another ride arrives this number moves, and the
     // point of asserting it is that a ride arriving WITHOUT motion should be noticed.
-    expect(rides).toHaveLength(2);
+    expect(rides).toHaveLength(3);
     const spins = rides.flatMap((ride) => drawn(ride).movers);
-    expect(spins).toHaveLength(2);
+    expect(spins).toHaveLength(3);
     for (const spin of spins) expect(spin.kind).toBe("spin");
-    // Opposite directions: two rides in one region turning the same way at the same speed
-    // read as one object drawn twice.
-    expect(Math.sign(spins[0].drift)).not.toBe(Math.sign(spins[1].drift));
+    // There is a reverse among the three, and their magnitudes differ.
+    expect(new Set(spins.map((spin) => Math.sign(spin.drift)))).toEqual(new Set([-1, 1]));
+    expect(new Set(spins.map((spin) => Math.abs(spin.drift))).size).toBe(3);
   });
 
   it("turns a ride slowly, unevenly, and never backwards", () => {

@@ -53,6 +53,7 @@ const FRAMES: Array<{ id: string; title: string; rect: Rect; floorId?: string }>
   // The two seams, close in. A transition is the one thing a region-sized crop cannot show.
   { id: "seam-yard", title: "Main St crosses into the yard", rect: { x: 1900, y: 380, w: 1400, h: 1100 } },
   { id: "seam-fair", title: "Third Ave runs out of the city", rect: { x: 700, y: 1200, w: 1300, h: 1100 } },
+  { id: "coaling-tower", title: "The coaling tower at native scale", rect: { x: 2370, y: 245, w: 470, h: 420 } },
   /**
    * The attractions, close enough to judge one glyph at a time.
    *
@@ -60,7 +61,7 @@ const FRAMES: Array<{ id: string; title: string; rect: Rect; floorId?: string }>
    * two rides were shipped four times each on the strength of region crops before anyone
    * looked at one on its own. These are at roughly play zoom.
    */
-  { id: "rides-west", title: "Helter-skelter and carousel", rect: { x: 300, y: 1900, w: 1200, h: 750 } },
+  { id: "rides-west", title: "Swing ride and carousel", rect: { x: 300, y: 1900, w: 1200, h: 750 } },
   { id: "rides-east", title: "The big top, at the end of the midway", rect: { x: 1700, y: 2400, w: 800, h: 700 } },
   // The waltzer had no close crop of its own — it fell between `rides-west`, which stops
   // 90 units above it, and the region frame, where a 300-unit ride is a smudge. It is one
