@@ -329,11 +329,10 @@ export const railYard: RegionParts = {
      * on to the temple, and legible as a way out from anywhere in the yard.
      */
     /**
-     * The 240-wide gate follows the visible spur on the pyramid's east side.
-     *
-     * The earlier opening sat west of the trail, where the pyramid left only 20 units
-     * between its north face and this fence. Moving the opening onto the authored trail
-     * keeps the fence, wagon, and full-size traversal route saying the same thing.
+     * The 240-wide gate contains the abandoned rail formation on its west side and the
+     * continuing foot trail on its east. The pyramid leaves no usable route behind the
+     * old western opening; this opening keeps the ballast, stop, clearing and full-size
+     * traversal lane in one composition.
      */
     ...fenceRun("yard-fence-s", "h", S1, W0 - 26, 4200, 26, [[3600, 3840]]),
   ],

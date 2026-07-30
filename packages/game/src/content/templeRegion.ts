@@ -183,18 +183,19 @@ const cityPlan: CityPlan = {
       ], (t) => 150 - t * 30),
     },
     /**
-     * The spur bed, now entirely NORTH of the yard's back fence.
+     * The spur bed through the yard's back gate.
      *
-     * The 660-wide pyramid reaches y 1820 and the fence is at 1774, so there are 46 units
-     * between them — which is not room for a railway. The company therefore got as far as
-     * the fence and no further, which is a better version of the same story than stopping
-     * 40 units short of a wall. Everything it left is on the yard side.
+     * The 660-wide pyramid reaches y 1820 and leaves no railway-width run west of its east
+     * face. The formation therefore occupies the 240-wide fence opening, with the stopped
+     * rail on its west side and a walking lane continuing round the pyramid on its east.
+     * Ballast, fence opening and clearing now make one readable exit instead of three
+     * unrelated marks.
      *
      * The bed ran 470 units south in the first draft and put the buffer stop and the wagon
      * INSIDE the terrace wall, with the wagon on top of a Dot in the tomb chamber — found
      * only because `auditDotPlacement` complained about the Dot.
      */
-    { id: "tmp-spur-bed", kind: "ballast", points: boxPoly(3300, 1620, 140, 190) },
+    { id: "tmp-spur-bed", kind: "ballast", points: boxPoly(3600, 1620, 240, 190) },
     {
       /**
        * The trail from the spur's end round the pyramid's east flank to the plaza.
@@ -206,8 +207,8 @@ const cityPlan: CityPlan = {
       id: "tmp-spur-trail",
       kind: "clearing",
       points: ribbonPoly([
-        { x: 3720, y: 1815 },
-        { x: 3700, y: 1870 },
+        { x: 3770, y: 1815 },
+        { x: 3720, y: 1900 },
         { x: 3700, y: 2350 },
         { x: 3820, y: PLAZA.y + 60 },
       ], (t) => 140 - t * 20),
@@ -450,20 +451,13 @@ const templeObjects: MapObject[] = [
   obj.authored("log-2680-2860", "log", 2680, 2860, 200, 46, { facing: "E" }),
 
   /**
-   * The spur's last hundred units: a buffer stop where the company stopped, and the
-   * wagon they left on it. It is the one modern thing in the region and it is broken,
-   * which is the world's gradient landing on its final beat.
+   * The spur's last hundred units: track and stop in the west side of the fence opening,
+   * with the abandoned wagon beside the approach and a full-size walking lane on the east.
+   * The stop is flush with the track's end but wholly inside the opening, so the hardware
+   * reads as the reason the railway ends without becoming part of the continuous fence.
    */
-  /**
-   * The last hundred units of the spur, all of it north of the fence now.
-   *
-   * Three objects in three distinct lanes of a 240-wide gate, because they were in two
-   * before and the buffer stop sat on the wagon. Track, then the stop flush at its end,
-   * then the wagon beside both — 24 units clear of the pyramid's north face, which is
-   * every unit there is.
-   */
-  obj.authored("track-3330-1660", "track", 3330, 1660, 60, 90),
-  obj.authored("buffer-stop-3330-1750", "bufferStop", 3330, 1750, 84, 46, { facing: "S" }),
+  obj.authored("track-3650-1660", "track", 3650, 1660, 60, 90),
+  obj.authored("buffer-stop-3638-1750", "bufferStop", 3638, 1750, 84, 46, { facing: "S" }),
   /**
    * The wagon, east of the shed's outer arc.
    *
@@ -472,7 +466,7 @@ const templeObjects: MapObject[] = [
    * whole west end was — and in both cases the bounding box could not have told anyone,
    * because a fan of engine bays is a 922 x 406 box that the shed occupies a third of.
    */
-  obj.authored("wagon-3420-1600", "wagon", 3420, 1600, 74, 174, { facing: "N" }),
+  obj.authored("wagon-3550-1600", "wagon", 3550, 1600, 74, 174, { facing: "N" }),
 
   /**
    * Place names here are physical signs now, using the same plate as Downtown.

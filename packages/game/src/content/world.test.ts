@@ -6,7 +6,7 @@ import { polygonContains } from "../geometry";
 import { validateInsertionMap } from "../insertion";
 import { auditBuildingFloorQuality, auditDotPlacement } from "../mapQuality";
 import { findNavigationPath } from "../navigation";
-import { OUTDOOR_FLOOR_ID } from "../types";
+import { OUTDOOR_FLOOR_ID, type Rect } from "../types";
 import { roundhouse, TABLE } from "./roundhouse";
 import { worldMap } from "./world";
 
@@ -148,12 +148,67 @@ describe("the world is one place", () => {
  * scenery itself promises.
  */
 describe("the abandoned spur is a traversable gate", () => {
+  const fence = worldMap.outdoor.walls
+    .filter((wall) => wall.id.startsWith("yard-fence-s-"))
+    .sort((a, b) => a.x - b.x);
+  const gate = {
+    left: fence[0].x + fence[0].w,
+    right: fence[1].x,
+    top: fence[0].y,
+    bottom: fence[0].y + fence[0].h,
+  };
+
+  it("puts the visible trail through the same opening as the collider", () => {
+    const trail = worldMap.outdoor.regions?.find((region) => region.id === "tmp-spur-trail")!;
+    const stop = worldMap.outdoor.objects.find((object) =>
+      object.kind === "bufferStop"
+      && object.y < gate.bottom
+      && object.y + object.h > gate.top
+    )!;
+    const crossingY = gate.bottom + RADIUS;
+    const passableLeft = Math.max(gate.left, stop.x + stop.w) + RADIUS;
+    const passableRight = gate.right - RADIUS;
+    const visibleCrossing = Array.from(
+      { length: Math.floor((passableRight - passableLeft) / 4) + 1 },
+      (_, index) => ({ x: passableLeft + index * 4, y: crossingY }),
+    ).some((point) => polygonContains(trail.points, point));
+
+    expect(visibleCrossing).toBe(true);
+  });
+
+  it("keeps the abandoned rail hardware in the gate without embedding it in the fence", () => {
+    const hardware = worldMap.outdoor.objects.filter((object) =>
+      ["bufferStop", "track", "wagon"].includes(object.kind)
+      && object.y >= 1_600
+      && object.y < gate.bottom
+    );
+    expect(hardware.map((object) => object.kind).sort()).toEqual(["bufferStop", "track", "wagon"]);
+
+    const track = hardware.find((object) => object.kind === "track")!;
+    const stop = hardware.find((object) => object.kind === "bufferStop")!;
+    const wagon = hardware.find((object) => object.kind === "wagon")!;
+    expect(track.x + track.w / 2).toBe(stop.x + stop.w / 2);
+    expect(stop.x).toBeGreaterThanOrEqual(gate.left);
+    expect(stop.x + stop.w).toBeLessThanOrEqual(gate.right);
+    expect(track.x - (wagon.x + wagon.w)).toBeGreaterThanOrEqual(0);
+    expect(track.x - (wagon.x + wagon.w)).toBeLessThanOrEqual(RADIUS * 2);
+
+    const overlaps = (a: Rect, b: Rect) =>
+      a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    expect(hardware.flatMap((object) => fence
+      .filter((wall) => overlaps(object, wall))
+      .map((wall) => `${object.id} overlaps ${wall.id}`))).toEqual([]);
+
+    const eastLane = gate.right - (stop.x + stop.w);
+    expect(eastLane).toBeGreaterThanOrEqual(RADIUS * 3);
+  });
+
   it("crosses the yard fence locally", () => {
     const path = findNavigationPath(
       worldMap,
       OUTDOOR_FLOOR_ID,
-      { x: 3720, y: 1680 },
-      { x: 3720, y: 1900 },
+      { x: 3770, y: 1680 },
+      { x: 3770, y: 1900 },
       RADIUS,
     );
     expect(path.length).toBeGreaterThan(0);
