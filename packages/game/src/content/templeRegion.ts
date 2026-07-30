@@ -7,6 +7,7 @@ import {
   boxPoly,
   dots,
   objects,
+  patrol,
   radial,
   rhythm,
   ribbonPoly,
@@ -520,7 +521,12 @@ export const templeRegion: RegionParts = {
     { id: "tmp-spur", name: "END OF LINE", position: { x: 3700, y: 2500 } },
   ],
   botSpawns: [
-    { id: "tmp-1", name: "Jade", squadId: "rival-19", isAmbient: true, color: "#4f9a7a", position: { x: 3120, y: 2740 } },
+    {
+      id: "tmp-1", name: "Jade", squadId: "rival-19", faction: "ambient", isAmbient: true, color: "#4f9a7a", position: { x: 3120, y: 2740 },
+      patrol: patrol("temple-plaza-edge", "Guard the temple plaza approach and ceremonial stair axis.", [
+        { x: 3120, y: 2740 }, { x: 3480, y: 2716 }, { x: 3504, y: 3000 }, { x: 3000, y: 2952 }, { x: 3000, y: 2820 },
+      ]),
+    },
     /**
      * On the plaza's west half, and the second attempt at moving it.
      *
@@ -530,11 +536,32 @@ export const templeRegion: RegionParts = {
      * other and neither could plan a first step. Both checks caught it, which is the point
      * of having a spawn-clearance test and a bots-actually-move test rather than one.
      */
-    { id: "tmp-2", name: "Obsidian", squadId: "rival-20", isAmbient: true, color: "#4a4a55", position: { x: 3020, y: 2880 } },
+    {
+      id: "tmp-2", name: "Obsidian", squadId: "rival-20", faction: "ambient", isAmbient: true, color: "#4a4a55", position: { x: 3020, y: 2880 },
+      patrol: patrol("temple-observatory-junction", "Watch the observatory and temple trail junction.", [
+        { x: 3020, y: 2880 }, { x: 2760, y: 3060 }, { x: 3124, y: 3200 }, { x: 3340, y: 3000 },
+      ]),
+    },
     // On the summit platform outside the shrine door, which is at y 2180. The old
     // position — the pyramid's centre, 170 down — is the middle of the high altar,
     // and "the centre of the landmark" is the middle of a solid every time.
-    { id: "tmp-3", name: "Copal", squadId: "rival-21", isAmbient: true, color: "#a8763f", position: { x: PYRAMID.x + PYRAMID.w / 2, y: 2230 }, floorId: "temple:ROOF" },
-    { id: "tmp-4", name: "Quetzal", squadId: "rival-22", isAmbient: true, color: "#3f8fa8", position: { x: OBSERVATORY.x + 40, y: OBSERVATORY.y + 60 }, floorId: "observatory:GROUND" },
+    {
+      id: "tmp-3", name: "Copal", squadId: "rival-21", faction: "ambient", isAmbient: true, color: "#a8763f", position: { x: PYRAMID.x + PYRAMID.w / 2, y: 2230 }, floorId: "temple:ROOF",
+      patrol: patrol("temple-summit", "Guard the summit shrine door and platform edge.", [
+        { x: PYRAMID.x + PYRAMID.w / 2, y: 2230 },
+        { x: PYRAMID.x + PYRAMID.w / 2 + 180, y: 2320 },
+        { x: PYRAMID.x + PYRAMID.w / 2, y: 2368 },
+        { x: PYRAMID.x + PYRAMID.w / 2 - 180, y: 2320 },
+      ]),
+    },
+    {
+      id: "tmp-4", name: "Quetzal", squadId: "rival-22", faction: "ambient", isAmbient: true, color: "#3f8fa8", position: { x: OBSERVATORY.x + 40, y: OBSERVATORY.y + 60 }, floorId: "observatory:GROUND",
+      patrol: patrol("observatory-instrument-floor", "Walk the observatory instrument, entry, and stair-side floor.", [
+        { x: OBSERVATORY.x + 40, y: OBSERVATORY.y + 60 },
+        { x: OBSERVATORY.x + 220, y: OBSERVATORY.y + 60 },
+        { x: OBSERVATORY.x + 220, y: OBSERVATORY.y + 240 },
+        { x: OBSERVATORY.x - 32, y: OBSERVATORY.y + 240 },
+      ]),
+    },
   ],
 };

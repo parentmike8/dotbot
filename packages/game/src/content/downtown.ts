@@ -4,7 +4,7 @@ import { beaconHouse } from "./beaconHouse";
 import { civicTower } from "./civicTower";
 import { lot6Depot } from "./lot6Depot";
 import { mercyClinic } from "./mercyClinic";
-import type { RegionParts } from "./regionKit";
+import { patrol, type RegionParts } from "./regionKit";
 import type {
   BotSpawn,
   DotSpawn,
@@ -460,19 +460,69 @@ function outdoorPlan(): OutdoorPlan {
 // ---------------------------------------------------------------------------
 
 const botSpawns: BotSpawn[] = [
-  { id: "player", name: "You", squadId: "alpha", controller: "human", color: "#ff3b6b", position: { x: 300, y: 920 } },
-  { id: "ally-1", name: "Indigo", squadId: "alpha", color: "#2f80ed", position: { x: 380, y: 920 } },
-  { id: "ally-2", name: "Sky", squadId: "alpha", color: "#56ccf2", position: { x: 250, y: 890 } },
-  { id: "enemy-1", name: "Ochre", squadId: "rival-1", isAmbient: true, color: "#f2994a", position: { x: 2280, y: 690 } },
-  { id: "enemy-2", name: "Mint", squadId: "rival-2", isAmbient: true, color: "#27ae60", position: { x: 900, y: 1520 } },
-  { id: "enemy-3", name: "Violet", squadId: "rival-3", isAmbient: true, color: "#9b51e0", position: { x: 1620, y: 800 } },
-  { id: "enemy-4", name: "Amber", squadId: "rival-4", isAmbient: true, color: "#f2c94c", position: { x: 1100, y: 320 } },
-  { id: "enemy-5", name: "Slate", squadId: "rival-5", isAmbient: true, color: "#7f8c8d", position: { x: 500, y: 300 }, floorId: "mercy:F1" },
-  { id: "enemy-6", name: "Coal", squadId: "rival-6", isAmbient: true, color: "#4f5b66", position: { x: 480, y: 1240 }, floorId: "lot6:B1" },
-  { id: "enemy-7", name: "Coral", squadId: "rival-7", isAmbient: true, color: "#ff7f6e", position: { x: 1810, y: 460 }, floorId: "civic:F4" },
-  { id: "enemy-8", name: "Plum", squadId: "rival-8", isAmbient: true, color: "#7d5ba6", position: { x: 1700, y: 430 }, floorId: "civic:F7" },
-  { id: "enemy-9", name: "Sage", squadId: "rival-9", isAmbient: true, color: "#6b8f71", position: { x: 1800, y: 1236 }, floorId: "beacon:F1" },
-  { id: "enemy-10", name: "Rose", squadId: "rival-10", isAmbient: true, color: "#c75b7a", position: { x: 1750, y: 1120 }, floorId: "beacon:ROOF" },
+  { id: "player", name: "You", squadId: "alpha", faction: "squad", controller: "human", color: "#ff3b6b", position: { x: 300, y: 920 } },
+  { id: "ally-1", name: "Indigo", squadId: "alpha", faction: "squad", color: "#2f80ed", position: { x: 380, y: 920 } },
+  { id: "ally-2", name: "Sky", squadId: "alpha", faction: "squad", color: "#56ccf2", position: { x: 250, y: 890 } },
+  {
+    id: "enemy-1", name: "Ochre", squadId: "rival-1", faction: "ambient", isAmbient: true, color: "#f2994a", position: { x: 2280, y: 690 },
+    patrol: patrol("civic-east-watch", "Watch the east car park and Civic Tower service edge.", [
+      { x: 2280, y: 690 }, { x: 2100, y: 690 }, { x: 2124, y: 300 }, { x: 2280, y: 324 },
+    ]),
+  },
+  {
+    id: "enemy-2", name: "Mint", squadId: "rival-2", faction: "ambient", isAmbient: true, color: "#27ae60", position: { x: 900, y: 1520 },
+    patrol: patrol("depot-south-yard", "Watch the southwest depot approach and extraction yard.", [
+      { x: 900, y: 1520 }, { x: 1220, y: 1520 }, { x: 1220, y: 1360 }, { x: 900, y: 1360 },
+    ]),
+  },
+  {
+    id: "enemy-3", name: "Violet", squadId: "rival-3", faction: "ambient", isAmbient: true, color: "#9b51e0", position: { x: 1620, y: 800 },
+    patrol: patrol("civic-south-frontage", "Guard the Civic Tower south entrance and Main St frontage.", [
+      { x: 1620, y: 800 }, { x: 1940, y: 800 }, { x: 1940, y: 660 }, { x: 1620, y: 660 },
+    ]),
+  },
+  {
+    id: "enemy-4", name: "Amber", squadId: "rival-4", faction: "ambient", isAmbient: true, color: "#f2c94c", position: { x: 1100, y: 320 },
+    patrol: patrol("northwest-yard-seam", "Watch the northwest plaza and service-yard seam.", [
+      { x: 1100, y: 320 }, { x: 1320, y: 320 }, { x: 1320, y: 540 }, { x: 1100, y: 540 },
+    ]),
+  },
+  {
+    id: "enemy-5", name: "Slate", squadId: "rival-5", faction: "ambient", isAmbient: true, color: "#7f8c8d", position: { x: 500, y: 300 }, floorId: "mercy:F1",
+    patrol: patrol("mercy-ward-round", "Walk Mercy Clinic F1 ward circulation.", [
+      { x: 500, y: 300 }, { x: 700, y: 300 }, { x: 700, y: 430 }, { x: 396, y: 406 }, { x: 300, y: 300 },
+    ]),
+  },
+  {
+    id: "enemy-6", name: "Coal", squadId: "rival-6", faction: "ambient", isAmbient: true, color: "#4f5b66", position: { x: 480, y: 1240 }, floorId: "lot6:B1",
+    patrol: patrol("lot6-bonded-cages", "Guard Lot 6 bonded cage storage.", [
+      { x: 480, y: 1240 }, { x: 580, y: 1240 }, { x: 540, y: 1360 }, { x: 480, y: 1360 },
+    ]),
+  },
+  {
+    id: "enemy-7", name: "Coral", squadId: "rival-7", faction: "ambient", isAmbient: true, color: "#ff7f6e", position: { x: 1810, y: 460 }, floorId: "civic:F4",
+    patrol: patrol("civic-operations", "Guard Civic F4 operations and its incident table.", [
+      { x: 1810, y: 460 }, { x: 1940, y: 450 }, { x: 1940, y: 324 }, { x: 1580, y: 324 }, { x: 1580, y: 440 },
+    ]),
+  },
+  {
+    id: "enemy-8", name: "Plum", squadId: "rival-8", faction: "ambient", isAmbient: true, color: "#7d5ba6", position: { x: 1700, y: 430 }, floorId: "civic:F7",
+    patrol: patrol("civic-plant-inspection", "Inspect Civic F7 plant and the south maintenance bench.", [
+      { x: 1700, y: 430 }, { x: 1880, y: 430 }, { x: 1740, y: 438 }, { x: 1600, y: 438 },
+    ]),
+  },
+  {
+    id: "enemy-9", name: "Sage", squadId: "rival-9", faction: "ambient", isAmbient: true, color: "#6b8f71", position: { x: 1800, y: 1236 }, floorId: "beacon:F1",
+    patrol: patrol("beacon-residential-corridor", "Walk Beacon F1's shared residential corridor.", [
+      { x: 1800, y: 1236 }, { x: 1640, y: 1236 }, { x: 1744, y: 1312 }, { x: 1936, y: 1288 }, { x: 1936, y: 1236 },
+    ]),
+  },
+  {
+    id: "enemy-10", name: "Rose", squadId: "rival-10", faction: "ambient", isAmbient: true, color: "#c75b7a", position: { x: 1750, y: 1120 }, floorId: "beacon:ROOF",
+    patrol: patrol("beacon-roof-round", "Guard Beacon's roof garden, terrace, and service corner.", [
+      { x: 1750, y: 1120 }, { x: 1900, y: 1064 }, { x: 2020, y: 1200 }, { x: 1900, y: 1360 }, { x: 1740, y: 1320 },
+    ]),
+  },
 ];
 
 const authoredDowntownMap: MapDocument = {

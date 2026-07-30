@@ -10,12 +10,22 @@ import type {
   MapObject,
   ObjectKind,
   ParkArea,
+  PatrolRoute,
   PowerupType,
   Road,
   Surface,
   Vec2,
   WallSegment,
 } from "../types";
+
+/** Production patrol authoring: ordered points plus the responsibility they express. */
+export function patrol(id: string, purpose: string, waypoints: Vec2[]): PatrolRoute {
+  return {
+    id,
+    purpose,
+    waypoints: waypoints.map((position) => ({ position })),
+  };
+}
 
 /**
  * Authoring helpers shared by every region, and the reason regions exist at all.

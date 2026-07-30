@@ -19,6 +19,7 @@ export {
 } from "./doorwayClearance";
 export { CONTRACT_ACTIVE_CAP, CONTRACT_OFFER_COUNT, contractDayStamp, contractObjectiveLabel, contractSatisfied, deriveContractTemplates, generateContractOffers } from "./contracts";
 export { downtownMap } from "./content/downtown";
+export { auditPatrolRoutes } from "./patrol";
 export {
   BASE_OBJECT_KINDS,
   BASE_KIND_ZONES,

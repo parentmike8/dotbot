@@ -769,20 +769,25 @@ describe.each(SHIPPED_MAPS)("every shipped map, not just the regression map: %s"
    * progress: a bot on the signal box's operating floor covers 16 units in three
    * seconds because the room is 300 wide, and that is correct behaviour.
    */
-  it("gets every AI bot moving within three seconds", { timeout: 30_000 }, async () => {
+  it("gets every authored ambient patrol moving within three seconds", { timeout: 30_000 }, async () => {
     const sim = await DotBotSimulation.create({ map, config: defaultGameConfig });
     const from = new Map(sim.getSnapshot().bots.map((bot) => [bot.id, { ...bot.position }]));
+    const ambientIds = new Set(
+      map.botSpawns
+        .filter((spawn) => spawn.faction === "ambient" || (spawn.faction === undefined && spawn.isAmbient))
+        .map((spawn) => spawn.id),
+    );
     for (let tick = 0; tick < 180; tick += 1) sim.step();
 
     const travelled = sim
       .getSnapshot()
-      .bots.filter((bot) => bot.id !== "player" && from.has(bot.id))
+      .bots.filter((bot) => ambientIds.has(bot.id) && from.has(bot.id))
       .map((bot) => {
         const start = from.get(bot.id)!;
         return { id: bot.id, moved: Math.hypot(bot.position.x - start.x, bot.position.y - start.y) };
       });
     sim.dispose();
-    // The base shells ship the player alone; there is nothing here to assert.
+    // Base shells and maps without ambient guards have nothing here to assert.
     if (travelled.length === 0) return;
 
     expect(travelled.filter((bot) => bot.moved < 10).map((bot) => bot.id), "these bots never moved at all").toEqual([]);
