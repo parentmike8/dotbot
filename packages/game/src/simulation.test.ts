@@ -2441,16 +2441,19 @@ describe("DotBotSimulation", () => {
   });
 
   it("classifies noise audibility across rooms and floors", () => {
-    const street = { x: 1000, y: 660 };
+    const street = { x: 500, y: 620 };
     const clinicLobby = { x: 500, y: 500 };
     const clinicWardF1 = { x: 400, y: 250 };
     const depotB1 = { x: 500, y: 1200 };
 
-    // Same arena: always audible, clear ring.
-    expect(classifyNoise(downtownMap, "outdoor", street, "outdoor", { x: 1200, y: 700 }, 0.3)).toEqual({
+    // Same arena: a nearby quiet sound is audible and clear.
+    expect(classifyNoise(downtownMap, "outdoor", street, "outdoor", { x: 650, y: 620 }, 0.3)).toEqual({
       muffled: false,
       vertical: 0,
     });
+
+    // Even the loudest sound does not broadcast across the whole outdoor plan.
+    expect(classifyNoise(downtownMap, "outdoor", street, "outdoor", { x: 1200, y: 700 }, 1)).toBeNull();
 
     // Street to inside a ground floor: loud only, muffled, no chevron.
     expect(classifyNoise(downtownMap, "outdoor", street, "outdoor", clinicLobby, 0.8)).toEqual({

@@ -179,6 +179,24 @@ describe("ambient AI faction and sensory contract", () => {
     sim.dispose();
   });
 
+  it("does not turn one outdoor dash into a plan-wide ambient alert", async () => {
+    const wall = { id: "screen", x: 220, y: 20, w: 20, h: 660 };
+    const sim = await simulation([
+      player("player", "alpha", { x: 100, y: 300 }),
+      ambient("near-guard", { x: 350, y: 300 }),
+      ambient("distant-guard", { x: 720, y: 300 }),
+    ], [wall]);
+
+    sim.applyInput("player", { move: { x: 0, y: 1 }, dash: true });
+    sim.step();
+
+    expect(internals(sim).bots.get("near-guard")?.aiAlert).toMatchObject({ targetId: "player" });
+    expect(objective(sim, "near-guard").intent).toBe("investigate");
+    expect(internals(sim).bots.get("distant-guard")?.aiAlert).toBeUndefined();
+    expect(objective(sim, "distant-guard").intent).toBe("patrol");
+    sim.dispose();
+  });
+
   it("searches the last-known area without omniscient pursuit, then returns to patrol", async () => {
     const sim = await simulation([
       player("player", "alpha", { x: 430, y: 300 }),

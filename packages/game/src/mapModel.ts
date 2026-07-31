@@ -703,6 +703,21 @@ export function stairConnections(map: MapDocument): Map<string, Set<string>> {
 }
 
 const LOUD_THRESHOLD = 0.6;
+/**
+ * Noise is local information, not a plan-wide broadcast.
+ *
+ * `resolvePlan` deliberately treats all outdoor ground as one plan. Before this
+ * range existed, a single dash in Downtown could therefore alert a patrol in the
+ * Temple at the opposite corner of the world. Quiet sounds now carry roughly
+ * across one room; the loudest impact carries 360 world units.
+ */
+const NOISE_BASE_RANGE_PX = 96;
+const NOISE_LOUD_RANGE_PX = 264;
+
+export function noiseHearingRange(loudness: number): number {
+  const boundedLoudness = Math.max(0, Math.min(1, loudness));
+  return NOISE_BASE_RANGE_PX + boundedLoudness * NOISE_LOUD_RANGE_PX;
+}
 
 export type NoisePresentation = {
   /** Muffled = heard through walls or floors; rendered as a dashed ring. */
@@ -726,6 +741,11 @@ export function classifyNoise(
   noisePosition: Vec2,
   loudness: number,
 ): NoisePresentation | null {
+  if (Math.hypot(listenerPosition.x - noisePosition.x, listenerPosition.y - noisePosition.y)
+      > noiseHearingRange(loudness)) {
+    return null;
+  }
+
   const listener = resolvePlan(map, listenerFloorId, listenerPosition);
   const noise = resolvePlan(map, noiseFloorId, noisePosition);
 
