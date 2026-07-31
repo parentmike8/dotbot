@@ -77,7 +77,27 @@ fleet_id=$(aws gamelift create-fleet "${profile_args[@]}" \
   --query 'FleetAttributes.FleetId' --output text)
 
 echo "Created $fleet_id; AWS temporarily starts one instance while activating the fleet."
-aws gamelift wait fleet-active "${profile_args[@]}" --region "$region" --fleet-ids "$fleet_id"
+deadline=$((SECONDS + 1200))
+while true; do
+  fleet_status=$(aws gamelift describe-fleet-attributes "${profile_args[@]}" \
+    --region "$region" --fleet-ids "$fleet_id" \
+    --query 'FleetAttributes[0].Status' --output text)
+  case "$fleet_status" in
+    ACTIVE)
+      break
+      ;;
+    ERROR|TERMINATED)
+      echo "Fleet $fleet_id entered terminal status $fleet_status; activation stopped." >&2
+      exit 1
+      ;;
+  esac
+  if ((SECONDS >= deadline)); then
+    echo "Fleet $fleet_id did not become ACTIVE within 20 minutes; activation stopped." >&2
+    exit 1
+  fi
+  echo "Fleet $fleet_id is $fleet_status; waiting for ACTIVE."
+  sleep 15
+done
 
 # Enforce a hard one-instance ceiling. Managed capacity can scale an idle fleet
 # to zero and wake one instance when a new game session is requested.

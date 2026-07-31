@@ -11,6 +11,6 @@ chmod 0555 \
 test -f "$game_root/server/index.js"
 test -f "$game_root/node/bin/node"
 test -f "$game_root/gamelift-adapter"
+test -x "$game_root/gamelift-adapter"
 
 "$game_root/node/bin/node" --version
-"$game_root/gamelift-adapter" --help >/dev/null 2>&1 || true
