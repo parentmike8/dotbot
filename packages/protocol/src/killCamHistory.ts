@@ -1,6 +1,6 @@
 import { contextKey, doorEntityCollisionRect, physicsFloorId } from "@dotbot/game/mapModel";
 import { distance } from "@dotbot/game/math";
-import type { DoorEntity, DownCause, GameSnapshot, MapDocument } from "@dotbot/game/types";
+import type { DoorEntity, DownCause, GameSnapshot, MapDocument, SimEvent } from "@dotbot/game/types";
 import { hasLineOfSight, OUTDOOR_SIGHT, seesOutdoors } from "@dotbot/game/visibility";
 import type { KillCamActor, KillCamClip, KillCamFrame } from "./messages";
 
@@ -14,11 +14,12 @@ type HistoryFrame = {
 };
 
 type KillCamHistoryOptions = {
-  /** Four seconds at the shipped 60 Hz simulation rate. */
+  /** Retained simulation ticks; defaults to six seconds at shipped 60 Hz. */
   historyTicks?: number;
 };
 
-const DEFAULT_HISTORY_TICKS = 4 * 60;
+export const KILL_CAM_HISTORY_SECONDS = 6;
+const DEFAULT_HISTORY_TICKS = KILL_CAM_HISTORY_SECONDS * 60;
 const DOOR_CAPTURE_RANGE = OUTDOOR_SIGHT + 80;
 
 /**
@@ -28,6 +29,7 @@ const DOOR_CAPTURE_RANGE = OUTDOOR_SIGHT + 80;
  */
 export class KillCamHistory {
   private readonly frames: HistoryFrame[] = [];
+  private readonly impacts: Array<Extract<SimEvent, { type: "hit" }>> = [];
   private readonly historyTicks: number;
 
   constructor(
@@ -39,6 +41,18 @@ export class KillCamHistory {
 
   get frameCount(): number {
     return this.frames.length;
+  }
+
+  /** Retain authoritative hits independently of the 20 Hz visual sampling. */
+  recordEvents(events: readonly SimEvent[]): void {
+    for (const event of events) {
+      if (event.type !== "hit") continue;
+      this.impacts.push({
+        ...event,
+        position: { ...event.position },
+        direction: { ...event.direction },
+      });
+    }
   }
 
   record(snapshot: GameSnapshot): void {
@@ -54,6 +68,7 @@ export class KillCamHistory {
     else this.frames.push(frame);
     const oldestTick = tick - this.historyTicks;
     while (this.frames[0] && this.frames[0].tick < oldestTick) this.frames.shift();
+    while (this.impacts[0] && this.impacts[0].tick < oldestTick) this.impacts.shift();
   }
 
   createClip(victimId: string, sourceBotId: string | undefined, cause: DownCause): KillCamClip | null {
@@ -107,6 +122,16 @@ export class KillCamHistory {
       deathTick: cause.tick,
       tickHz: selected.at(-1)?.tickHz ?? 60,
       frames,
+      impacts: this.impacts
+        .filter((impact) => impact.botId === victimId)
+        .filter((impact) => impact.tick >= cause.tick - this.historyTicks && impact.tick <= cause.tick)
+        .map((impact) => ({
+          tick: impact.tick,
+          result: impact.result,
+          position: { ...impact.position },
+          direction: { ...impact.direction },
+          ...(exposeSourceId && impact.byBotId === sourceBotId ? { sourceId: impact.byBotId } : {}),
+        })),
     };
   }
 

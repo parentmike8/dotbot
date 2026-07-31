@@ -1,7 +1,7 @@
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import { carriedItems } from "@dotbot/game/inventory";
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
-import { KillCamHistory, type EntityMeta, type KillCamClip } from "@dotbot/protocol";
+import { KILL_CAM_HISTORY_SECONDS, KillCamHistory, type EntityMeta, type KillCamClip } from "@dotbot/protocol";
 import type { GameSession } from "./GameSession";
 import type { RunState } from "./GameSession";
 
@@ -43,7 +43,7 @@ export class LocalSession implements GameSession {
     this.playerId = options.playerId;
     this.createSimulation = options.createSimulation ?? (() => DotBotSimulation.create({ map: this.map, config: this.config }));
     this.inputObserver = options.inputObserver;
-    this.killCamHistory = new KillCamHistory(this.map, { historyTicks: 4 * this.config.tickHz });
+    this.killCamHistory = new KillCamHistory(this.map, { historyTicks: KILL_CAM_HISTORY_SECONDS * this.config.tickHz });
     this.killCamSampleStride = Math.max(1, Math.round(this.config.tickHz / 20));
   }
 
@@ -95,6 +95,7 @@ export class LocalSession implements GameSession {
       simulation.applyInput(this.playerId, this.input);
       simulation.step();
       const frameEvents = simulation.drainEvents();
+      this.killCamHistory.recordEvents(frameEvents);
       this.stepsSinceKillCamSample += 1;
       const playerDowned = frameEvents.some((event) =>
         event.type === "downed" && event.botId === this.playerId);

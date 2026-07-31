@@ -174,6 +174,16 @@ export type KillCamFrame = {
   blockingDoorIds: string[];
 };
 
+export type KillCamImpact = {
+  tick: number;
+  result: import("@dotbot/game/types").HitResult;
+  position: { x: number; y: number };
+  /** Authoritative away-from-attacker presentation direction. */
+  direction: { x: number; y: number };
+  /** Included only when the clip already admits this source. */
+  sourceId?: string;
+};
+
 export type KillCamClip = {
   id: string;
   victimId: string;
@@ -184,6 +194,8 @@ export type KillCamClip = {
   deathTick: number;
   tickHz: number;
   frames: KillCamFrame[];
+  /** Exact authoritative impacts. Optional only for rolling compatibility. */
+  impacts?: KillCamImpact[];
 };
 
 export type WireKillCamActor = [
@@ -214,6 +226,8 @@ export type WireKillCamClip = {
   z: number;
   h: number;
   f: WireKillCamFrame[];
+  /** [tick, result, x, y, dx, dy, admitted source id?] */
+  p?: Array<[number, 0 | 1, number, number, number, number, string?]>;
 };
 
 export type WireSimEvent =

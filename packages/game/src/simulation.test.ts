@@ -6,10 +6,10 @@ import { interactionDotReach, withinDownedCoverRange } from "./interactions";
 import { classifyNoise, physicsFloorId, planningTableSurfaceRect, stairHalves } from "./mapModel";
 import { carriedCount } from "./inventory";
 import { DotBotSimulation, waypointRetired } from "./simulation";
-import { buildContactShape, contactDistance, makeContactShape } from "./bodyContact";
+import { buildContactShape, contactDistance, contactFeature, makeContactShape } from "./bodyContact";
 import { contactReach } from "./shields";
 import { hasLineOfSight } from "./visibility";
-import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, InputCommand, Item, MapDocument, Vec2, WallSegment } from "./types";
+import type { BotSpawn, DotSpawn, GameConfig, GameSnapshot, InputCommand, Item, MapDocument, SimEvent, Vec2, WallSegment } from "./types";
 
 const healthItem = { kind: "powerup", type: "health" } as const;
 const radarItem = { kind: "powerup", type: "radar" } as const;
@@ -1141,6 +1141,73 @@ describe("DotBotSimulation", () => {
 
     const enemy = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy");
     expect(enemy?.state).toBe("downed");
+    simulation.dispose();
+  });
+
+  it("lets the side of a surviving plate absorb a glancing body contact", async () => {
+    const angle = (80 * Math.PI) / 180;
+    const target = { x: 250, y: 180 };
+    const start = {
+      x: target.x + Math.cos(angle) * 90,
+      y: target.y + Math.sin(angle) * 90,
+    };
+    const simulation = await makeSimulation([
+      playerSpawn({ position: start }),
+      enemySpawn({
+        position: target,
+        maxShields: 3,
+        shields: 1,
+        controller: "frozen",
+      }),
+    ]);
+
+    simulation.applyInput("player", {
+      move: { x: -Math.cos(angle), y: -Math.sin(angle) },
+      dash: true,
+    });
+    let impact: Extract<SimEvent, { type: "hit" }> | undefined;
+    for (let tick = 0; tick < 30 && !impact; tick += 1) {
+      simulation.step();
+      impact = simulation.drainEvents().find((event): event is Extract<SimEvent, { type: "hit" }> =>
+        event.type === "hit" && event.botId === "enemy");
+    }
+
+    const after = simulation.getSnapshot();
+    const enemy = after.bots.find((bot) => bot.id === "enemy")!;
+    const player = after.bots.find((bot) => bot.id === "player")!;
+    // The centre line is in the broken neighbouring sector, but the player's
+    // finite body reaches the visible plate corner first. That obstacle must be
+    // spent before the core can be reached.
+    expect(enemy.state).toBe("alive");
+    expect(enemy.shields).toBe(0);
+    expect(impact).toEqual(expect.objectContaining({
+      type: "hit",
+      botId: "enemy",
+      byBotId: "player",
+      result: "plateBreak",
+    }));
+    expect(Math.hypot(
+      impact!.position.x - target.x,
+      impact!.position.y - target.y,
+    )).toBeCloseTo(enemy.radius, 6);
+    expect(Math.atan2(
+      impact!.position.y - target.y,
+      impact!.position.x - target.x,
+    )).toBeCloseTo(Math.PI / 3, 6);
+    const targetShape = makeContactShape(3);
+    const sourceShape = makeContactShape(3);
+    buildContactShape(targetShape, enemy.radius, 0, [1, 0, 0]);
+    buildContactShape(sourceShape, player.radius, player.facing, [1, 1, 1]);
+    const actualDx = player.position.x - enemy.position.x;
+    const actualDy = player.position.y - enemy.position.y;
+    const actualDistance = Math.hypot(actualDx, actualDy);
+    const expectedContact = contactFeature(
+      targetShape,
+      sourceShape,
+      actualDx / actualDistance,
+      actualDy / actualDistance,
+    ).distance;
+    expect(actualDistance).toBeCloseTo(expectedContact, 1);
     simulation.dispose();
   });
 

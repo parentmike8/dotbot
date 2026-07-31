@@ -36,7 +36,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
-    killCam, killCamHostRef, killCamReplayAvailable, skipKillCam, replayKillCam, selectDownedVerb, plea, useBay, swapBayItem, dropItem, takeFromBody, setBodyAction,
+    killCam, killCamHostRef, skipKillCam, replayKillCam, selectDownedVerb, plea, useBay, swapBayItem, dropItem, takeFromBody, setBodyAction,
     inventoryVisible, toggleInventory, closeInventory, setConnectionBlocked,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker,
     worldMapVisible, toggleWorldMap, closeWorldMap, markExterior, chooseExteriorMark, squadMarks,
@@ -73,6 +73,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       data-player-state={player?.state ?? "loading"}
       data-player-x={player ? Math.round(player.position.x) : undefined}
       data-player-y={player ? Math.round(player.position.y) : undefined}
+      data-player-shields={player?.shields}
       data-hit-confirm-ms={networkDebug?.hitConfirmationMs === null ? undefined : networkDebug?.hitConfirmationMs}
       data-hit-predicted={networkDebug?.hitPredictedCount}
       data-hit-confirmed={networkDebug?.hitConfirmedCount}
@@ -184,6 +185,9 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         viewportRef={killCamHostRef}
         label={killCam?.label ?? ""}
         progress={killCam?.progress ?? 0}
+        pass={killCam?.pass ?? 1}
+        replaysComplete={killCam?.replaysComplete ?? false}
+        onReplay={replayKillCam}
         onClose={skipKillCam}
       />
 
@@ -224,15 +228,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         />
       ) : null}
 
-      {downed ? (
-        <DownedSelfView
-          self={downed}
-          onPlea={plea}
-          onLeave={leaveRun}
-          onReplay={replayKillCam}
-          replayAvailable={killCamReplayAvailable && !killCam}
-        />
-      ) : null}
+      {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}
 
       <BodyPromptView prompt={prompt} onVerb={onVerb} onTake={takeFromBody} onTakeAll={(bodyId) => takeFromBody(bodyId, "all")} />
 

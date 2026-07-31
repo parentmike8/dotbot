@@ -70,12 +70,23 @@ describe("LocalSession run-state ownership", () => {
     });
     const { session } = scriptedSession({
       map: replayMap,
-      events: [{
-        type: "downed",
-        botId: "player",
-        byBotId: "ambient-guard",
-        cause,
-      }],
+      events: [
+        {
+          type: "hit",
+          botId: "player",
+          byBotId: "ambient-guard",
+          result: "downed",
+          tick: 1,
+          position: { ...cause.position },
+          direction: { ...cause.direction },
+        },
+        {
+          type: "downed",
+          botId: "player",
+          byBotId: "ambient-guard",
+          cause,
+        },
+      ],
       snapshot: snapshot(50, [player, guard]),
     });
 
@@ -87,6 +98,13 @@ describe("LocalSession run-state ownership", () => {
         victimId: "player",
         sourceBotId: "ambient-guard",
         cause,
+        impacts: [expect.objectContaining({
+          tick: 1,
+          result: "downed",
+          position: cause.position,
+          direction: cause.direction,
+          sourceId: "ambient-guard",
+        })],
         frames: [expect.objectContaining({
           victim: expect.objectContaining({ id: "player", state: "downed" }),
           source: expect.objectContaining({ id: "ambient-guard" }),

@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   applyPredictedImpactOverlays,
   classifyPredictedImpact,
+  impactContactForSource,
   impactReactionForTarget,
+  predictedImpactPosition,
   predictedImpactHoldMs,
   type QueuedPredictedImpact,
 } from "./impactPrediction";
@@ -76,6 +78,59 @@ describe("predicted impact presentation", () => {
     expect(reaction?.offset.x).toBeLessThan(0);
     expect(reaction?.scale).toBeLessThan(1);
     expect(impactReactionForTarget([impact()], "target", 1_151, false)).toBeNull();
+  });
+
+  it("mirrors finite-body glancing plate interception instead of the centre-angle shortcut", () => {
+    const angle = (80 * Math.PI) / 180;
+    const glancingTarget = target([1, 0, 0]);
+    const source = {
+      ...target(),
+      id: "player",
+      squadId: "alpha",
+      position: {
+        x: glancingTarget.position.x + Math.cos(angle) * 45,
+        y: glancingTarget.position.y + Math.sin(angle) * 45,
+      },
+    };
+    const state = { ...snapshot(glancingTarget), bots: [glancingTarget, source] };
+    expect(classifyPredictedImpact(state, impact())).toBe("plateBreak");
+    const point = predictedImpactPosition(state, impact());
+    expect(Math.hypot(
+      point.x - glancingTarget.position.x,
+      point.y - glancingTarget.position.y,
+    )).toBeCloseTo(glancingTarget.radius, 8);
+    expect(Math.atan2(
+      point.y - glancingTarget.position.y,
+      point.x - glancingTarget.position.x,
+    )).toBeCloseTo(Math.PI / 3, 8);
+
+    const missingSide = (120 * Math.PI) / 180;
+    const exposedSource = {
+      ...source,
+      position: {
+        x: glancingTarget.position.x + Math.cos(missingSide) * 34,
+        y: glancingTarget.position.y + Math.sin(missingSide) * 34,
+      },
+    };
+    expect(classifyPredictedImpact(
+      { ...state, bots: [glancingTarget, exposedSource] },
+      impact(),
+    )).toBe("downed");
+  });
+
+  it("presents the live attacker at exact plate contact before releasing post-solid displacement", () => {
+    const source = { ...target(), id: "player", position: { x: 220, y: 100 } };
+    const afterBreak = target([1, 1, 0]);
+    const contact = impactContactForSource([impact()], source, {
+      ...snapshot(afterBreak),
+      bots: [afterBreak, source],
+    }, 1_000);
+    expect(contact?.position).toEqual({ x: 148, y: 100 });
+    expect(contact?.weight).toBe(1);
+    expect(impactContactForSource([impact()], source, {
+      ...snapshot(afterBreak),
+      bots: [afterBreak, source],
+    }, 1_151)).toBeNull();
   });
 });
 

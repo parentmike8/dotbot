@@ -80,7 +80,7 @@ function GameSession({
   const {
     hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, settingsVisible, toggleSettings,
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, dropItem, leaveRun, selectDownedVerb, plea,
-    killCam, killCamHostRef, killCamReplayAvailable, skipKillCam, replayKillCam,
+    killCam, killCamHostRef, skipKillCam, replayKillCam,
     inventoryVisible, toggleInventory, closeInventory,
     takeFromBody, setBodyAction,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker, spectating,
@@ -109,6 +109,7 @@ function GameSession({
       data-player-state={player?.state ?? "loading"}
       data-player-x={player ? Math.round(player.position.x) : undefined}
       data-player-y={player ? Math.round(player.position.y) : undefined}
+      data-player-shields={player?.shields}
       data-dash-ready={player ? player.dashCooldownMs <= 0 : false}
       data-kill-cam={killCam ? "playing" : undefined}
       data-kill-cam-cause={killCam?.clip.cause.kind}
@@ -188,6 +189,9 @@ function GameSession({
         viewportRef={killCamHostRef}
         label={killCam?.label ?? ""}
         progress={killCam?.progress ?? 0}
+        pass={killCam?.pass ?? 1}
+        replaysComplete={killCam?.replaysComplete ?? false}
+        onReplay={replayKillCam}
         onClose={skipKillCam}
       />
 
@@ -200,15 +204,7 @@ function GameSession({
         />
       ) : null}
 
-      {downed ? (
-        <DownedSelfView
-          self={downed}
-          onPlea={plea}
-          onLeave={leaveRun}
-          onReplay={replayKillCam}
-          replayAvailable={killCamReplayAvailable && !killCam}
-        />
-      ) : null}
+      {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}
 
       <BodyPromptView prompt={prompt} onVerb={onVerb} onTake={takeFromBody} onTakeAll={(bodyId) => takeFromBody(bodyId, "all")} />
 

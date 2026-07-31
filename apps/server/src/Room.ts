@@ -395,6 +395,7 @@ export class Room {
       const snapshot = this.simulation.getSnapshot();
       this.latestServerTick = snapshot.debug.tickCount;
       const events = this.simulation.drainEvents();
+      this.killCamHistory.recordEvents(events);
       this.syncMemberSquads(snapshot);
       if (snapshot.debug.tickCount % 3 === 0 || events.some((event) => event.type === "downed")) {
         this.killCamHistory.record(snapshot);

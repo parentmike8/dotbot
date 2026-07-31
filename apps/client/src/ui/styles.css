@@ -863,6 +863,12 @@ button {
 .kill-cam-copy strong { font-size: 11px; letter-spacing: 1.8px; }
 .kill-cam-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.kill-cam-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
 .kill-cam-track {
   position: absolute;
   right: 0;

@@ -17,8 +17,8 @@ import {
   DASH_CONTACT_EPSILON_PX,
   MOVING_SPEED,
 } from "@dotbot/game/config";
-import { contactReach, coveringPlate } from "@dotbot/game/shields";
-import { buildContactShape, contactDistance, makeContactShape } from "@dotbot/game/bodyContact";
+import { contactReach } from "@dotbot/game/shields";
+import { buildContactShape, contactDistance, contactingPlate, makeContactShape } from "@dotbot/game/bodyContact";
 import type { DoorEntity, DotBotEntity, GameConfig, InputCommand, MapDocument, Solid, Vec2 } from "@dotbot/game";
 
 export type PredictedOwnBot = Pick<
@@ -419,19 +419,28 @@ function platesMeet(
   ownPosition: Vec2,
 ): boolean {
   if (state.shieldSegments.length === 0 || obstacle.shieldSegments.length === 0) return false;
-  const towardObstacle = Math.atan2(
-    obstacle.position.y - ownPosition.y,
-    obstacle.position.x - ownPosition.x,
+  const dx = obstacle.position.x - ownPosition.x;
+  const dy = obstacle.position.y - ownPosition.y;
+  const dist = Math.hypot(dx, dy);
+  const ux = dist > 0.001 ? dx / dist : 1;
+  const uy = dist > 0.001 ? dy / dist : 0;
+  buildContactShape(ownShape, state.radius, state.facing, state.shieldSegments);
+  buildContactShape(otherShape, obstacle.radius, obstacle.facing, obstacle.shieldSegments);
+  const ownPlate = contactingPlate(
+    ownShape,
+    state.facing,
+    state.shieldSegments,
+    otherShape,
+    ux,
+    uy,
   );
-  const towardOwn = Math.atan2(
-    ownPosition.y - obstacle.position.y,
-    ownPosition.x - obstacle.position.x,
-  );
-  const ownPlate = coveringPlate(state.facing, state.shieldSegments.length, towardObstacle);
-  const obstaclePlate = coveringPlate(
+  const obstaclePlate = contactingPlate(
+    otherShape,
     obstacle.facing,
-    obstacle.shieldSegments.length,
-    towardOwn,
+    obstacle.shieldSegments,
+    ownShape,
+    -ux,
+    -uy,
   );
-  return state.shieldSegments[ownPlate] > 0 && obstacle.shieldSegments[obstaclePlate] > 0;
+  return ownPlate !== null && obstaclePlate !== null;
 }

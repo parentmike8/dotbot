@@ -47,6 +47,8 @@ export type KillCamView = {
   clip: KillCamClip;
   progress: number;
   label: string;
+  pass: 1 | 2;
+  replaysComplete: boolean;
 };
 
 type JoystickState = {
@@ -143,7 +145,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [spectating, setSpectating] = useState<DotBotEntity | null>(null);
   const [killCam, setKillCam] = useState<KillCamView | null>(null);
-  const [killCamReplayAvailable, setKillCamReplayAvailable] = useState(false);
   const [debugVisible, setDebugVisible] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("netgraph"),
   );
@@ -246,7 +247,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         sessionRef.current?.setReplayActive?.(false);
         applyHudOverlayEvent("endReplay");
         setKillCam(null);
-        setKillCamReplayAvailable(false);
       });
     };
 
@@ -361,7 +361,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         for (const clip of session.drainKillCams?.() ?? []) {
           if (clip.victimId !== session.playerId) continue;
           lastKillCamClipRef.current = clip;
-          setKillCamReplayAvailable(true);
           startKillCamPlayback(clip);
         }
         const frameEvents = session.drainEvents();
@@ -505,12 +504,10 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           setKillCam(null);
           lastKillCamClipRef.current = null;
           killCamReplayQueuedRef.current = null;
-          setKillCamReplayAvailable(false);
         } else if (lastKillCamClipRef.current && liveStateEndedReplay) {
           lastKillCamClipRef.current = null;
           killCamReplayQueuedRef.current = null;
           killCamObservedDownedRef.current = false;
-          setKillCamReplayAvailable(false);
         }
         if (currentPlayer) playerSquadId = currentPlayer.squadId;
         const runState = session.getRunState();
@@ -548,8 +545,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         let killCamRender: {
           clip: KillCamClip;
           progress: number;
+          replayTick: number;
+          impacts: KillCamPlayback["impacts"];
           cameraTarget: Vec2;
           sourceVisible: boolean;
+          pass: 1 | 2;
+          replaysComplete: boolean;
         } | undefined;
         const playback = killCamPlaybackRef.current;
         if (playback && killCamRendererRef.current) {
@@ -593,12 +594,17 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
               playback.clip,
               meta,
               killCamDoorsRef.current,
+              playback.impacts,
             );
             killCamRender = {
               clip: playback.clip,
               progress: playback.progress,
+              replayTick: playback.replayTick,
+              impacts: playback.impacts,
               cameraTarget: killCamCameraTarget(replayFrame, playback.clip),
               sourceVisible: replayFrame.source !== undefined,
+              pass: playback.pass,
+              replaysComplete: playback.replaysComplete,
             };
           }
         }
@@ -630,6 +636,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           setKillCam(killCamRender ? {
             clip: killCamRender.clip,
             progress: killCamRender.progress,
+            pass: killCamRender.pass,
+            replaysComplete: killCamRender.replaysComplete,
             label: killCamLabel(
               killCamRender.clip,
               killCamRender.sourceVisible && killCamRender.clip.sourceBotId
@@ -870,7 +878,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     setKillCam(null);
     lastKillCamClipRef.current = null;
     killCamReplayQueuedRef.current = null;
-    setKillCamReplayAvailable(false);
     sessionRef.current?.leaveRun();
   }, [applyHudOverlayEvent]);
 
@@ -885,7 +892,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
   const replayKillCam = useCallback(() => {
     const clip = lastKillCamClipRef.current;
-    if (!clip || killCamPlaybackRef.current) return;
+    if (!clip) return;
+    killCamPlaybackRef.current?.skip();
+    killCamPlaybackRef.current = null;
     killCamReplayQueuedRef.current = clip;
   }, []);
 
@@ -1155,7 +1164,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     playerId: providedSession?.playerId ?? "player",
     spectating,
     killCam,
-    killCamReplayAvailable,
     debugVisible,
     networkDebug,
     settingsVisible,

@@ -13,21 +13,23 @@ describe("kill cam downed controls", () => {
           viewportRef={createRef<HTMLDivElement>()}
           label="DOWNED BY QUETZAL · DASH"
           progress={0.5}
+          pass={1}
+          replaysComplete={false}
+          onReplay={() => undefined}
           onClose={() => undefined}
         />
         <DownedSelfView
           self={{ beingRevived: false, rescuers: 1, watching: "Mate", pleaReady: true, pleaReadyInMs: 0 }}
           onPlea={() => undefined}
           onLeave={() => undefined}
-          onReplay={() => undefined}
-          replayAvailable
         />
       </>,
     );
     expect(html).toContain("CLOSE");
+    expect(html).toContain("REPLAY 1/2");
+    expect(html).toContain("Replay kill cam");
     expect(html).toContain("kill-cam-viewport");
     expect(html).toContain("PLEA");
-    expect(html).toContain("REPLAY");
     expect(html).toContain("LEAVE RUN");
   });
 });

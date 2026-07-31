@@ -1,12 +1,26 @@
 import { doorRuntimeId, physicsFloorId } from "@dotbot/game/mapModel";
 import { buildContactShape, contactDistance, makeContactShape } from "@dotbot/game/bodyContact";
+import { platesForCount, restoreShieldPlate } from "@dotbot/game/shields";
 import type { DoorEntity, GameSnapshot, MapDocument } from "@dotbot/game/types";
 import type { EntityMeta, KillCamActor, KillCamClip, KillCamFrame } from "@dotbot/protocol";
 
-/** Slow enough to read the impact, without turning a one-second attack into a wait. */
-export const KILL_CAM_PLAYBACK_RATE = 0.8;
-const IMPACT_HOLD_MS = 1_200;
+/** Two readable passes: orient once, then inspect the same contact more slowly. */
+export const KILL_CAM_PLAYBACK_RATES = [0.8, 0.7] as const;
+export const KILL_CAM_BETWEEN_PASS_HOLD_MS = 1_500;
+export const KILL_CAM_MAX_OPEN_MS = 30_000;
 const CONTACT_BLEND_SECONDS = 0.18;
+const CONTACT_RELEASE_SECONDS = 0.12;
+const DEFAULT_REPLAY_BODY_RADIUS = 24;
+const MAX_INFERRED_IMPACT_DISTANCE = 144;
+
+export type KillCamImpact = {
+  tick: number;
+  result: "plateBreak" | "downed";
+  position: { x: number; y: number };
+  targetPosition: { x: number; y: number };
+  direction: { x: number; y: number };
+  sourceId?: string;
+};
 
 export function killCamLabel(clip: KillCamClip, sourceName?: string): string {
   const cause = clip.cause.kind === "environment" ? "IMPACT" : clip.cause.kind.toUpperCase();
@@ -16,14 +30,43 @@ export function killCamLabel(clip: KillCamClip, sourceName?: string): string {
 export class KillCamPlayback {
   private elapsedRealMs = 0;
   private skipped = false;
+  readonly impacts: KillCamImpact[];
 
-  constructor(readonly clip: KillCamClip) {}
+  constructor(readonly clip: KillCamClip) {
+    this.impacts = killCamImpacts(clip);
+  }
+
+  private get replayDurationMs(): number {
+    return (this.clip.deathTick - this.clip.startTick) * (1000 / this.clip.tickHz);
+  }
+
+  get pass(): 1 | 2 {
+    const firstPassMs = this.replayDurationMs / KILL_CAM_PLAYBACK_RATES[0];
+    return this.elapsedRealMs < firstPassMs + KILL_CAM_BETWEEN_PASS_HOLD_MS ? 1 : 2;
+  }
+
+  get replaysComplete(): boolean {
+    const totalReplayMs = KILL_CAM_PLAYBACK_RATES.reduce(
+      (total, rate) => total + this.replayDurationMs / rate,
+      KILL_CAM_BETWEEN_PASS_HOLD_MS,
+    );
+    return this.elapsedRealMs >= totalReplayMs;
+  }
 
   get replayTick(): number {
-    const elapsedReplayMs = this.elapsedRealMs * KILL_CAM_PLAYBACK_RATE;
+    const firstPassMs = this.replayDurationMs / KILL_CAM_PLAYBACK_RATES[0];
+    if (this.elapsedRealMs < firstPassMs) {
+      const elapsedReplayMs = this.elapsedRealMs * KILL_CAM_PLAYBACK_RATES[0];
+      return this.clip.startTick + elapsedReplayMs / (1000 / this.clip.tickHz);
+    }
+    if (this.elapsedRealMs < firstPassMs + KILL_CAM_BETWEEN_PASS_HOLD_MS) {
+      return this.clip.deathTick;
+    }
+    const secondPassElapsedMs = this.elapsedRealMs - firstPassMs - KILL_CAM_BETWEEN_PASS_HOLD_MS;
+    const secondReplayMs = secondPassElapsedMs * KILL_CAM_PLAYBACK_RATES[1];
     return Math.min(
       this.clip.deathTick,
-      this.clip.startTick + elapsedReplayMs / (1000 / this.clip.tickHz),
+      this.clip.startTick + secondReplayMs / (1000 / this.clip.tickHz),
     );
   }
 
@@ -33,9 +76,7 @@ export class KillCamPlayback {
   }
 
   get finished(): boolean {
-    if (this.skipped) return true;
-    const replayDurationMs = (this.clip.deathTick - this.clip.startTick) * (1000 / this.clip.tickHz);
-    return this.elapsedRealMs >= replayDurationMs / KILL_CAM_PLAYBACK_RATE + IMPACT_HOLD_MS;
+    return this.skipped || this.elapsedRealMs >= KILL_CAM_MAX_OPEN_MS;
   }
 
   advance(elapsedMs: number): void {
@@ -47,8 +88,82 @@ export class KillCamPlayback {
   }
 
   sample(): KillCamFrame {
-    return sampleClip(this.clip.frames, this.replayTick);
+    return sampleClip(this.clip.frames, this.replayTick, this.clip.impacts);
   }
+}
+
+/** Exact event data on current clips; shield-state reconstruction for old rooms. */
+export function killCamImpacts(clip: KillCamClip): KillCamImpact[] {
+  if (clip.impacts) {
+    const exact = clip.impacts.map((impact) => ({
+      ...impact,
+      position: { ...impact.position },
+      direction: { ...impact.direction },
+      targetPosition: {
+        ...sampleClip(clip.frames, impact.tick).victim.position,
+      },
+    }));
+    if (!exact.some((impact) => impact.result === "downed" && impact.tick === clip.deathTick)) {
+      const deathFrame = clip.frames.at(-1)?.victim;
+      exact.push({
+        tick: clip.deathTick,
+        result: "downed",
+        position: { ...clip.cause.position },
+        targetPosition: deathFrame ? { ...deathFrame.position } : { ...clip.cause.position },
+        direction: { ...clip.cause.direction },
+        ...(clip.sourceBotId ? { sourceId: clip.sourceBotId } : {}),
+      });
+    }
+    return exact.sort((a, b) => a.tick - b.tick);
+  }
+
+  const impacts: KillCamImpact[] = [];
+  for (let index = 1; index < clip.frames.length; index += 1) {
+    const older = clip.frames[index - 1].victim;
+    const newerFrame = clip.frames[index];
+    const newer = newerFrame.victim;
+    if (newer.state !== "alive") continue;
+    const plateCount = Math.max(older.shieldSegments.length, newer.shieldSegments.length);
+    const olderPlateCount = older.shieldSegments.filter((plate) => plate > 0).length;
+    const newerPlateCount = newer.shieldSegments.filter((plate) => plate > 0).length;
+    if (newerPlateCount >= olderPlateCount) continue;
+
+    // Plates re-seat after every hit, so the array index that became zero is
+    // the new trailing slot, not necessarily the arc that was struck. The
+    // admitted attacker position is the honest impact direction when present.
+    const source = newerFrame.source;
+    const sourceDx = source ? source.position.x - newer.position.x : 0;
+    const sourceDy = source ? source.position.y - newer.position.y : 0;
+    const sourceDistance = Math.hypot(sourceDx, sourceDy);
+    const admittedSource = source && sourceDistance <= MAX_INFERRED_IMPACT_DISTANCE ? source : undefined;
+    const fallbackBrokenPlate = newer.shieldSegments.findIndex((plate) => plate <= 0);
+    const fallbackAngle = newer.facing
+      + Math.max(0, fallbackBrokenPlate) * Math.PI * 2 / Math.max(1, plateCount);
+    const towardSource = admittedSource && sourceDistance > 0.001
+      ? { x: sourceDx / sourceDistance, y: sourceDy / sourceDistance }
+      : { x: Math.cos(fallbackAngle), y: Math.sin(fallbackAngle) };
+    impacts.push({
+      tick: newerFrame.tick,
+      result: "plateBreak",
+      position: {
+        x: newer.position.x + towardSource.x * DEFAULT_REPLAY_BODY_RADIUS,
+        y: newer.position.y + towardSource.y * DEFAULT_REPLAY_BODY_RADIUS,
+      },
+      targetPosition: { ...newer.position },
+      direction: { x: -towardSource.x, y: -towardSource.y },
+      ...(admittedSource ? { sourceId: admittedSource.id } : {}),
+    });
+  }
+  const deathFrame = clip.frames.at(-1)?.victim;
+  impacts.push({
+    tick: clip.deathTick,
+    result: "downed",
+    position: { ...clip.cause.position },
+    targetPosition: deathFrame ? { ...deathFrame.position } : { ...clip.cause.position },
+    direction: { ...clip.cause.direction },
+    ...(clip.sourceBotId ? { sourceId: clip.sourceBotId } : {}),
+  });
+  return impacts.sort((a, b) => a.tick - b.tick);
 }
 
 export function killCamSnapshot(
@@ -56,9 +171,10 @@ export function killCamSnapshot(
   clip: KillCamClip,
   meta: ReadonlyMap<string, EntityMeta>,
   doorCatalog: readonly DoorEntity[],
+  impacts: readonly KillCamImpact[] = killCamImpacts(clip),
 ): GameSnapshot {
   const presentedSource = frame.source
-    ? sourceAtVisibleContact(frame, clip, meta)
+    ? sourceAtVisibleContact(frame, clip, meta, impacts)
     : undefined;
   const actors = [frame.victim, presentedSource, ...frame.visibleBots]
     .filter((actor): actor is KillCamActor => actor !== undefined);
@@ -140,29 +256,47 @@ function sourceAtVisibleContact(
   frame: KillCamFrame,
   clip: KillCamClip,
   meta: ReadonlyMap<string, EntityMeta>,
+  impacts: readonly KillCamImpact[],
 ): KillCamActor | undefined {
   const source = frame.source;
   if (!source || (clip.cause.kind !== "dash" && clip.cause.kind !== "ram")) return source;
   const blendTicks = Math.max(1, clip.tickHz * CONTACT_BLEND_SECONDS);
-  const blend = Math.max(0, Math.min(1, (frame.tick - (clip.deathTick - blendTicks)) / blendTicks));
+  const releaseTicks = Math.max(1, clip.tickHz * CONTACT_RELEASE_SECONDS);
+  const impact = impacts
+    .filter((candidate) => candidate.sourceId === source.id)
+    .filter((candidate) => frame.tick >= candidate.tick - blendTicks)
+    .filter((candidate) => candidate.result === "downed" || frame.tick <= candidate.tick + releaseTicks)
+    .sort((a, b) => Math.abs(frame.tick - a.tick) - Math.abs(frame.tick - b.tick))[0];
+  if (!impact) return source;
+  const blend = frame.tick <= impact.tick
+    ? Math.max(0, Math.min(1, (frame.tick - (impact.tick - blendTicks)) / blendTicks))
+    : impact.result === "downed"
+      ? 1
+      : Math.max(0, 1 - (frame.tick - impact.tick) / releaseTicks);
   if (blend <= 0) return source;
 
   const victimRadius = meta.get(frame.victim.id)?.radius ?? 24;
   const sourceRadius = meta.get(source.id)?.radius ?? 24;
   const victimShape = makeContactShape(frame.victim.shieldSegments.length);
   const sourceShape = makeContactShape(source.shieldSegments.length);
-  buildContactShape(victimShape, victimRadius, frame.victim.facing, frame.victim.shieldSegments);
+  const victimSegments = [...frame.victim.shieldSegments];
+  // The exact-tick frame already carries the post-hit shield count. Contact was
+  // established against the pre-hit shell, so restore the plate only for this
+  // geometric witness or the replay pulls the attacker through the plate to the
+  // smaller core on the same frame the plate breaks.
+  if (impact.result === "plateBreak") restoreShieldPlate(victimSegments);
+  buildContactShape(victimShape, victimRadius, frame.victim.facing, victimSegments);
   buildContactShape(sourceShape, sourceRadius, source.facing, source.shieldSegments);
 
-  const causeLength = Math.hypot(clip.cause.direction.x, clip.cause.direction.y);
+  const causeLength = Math.hypot(impact.direction.x, impact.direction.y);
   const recordedDx = source.position.x - frame.victim.position.x;
   const recordedDy = source.position.y - frame.victim.position.y;
   const recordedLength = Math.hypot(recordedDx, recordedDy);
   const ux = causeLength > 0.001
-    ? -clip.cause.direction.x / causeLength
+    ? -impact.direction.x / causeLength
     : recordedLength > 0.001 ? recordedDx / recordedLength : 1;
   const uy = causeLength > 0.001
-    ? -clip.cause.direction.y / causeLength
+    ? -impact.direction.y / causeLength
     : recordedLength > 0.001 ? recordedDy / recordedLength : 0;
   const touching = contactDistance(victimShape, sourceShape, ux, uy, 0);
   const contact = {
@@ -247,7 +381,11 @@ export function liveStateEndsKillCam(
   return authorityRevived || (observedDowned && victimState === "alive");
 }
 
-function sampleClip(frames: readonly KillCamFrame[], tick: number): KillCamFrame {
+function sampleClip(
+  frames: readonly KillCamFrame[],
+  tick: number,
+  exactImpacts?: readonly { tick: number; result: "plateBreak" | "downed" }[],
+): KillCamFrame {
   const first = frames[0];
   const last = frames.at(-1);
   if (!first || !last) throw new Error("Kill cam clip has no frames");
@@ -259,7 +397,7 @@ function sampleClip(frames: readonly KillCamFrame[], tick: number): KillCamFrame
     const newer = frames[index];
     if (tick <= newer.tick) {
       const alpha = (tick - older.tick) / Math.max(1, newer.tick - older.tick);
-      return {
+      const sampled = {
         tick,
         victim: interpolateActor(older.victim, newer.victim, alpha),
         ...(
@@ -274,6 +412,29 @@ function sampleClip(frames: readonly KillCamFrame[], tick: number): KillCamFrame
         blockingDoorIds: [...older.blockingDoorIds],
         visibleBots: interpolateVisibleBots(older.visibleBots, newer.visibleBots, alpha),
       };
+      // Visual frames are sampled at 20 Hz, but hits are authoritative 60 Hz
+      // events. Between two visual samples, apply the exact event on its own tick
+      // instead of leaving the old plate visible beside an already-playing flash.
+      if (alpha < 1 && exactImpacts) {
+        const landed = exactImpacts.filter((impact) =>
+          impact.tick > older.tick && impact.tick <= tick);
+        for (const impact of landed) {
+          if (impact.result === "downed") {
+            sampled.victim.state = "downed";
+            sampled.victim.shieldSegments = platesForCount(sampled.victim.shieldSegments.length, 0);
+            continue;
+          }
+          const remaining = Math.max(
+            0,
+            sampled.victim.shieldSegments.filter((plate) => plate > 0).length - 1,
+          );
+          sampled.victim.shieldSegments = platesForCount(
+            sampled.victim.shieldSegments.length,
+            remaining,
+          );
+        }
+      }
+      return sampled;
     }
     older = newer;
   }

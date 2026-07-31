@@ -29,6 +29,17 @@ export function toWireKillCamClip(clip: KillCamClip): WireKillCamClip {
     a: clip.startTick,
     z: clip.deathTick,
     h: clip.tickHz,
+    ...(clip.impacts?.length ? {
+      p: clip.impacts.map((impact) => ([
+        impact.tick,
+        impact.result === "plateBreak" ? 0 : 1,
+        roundPosition(impact.position.x),
+        roundPosition(impact.position.y),
+        roundFloat(impact.direction.x),
+        roundFloat(impact.direction.y),
+        ...(impact.sourceId ? [impact.sourceId] : []),
+      ] as [number, 0 | 1, number, number, number, number, string?])),
+    } : {}),
     f: clip.frames.map((frame) => {
       const wireFrame: import("./messages").WireKillCamFrame = [
         frame.tick,
@@ -57,6 +68,15 @@ export function fromWireKillCamClip(wire: WireKillCamClip): KillCamClip {
     startTick: wire.a,
     deathTick: wire.z,
     tickHz: wire.h,
+    ...(wire.p ? {
+      impacts: wire.p.map(([impactTick, result, px, py, pdx, pdy, sourceId]) => ({
+        tick: impactTick,
+        result: result === 0 ? "plateBreak" as const : "downed" as const,
+        position: { x: px, y: py },
+        direction: { x: pdx, y: pdy },
+        ...(sourceId ? { sourceId } : {}),
+      })),
+    } : {}),
     frames: wire.f.map(([frameTick, victim, source, blockingDoorIds = [], visibleBots = []]) => ({
       tick: frameTick,
       victim: fromWireKillCamActor(victim),

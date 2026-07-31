@@ -5,20 +5,21 @@
  * A bot's shields are ablative plates: `maxShields` arcs spaced evenly around
  * the body, anchored to the bot's facing, with plate 0 centered dead ahead.
  * Each plate is 1 (intact) or 0 (broken). There is no half state, and the reason is worth
- * keeping: a hit lands in exactly one arc and either takes a whole plate or reaches the core,
+ * keeping: a plate intercept takes the whole plate and a core contact ends the body,
  * so nothing in combat has ever produced a fraction. A third outcome once did — a hit on bare
  * body cracked the nearest surviving plate by half, so damage was never wasted — and removing
  * it left 0.5 behind as a value with one producer and no rule.
  *
- * Damage model: every hit lands in exactly one plate's arc. A live plate takes it
- * and breaks. A plate that has already broken is not there any more, so the hit
- * reaches the core — and a hit on the core puts the bot down, however many plates
- * are still standing elsewhere.
+ * Damage model: a body impact is absorbed by the first physical surface it meets.
+ * A live plate takes it and breaks, including a glancing contact against the
+ * plate's side. Only a contact that reaches the core first puts the bot down,
+ * however many plates are still standing elsewhere. Point sources such as mines
+ * use the same authored plate cells from their point of origin.
  *
  * Losing your plates is therefore not the same as going down. A bot with nothing
  * left is naked and one hit from anywhere ends it, but it can still run, still
  * extract, and still be saved. And a bot with two good plates can be dropped by
- * one hit through the arc where its third used to be: hard to land, and meant to
+ * one clean hit through the opening where its third used to be: hard to land, and meant to
  * be — it is the closest thing this game has to a headshot.
  *
  * After every hit the surviving plating re-seats best-first, so the strongest
@@ -94,6 +95,20 @@ export function coveringPlate(facing: number, maxShields: number, impactAngle: n
   return best;
 }
 
+/** Closest point angle on one plate's full authored collision cell. */
+export function plateContactAngle(
+  facing: number,
+  maxShields: number,
+  plate: number,
+  impactAngle: number,
+): number {
+  if (maxShields <= 1) return impactAngle;
+  const cell = TWO_PI / maxShields;
+  const centre = facing + plate * cell;
+  const relative = normalizeAngle(impactAngle - centre);
+  return centre + Math.max(-cell / 2, Math.min(cell / 2, relative));
+}
+
 /**
  * How far a bot reaches, as a share of its nominal radius.
  *
@@ -165,7 +180,7 @@ export function plateSum(segments: number[]): number {
 }
 
 export type ArmourHit = {
-  /** The plate whose arc the hit landed in, before any re-seat. */
+  /** The plate selected by a point-source angle, before any re-seat. */
   plate: number;
   /** That arc was already broken, so the hit reached the core. */
   core: boolean;
@@ -188,7 +203,9 @@ export function restoreShieldPlate(segments: number[]): void {
 }
 
 /**
- * Apply one qualifying hit, mutating the plate array. The surviving plating
+ * Apply one point-source hit, mutating the plate array. Body-vs-body combat uses
+ * `contactingPlate` from bodyContact so a finite attacker cannot pass through a
+ * plate's side. The surviving plating
  * re-seats best-first afterward, so a broken arc drifts to the back of a bot that
  * keeps moving toward the threat — which is what makes facing a defence and makes
  * running away expose the side you cannot afford to show.

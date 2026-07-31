@@ -140,24 +140,56 @@ describe("KillCamHistory", () => {
     expect(clip.frames.some((frame) => frame.victim.position.x === 999)).toBe(false);
   });
 
-  it("keeps a four-second 20 Hz window and appends an off-cadence authoritative death tick", () => {
+  it("keeps a six-second 20 Hz window and appends an off-cadence authoritative death tick", () => {
     const history = new KillCamHistory(map);
-    for (let tick = 0; tick <= 237; tick += 3) {
+    for (let tick = 0; tick <= 357; tick += 3) {
       history.record(snapshot(tick, 100 + tick / 10, { x: 180, y: 100 }));
     }
-    history.record(snapshot(238, 124, { x: 148, y: 100 }));
+    history.record(snapshot(358, 124, { x: 148, y: 100 }));
     const clip = history.createClip("victim", "killer", {
       ...dashCause,
-      tick: 238,
+      tick: 358,
       position: { x: 148, y: 100 },
     })!;
 
     expect(clip.startTick).toBe(0);
-    expect(clip.deathTick).toBe(238);
-    expect(clip.frames.at(-1)?.tick).toBe(238);
+    expect(clip.deathTick).toBe(358);
+    expect(clip.frames.at(-1)?.tick).toBe(358);
     expect(clip.frames.slice(1, -1).every((frame, index) =>
       frame.tick - clip.frames[index].tick === 3)).toBe(true);
     expect(clip.frames.at(-1)!.tick - clip.frames.at(-2)!.tick).toBe(1);
+  });
+
+  it("carries exact authoritative shield and core impacts instead of inferring sampled transitions", () => {
+    const history = new KillCamHistory(map);
+    history.record(snapshot(9, 200, { x: 244, y: 100 }));
+    history.recordEvents([{
+      type: "hit",
+      botId: "victim",
+      byBotId: "killer",
+      result: "plateBreak",
+      tick: 10,
+      position: { x: 221.234, y: 92.345 },
+      direction: { x: -0.75, y: 0.25 },
+    }]);
+    history.record(snapshot(12, 202, { x: 230, y: 105 }));
+    history.recordEvents([{
+      type: "hit",
+      botId: "victim",
+      byBotId: "killer",
+      result: "downed",
+      tick: 15,
+      position: { x: 211.2, y: 101.5 },
+      direction: { x: -1, y: 0 },
+    }]);
+    history.record(snapshot(15, 204, { x: 220, y: 104 }));
+
+    const clip = history.createClip("victim", "killer", dashCause)!;
+    expect(clip.impacts).toEqual([
+      expect.objectContaining({ tick: 10, result: "plateBreak", sourceId: "killer" }),
+      expect.objectContaining({ tick: 15, result: "downed", sourceId: "killer" }),
+    ]);
+    expect(clip.impacts?.[0].position).toEqual({ x: 221.234, y: 92.345 });
   });
 
   it("keeps an unknown environmental cause source-free", () => {

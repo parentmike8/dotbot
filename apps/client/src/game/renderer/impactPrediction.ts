@@ -1,5 +1,6 @@
-import { applyArmourHit, plateSum } from "@dotbot/game/shields";
-import type { GameSnapshot, HitResult, Vec2 } from "@dotbot/game/types";
+import { buildContactShape, contactDistance, contactingPlate, makeContactShape } from "@dotbot/game/bodyContact";
+import { CORE_REACH, coveringPlate, plateContactAngle, plateSum, reseatPlates, restoreShieldPlate } from "@dotbot/game/shields";
+import type { DotBotEntity, GameSnapshot, HitResult, Vec2 } from "@dotbot/game/types";
 import type { PredictedImpact } from "../session/GameSession";
 
 export const predictedImpactHoldMs = 220;
@@ -19,23 +20,103 @@ export type ImpactReaction = {
   rotation: number;
 };
 
+export type SourceContactPresentation = {
+  position: Vec2;
+  weight: number;
+};
+
 export const impactReactionDurationMs = 150;
 
-export function classifyPredictedImpact(snapshot: GameSnapshot, impact: Pick<PredictedImpact, "targetId" | "x" | "y">): HitResult {
+/**
+ * A hit is swept and adjudicated before nearby solid resolution can move the
+ * attacker away. For the short live impact beat, put the attacking body back
+ * at the exact contact the shared geometry accepted, then release smoothly to
+ * its authoritative post-solid position.
+ */
+export function impactContactForSource(
+  impacts: readonly QueuedPredictedImpact[],
+  source: DotBotEntity,
+  snapshot: GameSnapshot,
+  nowMs: number,
+): SourceContactPresentation | null {
+  const impact = [...impacts].reverse().find((candidate) =>
+    candidate.kind === "hit"
+      && candidate.sourceId === source.id
+      && nowMs - candidate.startedAt >= 0
+      && nowMs - candidate.startedAt <= impactReactionDurationMs);
+  if (!impact) return null;
+  const target = snapshot.bots.find((bot) => bot.id === impact.targetId);
+  if (!target) return null;
+
+  const length = Math.hypot(impact.direction.x, impact.direction.y);
+  const fallback = normalized({
+    x: source.position.x - target.position.x,
+    y: source.position.y - target.position.y,
+  });
+  const fromTargetToSource = length > 0.001
+    ? { x: -impact.direction.x / length, y: -impact.direction.y / length }
+    : fallback;
+  const targetSegments = [...target.shieldSegments];
+  if (impact.result === "plateBreak") restoreShieldPlate(targetSegments);
+  const targetShape = makeContactShape(target.maxShields);
+  const sourceShape = makeContactShape(source.maxShields);
+  buildContactShape(targetShape, target.radius, target.facing, targetSegments);
+  buildContactShape(sourceShape, source.radius, source.facing, source.shieldSegments);
+  const touching = contactDistance(
+    targetShape,
+    sourceShape,
+    fromTargetToSource.x,
+    fromTargetToSource.y,
+    0,
+  );
+  return {
+    position: {
+      x: target.position.x + fromTargetToSource.x * touching,
+      y: target.position.y + fromTargetToSource.y * touching,
+    },
+    weight: 1 - (nowMs - impact.startedAt) / impactReactionDurationMs,
+  };
+}
+
+export function classifyPredictedImpact(snapshot: GameSnapshot, impact: Pick<PredictedImpact, "targetId" | "sourceId" | "x" | "y">): HitResult {
   const target = snapshot.bots.find((bot) => bot.id === impact.targetId);
   if (!target || target.state !== "alive") return "plateBreak";
-  const segments = [...target.shieldSegments];
-  const impactAngle = Math.atan2(impact.y - target.position.y, impact.x - target.position.x);
-  return applyArmourHit(target.facing, segments, impactAngle).core ? "downed" : "plateBreak";
+  return predictedContactPlate(snapshot, target, impact) === null ? "downed" : "plateBreak";
 }
 
 export function predictedImpactDirection(
   snapshot: GameSnapshot,
-  impact: Pick<PredictedImpact, "targetId" | "x" | "y">,
+  impact: Pick<PredictedImpact, "targetId" | "sourceId" | "x" | "y">,
 ): Vec2 {
   const target = snapshot.bots.find((bot) => bot.id === impact.targetId);
   if (!target) return { x: 0, y: 0 };
-  return normalized({ x: target.position.x - impact.x, y: target.position.y - impact.y });
+  const source = snapshot.bots.find((bot) => bot.id === impact.sourceId);
+  return normalized({
+    x: target.position.x - (source?.position.x ?? impact.x),
+    y: target.position.y - (source?.position.y ?? impact.y),
+  });
+}
+
+/** Immediate predicted effect point, using the same plate/core surface as authority. */
+export function predictedImpactPosition(
+  snapshot: GameSnapshot,
+  impact: Pick<PredictedImpact, "targetId" | "sourceId" | "x" | "y">,
+): Vec2 {
+  const target = snapshot.bots.find((bot) => bot.id === impact.targetId);
+  if (!target) return { x: impact.x, y: impact.y };
+  const source = snapshot.bots.find((bot) => bot.id === impact.sourceId);
+  const dx = (source?.position.x ?? impact.x) - target.position.x;
+  const dy = (source?.position.y ?? impact.y) - target.position.y;
+  const impactAngle = Math.atan2(dy, dx);
+  const plate = predictedContactPlate(snapshot, target, impact);
+  const contactAngle = plate === null
+    ? impactAngle
+    : plateContactAngle(target.facing, target.shieldSegments.length, plate, impactAngle);
+  const radius = target.radius * (plate === null ? CORE_REACH : 1);
+  return {
+    x: target.position.x + Math.cos(contactAngle) * radius,
+    y: target.position.y + Math.sin(contactAngle) * radius,
+  };
 }
 
 /** Visual-only victim response on the same delayed body the attacker touched.
@@ -115,8 +196,11 @@ export function applyPredictedImpactOverlays(
     if (!impact.baselineShieldSegments || !impact.predictedShieldSegments) {
       impact.baselineShieldSegments = [...target.shieldSegments];
       impact.predictedShieldSegments = [...target.shieldSegments];
-      const impactAngle = Math.atan2(impact.y - target.position.y, impact.x - target.position.x);
-      applyArmourHit(target.facing, impact.predictedShieldSegments, impactAngle);
+      const plate = predictedContactPlate(snapshot, target, impact);
+      if (plate !== null) {
+        impact.predictedShieldSegments[plate] = 0;
+        reseatPlates(impact.predictedShieldSegments);
+      }
     }
 
     // A real server result has arrived. Never apply the speculative hit again
@@ -135,6 +219,40 @@ export function applyPredictedImpactOverlays(
         : bot;
     }),
   };
+}
+
+/** Client mirror of the authoritative finite-body plate witness. */
+function predictedContactPlate(
+  snapshot: GameSnapshot,
+  target: DotBotEntity,
+  impact: Pick<PredictedImpact, "sourceId" | "x" | "y">,
+): number | null {
+  const source = snapshot.bots.find((bot) => bot.id === impact.sourceId);
+  if (source) {
+    const dx = source.position.x - target.position.x;
+    const dy = source.position.y - target.position.y;
+    const dist = Math.hypot(dx, dy);
+    const ux = dist > 0.001 ? dx / dist : 1;
+    const uy = dist > 0.001 ? dy / dist : 0;
+    const targetShape = makeContactShape(target.maxShields);
+    const sourceShape = makeContactShape(source.maxShields);
+    buildContactShape(targetShape, target.radius, target.facing, target.shieldSegments);
+    buildContactShape(sourceShape, source.radius, source.facing, source.shieldSegments);
+    return contactingPlate(
+      targetShape,
+      target.facing,
+      target.shieldSegments,
+      sourceShape,
+      ux,
+      uy,
+    );
+  }
+
+  // Rolling snapshots can briefly lack source metadata. Preserve the old
+  // centre-angle fallback for that compatibility case only.
+  const impactAngle = Math.atan2(impact.y - target.position.y, impact.x - target.position.x);
+  const plate = coveringPlate(target.facing, target.shieldSegments.length, impactAngle);
+  return target.shieldSegments[plate] > 0 ? plate : null;
 }
 
 function sameSegments(left: readonly number[], right: readonly number[]): boolean {

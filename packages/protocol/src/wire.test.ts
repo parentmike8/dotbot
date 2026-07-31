@@ -354,6 +354,13 @@ describe("event wire mapping", () => {
       startTick: 0,
       deathTick: 60,
       tickHz: 60,
+      impacts: [{
+        tick: 45,
+        result: "plateBreak",
+        position: { x: 11.237, y: 18.454 },
+        direction: { x: -0.753, y: 0.251 },
+        sourceId: "killer",
+      }],
       frames: [{
         tick: 60,
         victim: { id: "victim", position: { x: 10.123, y: 20.456 }, facing: 1.234, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" },
@@ -368,6 +375,11 @@ describe("event wire mapping", () => {
     expect(fromWireKillCamClip(JSON.parse(JSON.stringify(wire)))).toMatchObject({
       ...clip,
       cause: { ...clip.cause, position: { x: 10.12, y: 20.46 } },
+      impacts: [{
+        ...clip.impacts[0],
+        position: { x: 11.24, y: 18.45 },
+        direction: { x: -0.75, y: 0.25 },
+      }],
       frames: [{
         ...clip.frames[0],
         victim: {

@@ -36,7 +36,7 @@
  * and core reach diverged.
  */
 
-import { CORE_REACH, PLATE_REACH } from "./shields";
+import { CORE_REACH, PLATE_REACH, coveringPlate } from "./shields";
 
 const TWO_PI = Math.PI * 2;
 
@@ -66,6 +66,16 @@ export type ContactShape = {
   /** Unit direction of a sector's second edge, `2*PI/n` counter-clockwise of e0. */
   e1x: Float64Array;
   e1y: Float64Array;
+  /** Authored plate represented by this primitive, or -1 for the core disc. */
+  plate: Int8Array;
+};
+
+export type ContactFeature = {
+  distance: number;
+  /** Primitive on A that establishes first contact along the requested axis. */
+  aPrimitive: number;
+  /** Primitive on B that establishes first contact along the requested axis. */
+  bPrimitive: number;
 };
 
 /** A reusable shape sized for a bot with at most `maxShields` plates. */
@@ -79,6 +89,7 @@ export function makeContactShape(maxShields: number): ContactShape {
     e0y: new Float64Array(capacity),
     e1x: new Float64Array(capacity),
     e1y: new Float64Array(capacity),
+    plate: new Int8Array(capacity).fill(-1),
   };
 }
 
@@ -125,11 +136,13 @@ export function buildContactShape(
     out.count = 1;
     out.kind[0] = KIND_DISC;
     out.r[0] = radius * (allIntact ? PLATE_REACH : CORE_REACH);
+    out.plate[0] = -1;
     return;
   }
 
   out.kind[0] = KIND_DISC;
   out.r[0] = radius * CORE_REACH;
+  out.plate[0] = -1;
 
   const cell = TWO_PI / n;
   const half = Math.PI / n;
@@ -146,6 +159,7 @@ export function buildContactShape(
     out.e0y[count] = Math.sin(a0);
     out.e1x[count] = Math.cos(a1);
     out.e1y[count] = Math.sin(a1);
+    out.plate[count] = index;
     count += 1;
   }
   out.count = count;
@@ -338,14 +352,75 @@ export function contactDistance(
   uy: number,
   floor = 0,
 ): number {
+  return contactKernel(a, b, ux, uy, floor);
+}
+
+/**
+ * Exact contact distance plus the two primitives that establish it.
+ *
+ * Damage uses the witness on the target to answer the physical question the
+ * centre-angle shortcut could not: did the attacking body first touch the bare
+ * core, or the SIDE of a surviving plate? A glancing body is finite, so its edge
+ * can meet a plate even when the line between centres points through a broken
+ * sector. Returning the same witness used by separation keeps collision and
+ * damage on one geometry.
+ */
+export function contactFeature(
+  a: ContactShape,
+  b: ContactShape,
+  ux: number,
+  uy: number,
+  floor = 0,
+): ContactFeature {
+  const feature: ContactFeature = { distance: floor, aPrimitive: 0, bPrimitive: 0 };
+  feature.distance = contactKernel(a, b, ux, uy, floor, feature);
+  return feature;
+}
+
+/**
+ * Which surviving plate on A physically establishes contact with B, or null
+ * when B reaches A's core first. `u` points from A toward B.
+ */
+export function contactingPlate(
+  a: ContactShape,
+  aFacing: number,
+  aSegments: readonly number[],
+  b: ContactShape,
+  ux: number,
+  uy: number,
+): number | null {
+  if (aSegments.length === 0 || aSegments.every((plate) => plate <= 0)) return null;
+  if (aSegments.every((plate) => plate > 0)) {
+    return coveringPlate(aFacing, aSegments.length, Math.atan2(uy, ux));
+  }
+  const witness = contactFeature(a, b, ux, uy);
+  const plate = a.plate[witness.aPrimitive];
+  return plate >= 0 && aSegments[plate] > 0 ? plate : null;
+}
+
+/** Allocation-free kernel for the separation hot path; witness is opt-in. */
+function contactKernel(
+  a: ContactShape,
+  b: ContactShape,
+  ux: number,
+  uy: number,
+  floor: number,
+  feature?: ContactFeature,
+): number {
   // Two fully plated bots, and any pair of bare cores: plain circles, plain sum.
   // The overwhelmingly common case, so it never touches the general machinery.
   if (a.count === 1 && b.count === 1) {
     const sum = a.r[0] + b.r[0];
+    if (feature) {
+      feature.aPrimitive = 0;
+      feature.bPrimitive = 0;
+    }
     return sum > floor ? sum : floor;
   }
 
   let best = floor;
+  let bestA = 0;
+  let bestB = 0;
   const aCount = a.count;
   const bCount = b.count;
 
@@ -356,22 +431,42 @@ export function contactDistance(
     for (let j = 1; j < bCount; j += 1) {
       if (a.r[i] + b.r[j] <= best) continue;
       const psi = pairExtent(a, i, b, j, ux, uy, best);
-      if (psi > best) best = psi;
+      if (psi > best) {
+        best = psi;
+        bestA = i;
+        bestB = j;
+      }
     }
   }
   for (let i = 1; i < aCount; i += 1) {
     if (a.r[i] + b.r[0] <= best) continue;
     const psi = pairExtent(a, i, b, 0, ux, uy, best);
-    if (psi > best) best = psi;
+    if (psi > best) {
+      best = psi;
+      bestA = i;
+      bestB = 0;
+    }
   }
   for (let j = 1; j < bCount; j += 1) {
     if (a.r[0] + b.r[j] <= best) continue;
     const psi = pairExtent(a, 0, b, j, ux, uy, best);
-    if (psi > best) best = psi;
+    if (psi > best) {
+      best = psi;
+      bestA = 0;
+      bestB = j;
+    }
   }
   // Core against core, which is a disc against a disc and needs no search.
   const cores = a.r[0] + b.r[0];
-  if (cores > best) best = cores;
+  if (cores > best) {
+    best = cores;
+    bestA = 0;
+    bestB = 0;
+  }
 
+  if (feature) {
+    feature.aPrimitive = bestA;
+    feature.bPrimitive = bestB;
+  }
   return best;
 }

@@ -3,6 +3,7 @@ import type { KillCamClip } from "@dotbot/protocol";
 import {
   KillCamPlayback,
   killCamCameraTarget,
+  killCamImpacts,
   killCamLabel,
   killCamSnapshot,
   liveStateEndsKillCam,
@@ -54,8 +55,9 @@ describe("KillCamPlayback", () => {
     expect(killCamLabel({ ...clip, cause: { ...clip.cause, kind: "environment" } })).toBe("IMPACT");
   });
 
-  it("uses an isolated deterministic near-real-time clock and never exposes the source before its visible frame", () => {
+  it("plays once at 80%, then repeats at 70%, without exposing the source before its visible frame", () => {
     const playback = new KillCamPlayback(clip);
+    expect(playback.pass).toBe(1);
     expect(playback.sample().source).toBeUndefined();
     playback.advance(600);
     expect(playback.replayTick).toBeCloseTo(28.8);
@@ -63,13 +65,25 @@ describe("KillCamPlayback", () => {
     playback.advance(25);
     expect(playback.replayTick).toBeCloseTo(30);
     expect(playback.sample().source?.id).toBe("killer");
+    playback.advance(625);
+    expect(playback.pass).toBe(1);
+    expect(playback.replayTick).toBe(clip.deathTick);
+    playback.advance(1_500);
+    expect(playback.pass).toBe(2);
+    expect(playback.replayTick).toBeCloseTo(0);
+    expect(playback.sample().source).toBeUndefined();
+    playback.advance(500 / 0.7);
+    expect(playback.replayTick).toBeCloseTo(30);
+    expect(playback.sample().source?.id).toBe("killer");
   });
 
-  it("finishes after replay plus a short impact hold, and skip is immediate", () => {
+  it("holds the final frame until the 30-second timeout, while close remains immediate", () => {
     const playback = new KillCamPlayback(clip);
-    playback.advance(2_400);
+    playback.advance(29_999);
     expect(playback.finished).toBe(false);
-    playback.advance(50);
+    expect(playback.replaysComplete).toBe(true);
+    expect(playback.replayTick).toBe(clip.deathTick);
+    playback.advance(1);
     expect(playback.finished).toBe(true);
 
     const skipped = new KillCamPlayback(clip);
@@ -77,9 +91,111 @@ describe("KillCamPlayback", () => {
     expect(skipped.finished).toBe(true);
   });
 
+  it("reconstructs authoritative plate-break flashes without treating the downed plate clear as extra hits", () => {
+    const plateClip: KillCamClip = {
+      ...clip,
+      frames: [
+        {
+          ...clip.frames[0],
+          victim: { ...clip.frames[0].victim, shieldSegments: [1, 1, 0] },
+        },
+        {
+          ...clip.frames[1],
+          tick: 15,
+          victim: { ...clip.frames[1].victim, shieldSegments: [1, 0, 0] },
+        },
+        clip.frames[2],
+      ],
+    };
+    const impacts = killCamImpacts(plateClip);
+    expect(impacts.map(({ tick, result }) => ({ tick, result }))).toEqual([
+      { tick: 15, result: "plateBreak" },
+      { tick: 60, result: "downed" },
+    ]);
+    expect(impacts[0].position).not.toEqual(impacts[0].targetPosition);
+    expect(impacts[0].sourceId).toBe("killer");
+    expect(impacts[1].position).toEqual(clip.cause.position);
+
+    const renderedAtBreak = killCamSnapshot(plateClip.frames[1], plateClip, new Map([
+      ["victim", { id: "victim", name: "Victim", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
+      ["killer", { id: "killer", name: "Killer", squadId: "bravo", isAmbient: true, maxShields: 3, radius: 24 }],
+    ]), [], impacts);
+    const victim = renderedAtBreak.bots.find((bot) => bot.id === "victim")!;
+    const killer = renderedAtBreak.bots.find((bot) => bot.id === "killer")!;
+    expect(Math.hypot(
+      killer.position.x - victim.position.x,
+      killer.position.y - victim.position.y,
+    )).toBeCloseTo(48, 6);
+  });
+
+  it("uses exact authoritative impact timing and positions when the clip supplies them", () => {
+    const exactClip: KillCamClip = {
+      ...clip,
+      impacts: [
+        {
+          tick: 12,
+          result: "plateBreak",
+          position: { x: 111.25, y: 92.75 },
+          direction: { x: -0.8, y: 0.2 },
+          sourceId: "killer",
+        },
+        {
+          tick: 60,
+          result: "downed",
+          position: { x: 153.4, y: 101.2 },
+          direction: { x: -1, y: 0 },
+          sourceId: "killer",
+        },
+      ],
+    };
+
+    expect(killCamImpacts(exactClip)).toEqual([
+      expect.objectContaining({ tick: 12, position: { x: 111.25, y: 92.75 } }),
+      expect.objectContaining({ tick: 60, position: { x: 153.4, y: 101.2 } }),
+    ]);
+    const playback = new KillCamPlayback(exactClip);
+    playback.advance((11 / 60) * 1_000 / 0.8);
+    expect(playback.sample().victim.shieldSegments).toEqual([1, 0, 0]);
+    playback.advance((1 / 60) * 1_000 / 0.8);
+    expect(playback.sample().victim.shieldSegments).toEqual([0, 0, 0]);
+
+    const visibleClip: KillCamClip = {
+      ...exactClip,
+      frames: exactClip.frames.map((frame, index) => ({
+        ...frame,
+        victim: {
+          ...frame.victim,
+          shieldSegments: index === 0 ? [1, 0, 0] : [0, 0, 0],
+        },
+        source: frame.source ?? {
+          id: "killer",
+          position: { x: 170, y: 100 },
+          facing: Math.PI,
+          floorId: "outdoor",
+          shieldSegments: [1, 1, 1],
+          dashActiveMs: 100,
+          state: "alive",
+        },
+      })),
+    };
+    const visiblePlayback = new KillCamPlayback(visibleClip);
+    visiblePlayback.advance((12 / 60) * 1_000 / 0.8);
+    const visibleFrame = visiblePlayback.sample();
+    const rendered = killCamSnapshot(visibleFrame, visibleClip, new Map([
+      ["victim", { id: "victim", name: "Victim", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
+      ["killer", { id: "killer", name: "Killer", squadId: "bravo", isAmbient: true, maxShields: 3, radius: 24 }],
+    ]), [], visiblePlayback.impacts);
+    const renderedVictim = rendered.bots.find((bot) => bot.id === "victim")!;
+    const renderedSource = rendered.bots.find((bot) => bot.id === "killer")!;
+    expect(Math.hypot(
+      renderedSource.position.x - renderedVictim.position.x,
+      renderedSource.position.y - renderedVictim.position.y,
+    )).toBeCloseTo(48, 6);
+  });
+
   it("builds an inert render-only snapshot containing only approved actors and no live dynamics", () => {
     const playback = new KillCamPlayback(clip);
-    playback.advance(3_000);
+    playback.advance(4_000);
     const rendered = killCamSnapshot(playback.sample(), clip, new Map([
       ["victim", { id: "victim", name: "Victim", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
       ["killer", { id: "killer", name: "Killer", squadId: "bravo", isAmbient: false, maxShields: 3, radius: 24 }],

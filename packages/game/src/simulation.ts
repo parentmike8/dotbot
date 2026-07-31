@@ -1,7 +1,7 @@
 import { collectSolids, separateCircleFromRect } from "./collision";
 import { buildSolidIndex, withExtraSolids, type SolidIndex, type SolidSource } from "./solidIndex";
 import { rectSolid } from "./geometry";
-import { buildContactShape, contactDistance, makeContactShape, type ContactShape } from "./bodyContact";
+import { buildContactShape, contactDistance, contactingPlate, makeContactShape, type ContactShape } from "./bodyContact";
 import {
   coincidentSeparationAxis,
   integrateWithWalls,
@@ -44,12 +44,15 @@ import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, hasRoom, insertItem, removeCarriedAt } from "./inventory";
 import { botSpawnFaction } from "./faction";
 import {
+  CORE_REACH,
   applyArmourHit,
   contactReach,
   coveringPlate,
   normalizeAngle,
+  plateContactAngle,
   plateSum,
   platesForCount,
+  reseatPlates,
   restoreShieldPlate,
 } from "./shields";
 import { OUTDOOR_FLOOR_ID } from "./types";
@@ -122,6 +125,7 @@ const MAX_REWIND_TICKS = 18;
  * make every AI dash a point-blank bump under the run-up rule.
  */
 const AI_DASH_RUN_UP_PX = DASH_HIT_FORGIVENESS_PX + 8;
+
 
 /**
  * Centre distance past which a pair cannot possibly be touching, so the exact
@@ -1276,8 +1280,9 @@ export class DotBotSimulation {
     const owner = this.bots.get(mine.placedByBotId);
     if (owner && !this.canDamage(owner, target)) return;
     if (owner) this.recordHostileAction(owner, target);
-    // A mine reads exactly like any other hit: the arc it goes off in takes it, or
-    // it reaches the core. One rule, so a mine can never do what a dash cannot.
+    // A mine is a point source: the authored plate cell it sits in takes it, or
+    // the exposed core does. Body-vs-body dashes additionally account for the
+    // attacker's finite shape intercepting the SIDE of a plate.
     const impactAngle = Math.atan2(mine.position.y - target.position.y, mine.position.x - target.position.x);
     const armourHit = applyArmourHit(target.facing, target.shieldSegments, impactAngle);
     target.shields = plateSum(target.shieldSegments);
@@ -3095,13 +3100,33 @@ export class DotBotSimulation {
   }
 
   private impactMeetsIntactPlate(target: InternalBot, source: InternalBot): boolean {
-    if (target.shieldSegments.length === 0) return false;
-    const impactAngle = Math.atan2(
-      source.position.y - target.position.y,
-      source.position.x - target.position.x,
+    return this.contactingPlate(target, source) !== null;
+  }
+
+  /**
+   * The target plate that physically establishes first body contact, if any.
+   *
+   * This cannot be answered from the centre-to-centre angle. At a glancing
+   * approach the attacker's finite body can hit the side of a surviving plate
+   * while that centre line points through a broken sector. Separation has always
+   * used the complete convex contact shapes; damage must use its witness too or
+   * the visible obstacle can be ignored and a plate-side hit becomes a down.
+   */
+  private contactingPlate(target: InternalBot, source: InternalBot): number | null {
+    const dx = source.position.x - target.position.x;
+    const dy = source.position.y - target.position.y;
+    const dist = Math.hypot(dx, dy);
+    const ux = dist > 0.001 ? dx / dist : 1;
+    const uy = dist > 0.001 ? dy / dist : 0;
+    const targetShape = this.shapeOf(target);
+    return contactingPlate(
+      targetShape,
+      target.facing,
+      target.shieldSegments,
+      this.shapeOf(source),
+      ux,
+      uy,
     );
-    const plate = coveringPlate(target.facing, target.shieldSegments.length, impactAngle);
-    return target.shieldSegments[plate] > 0;
   }
 
   /**
@@ -3196,12 +3221,14 @@ export class DotBotSimulation {
    * present-time body made valid lag-compensated hits stop at a different
    * place than the attacker had actually seen.
    */
-  private stopDashAtContact(attacker: InternalBot, victim: InternalBot): void {
+  private stopDashAtContact(attacker: InternalBot, victim: InternalBot, preImpactDistance?: number): void {
     attacker.dashActiveMs = 0;
     const target = this.perceivedTarget(attacker, victim).position;
     // The same reach the hit test used, or a dash stops at a distance the contact
-    // test never agreed was contact.
-    const touching = this.contactGap(attacker, victim, target);
+    // test never agreed was contact. A successful hit can remove a plate before
+    // this method runs, so callers preserve the PRE-impact span; otherwise the
+    // attacker visibly snaps through the plate it just struck and stops on the core.
+    const touching = preImpactDistance ?? this.contactGap(attacker, victim, target);
     const travel = subtract(attacker.position, attacker.prevPosition);
     const fromTarget = subtract(attacker.prevPosition, target);
     const travelLengthSquared = travel.x * travel.x + travel.y * travel.y;
@@ -3213,12 +3240,16 @@ export class DotBotSimulation {
     const b = 2 * (fromTarget.x * travel.x + fromTarget.y * travel.y);
     const c = fromTarget.x * fromTarget.x + fromTarget.y * fromTarget.y - touching * touching;
     const discriminant = b * b - 4 * travelLengthSquared * c;
-    if (travelLengthSquared > 0.0001 && discriminant >= 0) {
-      const entry = clamp((-b - Math.sqrt(discriminant)) / (2 * travelLengthSquared), 0, 1);
+    const entry = travelLengthSquared > 0.0001 && discriminant >= 0
+      ? (-b - Math.sqrt(discriminant)) / (2 * travelLengthSquared)
+      : Number.NaN;
+    if (entry >= 0 && entry <= 1) {
       contact = add(attacker.prevPosition, scale(travel, entry));
     } else {
       // The hit test permits a four-pixel forgiveness ring. For that narrow
-      // miss, magnetize to the closest point on the swept segment.
+      // miss, magnetize from the closest point on the swept segment to exact
+      // contact. Clamping an intersection that lies just BEYOND the segment to
+      // t=1 leaves visible daylight — the hit lands but the bodies never touch.
       const projected = travelLengthSquared > 0.0001
         ? clamp(-(fromTarget.x * travel.x + fromTarget.y * travel.y) / travelLengthSquared, 0, 1)
         : 0;
@@ -3321,6 +3352,15 @@ export class DotBotSimulation {
           const bBlocked = bConnects && bStartedTouching && bClosing;
           const aCanHit = aConnects && !aStartedTouching && aClosing;
           const bCanHit = bConnects && !bStartedTouching && bClosing;
+          // Capture both spans before either hit mutates/re-seats a plate. In the
+          // simultaneous non-clash case, resolving A must not rewrite where B's
+          // already-admitted dash first made contact.
+          const aImpactDistance = aBlocked || aCanHit
+            ? this.contactGap(a, b, this.perceivedTarget(a, b).position)
+            : undefined;
+          const bImpactDistance = bBlocked || bCanHit
+            ? this.contactGap(b, a, this.perceivedTarget(b, a).position)
+            : undefined;
           // Committed, not merely mid-dash: a body still counts for the length of the
           // parry grace after its dash ended, so the player who charged first is still
           // party to the clash when the second charge arrives.
@@ -3365,21 +3405,21 @@ export class DotBotSimulation {
 
           let bumped = false;
           if (aBlocked) {
-            this.stopDashAtContact(a, b);
+            this.stopDashAtContact(a, b, aImpactDistance);
             bumped = true;
           } else if (aCanHit) {
             this.recordHostileAction(a, b);
             if (this.damageBot(b, a)) {
-              this.stopDashAtContact(a, b);
+              this.stopDashAtContact(a, b, aImpactDistance);
             }
           }
           if (bBlocked) {
-            this.stopDashAtContact(b, a);
+            this.stopDashAtContact(b, a, bImpactDistance);
             bumped = true;
           } else if (bCanHit) {
             this.recordHostileAction(b, a);
             if (this.damageBot(a, b)) {
-              this.stopDashAtContact(b, a);
+              this.stopDashAtContact(b, a, bImpactDistance);
             }
           }
           if (bumped) {
@@ -3484,10 +3524,17 @@ export class DotBotSimulation {
     }
     this.recordHostileAction(source, target);
 
-    // The hit lands in one plate's arc. A live plate breaks; a broken arc is not
-    // there any more, so the hit reaches the core (see shields.ts for the model).
+    // Resolve damage from the same finite-body contact that admitted the hit.
+    // A plate can intercept at its side even when the centre line points past it.
     const impactAngle = Math.atan2(source.position.y - target.position.y, source.position.x - target.position.x);
-    const armourHit = applyArmourHit(target.facing, target.shieldSegments, impactAngle);
+    const contactPlate = this.contactingPlate(target, source);
+    const armourHit = contactPlate === null
+      ? { plate: coveringPlate(target.facing, target.shieldSegments.length, impactAngle), core: true }
+      : { plate: contactPlate, core: false };
+    if (!armourHit.core) {
+      target.shieldSegments[armourHit.plate] = 0;
+      reseatPlates(target.shieldSegments);
+    }
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
     /**
@@ -3503,6 +3550,14 @@ export class DotBotSimulation {
     source.dashParryGraceMs = 0;
     this.emitNoise("impact", target.position, target.floorId, NOISE_LOUDNESS.impact, source);
     const away = { x: -Math.cos(impactAngle), y: -Math.sin(impactAngle) };
+    const impactRadius = armourHit.core ? target.radius * CORE_REACH : target.radius;
+    const contactAngle = armourHit.core
+      ? impactAngle
+      : plateContactAngle(target.facing, target.shieldSegments.length, armourHit.plate, impactAngle);
+    const impactPosition = {
+      x: target.position.x + Math.cos(contactAngle) * impactRadius,
+      y: target.position.y + Math.sin(contactAngle) * impactRadius,
+    };
     const result = armourHit.core ? "downed" : "plateBreak";
     // A dedicated acknowledgement lets the attacking client correlate its
     // instant predicted contact with the exact authoritative result. It also
@@ -3513,10 +3568,7 @@ export class DotBotSimulation {
       botId: target.id,
       byBotId: source.id,
       result,
-      position: {
-        x: target.position.x - away.x * target.radius,
-        y: target.position.y - away.y * target.radius,
-      },
+      position: impactPosition,
       direction: away,
       tick: this.tickCount,
     });
@@ -3527,10 +3579,7 @@ export class DotBotSimulation {
       this.putBotDown(target, source.id, {
         kind: source.dashActiveMs > 0 ? "dash" : "ram",
         tick: this.tickCount,
-        position: {
-          x: target.position.x - away.x * target.radius,
-          y: target.position.y - away.y * target.radius,
-        },
+        position: impactPosition,
         direction: away,
       });
       return true;

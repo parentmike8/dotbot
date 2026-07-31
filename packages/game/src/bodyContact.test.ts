@@ -15,7 +15,7 @@
  * they MUST overlap a hair inside it (it does not overestimate either).
  */
 import { describe, expect, it } from "vitest";
-import { buildContactShape, contactDistance, makeContactShape } from "./bodyContact";
+import { buildContactShape, contactDistance, contactFeature, makeContactShape } from "./bodyContact";
 import { CORE_REACH, PLATE_REACH, contactReach } from "./shields";
 
 const R = 24;
@@ -295,6 +295,24 @@ describe("contact shape", () => {
 });
 
 describe("authored contact distances", () => {
+  it("identifies a surviving plate as the first obstacle on a glancing side hit", () => {
+    // Plate 0 ends at +60 degrees. The attacker approaches on an 80-degree
+    // centre line, so an angular lookup calls this the broken neighbouring arc.
+    // Its finite 24px body nevertheless reaches the plate corner first.
+    buildContactShape(shapeA, 24, 0, [1, 0, 0]);
+    buildContactShape(shapeB, 24, 0, [1, 1, 1]);
+    const approach = (80 * Math.PI) / 180;
+    const glancing = contactFeature(shapeA, shapeB, Math.cos(approach), Math.sin(approach));
+    expect(shapeA.plate[glancing.aPrimitive]).toBe(0);
+    expect(glancing.distance).toBeGreaterThan(24 * CORE_REACH + 24);
+
+    // Far enough round the missing side, the core really is the first contact.
+    const exposed = (120 * Math.PI) / 180;
+    const core = contactFeature(shapeA, shapeB, Math.cos(exposed), Math.sin(exposed));
+    expect(shapeA.plate[core.aPrimitive]).toBe(-1);
+    expect(core.distance).toBeCloseTo(24 * CORE_REACH + 24, 12);
+  });
+
   it("holds two fully plated bots exactly 48 apart", () => {
     expect(kernelDistance(body([1, 1, 1]), body([1, 1, 1], 1.3), 1, 0)).toBe(48);
     expect(kernelDistance(body([1, 1, 1], 2.1), body([1, 1, 1], -0.4), 0, 1)).toBe(48);

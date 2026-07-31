@@ -19,6 +19,7 @@ import {
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, Rect, SimEvent, Solid, Vec2 } from "@dotbot/game/types";
 import type { KillCamClip, MatchIntel } from "@dotbot/protocol";
+import type { KillCamImpact } from "../killCam";
 import { CORE_REACH } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
 import { buildMapArt, makeWorldLabel, type MapArt } from "./mapArt";
@@ -28,7 +29,9 @@ import { roofParallax } from "./model/modelRoof";
 import {
   applyPredictedImpactOverlays,
   classifyPredictedImpact,
+  impactContactForSource,
   impactReactionForTarget,
+  predictedImpactPosition,
   predictedImpactDirection,
   type QueuedPredictedImpact,
 } from "./impactPrediction";
@@ -103,6 +106,8 @@ export type InteractionChannelVisual = {
 export type KillCamRender = {
   clip: KillCamClip;
   progress: number;
+  replayTick: number;
+  impacts: readonly KillCamImpact[];
   cameraTarget: Vec2;
 };
 
@@ -428,7 +433,8 @@ export class GameRenderer {
   queueImpact(impact: PredictedImpact, snapshot: GameSnapshot): HitResult | null {
     const result = classifyPredictedImpact(snapshot, impact);
     const direction = predictedImpactDirection(snapshot, impact);
-    this.impactFlashes.push({ ...impact, result, direction, startedAt: performance.now() });
+    const position = predictedImpactPosition(snapshot, impact);
+    this.impactFlashes.push({ ...impact, ...position, result, direction, startedAt: performance.now() });
     this.addCameraImpulse(
       direction,
       impact.kind === "clash" ? 5 : impact.kind === "bump" ? 2.5 : result === "downed" ? 5 : 3.5,
@@ -471,6 +477,10 @@ export class GameRenderer {
       match.confirmedAt = now;
       match.result = event.result;
       match.direction = direction;
+      if (eventHasWorldPoint) {
+        match.x = event.position.x;
+        match.y = event.position.y;
+      }
       return true;
     }
 
@@ -1756,6 +1766,7 @@ export class GameRenderer {
     // around with the body. It goes in the same bucket rather than being added
     // afterward, so a shake still costs at most a redraw per 11.25 degrees.
     const reaction = impactReactionForTarget(this.impactFlashes, bot.id, now, this.reducedMotion);
+    const sourceContact = impactContactForSource(this.impactFlashes, bot, snapshot, now);
     const spin = bot.facing + (reaction?.rotation ?? 0);
     const spinBucket = Math.round((spin / (Math.PI * 2)) * sunSteps);
     const signature = [
@@ -1786,9 +1797,15 @@ export class GameRenderer {
 
     view.root.visible = true;
     view.root.alpha = fade;
+    const presentedPosition = sourceContact
+      ? {
+          x: displayPosition.x + (sourceContact.position.x - displayPosition.x) * sourceContact.weight,
+          y: displayPosition.y + (sourceContact.position.y - displayPosition.y) * sourceContact.weight,
+        }
+      : displayPosition;
     view.root.position.set(
-      displayPosition.x + (reaction?.offset.x ?? 0),
-      displayPosition.y + (reaction?.offset.y ?? 0),
+      presentedPosition.x + (reaction?.offset.x ?? 0),
+      presentedPosition.y + (reaction?.offset.y ?? 0),
     );
     view.root.rotation = spin;
     view.root.scale.set(reaction?.scale ?? 1);
@@ -1870,23 +1887,45 @@ export class GameRenderer {
     return bot.isAmbient ? AMBIENT_GREY : RIVAL_RED;
   }
 
-  private drawKillCamImpact({ clip, progress }: KillCamRender): void {
-    if (progress < 0.82) return;
-    const reveal = clamp01((progress - 0.82) / 0.18);
-    const { position, direction, kind } = clip.cause;
-    const radius = 8 + reveal * 18;
-    const color = kind === "mine" ? 0xe8590c : INK.structure;
-    this.dynamicGfx.circle(position.x, position.y, radius)
-      .stroke({ color, width: 3, alpha: 0.35 + reveal * 0.6 });
-    this.dynamicGfx
-      .moveTo(position.x - direction.x * 28, position.y - direction.y * 28)
-      .lineTo(position.x - direction.x * 7, position.y - direction.y * 7)
-      .stroke({ color, width: 3, alpha: reveal });
-    if (kind === "mine") {
+  private drawKillCamImpact({ clip, replayTick, impacts }: KillCamRender): void {
+    for (const impact of impacts) {
+      const durationTicks = clip.tickHz * (impact.result === "downed" ? 0.32 : 0.26);
+      const ageTicks = replayTick - impact.tick;
+      if (ageTicks < 0 || ageTicks > durationTicks) continue;
+      const progress = clamp01(ageTicks / Math.max(1, durationTicks));
+      const alpha = (1 - progress) * 0.95;
+      const radius = 8 + progress * (impact.result === "downed" ? 24 : 19);
+      const color = clip.cause.kind === "mine" && impact.result === "downed"
+        ? 0xe8590c
+        : INK.structure;
+
+      this.dynamicGfx.circle(impact.position.x, impact.position.y, radius)
+        .stroke({ color, width: impact.result === "downed" ? 3.5 : 3, alpha });
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        this.dynamicGfx
+          .moveTo(impact.position.x + dx * radius, impact.position.y + dy * radius)
+          .lineTo(impact.position.x + dx * (radius + 7), impact.position.y + dy * (radius + 7))
+          .stroke({ color, width: 2, alpha });
+      }
       this.dynamicGfx
-        .moveTo(position.x - 6, position.y - 6).lineTo(position.x + 6, position.y + 6)
-        .moveTo(position.x + 6, position.y - 6).lineTo(position.x - 6, position.y + 6)
-        .stroke({ color, width: 2.5, alpha: reveal });
+        .moveTo(impact.position.x - impact.direction.x * 28, impact.position.y - impact.direction.y * 28)
+        .lineTo(impact.position.x - impact.direction.x * 7, impact.position.y - impact.direction.y * 7)
+        .stroke({ color, width: 3, alpha });
+
+      if (ageTicks <= clip.tickHz * 0.12) {
+        const pulseProgress = ageTicks / Math.max(1, clip.tickHz * 0.12);
+        this.dynamicGfx.circle(
+          impact.targetPosition.x,
+          impact.targetPosition.y,
+          12 + pulseProgress * 7,
+        ).stroke({ color: 0xffffff, width: 5, alpha: (1 - pulseProgress) * 0.9 });
+      }
+      if (clip.cause.kind === "mine" && impact.result === "downed") {
+        this.dynamicGfx
+          .moveTo(impact.position.x - 6, impact.position.y - 6).lineTo(impact.position.x + 6, impact.position.y + 6)
+          .moveTo(impact.position.x + 6, impact.position.y - 6).lineTo(impact.position.x - 6, impact.position.y + 6)
+          .stroke({ color, width: 2.5, alpha });
+      }
     }
   }
 
