@@ -137,10 +137,12 @@ function watchLine(self: DownedSelf): string {
  * you. And no GIVE UP, which named a thing that no longer exists: nothing can
  * finish you off, so leaving is a decision rather than a defeat.
  */
-export function DownedSelfView({ self, onPlea, onLeave }: {
+export function DownedSelfView({ self, onPlea, onLeave, onReplay, replayAvailable = false }: {
   self: DownedSelf;
   onPlea: () => void;
   onLeave: () => void;
+  onReplay?: () => void;
+  replayAvailable?: boolean;
 }) {
   if (self.beingRevived) {
     return (
@@ -162,6 +164,16 @@ export function DownedSelfView({ self, onPlea, onLeave }: {
       </p>
       <div className="prompt-keys">
         <Key code="P" label={pleaLabel} onPress={onPlea} disabled={!self.pleaReady} />
+        {replayAvailable && onReplay ? (
+          <button
+            type="button"
+            className="prompt-text-action"
+            onClick={(event) => {
+              event.currentTarget.blur();
+              onReplay();
+            }}
+          >REPLAY</button>
+        ) : null}
         <button
           type="button"
           className="prompt-text-action"

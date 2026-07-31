@@ -78,19 +78,28 @@ const dashCause: DownCause = {
 };
 
 describe("KillCamHistory", () => {
-  it("omits a hidden approach and every unrelated/private field, then admits the killer once visible", () => {
+  it("keeps historically known squadmates and visible bystanders without leaking hidden or private state", () => {
     const history = new KillCamHistory(map, { historyTicks: 240 });
-    history.record(snapshot(3, 200, { x: 320, y: 100 }, [bot("third-party", { x: 210, y: 120 })]));
-    history.record(snapshot(6, 202, { x: 310, y: 100 }, [bot("third-party", { x: 212, y: 120 })]));
-    history.record(snapshot(12, 204, { x: 230, y: 210 }, [bot("third-party", { x: 214, y: 120 })]));
-    history.record(snapshot(15, 206, { x: 220, y: 104 }, [bot("third-party", { x: 216, y: 120 })]));
+    const extras = (offset: number) => [
+      bot("mate", { x: 330, y: 140 }, { state: "downed" }),
+      bot("visible-party", { x: 210 + offset, y: 120 }),
+      bot("hidden-party", { x: 320, y: 150 }),
+    ];
+    history.record(snapshot(3, 200, { x: 320, y: 100 }, extras(0)));
+    history.record(snapshot(6, 202, { x: 310, y: 100 }, extras(2)));
+    history.record(snapshot(12, 204, { x: 230, y: 210 }, extras(4)));
+    history.record(snapshot(15, 206, { x: 220, y: 104 }, extras(6)));
 
     const clip = history.createClip("victim", "killer", dashCause)!;
     expect(clip.frames.slice(0, 2).every((frame) => frame.source === undefined)).toBe(true);
     expect(clip.frames.slice(2).every((frame) => frame.source?.id === "killer")).toBe(true);
+    expect(clip.frames.every((frame) => frame.visibleBots.some((actor) =>
+      actor.id === "mate" && actor.state === "downed"))).toBe(true);
+    expect(clip.frames.every((frame) => frame.visibleBots.some((actor) =>
+      actor.id === "visible-party"))).toBe(true);
 
     const encoded = JSON.stringify(clip);
-    expect(encoded).not.toContain("third-party");
+    expect(encoded).not.toContain("hidden-party");
     expect(encoded).not.toContain("health");
     expect(encoded).not.toContain("radar");
     expect(encoded).not.toContain("radarPings");

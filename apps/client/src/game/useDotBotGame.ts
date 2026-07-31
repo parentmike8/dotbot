@@ -88,9 +88,13 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const worldMapEnabledRef = useRef(options.worldMapEnabled ?? true);
   worldMapEnabledRef.current = options.worldMapEnabled ?? true;
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const killCamHostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<GameSession | null>(null);
   const rendererRef = useRef<GameRenderer | null>(null);
+  const killCamRendererRef = useRef<GameRenderer | null>(null);
   const killCamPlaybackRef = useRef<KillCamPlayback | null>(null);
+  const lastKillCamClipRef = useRef<KillCamClip | null>(null);
+  const killCamReplayQueuedRef = useRef<KillCamClip | null>(null);
   const killCamObservedDownedRef = useRef(false);
   const killCamDoorsRef = useRef<ReturnType<typeof killCamDoorCatalog>>([]);
   const feedbackRef = useRef<ImpactFeedback | null>(null);
@@ -139,6 +143,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [spectating, setSpectating] = useState<DotBotEntity | null>(null);
   const [killCam, setKillCam] = useState<KillCamView | null>(null);
+  const [killCamReplayAvailable, setKillCamReplayAvailable] = useState(false);
   const [debugVisible, setDebugVisible] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("netgraph"),
   );
@@ -203,12 +208,47 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     let fps = 0;
     let playerSquadId: string | null = null;
     let resizeObserver: ResizeObserver | undefined;
+    let killCamResizeObserver: ResizeObserver | undefined;
+    let killCamRendererPromise: Promise<void> | null = null;
     const feedback = new ImpactFeedback(feedbackPreferencesRef.current, {
       onAudioStatusChange: (status) => {
         if (!disposed) setAudioStatus(status);
       },
     });
     feedbackRef.current = feedback;
+
+    const ensureKillCamRenderer = (map: MapDocument): void => {
+      if (killCamRendererRef.current || killCamRendererPromise || !killCamHostRef.current) return;
+      const host = killCamHostRef.current;
+      killCamRendererPromise = GameRenderer.create(host, map).then((renderer) => {
+        killCamRendererPromise = null;
+        if (disposed) {
+          renderer.destroy();
+          return;
+        }
+        renderer.setReducedMotion(feedbackPreferencesRef.current.reducedMotion);
+        killCamRendererRef.current = renderer;
+        killCamResizeObserver = new ResizeObserver(([entry]) => {
+          renderer.resize(entry.contentRect.width, entry.contentRect.height);
+        });
+        killCamResizeObserver.observe(host);
+      }).catch((error: unknown) => {
+        killCamRendererPromise = null;
+        if (disposed) return;
+        // A replay viewport is optional presentation. Keep the live downed view
+        // usable even if the browser cannot allocate a second graphics context.
+        console.error("Unable to create kill cam viewport", error);
+        killCamPlaybackRef.current?.skip();
+        killCamPlaybackRef.current = null;
+        lastKillCamClipRef.current = null;
+        killCamReplayQueuedRef.current = null;
+        killCamObservedDownedRef.current = false;
+        sessionRef.current?.setReplayActive?.(false);
+        applyHudOverlayEvent("endReplay");
+        setKillCam(null);
+        setKillCamReplayAvailable(false);
+      });
+    };
 
     async function start() {
       const host = hostRef.current;
@@ -251,6 +291,17 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         renderer.resize(entry.contentRect.width, entry.contentRect.height);
       });
       resizeObserver.observe(host);
+
+      const startKillCamPlayback = (clip: KillCamClip): void => {
+        killCamPlaybackRef.current = new KillCamPlayback(clip);
+        killCamObservedDownedRef.current = false;
+        // Replay owns every focus-taking HUD surface, including inventory.
+        // Plea and Leave are separate downed controls and stay mounted.
+        dropQueuedRef.current = undefined;
+        applyHudOverlayEvent("startReplay");
+        session.setReplayActive?.(true);
+        ensureKillCamRenderer(session.map);
+      };
 
       const loop = (now: number) => {
         if (disposed) {
@@ -302,15 +353,16 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         pingQueuedRef.current = undefined;
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
+        const queuedReplay = killCamReplayQueuedRef.current;
+        if (queuedReplay) {
+          killCamReplayQueuedRef.current = null;
+          startKillCamPlayback(queuedReplay);
+        }
         for (const clip of session.drainKillCams?.() ?? []) {
           if (clip.victimId !== session.playerId) continue;
-          killCamPlaybackRef.current = new KillCamPlayback(clip);
-          killCamObservedDownedRef.current = false;
-          // Replay owns every focus-taking HUD surface, including inventory.
-          // Plea and Leave are separate downed controls and stay mounted.
-          dropQueuedRef.current = undefined;
-          applyHudOverlayEvent("startReplay");
-          session.setReplayActive?.(true);
+          lastKillCamClipRef.current = clip;
+          setKillCamReplayAvailable(true);
+          startKillCamPlayback(clip);
         }
         const frameEvents = session.drainEvents();
         const framePlayer = nextSnapshot?.bots.find((bot) => bot.id === session.playerId);
@@ -439,17 +491,26 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const authorityRevived = frameEvents.some((event) =>
           (event.type === "revived" || event.type === "recruited")
           && event.botId === session.playerId);
-        if (killCamPlaybackRef.current && liveStateEndsKillCam(
+        const liveStateEndedReplay = liveStateEndsKillCam(
           killCamObservedDownedRef.current,
           currentPlayer?.state,
           authorityRevived,
-        )) {
+        );
+        if (killCamPlaybackRef.current && liveStateEndedReplay) {
           killCamPlaybackRef.current.skip();
           killCamPlaybackRef.current = null;
           killCamObservedDownedRef.current = false;
           session.setReplayActive?.(false);
           applyHudOverlayEvent("endReplay");
           setKillCam(null);
+          lastKillCamClipRef.current = null;
+          killCamReplayQueuedRef.current = null;
+          setKillCamReplayAvailable(false);
+        } else if (lastKillCamClipRef.current && liveStateEndedReplay) {
+          lastKillCamClipRef.current = null;
+          killCamReplayQueuedRef.current = null;
+          killCamObservedDownedRef.current = false;
+          setKillCamReplayAvailable(false);
         }
         if (currentPlayer) playerSquadId = currentPlayer.squadId;
         const runState = session.getRunState();
@@ -482,8 +543,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const spectator = selectSpectatedBot(livingSquadmates, spectatedBotIdRef.current, spectateCycleQueuedRef.current);
         spectateCycleQueuedRef.current = false;
         spectatedBotIdRef.current = spectator?.id ?? null;
-        let renderPlayerId = spectator?.id ?? session.playerId;
-        let renderSnapshot = nextSnapshot;
+        const renderPlayerId = spectator?.id ?? session.playerId;
+        let killCamSnapshotToRender: GameSnapshot | undefined;
         let killCamRender: {
           clip: KillCamClip;
           progress: number;
@@ -491,7 +552,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           sourceVisible: boolean;
         } | undefined;
         const playback = killCamPlaybackRef.current;
-        if (playback) {
+        if (playback && killCamRendererRef.current) {
           playback.advance(elapsedMs);
           if (playback.finished) {
             killCamPlaybackRef.current = null;
@@ -501,7 +562,11 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
             setKillCam(null);
           } else {
             const replayFrame = playback.sample();
-            const ids = [playback.clip.victimId, playback.clip.sourceBotId]
+            const ids = [
+              playback.clip.victimId,
+              playback.clip.sourceBotId,
+              ...replayFrame.visibleBots.map((actor) => actor.id),
+            ]
               .filter((id): id is string => id !== undefined);
             const meta = new Map<string, EntityMeta>();
             for (const id of ids) {
@@ -523,8 +588,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
                 });
               }
             }
-            renderSnapshot = killCamSnapshot(replayFrame, playback.clip, meta, killCamDoorsRef.current);
-            renderPlayerId = session.playerId;
+            killCamSnapshotToRender = killCamSnapshot(
+              replayFrame,
+              playback.clip,
+              meta,
+              killCamDoorsRef.current,
+            );
             killCamRender = {
               clip: playback.clip,
               progress: playback.progress,
@@ -534,13 +603,22 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           }
         }
         const presentedAt = renderer.render(
-          renderSnapshot,
+          nextSnapshot,
           renderPlayerId,
-          !killCamRender && watching && runState.phase === "over" && spectator === null,
-          killCamRender ? null : interactionChannelRef.current,
-          killCamRender ? undefined : session.intel,
-          killCamRender,
+          watching && runState.phase === "over" && spectator === null,
+          interactionChannelRef.current,
+          session.intel,
         );
+        if (killCamRender && killCamSnapshotToRender) {
+          killCamRendererRef.current?.render(
+            killCamSnapshotToRender,
+            session.playerId,
+            false,
+            null,
+            undefined,
+            killCamRender,
+          );
+        }
         for (const impact of predictedImpacts) {
           session.recordImpactPresented?.(impact.predictionId, presentedAt);
         }
@@ -716,19 +794,24 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
       window.removeEventListener("blur", onWindowBlur);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       resizeObserver?.disconnect();
+      killCamResizeObserver?.disconnect();
 
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current);
       }
 
       rendererRef.current?.destroy();
+      killCamRendererRef.current?.destroy();
       feedbackRef.current?.destroy();
       sessionRef.current?.dispose();
       killCamPlaybackRef.current = null;
+      lastKillCamClipRef.current = null;
+      killCamReplayQueuedRef.current = null;
       killCamObservedDownedRef.current = false;
       killCamDoorsRef.current = [];
       sessionRef.current?.setReplayActive?.(false);
       rendererRef.current = null;
+      killCamRendererRef.current = null;
       feedbackRef.current = null;
       sessionRef.current = null;
     };
@@ -785,6 +868,9 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     sessionRef.current?.setReplayActive?.(false);
     applyHudOverlayEvent("endReplay");
     setKillCam(null);
+    lastKillCamClipRef.current = null;
+    killCamReplayQueuedRef.current = null;
+    setKillCamReplayAvailable(false);
     sessionRef.current?.leaveRun();
   }, [applyHudOverlayEvent]);
 
@@ -796,6 +882,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     applyHudOverlayEvent("endReplay");
     setKillCam(null);
   }, [applyHudOverlayEvent]);
+
+  const replayKillCam = useCallback(() => {
+    const clip = lastKillCamClipRef.current;
+    if (!clip || killCamPlaybackRef.current) return;
+    killCamReplayQueuedRef.current = clip;
+  }, []);
 
   /**
    * `undefined` clears it. A verb is standing state — the simulation reads it every
@@ -933,6 +1025,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     feedbackPreferencesRef.current = next;
     feedbackRef.current?.setPreferences(next);
     rendererRef.current?.setReducedMotion(next.reducedMotion);
+    killCamRendererRef.current?.setReducedMotion(next.reducedMotion);
     saveFeedbackPreferences(next);
     setFeedbackPreferences(next);
     if (key === "sound" && next.sound) void feedbackRef.current?.unlock();
@@ -1043,6 +1136,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 
   return {
     hostRef,
+    killCamHostRef,
     pingHandlers,
     pingPicker,
     choosePingKind,
@@ -1061,6 +1155,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     playerId: providedSession?.playerId ?? "player",
     spectating,
     killCam,
+    killCamReplayAvailable,
     debugVisible,
     networkDebug,
     settingsVisible,
@@ -1083,6 +1178,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     dropItem,
     leaveRun,
     skipKillCam,
+    replayKillCam,
     selectDownedVerb,
     takeFromBody,
     plea,

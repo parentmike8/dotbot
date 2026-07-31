@@ -163,6 +163,13 @@ export type KillCamFrame = {
    * source. An absent actor is not a stale last-known position.
    */
   source?: KillCamActor;
+  /**
+   * Other actors the victim was entitled to know about at this tick: squadmates
+   * (including downed squadmates) plus non-squad actors actually visible to the
+   * victim. Kept separate from `source` so attacker admission still controls the
+   * kill label and camera framing.
+   */
+  visibleBots: KillCamActor[];
   /** Nearby closed doors that shaped the victim's historical fog. */
   blockingDoorIds: string[];
 };
@@ -195,6 +202,7 @@ export type WireKillCamFrame = [
   victim: WireKillCamActor,
   source: WireKillCamActor | null,
   blockingDoorIds?: string[],
+  visibleBots?: WireKillCamActor[],
 ];
 
 export type WireKillCamClip = {

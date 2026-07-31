@@ -25,18 +25,21 @@ const clip: KillCamClip = {
     {
       tick: 0,
       victim: { id: "victim", position: { x: 100, y: 100 }, facing: 0, floorId: "outdoor", shieldSegments: [1, 0, 0], dashActiveMs: 0, state: "alive" },
+      visibleBots: [{ id: "mate", position: { x: 90, y: 120 }, facing: 0, floorId: "outdoor", shieldSegments: [1, 0, 0], dashActiveMs: 0, state: "alive" }],
       blockingDoorIds: [],
     },
     {
       tick: 30,
       victim: { id: "victim", position: { x: 120, y: 100 }, facing: 0, floorId: "outdoor", shieldSegments: [1, 0, 0], dashActiveMs: 0, state: "alive" },
       source: { id: "killer", position: { x: 220, y: 100 }, facing: Math.PI, floorId: "outdoor", shieldSegments: [1, 1, 1], dashActiveMs: 100, state: "alive" },
+      visibleBots: [{ id: "mate", position: { x: 100, y: 120 }, facing: 0, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" }],
       blockingDoorIds: [],
     },
     {
       tick: 60,
       victim: { id: "victim", position: { x: 150, y: 100 }, facing: 0, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" },
       source: { id: "killer", position: { x: 180, y: 100 }, facing: Math.PI, floorId: "outdoor", shieldSegments: [1, 1, 1], dashActiveMs: 0, state: "alive" },
+      visibleBots: [{ id: "mate", position: { x: 110, y: 120 }, facing: 0, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" }],
       blockingDoorIds: [],
     },
   ],
@@ -51,22 +54,22 @@ describe("KillCamPlayback", () => {
     expect(killCamLabel({ ...clip, cause: { ...clip.cause, kind: "environment" } })).toBe("IMPACT");
   });
 
-  it("uses an isolated deterministic quarter-speed clock and never exposes the source before its visible frame", () => {
+  it("uses an isolated deterministic near-real-time clock and never exposes the source before its visible frame", () => {
     const playback = new KillCamPlayback(clip);
     expect(playback.sample().source).toBeUndefined();
-    playback.advance(1_000);
-    expect(playback.replayTick).toBeCloseTo(15);
+    playback.advance(600);
+    expect(playback.replayTick).toBeCloseTo(28.8);
     expect(playback.sample().source).toBeUndefined();
-    playback.advance(1_000);
+    playback.advance(25);
     expect(playback.replayTick).toBeCloseTo(30);
     expect(playback.sample().source?.id).toBe("killer");
   });
 
   it("finishes after replay plus a short impact hold, and skip is immediate", () => {
     const playback = new KillCamPlayback(clip);
-    playback.advance(4_000);
+    playback.advance(2_400);
     expect(playback.finished).toBe(false);
-    playback.advance(700);
+    playback.advance(50);
     expect(playback.finished).toBe(true);
 
     const skipped = new KillCamPlayback(clip);
@@ -80,11 +83,33 @@ describe("KillCamPlayback", () => {
     const rendered = killCamSnapshot(playback.sample(), clip, new Map([
       ["victim", { id: "victim", name: "Victim", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
       ["killer", { id: "killer", name: "Killer", squadId: "bravo", isAmbient: false, maxShields: 3, radius: 24 }],
+      ["mate", { id: "mate", name: "Mate", squadId: "alpha", isAmbient: true, maxShields: 3, radius: 20 }],
     ]), []);
-    expect(rendered.bots.map((bot) => bot.id)).toEqual(["victim", "killer"]);
+    expect(rendered.bots.map((bot) => bot.id)).toEqual(["victim", "killer", "mate"]);
+    expect(rendered.bots.find((bot) => bot.id === "mate")?.state).toBe("downed");
     expect(rendered.dots).toEqual([]);
     expect(rendered.coverages).toEqual([]);
     expect(rendered.noises).toEqual([]);
+  });
+
+  it("ends a dash replay at the exact visible body-contact distance", () => {
+    const separatedImpact = {
+      ...clip.frames.at(-1)!,
+      source: {
+        ...clip.frames.at(-1)!.source!,
+        position: { x: 260, y: 100 },
+      },
+    };
+    const rendered = killCamSnapshot(separatedImpact, clip, new Map([
+      ["victim", { id: "victim", name: "Victim", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
+      ["killer", { id: "killer", name: "Killer", squadId: "bravo", isAmbient: true, maxShields: 3, radius: 24 }],
+    ]), []);
+    const victim = rendered.bots.find((bot) => bot.id === "victim")!;
+    const killer = rendered.bots.find((bot) => bot.id === "killer")!;
+    expect(Math.hypot(
+      killer.position.x - victim.position.x,
+      killer.position.y - victim.position.y,
+    )).toBeCloseTo(24 * 0.4 + 24, 6);
   });
 
   it("shows a source-neutral mine device only at the impact", () => {
@@ -108,7 +133,7 @@ describe("KillCamPlayback", () => {
     expect(atAdmission).toEqual(clip.frames[1].victim.position);
 
     const playback = new KillCamPlayback(clip);
-    playback.advance(3_000);
+    playback.advance(900);
     const midway = playback.sample();
     const target = killCamCameraTarget(midway, clip);
     const impactMidpoint = {

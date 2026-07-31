@@ -4,7 +4,7 @@ import type { DoorEntity, DownCause, GameSnapshot, MapDocument } from "@dotbot/g
 import { hasLineOfSight, OUTDOOR_SIGHT, seesOutdoors } from "@dotbot/game/visibility";
 import type { KillCamActor, KillCamClip, KillCamFrame } from "./messages";
 
-type HistoryActor = KillCamActor;
+type HistoryActor = KillCamActor & { squadId: string };
 
 type HistoryFrame = {
   tick: number;
@@ -76,12 +76,18 @@ export class KillCamHistory {
       const source = cause.kind === "mine" || cause.kind === "environment" || !sourceBotId
         ? undefined
         : frame.bots.get(sourceBotId);
+      const visibleBots = [...frame.bots.values()]
+        .filter((actor) => actor.id !== victimId && actor.id !== sourceBotId)
+        .filter((actor) => actor.squadId === victim.squadId
+          || historicallyVisible(this.map, victim, actor, frame.doors))
+        .map(copyHistoryActor);
       frames.push({
         tick: frame.tick,
         victim: copyHistoryActor(victim),
         ...(source && historicallyVisible(this.map, victim, source, frame.doors)
           ? { source: copyHistoryActor(source) }
           : {}),
+        visibleBots,
         blockingDoorIds,
       });
     }
@@ -138,14 +144,19 @@ function copyActor(bot: GameSnapshot["bots"][number]): HistoryActor {
     shieldSegments: [...bot.shieldSegments],
     dashActiveMs: bot.dashActiveMs,
     state: bot.state,
+    squadId: bot.squadId,
   };
 }
 
-function copyHistoryActor(actor: HistoryActor): HistoryActor {
+function copyHistoryActor(actor: HistoryActor): KillCamActor {
   return {
-    ...actor,
+    id: actor.id,
     position: { ...actor.position },
+    facing: actor.facing,
+    floorId: actor.floorId,
     shieldSegments: [...actor.shieldSegments],
+    dashActiveMs: actor.dashActiveMs,
+    state: actor.state,
   };
 }
 

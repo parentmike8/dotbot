@@ -36,6 +36,7 @@ export function toWireKillCamClip(clip: KillCamClip): WireKillCamClip {
         frame.source ? toWireKillCamActor(frame.source) : null,
       ];
       if (frame.blockingDoorIds.length) wireFrame[3] = frame.blockingDoorIds;
+      if (frame.visibleBots.length) wireFrame[4] = frame.visibleBots.map(toWireKillCamActor);
       return wireFrame;
     }),
   };
@@ -56,10 +57,11 @@ export function fromWireKillCamClip(wire: WireKillCamClip): KillCamClip {
     startTick: wire.a,
     deathTick: wire.z,
     tickHz: wire.h,
-    frames: wire.f.map(([frameTick, victim, source, blockingDoorIds = []]) => ({
+    frames: wire.f.map(([frameTick, victim, source, blockingDoorIds = [], visibleBots = []]) => ({
       tick: frameTick,
       victim: fromWireKillCamActor(victim),
       ...(source ? { source: fromWireKillCamActor(source) } : {}),
+      visibleBots: visibleBots.map(fromWireKillCamActor),
       blockingDoorIds: [...blockingDoorIds],
     })),
   };

@@ -36,7 +36,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
-    killCam, skipKillCam, selectDownedVerb, plea, useBay, swapBayItem, dropItem, takeFromBody, setBodyAction,
+    killCam, killCamHostRef, killCamReplayAvailable, skipKillCam, replayKillCam, selectDownedVerb, plea, useBay, swapBayItem, dropItem, takeFromBody, setBodyAction,
     inventoryVisible, toggleInventory, closeInventory, setConnectionBlocked,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker,
     worldMapVisible, toggleWorldMap, closeWorldMap, markExterior, chooseExteriorMark, squadMarks,
@@ -179,13 +179,13 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         </aside>
       ) : null}
 
-      {killCam ? (
-        <KillCamOverlay
-          label={killCam.label}
-          progress={killCam.progress}
-          onSkip={skipKillCam}
-        />
-      ) : null}
+      <KillCamOverlay
+        open={Boolean(killCam)}
+        viewportRef={killCamHostRef}
+        label={killCam?.label ?? ""}
+        progress={killCam?.progress ?? 0}
+        onClose={skipKillCam}
+      />
 
       {!killCam && mineRotated ? <div className="spectating-chip" aria-live="polite">Mine rotated</div> : null}
 
@@ -224,7 +224,15 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         />
       ) : null}
 
-      {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}
+      {downed ? (
+        <DownedSelfView
+          self={downed}
+          onPlea={plea}
+          onLeave={leaveRun}
+          onReplay={replayKillCam}
+          replayAvailable={killCamReplayAvailable && !killCam}
+        />
+      ) : null}
 
       <BodyPromptView prompt={prompt} onVerb={onVerb} onTake={takeFromBody} onTakeAll={(bodyId) => takeFromBody(bodyId, "all")} />
 

@@ -358,11 +358,12 @@ describe("event wire mapping", () => {
         tick: 60,
         victim: { id: "victim", position: { x: 10.123, y: 20.456 }, facing: 1.234, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" },
         source: { id: "killer", position: { x: 30, y: 20 }, facing: 3.14, floorId: "outdoor", shieldSegments: [1, 1, 1], dashActiveMs: 10, state: "alive" },
+        visibleBots: [{ id: "mate", position: { x: 18, y: 24 }, facing: 0, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" }],
         blockingDoorIds: ["door-a"],
       }],
     } satisfies KillCamClip;
     const wire = toWireKillCamClip(clip);
-    expect(wire.f[0]).toHaveLength(4);
+    expect(wire.f[0]).toHaveLength(5);
     expect(JSON.stringify(wire)).not.toContain("position");
     expect(fromWireKillCamClip(JSON.parse(JSON.stringify(wire)))).toMatchObject({
       ...clip,

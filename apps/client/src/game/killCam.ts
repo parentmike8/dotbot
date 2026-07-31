@@ -1,9 +1,12 @@
 import { doorRuntimeId, physicsFloorId } from "@dotbot/game/mapModel";
+import { buildContactShape, contactDistance, makeContactShape } from "@dotbot/game/bodyContact";
 import type { DoorEntity, GameSnapshot, MapDocument } from "@dotbot/game/types";
 import type { EntityMeta, KillCamActor, KillCamClip, KillCamFrame } from "@dotbot/protocol";
 
-export const KILL_CAM_PLAYBACK_RATE = 0.25;
-const IMPACT_HOLD_MS = 600;
+/** Slow enough to read the impact, without turning a one-second attack into a wait. */
+export const KILL_CAM_PLAYBACK_RATE = 0.8;
+const IMPACT_HOLD_MS = 1_200;
+const CONTACT_BLEND_SECONDS = 0.18;
 
 export function killCamLabel(clip: KillCamClip, sourceName?: string): string {
   const cause = clip.cause.kind === "environment" ? "IMPACT" : clip.cause.kind.toUpperCase();
@@ -54,7 +57,11 @@ export function killCamSnapshot(
   meta: ReadonlyMap<string, EntityMeta>,
   doorCatalog: readonly DoorEntity[],
 ): GameSnapshot {
-  const actors = [frame.victim, frame.source].filter((actor): actor is KillCamActor => actor !== undefined);
+  const presentedSource = frame.source
+    ? sourceAtVisibleContact(frame, clip, meta)
+    : undefined;
+  const actors = [frame.victim, presentedSource, ...frame.visibleBots]
+    .filter((actor): actor is KillCamActor => actor !== undefined);
   const bots = actors.map((actor) => {
     const entity = meta.get(actor.id);
     const maxShields = entity?.maxShields ?? actor.shieldSegments.length;
@@ -119,6 +126,56 @@ export function killCamSnapshot(
       activeBodies: bots.length,
       activeDots: 0,
     },
+  };
+}
+
+/**
+ * A dash is validated against the attacker's swept path, then the simulation
+ * resolves its final position against nearby solids. In a tight corner that
+ * post-hit placement can be several body widths away even though the sweep
+ * genuinely connected. Ease the replay's final fraction onto the exact shared
+ * body-contact distance so the kill cam shows the contact combat adjudicated.
+ */
+function sourceAtVisibleContact(
+  frame: KillCamFrame,
+  clip: KillCamClip,
+  meta: ReadonlyMap<string, EntityMeta>,
+): KillCamActor | undefined {
+  const source = frame.source;
+  if (!source || (clip.cause.kind !== "dash" && clip.cause.kind !== "ram")) return source;
+  const blendTicks = Math.max(1, clip.tickHz * CONTACT_BLEND_SECONDS);
+  const blend = Math.max(0, Math.min(1, (frame.tick - (clip.deathTick - blendTicks)) / blendTicks));
+  if (blend <= 0) return source;
+
+  const victimRadius = meta.get(frame.victim.id)?.radius ?? 24;
+  const sourceRadius = meta.get(source.id)?.radius ?? 24;
+  const victimShape = makeContactShape(frame.victim.shieldSegments.length);
+  const sourceShape = makeContactShape(source.shieldSegments.length);
+  buildContactShape(victimShape, victimRadius, frame.victim.facing, frame.victim.shieldSegments);
+  buildContactShape(sourceShape, sourceRadius, source.facing, source.shieldSegments);
+
+  const causeLength = Math.hypot(clip.cause.direction.x, clip.cause.direction.y);
+  const recordedDx = source.position.x - frame.victim.position.x;
+  const recordedDy = source.position.y - frame.victim.position.y;
+  const recordedLength = Math.hypot(recordedDx, recordedDy);
+  const ux = causeLength > 0.001
+    ? -clip.cause.direction.x / causeLength
+    : recordedLength > 0.001 ? recordedDx / recordedLength : 1;
+  const uy = causeLength > 0.001
+    ? -clip.cause.direction.y / causeLength
+    : recordedLength > 0.001 ? recordedDy / recordedLength : 0;
+  const touching = contactDistance(victimShape, sourceShape, ux, uy, 0);
+  const contact = {
+    x: frame.victim.position.x + ux * touching,
+    y: frame.victim.position.y + uy * touching,
+  };
+  return {
+    ...source,
+    position: {
+      x: source.position.x + (contact.x - source.position.x) * blend,
+      y: source.position.y + (contact.y - source.position.y) * blend,
+    },
+    shieldSegments: [...source.shieldSegments],
   };
 }
 
@@ -215,6 +272,7 @@ function sampleClip(frames: readonly KillCamFrame[], tick: number): KillCamFrame
                 : {}
         ),
         blockingDoorIds: [...older.blockingDoorIds],
+        visibleBots: interpolateVisibleBots(older.visibleBots, newer.visibleBots, alpha),
       };
     }
     older = newer;
@@ -247,6 +305,25 @@ function copyFrame(frame: KillCamFrame): KillCamFrame {
     tick: frame.tick,
     victim: copyActor(frame.victim),
     ...(frame.source ? { source: copyActor(frame.source) } : {}),
+    visibleBots: frame.visibleBots.map(copyActor),
     blockingDoorIds: [...frame.blockingDoorIds],
   };
+}
+
+function interpolateVisibleBots(
+  older: readonly KillCamActor[],
+  newer: readonly KillCamActor[],
+  alpha: number,
+): KillCamActor[] {
+  const newerById = new Map(newer.map((actor) => [actor.id, actor]));
+  const result = older.flatMap((actor) => {
+    const next = newerById.get(actor.id);
+    if (next) {
+      newerById.delete(actor.id);
+      return [interpolateActor(actor, next, alpha)];
+    }
+    return alpha < 1 ? [copyActor(actor)] : [];
+  });
+  if (alpha >= 1) result.push(...[...newerById.values()].map(copyActor));
+  return result;
 }

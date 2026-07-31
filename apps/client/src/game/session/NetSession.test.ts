@@ -146,6 +146,7 @@ describe("NetSession item edges", () => {
       frames: [{
         tick: 0,
         victim: { id: "victim", position: { x: 10, y: 20 }, facing: 0, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" },
+        visibleBots: [],
         blockingDoorIds: [],
       }],
     } satisfies KillCamClip;
@@ -195,6 +196,7 @@ describe("NetSession item edges", () => {
       frames: [{
         tick: 60,
         victim: { id: "victim", position: { x: 10, y: 20 }, facing: 0, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" },
+        visibleBots: [],
         blockingDoorIds: [],
       }],
     } satisfies KillCamClip;
@@ -303,6 +305,7 @@ describe("NetSession item edges", () => {
           id: "victim", position: { x: 10, y: 20 }, facing: 0, floorId: "outdoor",
           shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed",
         },
+        visibleBots: [],
         blockingDoorIds: [],
       }],
     } satisfies KillCamClip;
