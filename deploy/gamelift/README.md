@@ -10,12 +10,11 @@ DotBot therefore publishes the production runtime from `deploy/gamelift-ec2`,
 using a GameLift Managed EC2 fleet with `CertificateType=GENERATED`. This keeps
 TLS direct to the game process and avoids a latency-producing proxy.
 
-## Current safety state
+## Production state (2026-07-31)
 
 - AWS account: `380314682423` (`dotbot`)
 - GameLift control/home region: `us-east-1`
-- Intended production compute location: `ca-central-1`
-- ECR: `380314682423.dkr.ecr.us-east-1.amazonaws.com/dotbot-game-server`
+- Production compute location: `ca-central-1`
 - GitHub deploy role: `DotBotGitHubDeploy`, restricted to
   `parentmike8/dotbot` on `main`
 - GameLift fleet role: `DotBotGameLiftFleetRole`
@@ -23,16 +22,18 @@ TLS direct to the game process and avoids a latency-producing proxy.
   14-day retention
 - Billing budget: `$200 USD/month`, with 50%, 80%, forecasted 100%, and actual
   100% email notifications
-- Paid GameLift instances: **none**
+- Active fleet: `fleet-a7db4a18-3c9d-48f0-a706-9c368f92af29`
+- Immutable production build: `build-1aa2e904-677e-4334-bd4d-038b625b9625`
+- Paid GameLift capacity: zero to one On-Demand `c6gn.large`, managed down to
+  zero after 30 inactive minutes
 - Production fleet shape: one On-Demand ARM64 `c6gn.large` at most, running
   two room processes in `ca-central-1`
-- The last account inspection found a `c6gn.large` GameLift limit of one in
-  Canada Central. `activate-fleet.sh` rechecks both the limit and current usage
-  and refuses activation unless the limit is at least one and usage is zero.
+- The production validation admitted two independent clients into the same
+  allocated room over the fleet's generated TLS endpoint. `activate-fleet.sh`
+  rechecks regional routing, quota, current usage, and build readiness, and
+  refuses activation if another fleet exists.
 
-The empty ECR repository and container-group IAM permissions are retained only
-until the EC2 path is fully live; no workflow publishes this compatibility
-image and no container fleet exists.
+No workflow publishes this compatibility image and no container fleet exists.
 
 Do not use the older `c7i.xlarge` or `c7g.large` quota requests to decide
 whether this fleet can launch. GameLift limits are per instance type and

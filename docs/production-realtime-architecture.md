@@ -1,59 +1,84 @@
 # Production realtime architecture
 
-Status: accepted direction, 2026-07-16
+Status: production, 2026-07-31
 
 ## Product constraints
 
 - One gameplay implementation across desktop web, mobile web, and a future
   Capacitor iOS/Android container.
 - Current mobile browsers are first-class clients, not reduced spectators.
-- A link must remain enough to play; app-store installation is optional.
+- A link remains enough to play; app-store installation is optional.
 - Server authority, 60 Hz simulation, local input prediction, and remote
   interpolation remain the mechanical foundation.
-- Staging and production use the same runtime topology and protocol. Staging
-  may run fewer replicas, but it is not a separate prototype architecture.
+- The Cloud Run service remains the account, base, inventory, and persistence
+  authority. Dedicated game processes never receive database credentials.
 
 ## Runtime topology
 
 ```text
 Browser / Capacitor
-  |-- HTTPS: account, base, inventory, matchmaking
-  |     -> Cloud Run control service -> Cloud SQL
+  |-- HTTPS: client, account, base, inventory
+  |     -> Cloud Run (us-central1) -> Cloud SQL
   |
-  |-- primary realtime: WebTransport (QUIC, direct regional path)
-  |     -> allocated Agones GameServer -> authoritative 60 Hz simulation
+  |-- HTTPS: create/join room
+  |     -> API Gateway + matchmaker Lambda (us-east-1)
+  |          -> GameLift allocation (ca-central-1)
   |
-  `-- compatibility realtime: WebSocket
-        -> stable regional gateway -> allocated Agones GameServer
+  `-- direct WSS with GameLift-generated TLS
+        -> allocated GameLift managed-EC2 process (ca-central-1)
+             -> signed Lambda relay -> Cloud Run persistence allow-list
 ```
 
-The existing React, PixiJS, TypeScript, Rapier, and protocol packages stay.
-React remains outside the frame loop. Pixi remains the renderer. The server
-simulation remains the only authority for damage, collision, and persistence.
+Cloud Run exposes the matchmaker URL through `/api/game-config`. Until that
+value is configured, the same client falls back to the Cloud Run WebSocket
+path, which is the emergency rollback path.
+
+GameLift runs one On-Demand ARM64 `c6gn.large` at most. The instance hosts two
+isolated room processes on TCP 7000 and 7001. Each process owns one allocated
+game session and up to nine players. GameLift supplies the public DNS name and
+TLS certificate, so browsers connect directly without a realtime proxy.
+
+The process startup order is load-bearing:
+
+1. initialize the GameLift SDK;
+2. register `ProcessReady`, reporting bootstrap health while session
+   activation remains gated;
+3. obtain the generated certificate;
+4. launch the Node server and pass its deep health check;
+5. open the session-activation gate.
 
 ## Transport contract
 
 The application protocol has two delivery classes:
 
 - `reliable`: identity, lobby state, allocation, one-shot actions, combat
-  confirmations, inventory, extraction, and match outcomes.
+  confirmations, inventory, extraction, and match outcomes;
 - `latest`: continuous movement input and superseding snapshots.
 
-WebTransport maps `latest` to QUIC datagrams and `reliable` to ordered streams.
-The compatibility WebSocket maps both classes to its single ordered stream.
-Game code depends on the delivery contract, not on either browser API.
+Production currently maps both classes to a direct secure WebSocket. The
+server keeps compression, admission, reconnect, and backpressure rules in the
+transport layer so game code depends on delivery semantics rather than a
+browser API. WebTransport remains a possible future optimization, not part of
+the deployed topology.
 
-Each allocated game-server pod terminates WebTransport beside the Node game
-process. It exposes an Agones-assigned UDP host port. The allocation response
-contains the server address, port, session token, and the hash of a short-lived
-certificate generated for that process. This permits a secure direct browser
-connection without putting a permanent relay in the fast path. Certificate
-rotation and allocation-token expiry are automated.
+Every production connection must present the short-lived GameLift player
+session returned by the matchmaker. The dedicated server verifies that the
+reservation belongs to its exact game session before lobby admission. A mobile
+network handoff keeps the reservation and player-controlled bot available for
+20 seconds before AI takeover and removal.
 
-WebSocket remains mandatory because WebTransport is new on current browsers
-and operating-system WebViews can lag browser support. Compatibility traffic
-may use the stable gateway; it must be measured separately so it never hides a
-regression in the primary path.
+## Persistence boundary
+
+GameLift processes use short-lived fleet-role credentials to invoke only the
+matchmaker Lambda. The Lambda signs a narrow, allow-listed persistence request
+to Cloud Run. Cloud Run verifies timestamp, request ID, signature, replay
+claim, operation, and payload before touching Cloud SQL. Database credentials
+and the relay secret are not present on the fleet.
+
+The allowed game-server operations cover identity resolution, tutorial and
+insertion checks, match intelligence, match start, extraction/outcome writes,
+and match finish. Base editing, fabrication, contracts, and arbitrary queries
+remain unavailable from a dedicated match process.
 
 ## Combat timeline
 
@@ -64,29 +89,28 @@ combat time from a periodically reported full RTT.
 
 The local predictor collides with remote bodies sampled from the rendered
 timeline. It must never collide with a fresher, invisible snapshot. Predicted
-impact presentation will be keyed by attack id and either confirmed or rejected
-by an authoritative combat result; time-based FX deduplication is temporary.
+impact presentation is keyed by attack ID and either confirmed or rejected by
+an authoritative combat result.
 
-## Regional layout
+## Regional and capacity policy
 
-Launch region: `northamerica-northeast2` (Toronto).
+- GameLift build and fleet: Canada Central (`ca-central-1`).
+- Cloud Run and Cloud SQL: Google `us-central1`.
+- Allocation and persistence-relay Lambda: AWS `us-east-1`.
+- GameLift instance type: On-Demand ARM64 `c6gn.large`.
+- Hard fleet ceiling: one instance and two concurrent room processes.
+- Idle policy: managed scale to and from zero after 30 inactive minutes.
+- Session protection: full protection while a game session is active.
+- Public game ports: TCP 7000-7001 only; adapter ports remain loopback-only.
 
-- Regional GKE Standard cluster across three zones.
-- Three fixed Agones system nodes, one per zone.
-- Three minimum dedicated game nodes, one per zone; autoscale to twelve.
-- Agones system workloads are tainted away from game nodes.
-- Regular GKE release channel, auto-repair, auto-upgrade, Workload Identity,
-  managed Prometheus, workload logging, and deletion protection.
-- Direct game ports: UDP 7000-8000. TCP in the same range is reserved for
-  operational fallback and migration, not assumed by the primary path.
-
-When player latency data shows a material population outside northeastern
-North America, add a region rather than making Toronto larger. Matchmaking
-selects the lowest-latency healthy region and never moves a live match.
+Do not raise the process count or instance ceiling without measured 60 Hz tick,
+memory, network, and reconnect headroom. Add a region when player latency data
+shows a material population elsewhere; do not make the Canada fleet larger as
+a substitute for regional placement.
 
 ## Mobile performance policy
 
-- Landscape and portrait layouts must respect safe areas and browser chrome.
+- Landscape and portrait layouts respect safe areas and browser chrome.
 - Touch input is sampled into the same 60 Hz input frames as keyboard/gamepad.
 - Render resolution scales independently of world simulation.
 - Quality reductions affect particles, shadows, and resolution before input,
@@ -95,48 +119,36 @@ selects the lowest-latency healthy region and never moves a live match.
 - Audio unlock, haptics, secure token storage, deep links, and push are native
   shell capabilities; they do not fork gameplay.
 - The release gate includes current iPhone Safari, current Android Chrome, and
-  at least one older supported device in each family. Capacitor WebViews have a
-  separate transport-capability gate because browser support does not prove
-  WebView support.
+  at least one older supported device in each family.
 
-## Cost envelope (USD list price, Toronto)
+## Cost and safety envelope
 
-The initial always-on high-availability floor is approximately **$575-$650 per
-month**, before material player traffic. The estimate uses 730 hours/month:
+The live AWS price checked on 2026-07-31 for GameLift `c6gn.large` in Canada
+Central was **$0.121 USD/hour**, or about **$88.33 for 730 continuously active
+hours** before bandwidth and minor control-plane usage. Managed idle
+scale-to-zero should make a quiet month materially lower.
 
-| Component | Monthly estimate |
-| --- | ---: |
-| Regional GKE cluster management | $73 |
-| 3 x `c4-standard-2` game nodes | $238 |
-| 3 x `e2-standard-2` Agones system nodes | $162 |
-| 6 x 30 GiB balanced persistent disks | $20 |
-| External IPv4 addresses and network rules | $20-$40 |
-| Existing Cloud Run control plane and Cloud SQL | $40-$55 |
-| Initial logs, metrics, and modest egress allowance | $25-$60 |
+The AWS account has a `$200 USD/month` budget with actual-spend alerts at 50%,
+80%, and 100%, plus a forecasted 100% alert. Fleet activation rechecks the
+regional instance limit, verifies zero existing usage, requires an explicit
+paid confirmation, and refuses to create a second fleet. No Savings Plan or
+commitment should be purchased until production utilization is measured.
 
-Toronto list rates used on 2026-07-16 were $0.03815312/vCPU-hour plus
-$0.004336132/GiB-hour for C4, $0.02401338/vCPU-hour plus
-$0.00321816/GiB-hour for E2, $0.11/GiB-month for balanced disk, and
-$0.12/GiB internet egress to the Americas. Actual billing varies with traffic,
-logging volume, sustained-use/committed-use discounts, and taxes.
+## Release and rollback
 
-A higher-headroom floor with six game nodes is approximately **$815-$900 per
-month**. Autoscaling above the three-node floor adds about **$79/month per
-`c4-standard-2` node**, plus disk, IP, logging, and egress. No committed-use
-discount should be purchased until production utilization is measured.
+The guarded order is:
 
-## Provisioning gate
+1. apply additive Cloud SQL migrations;
+2. deploy the current Cloud Run control service with GameLift routing off;
+3. deploy the AWS control plane with the intended fleet ID;
+4. publish and verify an immutable ARM64 GameLift build;
+5. activate one fleet and validate allocation, generated TLS, player-session
+   admission, persistence, and two independent clients;
+6. set `DOTBOT_MATCHMAKER_URL` on Cloud Run;
+7. verify `/api/game-config`, create/join, direct WSS, and game admission from
+   the public service.
 
-Terraform under `deploy/gke/terraform` is the source of truth. Before the first
-`terraform apply`:
-
-1. confirm the monthly floor;
-2. create the remote Terraform state bucket with versioning and retention;
-3. enable the GKE API;
-4. review the plan for six minimum nodes in Toronto and no resources elsewhere;
-5. capture the plan artifact and obtain explicit approval;
-6. apply, install Agones, run failure/latency gates, then shift realtime traffic.
-
-The existing Cloud Run service remains live until the dedicated path passes the
-same production protocol, persistence, reconnect, and mobile gates. It is a
-rollback path during migration, not the final realtime host.
+Rollback removes `DOTBOT_MATCHMAKER_URL` from Cloud Run. This returns room
+creation to the existing Cloud Run WebSocket path without moving account or
+persistence data. `deploy/aws/emergency-stop.sh` is the separate guarded path
+for disabling GameLift capacity.

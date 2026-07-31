@@ -2,14 +2,14 @@
 
 The public domain stays on the existing Google Cloud deployment. Cloud Run
 serves the web/mobile client, account APIs, base/profile data, and the
-authoritative persistence relay backed by Cloud SQL. Once the final cutover is
-enabled, realtime rooms are allocated to a single-region Amazon GameLift
-Managed EC2 fleet in Canada (`ca-central-1`) and the browser connects directly
-to its generated TLS/WSS endpoint.
+authoritative persistence relay backed by Cloud SQL. Realtime rooms are
+allocated to a single-region Amazon GameLift Managed EC2 fleet in Canada
+(`ca-central-1`), and the browser connects directly to its generated TLS/WSS
+endpoint.
 
-Until `DOTBOT_MATCHMAKER_URL` is set on Cloud Run, gameplay continues to use
-the current Cloud Run websocket path. That makes deployment and gameplay
-cutover separate, reversible operations.
+Production cut over to GameLift on 2026-07-31. `DOTBOT_MATCHMAKER_URL` is set on
+Cloud Run; removing it returns gameplay to the Cloud Run websocket path. That
+keeps deployment and gameplay routing separate and reversible.
 
 ## Run the production build locally
 
@@ -62,7 +62,7 @@ CONFIRM_DOTBOT_PRODUCTION_MIGRATION=dot-bot-c39fc ./deploy/migrate-production.sh
 
 1. Apply the additive Cloud SQL migration.
 2. Deploy and verify Cloud Run with GameLift routing still disabled.
-3. Deploy the AWS control plane with `FleetId=pending-quota-approval`.
+3. Deploy the AWS control plane with a pending fleet placeholder.
 4. Publish the Canada ARM64 GameLift build.
 5. After confirming the existing `c6gn.large` capacity in `ca-central-1`, run
    `deploy/aws/activate-fleet.sh` with the new build ID and the explicit paid

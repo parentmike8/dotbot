@@ -24,6 +24,14 @@ if [[ "$account_id" != "380314682423" ]]; then
   exit 1
 fi
 
+matchmaker_game_region=$(aws lambda get-function-configuration "${profile_args[@]}" \
+  --region "$control_plane_region" --function-name dotbot-production-matchmaker \
+  --query 'Environment.Variables.GAMELIFT_REGION' --output text)
+if [[ "$matchmaker_game_region" != "$region" ]]; then
+  echo "Matchmaker targets ${matchmaker_game_region:-no GameLift region}, not $region; deploy the current AWS control-plane template before paid activation." >&2
+  exit 1
+fi
+
 quota=$(aws gamelift describe-ec2-instance-limits "${profile_args[@]}" \
   --region "$region" --ec2-instance-type "$instance_type" \
   --query 'EC2InstanceLimits[0].InstanceLimit' --output text)
