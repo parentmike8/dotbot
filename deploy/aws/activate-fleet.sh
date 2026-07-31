@@ -3,7 +3,7 @@ set -euo pipefail
 
 region="ca-central-1"
 control_plane_region="us-east-1"
-instance_type="c7g.large"
+instance_type="c6gn.large"
 build_id="${BUILD_ID:-}"
 profile_args=()
 if [[ -n "${AWS_PROFILE:-}" ]]; then profile_args=(--profile "$AWS_PROFILE"); fi
@@ -27,8 +27,19 @@ fi
 quota=$(aws gamelift describe-ec2-instance-limits "${profile_args[@]}" \
   --region "$region" --ec2-instance-type "$instance_type" \
   --query 'EC2InstanceLimits[0].InstanceLimit' --output text)
+current_instances=$(aws gamelift describe-ec2-instance-limits "${profile_args[@]}" \
+  --region "$region" --ec2-instance-type "$instance_type" \
+  --query 'EC2InstanceLimits[0].CurrentInstances' --output text)
+if [[ ! "$quota" =~ ^[0-9]+$ || ! "$current_instances" =~ ^[0-9]+$ ]]; then
+  echo "Could not verify GameLift $instance_type quota and usage in $region; no fleet was created." >&2
+  exit 1
+fi
 if ((quota < 1)); then
   echo "GameLift $instance_type quota is still $quota in $region; no fleet was created." >&2
+  exit 1
+fi
+if ((current_instances != 0)); then
+  echo "GameLift $instance_type already uses $current_instances of $quota instances in $region; no fleet was created." >&2
   exit 1
 fi
 
@@ -85,4 +96,4 @@ aws cloudformation update-stack "${profile_args[@]}" --region "$control_plane_re
 aws cloudformation wait stack-update-complete "${profile_args[@]}" --region "$control_plane_region" \
   --stack-name dotbot-production-control-plane
 
-echo "Fleet $fleet_id is active in ca-central-1 on c7g.large: max=1 with idle scale-to-zero. Gameplay cutover is still OFF."
+echo "Fleet $fleet_id is active in $region on $instance_type: max=1 with idle scale-to-zero. Gameplay cutover is still OFF."

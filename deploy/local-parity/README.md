@@ -1,7 +1,7 @@
 # Local production-parity lab
 
 This lab runs the compiled DotBot production image locally. On Apple Silicon,
-that is also the same ARM64 architecture as the planned `c7g` GameLift fleet;
+that is also the same ARM64 architecture as the planned `c6gn` GameLift fleet;
 on an x86 machine the code and build path remain identical but the CPU
 architecture does not. It uses production gameplay defaults, a private
 PostgreSQL database, direct HTTPS/WSS termination in the Node game server, and

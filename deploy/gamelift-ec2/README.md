@@ -8,7 +8,7 @@ path.
 
 The package contains a pinned ARM64 Linux Node runtime, the bundled
 authoritative server, and the ARM64 Go GameLift SDK adapter. Two runtime
-processes are configured on a `c7g.large`, each with its own public TLS port
+processes are configured on a `c6gn.large`, each with its own public TLS port
 and loopback adapter port. Each process admits exactly one allocated GameLift
 game session, so the initial one-instance ceiling supports two simultaneous
 rooms (up to 18 players) until production measurements justify more.

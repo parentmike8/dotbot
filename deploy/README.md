@@ -64,14 +64,14 @@ CONFIRM_DOTBOT_PRODUCTION_MIGRATION=dot-bot-c39fc ./deploy/migrate-production.sh
 2. Deploy and verify Cloud Run with GameLift routing still disabled.
 3. Deploy the AWS control plane with `FleetId=pending-quota-approval`.
 4. Publish the Canada ARM64 GameLift build.
-5. After AWS grants `c7g.large` capacity in `ca-central-1`, run
+5. After confirming the existing `c6gn.large` capacity in `ca-central-1`, run
    `deploy/aws/activate-fleet.sh` with the new build ID and the explicit paid
    activation confirmation.
 6. Validate two real devices against the production fleet.
 7. Run `deploy/aws/cutover.sh` to enable GameLift allocation on the same public
    domain.
 
-The fleet script enforces an On-Demand `c7g.large`, a hard maximum of one
+The fleet script enforces an On-Demand `c6gn.large`, a hard maximum of one
 instance, two room processes, and managed scale-to-zero after 30 idle minutes.
 The first room after an idle scale-down automatically waits and retries while
 AWS wakes the instance. Never raise the process count or instance ceiling

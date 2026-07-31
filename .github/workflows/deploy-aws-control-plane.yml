@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       fleet_id:
-        description: GameLift fleet ID after quota approval
+        description: Active GameLift fleet ID after production validation
         required: false
         default: pending-quota-approval
 

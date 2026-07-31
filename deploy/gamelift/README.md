@@ -24,17 +24,21 @@ TLS direct to the game process and avoids a latency-producing proxy.
 - Billing budget: `$200 USD/month`, with 50%, 80%, forecasted 100%, and actual
   100% email notifications
 - Paid GameLift instances: **none**
-- `c7i.xlarge` GameLift quota for the Canada Central fleet location: `0` until
-  AWS approves an increase
+- Production fleet shape: one On-Demand ARM64 `c6gn.large` at most, running
+  two room processes in `ca-central-1`
+- The last account inspection found a `c6gn.large` GameLift limit of one in
+  Canada Central. `activate-fleet.sh` rechecks both the limit and current usage
+  and refuses activation unless the limit is at least one and usage is zero.
 
 The empty ECR repository and container-group IAM permissions are retained only
 until the EC2 path is fully live; no workflow publishes this compatibility
 image and no container fleet exists.
 
-At the current AWS public rate, one Linux `c7i.xlarge` in Canada Central is
-`$0.242/hour`, or about `$176.66` for a 730-hour month. The one-instance maximum
-is therefore essential: it leaves roughly `$23.34/month` for logs, image
-storage, and control-plane traffic under the `$200` budget.
+Do not use the older `c7i.xlarge` or `c7g.large` quota requests to decide
+whether this fleet can launch. GameLift limits are per instance type and
+location. Verify the current `c6gn.large` GameLift price and the `$200` budget
+alarms during every activation preflight; never raise the budget or the
+one-instance ceiling without a separate measured capacity decision.
 
 ## Local verification
 
