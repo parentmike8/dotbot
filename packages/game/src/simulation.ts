@@ -93,6 +93,24 @@ const DEFAULT_DOOR_HOLD_MS = 1_150;
 const DEFAULT_DOOR_TRIGGER_RADIUS = 112;
 const DEFAULT_DOOR_NOISE = 0.42;
 
+/**
+ * Current ambient-body rewards, using the same explicit prototype items the
+ * world's Dots use. Health is deliberately the common result; utility and a
+ * mine provide variety without making every ordinary patrol a rare-loot source.
+ *
+ * Authored `bays` always win, including an explicit empty array for a practice
+ * target. This table is only the production fallback for otherwise-unconfigured
+ * ambient guards.
+ */
+const AMBIENT_LOOT_TABLE: readonly Item[] = [
+  { kind: "powerup", type: "health" },
+  { kind: "powerup", type: "health" },
+  { kind: "powerup", type: "radar" },
+  { kind: "powerup", type: "dashOvercharge" },
+  { kind: "powerup", type: "incognito" },
+  { kind: "mine" },
+];
+
 /** Combat rewind window: 18 ticks ≈ 300ms covers the client's interpolation
  * buffer plus a full round trip and the input queue wait, without letting
  * badly lagged attackers hit deep into the past. */
@@ -566,7 +584,7 @@ export class DotBotSimulation {
       shields: plateSum(shieldSegments),
       shieldSegments,
       bays: normalizedBays(spawn, this.config),
-      hold: factionKind === "ambient" ? [] : (spawn.hold ?? []).slice(0, this.config.holdSlots),
+      hold: (spawn.hold ?? []).slice(0, this.config.holdSlots),
       inventoryRevision: 0,
       carriedCount: 0,
       searched: false,
@@ -3776,11 +3794,11 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
   };
 }
 
-function normalizedBays(spawn: BotSpawn, config: GameConfig): (import("./types").Item | null)[] {
-  if (botSpawnFaction(spawn) === "ambient") {
-    return Array.from({ length: config.baySlots }, () => null);
-  }
-  const provided = spawn.bays?.slice(0, config.baySlots) ?? [{ kind: "powerup", type: "health" } as const];
+function normalizedBays(spawn: BotSpawn, config: GameConfig): (Item | null)[] {
+  const fallback = botSpawnFaction(spawn) === "ambient"
+    ? [{ ...AMBIENT_LOOT_TABLE[stableHash(spawn.id) % AMBIENT_LOOT_TABLE.length] }]
+    : [{ kind: "powerup", type: "health" } as const];
+  const provided = spawn.bays?.slice(0, config.baySlots) ?? fallback;
   return [...provided, ...Array.from({ length: config.baySlots - provided.length }, () => null)];
 }
 

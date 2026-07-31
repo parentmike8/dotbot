@@ -1028,7 +1028,7 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
-  it("never lets ambient AI acquire an extraction channel", async () => {
+  it("never lets ambient AI extract its carried loot", async () => {
     const baseMap = makeMap([enemySpawn({ position: { x: 100, y: 100 }, bays: testBays(3), hold: [] })]);
     const simulation = await DotBotSimulation.create({
       map: {
@@ -1046,7 +1046,7 @@ describe("DotBotSimulation", () => {
 
     const snapshot = simulation.getSnapshot();
     expect(sawExtraction).toBe(false);
-    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.bays.filter(Boolean).length).toBe(0);
+    expect(snapshot.bots.find((bot) => bot.id === "enemy")?.bays.filter(Boolean).length).toBe(3);
     simulation.dispose();
   });
 
@@ -1690,6 +1690,67 @@ describe("DotBotSimulation", () => {
     const bots = simulation.getSnapshot().bots;
     expect(combatEvents).toEqual([]);
     expect(bots.every((bot) => bot.state === "alive" && bot.shields === 1)).toBe(true);
+    simulation.dispose();
+  });
+
+  it("makes an unconfigured ambient body worth searching while preserving authored empty inventories", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({
+        id: "lootable-patrol",
+        controller: "frozen",
+        position: { x: 100, y: 180 },
+        state: "downed",
+        shields: 0,
+        bays: undefined,
+        hold: undefined,
+      }),
+      enemySpawn({
+        id: "authored-empty-practice",
+        controller: "frozen",
+        position: { x: 300, y: 180 },
+        state: "downed",
+        shields: 0,
+        bays: [],
+        hold: [],
+      }),
+    ]);
+
+    const initial = simulation.getSnapshot();
+    expect(initial.bots.find((bot) => bot.id === "lootable-patrol")?.carriedCount).toBe(1);
+    expect(initial.bots.find((bot) => bot.id === "authored-empty-practice")?.carriedCount).toBe(0);
+
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, downedVerb: "loot" });
+    runTicks(simulation, 12);
+    const opened = simulation.getSnapshot().bots.find((bot) => bot.id === "lootable-patrol")!;
+    expect(opened.searched).toBe(true);
+    expect(opened.carriedCount).toBe(1);
+
+    simulation.applyInput("player", {
+      move: { x: 0, y: 0 },
+      dash: false,
+      take: { fromBotId: "lootable-patrol", index: "all" },
+    });
+    simulation.step();
+
+    const after = simulation.getSnapshot();
+    expect(after.bots.find((bot) => bot.id === "player")?.carriedCount).toBe(1);
+    expect(after.bots.find((bot) => bot.id === "lootable-patrol")?.carriedCount).toBe(0);
+    simulation.dispose();
+  });
+
+  it("preserves an ambient bot's authored bay and hold rewards", async () => {
+    const simulation = await makeSimulation([
+      enemySpawn({
+        bays: [radarItem],
+        hold: [incognitoItem],
+      }),
+    ]);
+
+    const ambient = simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")!;
+    expect(ambient.bays.filter(Boolean)).toEqual([radarItem]);
+    expect(ambient.hold).toEqual([incognitoItem]);
+    expect(ambient.carriedCount).toBe(2);
     simulation.dispose();
   });
 
