@@ -1974,6 +1974,8 @@ export class DotBotSimulation {
 
   private pickBotTarget(bot: InternalBot): AiTarget {
     if (bot.isAmbient) return this.pickAmbientTarget(bot);
+    const capture = this.dotCaptureObjective(bot);
+    if (capture) return capture;
     // A squad's marks steer its own AI members. Ambient greys are nobody's squadmates and
     // ignore them, which is also what keeps a mark from herding the whole map.
     const marked = this.markedObjective(bot);
@@ -2046,6 +2048,38 @@ export class DotBotSimulation {
 
     bot.aiMode = "escort";
     return makeAiTarget(bot.spawn, bot.spawnFloorId, 48, bot.radius * 4, "escort");
+  }
+
+  /**
+   * Keep an escort on a Dot once it starts the shared pickup channel.
+   *
+   * Opportunistic health has no persistent mark, so without this objective the
+   * escort would take one capture tick while crossing the Dot and then continue
+   * following the player. The ordinary capture delay would never finish.
+   */
+  private dotCaptureObjective(bot: InternalBot): AiTarget | null {
+    const coverage = [...this.coverages.values()].find(
+      (candidate) => candidate.kind === "capture" && candidate.actorId === bot.id,
+    );
+    if (!coverage) return null;
+    const dot = this.dots.get(coverage.targetId);
+    if (!dot?.active) return null;
+
+    const ordered = this.markedLootDot(bot)?.id === dot.id;
+    const needsHealth = dot.item.kind === "powerup"
+      && dot.item.type === "health"
+      && bot.shields < bot.maxShields;
+    if (!ordered && !needsHealth) return null;
+
+    const captureDistance = Math.max(0, interactionDotReach(bot.radius, dot.radius) - 2);
+    return makeAiTarget(
+      dot.position,
+      dot.floorId,
+      captureDistance,
+      captureDistance + bot.radius * 2,
+      "investigate",
+      dot.id,
+    );
   }
 
   private pickAmbientTarget(bot: InternalBot): AiTarget {
@@ -3346,22 +3380,8 @@ export class DotBotSimulation {
           })[0]
         : undefined;
 
-      if (healthEscort) {
-        // Restorative Dots are the narrow opportunistic-loot exception: a hurt
-        // escort walking past uses one immediately instead of stealing it into
-        // inventory and requiring a player-only bay command later.
-        restoreShieldPlate(healthEscort.shieldSegments);
-        healthEscort.shields = plateSum(healthEscort.shieldSegments);
-        if (dot.runtime) this.dots.delete(dot.id);
-        else dot.active = false;
-        this.coverages.delete(`capture:${dot.id}`);
-        this.events.push({ type: "dotCaptured", botId: healthEscort.id, dotId: dot.id });
-        this.emitNoise("channel", dot.position, dot.floorId, this.config.powerupNoiseLoudness, healthEscort);
-        continue;
-      }
-
       const orderedEscort = nearbyEscorts.find((bot) => this.markedLootDot(bot)?.id === dot.id);
-      const coveringBot = coveringHuman ?? orderedEscort;
+      const coveringBot = coveringHuman ?? orderedEscort ?? healthEscort;
 
       if (!coveringBot) {
         dot.captureProgressMs = Math.max(0, dot.captureProgressMs - dtMs * 0.65);
@@ -3389,9 +3409,27 @@ export class DotBotSimulation {
       });
 
       if (dot.captureProgressMs >= this.config.dotCaptureDurationMs) {
-        const inserted = insertItem(coveringBot, { ...dot.item }, this.config.holdSlots);
-        if (inserted) {
-          coveringBot.inventoryRevision += 1;
+        const consumeHealth = this.isEscort(coveringBot)
+          && dot.item.kind === "powerup"
+          && dot.item.type === "health"
+          && coveringBot.shields < coveringBot.maxShields;
+        const claimed = consumeHealth
+          ? true
+          : insertItem(coveringBot, { ...dot.item }, this.config.holdSlots);
+        if (claimed) {
+          if (consumeHealth) {
+            restoreShieldPlate(coveringBot.shieldSegments);
+            coveringBot.shields = plateSum(coveringBot.shieldSegments);
+            this.emitNoise(
+              "channel",
+              dot.position,
+              dot.floorId,
+              this.config.powerupNoiseLoudness,
+              coveringBot,
+            );
+          } else {
+            coveringBot.inventoryRevision += 1;
+          }
           if (dot.runtime) this.dots.delete(dot.id);
           else dot.active = false;
           this.events.push({ type: "dotCaptured", botId: coveringBot.id, dotId: dot.id });

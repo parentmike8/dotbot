@@ -345,7 +345,7 @@ describe("escort hostility, orders, and inventory contract", () => {
     sim.dispose();
   });
 
-  it("lets a hurt escort consume nearby health without a loot order", async () => {
+  it("makes a hurt escort complete the pickup channel before consuming nearby health", async () => {
     const testMap = mapWith([
       player("player", "alpha", { x: 200, y: 300 }),
       { ...player("escort", "alpha", { x: 300, y: 300 }, "ai"), maxShields: 3, shields: 1 },
@@ -359,9 +359,24 @@ describe("escort hostility, orders, and inventory contract", () => {
 
     sim.step();
 
-    const snapshot = sim.getSnapshot();
-    expect(snapshot.dots.find((dot) => dot.id === "health")?.active).toBe(false);
-    const escort = snapshot.bots.find((bot) => bot.id === "escort")!;
+    const started = sim.getSnapshot();
+    expect(started.dots.find((dot) => dot.id === "health")?.active).toBe(true);
+    expect(started.bots.find((bot) => bot.id === "escort")?.shields).toBe(1);
+    expect(started.coverages).toContainEqual(expect.objectContaining({
+      kind: "capture",
+      actorId: "escort",
+      targetId: "health",
+      durationMs: config.dotCaptureDurationMs,
+    }));
+
+    run(sim, 5);
+    expect(sim.getSnapshot().dots.find((dot) => dot.id === "health")?.active).toBe(true);
+    expect(sim.getSnapshot().bots.find((bot) => bot.id === "escort")?.shields).toBe(1);
+
+    run(sim, 2);
+    const completed = sim.getSnapshot();
+    expect(completed.dots.find((dot) => dot.id === "health")?.active).toBe(false);
+    const escort = completed.bots.find((bot) => bot.id === "escort")!;
     expect(escort.shields).toBe(2);
     expect(escort.carriedCount).toBe(0);
     expect(escort.bays).toEqual(escort.bays.map(() => null));
