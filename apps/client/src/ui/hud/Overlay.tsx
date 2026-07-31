@@ -115,7 +115,18 @@ export function BayBank({
                 type="button"
                 className={`bay-button ${itemFamily(item)}`}
                 key={index}
-                onClick={() => onUse(index)}
+                onPointerDown={(event) => {
+                  // Mobile Safari can suppress the later synthetic click while
+                  // another finger is holding the movement joystick. Use this
+                  // pointer independently so moving never blocks an item use.
+                  if (event.pointerType !== "mouse") event.preventDefault();
+                  onUse(index);
+                }}
+                onClick={(event) => {
+                  // Pointer presses are handled above. A keyboard-activated
+                  // native button click has detail 0 and still needs to work.
+                  if (event.detail === 0) onUse(index);
+                }}
                 disabled={!item || !canAct}
                 aria-label={`Bay ${index + 1}${item ? `: ${itemLabel(item)}` : ": empty"}`}
               >

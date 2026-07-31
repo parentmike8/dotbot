@@ -1268,6 +1268,12 @@ button {
 }
 
 @media (max-width: 620px) {
+  .touch-controls {
+    /* The bay bank becomes a bottom-centred tray at this width. Keep both
+       thumb targets completely above it instead of sharing the same edge. */
+    bottom: max(94px, calc(env(safe-area-inset-bottom) + 86px));
+  }
+
   .hud-top-left {
     top: max(10px, env(safe-area-inset-top));
   }
