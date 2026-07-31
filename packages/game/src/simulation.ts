@@ -385,6 +385,7 @@ export class DotBotSimulation {
     position: Vec2;
     floorId: string;
     atMs: number;
+    targetDotId?: string;
   }> = [];
   private readonly dots = new Map<string, InternalDot>();
   private readonly mines = new Map<string, InternalMine>();
@@ -1349,6 +1350,7 @@ export class DotBotSimulation {
     this.grantPlanningPermit(active);
 
     for (const bot of active) {
+      this.useEscortHealthIfNeeded(bot);
       const objective = this.pickBotTarget(bot);
       if (this.noteAiStall(bot, objective)) {
         // Blacklisted this tick: the objective it has been leaning on is gone, so
@@ -1372,6 +1374,15 @@ export class DotBotSimulation {
 
       this.tryAiDash(bot, objective);
     }
+  }
+
+  /** Escorts spend carried health themselves once a plate is missing. */
+  private useEscortHealthIfNeeded(bot: InternalBot): void {
+    if (!this.isEscort(bot) || bot.shields >= bot.maxShields) return;
+    const bayIndex = bot.bays.findIndex(
+      (item) => item?.kind === "powerup" && item.type === "health",
+    );
+    if (isSlot(bot.bays, bayIndex)) this.fireBay(bot, bayIndex);
   }
 
   private sameArena(bot: InternalBot, floorId: string, position: Vec2): boolean {
@@ -1794,6 +1805,16 @@ export class DotBotSimulation {
       x: clamp(position.x, 0, this.map.width),
       y: clamp(position.y, 0, this.map.height),
     };
+    const targetDotId = kind === "loot"
+      ? [...this.dots.values()]
+        .filter((dot) => dot.active && dot.floorId === floorId)
+        .filter((dot) => distance(dot.position, at) < PING_PULL)
+        .sort((left, right) => {
+          const leftDistance = distance(left.position, at);
+          const rightDistance = distance(right.position, at);
+          return leftDistance - rightDistance || left.id.localeCompare(right.id);
+        })[0]?.id
+      : undefined;
     /**
      * Held for the AI, and this REVERSES the event-only design that was here an hour ago.
      *
@@ -1810,7 +1831,7 @@ export class DotBotSimulation {
     this.squadMarks = this.squadMarks
       .filter((mark) => mark.squadId !== bot.squadId || this.timeMs - mark.atMs < PING_MEMORY_MS)
       .filter((mark) => !(mark.squadId === bot.squadId && mark.kind === kind))
-      .concat({ squadId: bot.squadId, kind, position: at, floorId, atMs: this.timeMs });
+      .concat({ squadId: bot.squadId, kind, position: at, floorId, atMs: this.timeMs, targetDotId });
     this.events.push({
       type: "pinged",
       botId: bot.id,
@@ -1830,30 +1851,28 @@ export class DotBotSimulation {
    * one carrying current information. Same reasoning as the client's cap, arrived at from
    * the other end.
    */
-  private markFor(bot: InternalBot, kind: PingKind): { position: Vec2; floorId: string } | null {
+  private markFor(bot: InternalBot, kind: PingKind): { position: Vec2; floorId: string; targetDotId?: string } | null {
     const mark = this.squadMarks.find(
       (candidate) => candidate.squadId === bot.squadId
         && candidate.kind === kind
         && this.timeMs - candidate.atMs < PING_MEMORY_MS,
     );
-    return mark ? { position: mark.position, floorId: mark.floorId } : null;
+    return mark
+      ? { position: mark.position, floorId: mark.floorId, targetDotId: mark.targetDotId }
+      : null;
   }
 
   /**
    * Bias an AI squadmate's objective toward what its squad has marked.
    *
-   * A NUDGE, not an order, and the distinction is the whole design. A mark that overrode the
-   * AI outright would let one click walk a squadmate off a roof or out of a fight it was
-   * winning, and a player cannot see enough of the AI's situation to be given that power. So
-   * a mark bends what the bot was already choosing between:
+   * Marks are short-lived squad direction, with the target kind deciding how literal it is:
    *
    *  - `enemy` promotes a rival NEAR THE MARK, so pointing at nothing does nothing
-   *  - `loot`  promotes an uncollected Dot near the mark, same condition
-   *  - `here`  is the universal one: go there, and take whatever is worth taking on arrival
+   *  - `loot`  names one live Dot and orders the escort to capture it
+   *  - `here`  is the universal movement order: go there
    *
    * `here` deliberately has no "is there something there" test, because that is what makes
-   * it universal — it is the mark you use when you cannot say why, and the bot working out
-   * what is nearby when it arrives is exactly the behaviour asked for.
+   * it universal — it is the mark you use when you cannot say why.
    */
   private markedObjective(bot: InternalBot): AiTarget | null {
     const enemyMark = this.markFor(bot, "enemy");
@@ -1868,17 +1887,20 @@ export class DotBotSimulation {
       if (rival) return this.huntTarget(bot, rival);
     }
 
-    const lootMark = this.markFor(bot, "loot");
-    if (lootMark) {
-      const dot = [...this.dots.values()]
-        .filter((candidate) => candidate.active && candidate.floorId === lootMark.floorId)
-        .filter((candidate) => distance(candidate.position, lootMark.position) < PING_PULL)
-        .sort((a, b) => distance(a.position, lootMark.position) - distance(b.position, lootMark.position))[0];
-      if (dot) {
-        // An escort acknowledges the loot order by moving to it, but never picks
-        // it up. Inventory remains a player decision.
-        return makeAiTarget(dot.position, dot.floorId, PING_ARRIVED, PING_ARRIVED * 1.6, "investigate");
-      }
+    const dot = this.markedLootDot(bot);
+    if (dot) {
+      // A loot mark is an order, not merely a point of interest. Stop inside the
+      // same visible-footprint reach used by capture authority so the escort can
+      // actually finish the channel instead of staring at the Dot from 56 px away.
+      const captureDistance = Math.max(0, interactionDotReach(bot.radius, dot.radius) - 2);
+      return makeAiTarget(
+        dot.position,
+        dot.floorId,
+        captureDistance,
+        captureDistance + bot.radius * 2,
+        "investigate",
+        dot.id,
+      );
     }
 
     const here = this.markFor(bot, "here");
@@ -1886,6 +1908,15 @@ export class DotBotSimulation {
       return makeAiTarget(here.position, here.floorId, PING_ARRIVED, PING_ARRIVED * 1.6, "investigate");
     }
     return null;
+  }
+
+  /** The live Dot a squad's current loot mark actually names. */
+  private markedLootDot(bot: InternalBot): InternalDot | null {
+    if (!this.isEscort(bot)) return null;
+    const lootMark = this.markFor(bot, "loot");
+    if (!lootMark?.targetDotId) return null;
+    const dot = this.dots.get(lootMark.targetDotId);
+    return dot?.active && dot.floorId === lootMark.floorId ? dot : null;
   }
 
   private pleaFor(bot: InternalBot): void {
@@ -3257,20 +3288,62 @@ export class DotBotSimulation {
   }
 
   private resolveDotCapture(dtMs: number): void {
-    const aliveBots = [...this.bots.values()].filter(
+    const aliveHumans = [...this.bots.values()].filter(
       (bot) => bot.state === "alive" && this.controllers.get(bot.id) === "human",
     );
+    const aliveEscorts = [...this.bots.values()]
+      .filter((bot) => bot.state === "alive" && this.isEscort(bot))
+      .sort((left, right) => left.id.localeCompare(right.id));
 
     for (const dot of this.dots.values()) {
       if (!dot.active) {
         continue;
       }
 
-      const coveringBot = aliveBots.find(
+      // A player standing on a Dot always owns it. An escort may only take over
+      // when no human is covering it, either because the squad explicitly marked
+      // this Dot as loot or because the escort needs the health it just passed.
+      const coveringHuman = aliveHumans.find(
         (bot) =>
           bot.floorId === dot.floorId &&
           withinInteractionDotRange(bot.position, bot.radius, dot.position, dot.radius),
       );
+      const nearbyEscorts = coveringHuman
+        ? []
+        : aliveEscorts.filter(
+          (bot) =>
+            bot.floorId === dot.floorId &&
+            withinInteractionDotRange(bot.position, bot.radius, dot.position, dot.radius),
+        );
+
+      const healthEscort = dot.item.kind === "powerup" && dot.item.type === "health"
+        ? nearbyEscorts
+          .filter((bot) => bot.shields < bot.maxShields)
+          .sort((left, right) => {
+            const leftMissing = left.maxShields - left.shields;
+            const rightMissing = right.maxShields - right.shields;
+            return rightMissing - leftMissing
+              || distance(left.position, dot.position) - distance(right.position, dot.position)
+              || left.id.localeCompare(right.id);
+          })[0]
+        : undefined;
+
+      if (healthEscort) {
+        // Restorative Dots are the narrow opportunistic-loot exception: a hurt
+        // escort walking past uses one immediately instead of stealing it into
+        // inventory and requiring a player-only bay command later.
+        restoreShieldPlate(healthEscort.shieldSegments);
+        healthEscort.shields = plateSum(healthEscort.shieldSegments);
+        if (dot.runtime) this.dots.delete(dot.id);
+        else dot.active = false;
+        this.coverages.delete(`capture:${dot.id}`);
+        this.events.push({ type: "dotCaptured", botId: healthEscort.id, dotId: dot.id });
+        this.emitNoise("channel", dot.position, dot.floorId, this.config.powerupNoiseLoudness, healthEscort);
+        continue;
+      }
+
+      const orderedEscort = nearbyEscorts.find((bot) => this.markedLootDot(bot)?.id === dot.id);
+      const coveringBot = coveringHuman ?? orderedEscort;
 
       if (!coveringBot) {
         dot.captureProgressMs = Math.max(0, dot.captureProgressMs - dtMs * 0.65);

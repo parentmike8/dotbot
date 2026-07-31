@@ -307,7 +307,7 @@ describe("escort hostility, orders, and inventory contract", () => {
     sim.dispose();
   });
 
-  it("keeps ping movement but never lets escorts capture loot", async () => {
+  it("lets an escort capture and carry the Dot named by a loot order", async () => {
     const testMap = mapWith([
       player("player", "alpha", { x: 200, y: 300 }),
       player("escort", "alpha", { x: 260, y: 300 }, "ai"),
@@ -315,7 +315,11 @@ describe("escort hostility, orders, and inventory contract", () => {
     testMap.outdoor.dotSpawns = [{
       id: "loot",
       position: { x: 600, y: 300 },
-      item: { kind: "powerup", type: "health" },
+      item: { kind: "powerup", type: "radar" },
+    }, {
+      id: "nearby-loot",
+      position: { x: 650, y: 300 },
+      item: { kind: "powerup", type: "dashOvercharge" },
     }];
     const sim = await DotBotSimulation.create({ map: testMap, config });
 
@@ -325,12 +329,82 @@ describe("escort hostility, orders, and inventory contract", () => {
       ping: { kind: "loot", position: { x: 600, y: 300 } },
     });
     sim.step();
-    expect(objective(sim, "escort").position).toEqual({ x: 600, y: 300 });
+    expect(objective(sim, "escort")).toMatchObject({
+      position: { x: 600, y: 300 },
+      targetId: "loot",
+    });
 
     run(sim, 360);
     const snapshot = sim.getSnapshot();
-    expect(snapshot.dots.find((dot) => dot.id === "loot")?.active).toBe(true);
+    expect(snapshot.dots.find((dot) => dot.id === "loot")?.active).toBe(false);
+    expect(snapshot.dots.find((dot) => dot.id === "nearby-loot")?.active).toBe(true);
+    const escort = snapshot.bots.find((bot) => bot.id === "escort")!;
+    expect(escort.carriedCount).toBe(1);
+    expect(escort.bays[0]).toMatchObject({ kind: "powerup", type: "radar" });
+    expect(escort.bays.slice(1)).toEqual(escort.bays.slice(1).map(() => null));
+    sim.dispose();
+  });
+
+  it("lets a hurt escort consume nearby health without a loot order", async () => {
+    const testMap = mapWith([
+      player("player", "alpha", { x: 200, y: 300 }),
+      { ...player("escort", "alpha", { x: 300, y: 300 }, "ai"), maxShields: 3, shields: 1 },
+    ]);
+    testMap.outdoor.dotSpawns = [{
+      id: "health",
+      position: { x: 300, y: 300 },
+      item: { kind: "powerup", type: "health" },
+    }];
+    const sim = await DotBotSimulation.create({ map: testMap, config });
+
+    sim.step();
+
+    const snapshot = sim.getSnapshot();
+    expect(snapshot.dots.find((dot) => dot.id === "health")?.active).toBe(false);
+    const escort = snapshot.bots.find((bot) => bot.id === "escort")!;
+    expect(escort.shields).toBe(2);
+    expect(escort.carriedCount).toBe(0);
+    expect(escort.bays).toEqual(escort.bays.map(() => null));
+    sim.dispose();
+  });
+
+  it("does not let a full-health escort take an unmarked health Dot", async () => {
+    const testMap = mapWith([
+      player("player", "alpha", { x: 200, y: 300 }),
+      player("escort", "alpha", { x: 300, y: 300 }, "ai"),
+    ]);
+    testMap.outdoor.dotSpawns = [{
+      id: "health",
+      position: { x: 300, y: 300 },
+      item: { kind: "powerup", type: "health" },
+    }];
+    const sim = await DotBotSimulation.create({ map: testMap, config });
+
+    sim.step();
+
+    const snapshot = sim.getSnapshot();
+    expect(snapshot.dots.find((dot) => dot.id === "health")?.active).toBe(true);
     expect(snapshot.bots.find((bot) => bot.id === "escort")?.carriedCount).toBe(0);
+    sim.dispose();
+  });
+
+  it("lets a hurt escort use health it already carries", async () => {
+    const sim = await simulation([
+      player("player", "alpha", { x: 200, y: 300 }),
+      {
+        ...player("escort", "alpha", { x: 300, y: 300 }, "ai"),
+        maxShields: 3,
+        shields: 1,
+        bays: [{ kind: "powerup", type: "health" }, null, null],
+      },
+    ]);
+
+    sim.step();
+
+    const escort = sim.getSnapshot().bots.find((bot) => bot.id === "escort")!;
+    expect(escort.shields).toBe(2);
+    expect(escort.carriedCount).toBe(0);
+    expect(escort.bays).toEqual([null, null, null]);
     sim.dispose();
   });
 
