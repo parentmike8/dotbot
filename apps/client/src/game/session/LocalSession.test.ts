@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
-import type { GameSnapshot, SimEvent } from "@dotbot/game/types";
+import type { GameSnapshot, MapDocument, SimEvent } from "@dotbot/game/types";
 import { LocalSession, type LocalSimulation } from "./LocalSession";
 
 describe("LocalSession run-state ownership", () => {
@@ -50,6 +50,76 @@ describe("LocalSession run-state ownership", () => {
     session.update(100);
 
     expect(session.drainEvents()).toEqual([hit]);
+  });
+
+  it("queues the authoritative replay when an ambient AI downs the solo player", async () => {
+    const cause = {
+      kind: "dash" as const,
+      tick: 1,
+      position: { x: 28, y: 10 },
+      direction: { x: -1, y: 0 },
+    };
+    const player = testBot("player", "Player", { x: 10, y: 10 }, {
+      state: "downed",
+      shields: 0,
+      shieldSegments: [0, 0, 0],
+    });
+    const guard = testBot("ambient-guard", "Depot Guard", { x: 40, y: 10 }, {
+      squadId: "ambient",
+      isAmbient: true,
+    });
+    const { session } = scriptedSession({
+      map: replayMap,
+      events: [{
+        type: "downed",
+        botId: "player",
+        byBotId: "ambient-guard",
+        cause,
+      }],
+      snapshot: snapshot(50, [player, guard]),
+    });
+
+    await session.start();
+    session.update(100);
+
+    expect(session.drainKillCams()).toEqual([
+      expect.objectContaining({
+        victimId: "player",
+        sourceBotId: "ambient-guard",
+        cause,
+        frames: [expect.objectContaining({
+          victim: expect.objectContaining({ id: "player", state: "downed" }),
+          source: expect.objectContaining({ id: "ambient-guard" }),
+        })],
+      }),
+    ]);
+    expect(session.drainKillCams()).toEqual([]);
+    expect(session.getEntityMeta("ambient-guard")?.name).toBe("Depot Guard");
+  });
+
+  it("suppresses solo gameplay input during replay while retaining plea", async () => {
+    const applied: import("@dotbot/game/types").InputCommand[] = [];
+    const current = snapshot(0, [testBot("player", "Player", { x: 10, y: 10 })]);
+    const simulation: LocalSimulation = {
+      applyInput(_botId, input) { applied.push(input); },
+      dispose() {},
+      drainEvents: () => [],
+      getSnapshot: () => current,
+      setMeasuredFps() {},
+      step() {},
+    };
+    const session = new LocalSession({
+      map: downtownMap,
+      config: defaultGameConfig,
+      playerId: "player",
+      createSimulation: async () => simulation,
+    });
+    await session.start();
+
+    session.setReplayActive(true);
+    session.sendInput({ move: { x: 1, y: 0 }, dash: true, useBay: 0, plea: true });
+
+    expect(applied.at(-1)).toEqual({ move: { x: 0, y: 0 }, dash: false, plea: true });
   });
 
   it("derives timeout state from local time and current inventory", async () => {
@@ -112,7 +182,12 @@ describe("LocalSession run-state ownership", () => {
   });
 });
 
-function scriptedSession(options: { config?: typeof defaultGameConfig; events: SimEvent[]; snapshot: GameSnapshot }) {
+function scriptedSession(options: {
+  config?: typeof defaultGameConfig;
+  events: SimEvent[];
+  map?: MapDocument;
+  snapshot: GameSnapshot;
+}) {
   let events = [...options.events];
   const simulation: LocalSimulation = {
     applyInput() {},
@@ -129,13 +204,25 @@ function scriptedSession(options: { config?: typeof defaultGameConfig; events: S
   const config = options.config ?? { ...defaultGameConfig, tickHz: 10 };
   return {
     session: new LocalSession({
-      map: downtownMap,
+      map: options.map ?? downtownMap,
       config,
       playerId: "player",
       createSimulation: async () => simulation,
     }),
   };
 }
+
+const replayMap: MapDocument = {
+  id: "local-kill-cam-test",
+  name: "Local Kill Cam Test",
+  width: 600,
+  height: 400,
+  outdoor: { roads: [], parks: [], walls: [], objects: [], dotSpawns: [] },
+  buildings: [],
+  extractionPoints: [],
+  insertionPoints: [],
+  botSpawns: [],
+};
 
 function snapshot(timeMs: number, bots: GameSnapshot["bots"]): GameSnapshot {
   return {
@@ -146,5 +233,42 @@ function snapshot(timeMs: number, bots: GameSnapshot["bots"]): GameSnapshot {
     coverages: [],
     noises: [],
     debug: { tickHz: 10, tickCount: 1, fps: 60, activeBodies: bots.length, activeDots: 0 },
+  };
+}
+
+function testBot(
+  id: string,
+  name: string,
+  position: { x: number; y: number },
+  overrides: Partial<GameSnapshot["bots"][number]> = {},
+): GameSnapshot["bots"][number] {
+  return {
+    id,
+    name,
+    squadId: "alpha",
+    isAmbient: false,
+    color: "#fff",
+    position,
+    radius: 24,
+    state: "alive",
+    floorId: "outdoor",
+    facing: 0,
+    moving: false,
+    maxShields: 3,
+    shields: 3,
+    shieldSegments: [1, 1, 1],
+    bays: [null, null, null],
+    hold: [],
+    carriedCount: 0,
+    searched: false,
+    pleaded: false,
+    radarActiveMs: 0,
+    radarPings: [],
+    dashOverchargeCharges: 0,
+    incognitoMs: 0,
+    dashCooldownMs: 0,
+    dashActiveMs: 0,
+    invulnerabilityMs: 0,
+    ...overrides,
   };
 }

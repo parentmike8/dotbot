@@ -1,6 +1,7 @@
 import { DotBotSimulation } from "@dotbot/game/simulation";
 import { carriedItems } from "@dotbot/game/inventory";
 import type { GameConfig, GameSnapshot, InputCommand, MapDocument, SimEvent } from "@dotbot/game/types";
+import { KillCamHistory, type EntityMeta, type KillCamClip } from "@dotbot/protocol";
 import type { GameSession } from "./GameSession";
 import type { RunState } from "./GameSession";
 
@@ -24,10 +25,15 @@ export class LocalSession implements GameSession {
   private readonly config: GameConfig;
   private readonly createSimulation: () => Promise<LocalSimulation>;
   private readonly inputObserver?: (input: InputCommand) => void;
+  private readonly killCamHistory: KillCamHistory;
+  private readonly killCamSampleStride: number;
   private simulation: LocalSimulation | null = null;
   private accumulator = 0;
+  private stepsSinceKillCamSample = 0;
   private input: InputCommand = { move: { x: 0, y: 0 }, dash: false };
   private events: SimEvent[] = [];
+  private killCams: KillCamClip[] = [];
+  private replayActive = false;
   private runState: RunState = { phase: "live" };
   private lastSnapshot: GameSnapshot | null = null;
 
@@ -37,14 +43,24 @@ export class LocalSession implements GameSession {
     this.playerId = options.playerId;
     this.createSimulation = options.createSimulation ?? (() => DotBotSimulation.create({ map: this.map, config: this.config }));
     this.inputObserver = options.inputObserver;
+    this.killCamHistory = new KillCamHistory(this.map, { historyTicks: 4 * this.config.tickHz });
+    this.killCamSampleStride = Math.max(1, Math.round(this.config.tickHz / 20));
   }
 
   async start(): Promise<void> {
     this.simulation = await this.createSimulation();
+    const snapshot = this.simulation.getSnapshot();
+    this.lastSnapshot = snapshot;
+    this.killCamHistory.record(snapshot);
   }
 
   sendInput(input: InputCommand): void {
     this.inputObserver?.(input);
+    if (this.replayActive) {
+      this.input = { move: { x: 0, y: 0 }, dash: false, plea: input.plea };
+      this.simulation?.applyInput(this.playerId, this.input);
+      return;
+    }
     this.input = { move: input.move, dash: false, downedVerb: input.downedVerb, plea: false };
     // Hand the intent to the sim immediately so its own sticky Dash queue
     // retains a press even when this render frame does not produce a tick.
@@ -79,6 +95,15 @@ export class LocalSession implements GameSession {
       simulation.applyInput(this.playerId, this.input);
       simulation.step();
       const frameEvents = simulation.drainEvents();
+      this.stepsSinceKillCamSample += 1;
+      const playerDowned = frameEvents.some((event) =>
+        event.type === "downed" && event.botId === this.playerId);
+      if (playerDowned || this.stepsSinceKillCamSample >= this.killCamSampleStride) {
+        const tickSnapshot = simulation.getSnapshot();
+        this.killCamHistory.record(tickSnapshot);
+        this.stepsSinceKillCamSample = 0;
+        if (playerDowned) this.captureKillCam(frameEvents, tickSnapshot);
+      }
       // The renderer/sensory layer consumes hit events in the same frame in
       // local mode too. The hook keeps them out of long-lived React history.
       this.events.push(...frameEvents);
@@ -106,6 +131,30 @@ export class LocalSession implements GameSession {
     return this.events.splice(0);
   }
 
+  drainKillCams(): KillCamClip[] {
+    return this.killCams.splice(0);
+  }
+
+  setReplayActive(active: boolean): void {
+    this.replayActive = active;
+    if (!active) return;
+    this.input = { move: { x: 0, y: 0 }, dash: false };
+    this.simulation?.applyInput(this.playerId, this.input);
+  }
+
+  getEntityMeta(id: string): EntityMeta | undefined {
+    const bot = this.lastSnapshot?.bots.find((candidate) => candidate.id === id);
+    return bot ? {
+      id: bot.id,
+      name: bot.name,
+      squadId: bot.squadId,
+      isAmbient: bot.isAmbient,
+      maxShields: bot.maxShields,
+      radius: bot.radius,
+      color: bot.color,
+    } : undefined;
+  }
+
   getRunState(): RunState {
     return this.runState;
   }
@@ -125,9 +174,28 @@ export class LocalSession implements GameSession {
     this.simulation?.dispose();
     this.simulation = null;
     this.accumulator = 0;
+    this.stepsSinceKillCamSample = 0;
     this.events = [];
+    this.killCams = [];
+    this.replayActive = false;
     this.runState = { phase: "live" };
     this.lastSnapshot = null;
+  }
+
+  private captureKillCam(events: readonly SimEvent[], snapshot: GameSnapshot): void {
+    for (const event of events) {
+      if (event.type !== "downed" || event.botId !== this.playerId) continue;
+      const victim = snapshot.bots.find((bot) => bot.id === event.botId);
+      if (!victim) continue;
+      const cause = event.cause ?? {
+        kind: "environment" as const,
+        tick: snapshot.debug.tickCount,
+        position: { ...victim.position },
+        direction: { x: 0, y: 0 },
+      };
+      const clip = this.killCamHistory.createClip(event.botId, event.byBotId, cause);
+      if (clip) this.killCams.push(clip);
+    }
   }
 
   private applyRunEvents(events: SimEvent[]): void {

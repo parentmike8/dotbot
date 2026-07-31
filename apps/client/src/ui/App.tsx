@@ -8,6 +8,7 @@ import { FeedbackControls } from "./FeedbackControls";
 import { arrivalGroups, selectBaseMap, spawnAt } from "../mapSelection";
 import { BodyPromptView, DownedSelfView } from "./downed/DownedPrompts";
 import { useDownedPrompts } from "./downed/useDownedPrompts";
+import { KillCamOverlay } from "./downed/KillCamOverlay";
 import {
   BayBank, DebugPanel, FloorRail, InventoryPanel, PingPicker, RunReadout, SettingsPanel, SpawnPicker, TouchControls,
 } from "./hud/Overlay";
@@ -79,6 +80,7 @@ function GameSession({
   const {
     hostRef, snapshot, events, runResult, map, playerId, debugVisible, networkDebug, settingsVisible, toggleSettings,
     joystick, joystickHandlers, queueDash, useBay, swapBayItem, dropItem, leaveRun, selectDownedVerb, plea,
+    killCam, skipKillCam,
     inventoryVisible, toggleInventory, closeInventory,
     takeFromBody, setBodyAction,
     pingHandlers, pingPicker, choosePingKind, clearPings, closePingPicker, spectating,
@@ -108,6 +110,8 @@ function GameSession({
       data-player-x={player ? Math.round(player.position.x) : undefined}
       data-player-y={player ? Math.round(player.position.y) : undefined}
       data-dash-ready={player ? player.dashCooldownMs <= 0 : false}
+      data-kill-cam={killCam ? "playing" : undefined}
+      data-kill-cam-cause={killCam?.clip.cause.kind}
     >
       <div ref={hostRef} className="game-canvas" {...pingHandlers} />
 
@@ -137,9 +141,10 @@ function GameSession({
         onUse={useBay}
         onOpen={toggleInventory}
         open={inventoryVisible}
+        disabled={Boolean(killCam)}
       />
 
-      {inventoryVisible && player && runResult === null ? (
+      {inventoryVisible && player && runResult === null && !killCam ? (
         <InventoryPanel
           player={player}
           slots={defaultGameConfig.baySlots}
@@ -151,7 +156,7 @@ function GameSession({
         />
       ) : null}
 
-      {settingsVisible ? (
+      {settingsVisible && !killCam ? (
         <SettingsPanel onClose={toggleSettings}>
           <FeedbackControls
             preferences={feedbackPreferences}
@@ -176,6 +181,10 @@ function GameSession({
           onChoosePing={chooseExteriorMark}
           onClose={closeWorldMap}
         />
+      ) : null}
+
+      {killCam ? (
+        <KillCamOverlay label={killCam.label} progress={killCam.progress} onSkip={skipKillCam} />
       ) : null}
 
       {pingPicker ? (

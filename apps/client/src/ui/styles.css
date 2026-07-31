@@ -800,6 +800,75 @@ button {
   backdrop-filter: blur(8px);
 }
 
+.kill-cam-overlay {
+  position: absolute;
+  z-index: 24;
+  top: max(14px, env(safe-area-inset-top));
+  left: 50%;
+  display: grid;
+  grid-template-columns: auto minmax(52px, 120px) auto;
+  align-items: center;
+  gap: 10px;
+  width: min(430px, calc(100% - 28px));
+  padding: 8px 10px;
+  transform: translateX(-50%);
+  border: 1px solid color-mix(in srgb, var(--ink) 70%, transparent);
+  background: var(--panel-glass);
+  color: var(--ink);
+  backdrop-filter: blur(8px);
+}
+
+.kill-cam-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 9px;
+  line-height: 1.1;
+  letter-spacing: 1.2px;
+}
+
+.kill-cam-copy strong { font-size: 11px; letter-spacing: 1.8px; }
+.kill-cam-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.kill-cam-track {
+  display: block;
+  overflow: hidden;
+  height: 2px;
+  background: color-mix(in srgb, var(--ink) 18%, transparent);
+}
+
+.kill-cam-track > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: var(--ink);
+}
+
+.kill-cam-overlay button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+
+.kill-cam-overlay kbd {
+  min-width: 34px;
+  padding: 4px 6px;
+  border: 1px solid currentColor;
+  font: inherit;
+  font-size: 8px;
+}
+
 .leave-to-base {
   position: absolute;
   z-index: 9;
@@ -1330,6 +1399,23 @@ button {
   .inventory-hold {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+@media (max-width: 480px) {
+  .kill-cam-overlay { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+  .kill-cam-copy { grid-column: 1; grid-row: 1; }
+  .kill-cam-track { grid-column: 1; grid-row: 2; }
+
+  .kill-cam-overlay button {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    justify-content: center;
+    min-width: 52px;
+    min-height: 32px;
+    border: 1px solid currentColor;
+  }
+
+  .kill-cam-overlay button kbd { display: none; }
 }
 
 @media (max-width: 430px) {

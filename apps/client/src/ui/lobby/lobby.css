@@ -77,29 +77,6 @@
 .net-game-bays > div { display: grid; grid-template-columns: repeat(4,34px); gap: 4px; }
 .net-game-bays b { display: grid; height: 32px; place-items: center; border: 1px solid var(--ink); background: var(--paper); font: 900 17px/1 ui-monospace,monospace; }
 .spectating-chip { position: absolute; z-index: 21; top: 14px; left: 50%; padding: 8px 12px; border: 1px solid var(--ink); background: var(--paper-glass); color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 850; letter-spacing: 1.4px; transform: translateX(-50%); }
-.kill-cam-overlay { position: absolute; z-index: 24; top: 14px; left: 50%; display: grid; grid-template-columns: auto minmax(52px, 120px) auto; align-items: center; gap: 10px; width: min(430px, calc(100% - 28px)); padding: 8px 10px; color: var(--ink); background: var(--panel-glass); border: 1px solid color-mix(in srgb, var(--ink) 70%, transparent); transform: translateX(-50%); backdrop-filter: blur(8px); }
-.kill-cam-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; font-size: 9px; line-height: 1.1; letter-spacing: 1.2px; }
-.kill-cam-copy strong { font-size: 11px; letter-spacing: 1.8px; }
-.kill-cam-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kill-cam-track { display: block; overflow: hidden; height: 2px; background: color-mix(in srgb, var(--ink) 18%, transparent); }
-.kill-cam-track > span { display: block; width: 100%; height: 100%; background: var(--ink); transform-origin: left center; }
-.kill-cam-overlay button { display: inline-flex; align-items: center; gap: 6px; padding: 0; color: inherit; border: 0; background: transparent; cursor: pointer; font: inherit; font-size: 9px; font-weight: 850; letter-spacing: 1px; }
-.kill-cam-overlay kbd { min-width: 34px; padding: 4px 6px; border: 1px solid currentColor; font: inherit; font-size: 8px; }
-
-@media (max-width: 480px) {
-  .kill-cam-overlay { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
-  .kill-cam-copy { grid-column: 1; grid-row: 1; }
-  .kill-cam-track { grid-column: 1; grid-row: 2; }
-  .kill-cam-overlay button {
-    grid-column: 2;
-    grid-row: 1 / 3;
-    justify-content: center;
-    min-width: 52px;
-    min-height: 32px;
-    border: 1px solid currentColor;
-  }
-  .kill-cam-overlay button kbd { display: none; }
-}
 .leave-to-base { position: absolute; z-index: 22; right: 14px; bottom: 14px; padding: 11px 14px; border: 2px solid var(--ink); background: var(--paper); color: var(--ink); font: 850 10px/1 ui-monospace, monospace; letter-spacing: .12em; }
 .body-prompt, .downed-self { bottom: 22px; }
 @media (max-width: 620px) { .lobby-actions, .lobby-squads { grid-template-columns: 1fr; } .lobby-or { text-align: center; } }
