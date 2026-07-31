@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { defaultGameConfig } from "./config";
 import { downtownMap } from "./content/downtown";
+import { worldMap } from "./content/world";
 import { interactionDotReach, withinDownedCoverRange } from "./interactions";
-import { classifyNoise, physicsFloorId, planningTableSurfaceRect } from "./mapModel";
+import { classifyNoise, physicsFloorId, planningTableSurfaceRect, stairHalves } from "./mapModel";
 import { carriedCount } from "./inventory";
 import { DotBotSimulation, waypointRetired } from "./simulation";
 import { buildContactShape, contactDistance, makeContactShape } from "./bodyContact";
@@ -2221,6 +2222,246 @@ describe("DotBotSimulation", () => {
     runTicks(simulation, 30);
     player = simulation.getSnapshot().bots.find((bot) => bot.id === "player");
     expect(player?.floorId).toBe("outdoor");
+    simulation.dispose();
+  });
+
+  it("makes AI clear a crowded stair before it can be shoved back across the break line", async () => {
+    const stairRect = { x: 250, y: 80, w: 60, h: 160 };
+    const baseMap = makeMap([allySpawn({ position: { x: 280, y: 165 } })]);
+    const simulation = await DotBotSimulation.create({
+      map: {
+        ...baseMap,
+        buildings: [
+          {
+            id: "tower",
+            kind: "office",
+            name: "TOWER",
+            footprint: { x: 200, y: 60, w: 220, h: 240 },
+            floors: [
+              {
+                id: "tower:GROUND",
+                label: "GROUND",
+                walls: [],
+                doorways: [],
+                objects: [],
+                stairs: [
+                  { id: "tower-up", rect: stairRect, direction: "up", toFloorId: "tower:F2", bottom: "S" },
+                ],
+                dotSpawns: [],
+              },
+              {
+                id: "tower:F2",
+                label: "F2",
+                walls: [],
+                doorways: [],
+                objects: [],
+                stairs: [
+                  { id: "tower-down", rect: stairRect, direction: "down", toFloorId: "outdoor", bottom: "S" },
+                ],
+                dotSpawns: [],
+              },
+            ],
+          },
+        ],
+      },
+      config: testConfig,
+    });
+    type StairBotHandle = {
+      position: Vec2;
+      prevPosition: Vec2;
+      floorId: string;
+      radius: number;
+      aiStairTargetId?: string;
+      aiStairEgress?: { floorId: string; rect: typeof stairRect; position: Vec2 };
+    };
+    type StairInternals = {
+      bots: Map<string, StairBotHandle>;
+      resolveStairs(): void;
+      routeAiTarget(
+        bot: StairBotHandle,
+        target: {
+          position: Vec2;
+          floorId: string;
+          stopDistance: number;
+          slowDistance: number;
+          intent: "escort";
+          projectionAllowed: boolean;
+        },
+      ): { position: Vec2 };
+    };
+    const internal = simulation as unknown as StairInternals;
+    const ally = internal.bots.get("ally")!;
+
+    // The AI walks north over the Ground -> F2 break line.
+    ally.aiStairTargetId = "tower-up";
+    ally.prevPosition = { x: 280, y: 165 };
+    ally.position = { x: 280, y: 155 };
+    internal.resolveStairs();
+    expect(ally.floorId).toBe("tower:F2");
+    expect(ally.aiStairEgress).toBeDefined();
+
+    // Even if its real escort target is behind it, routing first clears the flight.
+    const egress = ally.aiStairEgress!;
+    const routed = internal.routeAiTarget(ally, {
+      position: { x: 280, y: 220 },
+      floorId: "tower:F2",
+      stopDistance: 44,
+      slowDistance: 96,
+      intent: "escort",
+      projectionAllowed: false,
+    });
+    expect(routed.position).toEqual(egress.position);
+
+    // Reproduce the crowding shove: on F2, north is the entry half and south is
+    // the reverse exit. The old rule immediately sent the bot back downstairs
+    // and emitted another pair of visible stair-noise rings.
+    ally.prevPosition = { x: 280, y: 155 };
+    ally.position = { x: 280, y: 165 };
+    internal.resolveStairs();
+    expect(ally.floorId).toBe("tower:F2");
+    expect(simulation.getSnapshot().noises.filter((noise) => noise.kind === "stairs")).toHaveLength(2);
+
+    // Once its centre has actually left the flight, ordinary two-way traversal
+    // returns immediately; this is egress hysteresis, not a timed lockout.
+    ally.prevPosition = { ...egress.position };
+    ally.position = { ...egress.position };
+    internal.resolveStairs();
+    expect(ally.aiStairEgress).toBeUndefined();
+
+    // Merely crossing a stair in a crowd is not an AI navigation decision.
+    ally.prevPosition = { x: 280, y: 155 };
+    ally.position = { x: 280, y: 165 };
+    internal.resolveStairs();
+    expect(ally.floorId).toBe("tower:F2");
+    expect(simulation.getSnapshot().noises.filter((noise) => noise.kind === "stairs")).toHaveLength(2);
+
+    // Once cross-floor routing selects the reverse link, the same motion works.
+    ally.aiStairTargetId = "tower-down";
+    ally.prevPosition = { x: 280, y: 155 };
+    ally.position = { x: 280, y: 165 };
+    internal.resolveStairs();
+    expect(ally.floorId).toBe("outdoor");
+    expect(simulation.getSnapshot().noises.filter((noise) => noise.kind === "stairs")).toHaveLength(4);
+    simulation.dispose();
+  });
+
+  it("funnels an escort squad through the real Lot 6 basement stair without floor-flip noise", async () => {
+    const stairRect = { x: 756, y: 1012, w: 88, h: 148 };
+    const simulation = await DotBotSimulation.create({
+      map: {
+        ...downtownMap,
+        botSpawns: [
+          playerSpawn({ position: { x: 700, y: 1230 }, floorId: "lot6:B1" }),
+          allySpawn({ id: "ally-a", position: { x: 780, y: 1044 } }),
+          allySpawn({ id: "ally-b", position: { x: 804, y: 1056 } }),
+          allySpawn({ id: "ally-c", position: { x: 820, y: 1032 } }),
+        ],
+      },
+      config: testConfig,
+    });
+
+    const floorChanges = new Map<string, number>([
+      ["ally-a", 0],
+      ["ally-b", 0],
+      ["ally-c", 0],
+    ]);
+    let previousFloors = new Map(
+      simulation.getSnapshot().bots
+        .filter((bot) => bot.id.startsWith("ally-"))
+        .map((bot) => [bot.id, bot.floorId]),
+    );
+    for (let tick = 0; tick < 360; tick += 1) {
+      simulation.step();
+      const currentEscorts = simulation.getSnapshot().bots.filter((bot) => bot.id.startsWith("ally-"));
+      for (const escort of currentEscorts) {
+        if (previousFloors.get(escort.id) !== escort.floorId) {
+          floorChanges.set(escort.id, (floorChanges.get(escort.id) ?? 0) + 1);
+        }
+      }
+      previousFloors = new Map(currentEscorts.map((bot) => [bot.id, bot.floorId]));
+    }
+
+    const snapshot = simulation.getSnapshot();
+    const escorts = snapshot.bots.filter((bot) => bot.id.startsWith("ally-"));
+    expect(escorts).toHaveLength(3);
+    for (const escort of escorts) {
+      expect(escort.floorId).toBe("lot6:B1");
+      expect(floorChanges.get(escort.id)).toBe(1);
+      expect(
+        escort.position.x >= stairRect.x &&
+        escort.position.x <= stairRect.x + stairRect.w &&
+        escort.position.y >= stairRect.y &&
+        escort.position.y <= stairRect.y + stairRect.h,
+      ).toBe(false);
+    }
+    simulation.dispose();
+  });
+
+  it("gives AI a collision-clear egress after every production stair direction", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: { ...worldMap, botSpawns: [] },
+      config: testConfig,
+    });
+    type ProductionStairBot = {
+      position: Vec2;
+      prevPosition: Vec2;
+      floorId: string;
+      radius: number;
+      aiStairTargetId?: string;
+      aiStairEgress?: { floorId: string; rect: { x: number; y: number; w: number; h: number }; position: Vec2 };
+    };
+    type ProductionStairInternals = {
+      bots: Map<string, ProductionStairBot>;
+      resolveStairs(): void;
+    };
+    const internal = simulation as unknown as ProductionStairInternals;
+    let checked = 0;
+
+    for (const building of worldMap.buildings) {
+      for (const floor of building.floors) {
+        for (const stair of floor.stairs) {
+          const { entry, exit } = stairHalves(stair);
+          const sourceFloor = physicsFloorId(worldMap, floor.id);
+          const targetFloor = physicsFloorId(worldMap, stair.toFloorId);
+          const id = `production-stair-${checked}`;
+          simulation.spawnBot(allySpawn({
+            id,
+            name: id,
+            floorId: sourceFloor,
+            position: { x: entry.x + entry.w / 2, y: entry.y + entry.h / 2 },
+          }), "ai");
+          const bot = internal.bots.get(id)!;
+          bot.prevPosition = { x: entry.x + entry.w / 2, y: entry.y + entry.h / 2 };
+          bot.position = { x: exit.x + exit.w / 2, y: exit.y + exit.h / 2 };
+          bot.aiStairTargetId = stair.id;
+
+          internal.resolveStairs();
+
+          const label = `${floor.id} -> ${stair.toFloorId}`;
+          expect(bot.floorId, label).toBe(targetFloor);
+          expect(bot.aiStairEgress, label).toBeDefined();
+          const egress = bot.aiStairEgress!;
+          const expanded = {
+            x: stair.rect.x - bot.radius,
+            y: stair.rect.y - bot.radius,
+            w: stair.rect.w + bot.radius * 2,
+            h: stair.rect.h + bot.radius * 2,
+          };
+          expect(
+            egress.position.x >= expanded.x &&
+            egress.position.x <= expanded.x + expanded.w &&
+            egress.position.y >= expanded.y &&
+            egress.position.y <= expanded.y + expanded.h,
+            `${label} egress must fully clear the shared flight`,
+          ).toBe(false);
+
+          simulation.removeBot(id);
+          checked += 1;
+        }
+      }
+    }
+
+    expect(checked).toBeGreaterThan(20);
     simulation.dispose();
   });
 

@@ -260,6 +260,15 @@ type AiAlert = {
   lastSensedAtMs: number;
 };
 
+type AiStairEgress = {
+  /** The floor the bot just reached. */
+  floorId: string;
+  /** The shared flight rectangle it must leave before it may reverse floors. */
+  rect: Rect;
+  /** A clear point beyond one of the destination half's open edges. */
+  position: Vec2;
+};
+
 type InternalBot = DotBotEntity & {
   inventoryRevision: number;
   factionKind: BotFactionKind;
@@ -336,6 +345,17 @@ type InternalBot = DotBotEntity & {
   aiAttention: number;
   aiPathProjected: boolean;
   aiAvoidTargets: Map<string, number>;
+  /** The exact stair chosen by this tick's cross-floor route. */
+  aiStairTargetId?: string;
+  /**
+   * A just-transitioned AI must clear the flight before pursuing its objective.
+   *
+   * Without this, a target behind it makes the bot turn on the break line and
+   * body separation can shove it straight back onto the previous floor. In a
+   * crowded stair that becomes a floor-flip loop, emitting a new pair of stair
+   * noises (and visible rings) every pass.
+   */
+  aiStairEgress?: AiStairEgress;
   /** Consecutive ticks of asking to move and not moving. See `noteAiStall`. */
   aiStallTicks: number;
   /** Where the current stall window started measuring from. */
@@ -624,6 +644,8 @@ export class DotBotSimulation {
       aiAttention: 0,
       aiPathProjected: false,
       aiAvoidTargets: new Map(),
+      aiStairTargetId: undefined,
+      aiStairEgress: undefined,
       aiStallTicks: 0,
       aiStallFrom: { ...spawn.position },
       contactShape: makeContactShape(maxShields),
@@ -1378,7 +1400,7 @@ export class DotBotSimulation {
         const routed = this.routeAiTarget(bot, replacement);
         bot.desiredMove = this.steerBotAlongPath(bot, routed);
         if (length(bot.desiredMove) > 0.05) bot.lastAim = bot.desiredMove;
-        this.tryAiDash(bot, replacement);
+        if (!bot.aiStairEgress) this.tryAiDash(bot, replacement);
         continue;
       }
       this.rememberAiObjective(bot, objective);
@@ -1390,7 +1412,7 @@ export class DotBotSimulation {
         bot.lastAim = desired;
       }
 
-      this.tryAiDash(bot, objective);
+      if (!bot.aiStairEgress) this.tryAiDash(bot, objective);
     }
   }
 
@@ -1621,6 +1643,24 @@ export class DotBotSimulation {
       if (objective.intent === "patrol" && bot.patrol && bot.patrol.waypoints.length > 0) {
         bot.aiPatrolIndex = (bot.aiPatrolIndex + 1) % bot.patrol.waypoints.length;
       }
+      return true;
+    }
+    const stalledTarget = this.bots.get(objective.targetId);
+    if (
+      objective.intent === "escort" &&
+      stalledTarget?.state === "alive" &&
+      stalledTarget.squadId === bot.squadId &&
+      this.controllers.get(stalledTarget.id) === "human"
+    ) {
+      /**
+       * A doorway queue is not permission to abandon the player.
+       *
+       * Blacklisting the human made the escort fall back to its original spawn.
+       * In a multi-floor building that meant deliberately taking the same stair
+       * back out, exactly the floor-flip loop the stall escape was meant to end.
+       * Clear and replan instead; the other bodies continue moving and the queue
+       * drains without changing the escort's mission.
+       */
       return true;
     }
     bot.aiAvoidTargets.set(objective.targetId, AI_STALL_AVOID_MS + this.nextRandom() * AI_STALL_AVOID_MS);
@@ -2194,6 +2234,20 @@ export class DotBotSimulation {
 
   /** Convert a strategic target into the next same-floor navigation target. */
   private routeAiTarget(bot: InternalBot, target: AiTarget): AiTarget {
+    const stairEgress = this.activeAiStairEgress(bot);
+    if (stairEgress) {
+      bot.aiStairTargetId = undefined;
+      return {
+        ...target,
+        floorId: bot.floorId,
+        position: stairEgress.position,
+        stopDistance: 1,
+        slowDistance: bot.radius * 2,
+        projectionAllowed: false,
+      };
+    }
+
+    bot.aiStairTargetId = undefined;
     const targetFloorId = physicsFloorId(this.map, target.floorId);
 
     if (bot.floorId === targetFloorId) {
@@ -2216,6 +2270,7 @@ export class DotBotSimulation {
           : undefined;
 
         if (stair) {
+          bot.aiStairTargetId = stair.id;
           return {
             ...target,
             floorId: bot.floorId,
@@ -2244,6 +2299,101 @@ export class DotBotSimulation {
     }
 
     return { ...target, floorId: bot.floorId };
+  }
+
+  /**
+   * Keep an AI's post-transition steering and floor latch alive only while its
+   * footprint still touches the shared flight. Fully clearing any open edge
+   * completes the traversal and restores ordinary target selection immediately.
+   */
+  private activeAiStairEgress(bot: InternalBot): AiStairEgress | undefined {
+    const egress = bot.aiStairEgress;
+    if (!egress) return undefined;
+    const footprintStillTouchesFlight = rectContainsPoint({
+      x: egress.rect.x - bot.radius,
+      y: egress.rect.y - bot.radius,
+      w: egress.rect.w + bot.radius * 2,
+      h: egress.rect.h + bot.radius * 2,
+    }, bot.position);
+    if (bot.floorId !== egress.floorId || !footprintStillTouchesFlight) {
+      bot.aiStairEgress = undefined;
+      return undefined;
+    }
+    return egress;
+  }
+
+  /**
+   * Pick a physically clear point beyond the destination half of a stair.
+   *
+   * The open end is tried alongside both open sides because a flight may finish
+   * near a shell wall (Quayside B1 does). Stable per-bot selection spreads a
+   * squad across the available exits instead of giving every escort the same
+   * point to occupy.
+   */
+  private aiStairEgress(bot: InternalBot, stair: StairLink, targetFloor: string): AiStairEgress | undefined {
+    const { exit, vertical } = stairHalves(stair);
+    const margin = bot.radius + 4;
+    const samples = (start: number, size: number): number[] => {
+      const inset = Math.min(bot.radius, size / 2);
+      const low = start + inset;
+      const high = start + size - inset;
+      const values = [start + size / 2, low, high];
+      for (let value = Math.ceil(low / 8) * 8; value <= high; value += 8) {
+        values.push(value);
+      }
+      return [...new Set(values)];
+    };
+    const candidates: Vec2[] = [];
+    if (vertical) {
+      const outwardY = exit.y === stair.rect.y ? stair.rect.y - margin : stair.rect.y + stair.rect.h + margin;
+      for (const x of samples(exit.x, exit.w)) candidates.push({ x, y: outwardY });
+      for (const y of samples(exit.y, exit.h)) {
+        candidates.push({ x: stair.rect.x - margin, y });
+        candidates.push({ x: stair.rect.x + stair.rect.w + margin, y });
+      }
+    } else {
+      const outwardX = exit.x === stair.rect.x ? stair.rect.x - margin : stair.rect.x + stair.rect.w + margin;
+      for (const y of samples(exit.y, exit.h)) candidates.push({ x: outwardX, y });
+      for (const x of samples(exit.x, exit.w)) {
+        candidates.push({ x, y: stair.rect.y - margin });
+        candidates.push({ x, y: stair.rect.y + stair.rect.h + margin });
+      }
+    }
+
+    /**
+     * This is deliberately a local swept collision check, not A*.
+     *
+     * Stair transitions happen after the one-search-per-tick planning permit.
+     * Running even three extra searches here reintroduces the exact synchronized
+     * frame spikes that permit exists to prevent. The destination half is itself
+     * the approach: if a sampled edge is directly clear from the break line, it
+     * is a valid egress. The ordinary permitted planner takes over after that.
+     *
+     * Static solids omit a currently closed automatic door. The bot waits for
+     * that live door through normal movement collision; a door that is about to
+     * open must not make the permanent stair geometry look exitless.
+     */
+    const solids = this.solidIndexes.get(targetFloor) ?? this.staticSolids.get(targetFloor) ?? [];
+    const clear = candidates.filter((candidate) => {
+      if (
+        candidate.x < bot.radius ||
+        candidate.x > this.map.width - bot.radius ||
+        candidate.y < bot.radius ||
+        candidate.y > this.map.height - bot.radius ||
+        rectContainsPoint(stair.rect, candidate)
+      ) {
+        return false;
+      }
+      const travel = subtract(candidate, bot.position);
+      const reached = integrateWithWalls(bot.position, travel, 1_000, bot.radius, solids);
+      return distance(reached, candidate) < 0.01;
+    });
+    if (clear.length === 0) return undefined;
+    return {
+      floorId: targetFloor,
+      rect: { ...stair.rect },
+      position: { ...clear[stableHash(bot.id) % clear.length] },
+    };
   }
 
   private nextPlanOnRoute(start: string, goal: string): string | null {
@@ -2787,8 +2937,14 @@ export class DotBotSimulation {
       if (bot.state !== "alive") {
         continue;
       }
+      if (this.controllers.get(bot.id) === "ai" && this.activeAiStairEgress(bot)) {
+        continue;
+      }
 
       for (const stair of this.stairsByFloor.get(bot.floorId) ?? []) {
+        if (this.controllers.get(bot.id) === "ai" && bot.aiStairTargetId !== stair.id) {
+          continue;
+        }
         if (!rectContainsPoint(stair.rect, bot.position) || !rectContainsPoint(stair.rect, bot.prevPosition)) {
           continue;
         }
@@ -2802,6 +2958,10 @@ export class DotBotSimulation {
         const sourceFloor = bot.floorId;
         const targetFloor = physicsFloorId(this.map, stair.toFloorId);
         bot.floorId = targetFloor;
+        if (this.controllers.get(bot.id) === "ai") {
+          bot.aiStairTargetId = undefined;
+          bot.aiStairEgress = this.aiStairEgress(bot, stair, targetFloor);
+        }
         bot.aiPath = [];
         bot.aiRepathMs = 0;
         bot.aiPathProjected = false;
