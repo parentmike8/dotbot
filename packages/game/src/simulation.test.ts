@@ -3250,7 +3250,12 @@ describe("combat lag compensation", () => {
 describe("AI commands and the separation solver agree", () => {
   /** `desiredMove` is the steering the AI produced this tick; no snapshot
    * carries it, and "did the bot stop asking" is the whole question here. */
-  type AiInternals = { desiredMove: Vec2; velocity: Vec2; dashCooldownMs: number };
+  type AiInternals = {
+    desiredMove: Vec2;
+    velocity: Vec2;
+    dashCooldownMs: number;
+    aiAvoidTargets: Map<string, number>;
+  };
   const aiInternals = (simulation: DotBotSimulation): Map<string, AiInternals> =>
     (simulation as unknown as { bots: Map<string, AiInternals> }).bots;
 
@@ -3890,6 +3895,52 @@ describe("AI commands and the separation solver agree", () => {
     // And the one that got there is standing, not still pressing inward.
     const steering = aiInternals(simulation).get(claimants[0])!.desiredMove;
     expect(Math.hypot(steering.x, steering.y) * defaultGameConfig.botSpeed).toBeLessThan(0.01);
+    simulation.dispose();
+  });
+
+  it("has the last living escort revive two nearby downed squadmates in sequence", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({
+        id: "player",
+        state: "downed",
+        shields: 0,
+        position: { x: 226, y: 180 },
+      }),
+      allySpawn({
+        id: "downed-escort",
+        state: "downed",
+        shields: 0,
+        position: { x: 274, y: 180 },
+      }),
+      allySpawn({
+        id: "rescuer",
+        position: { x: 322, y: 180 },
+      }),
+    ]);
+    disableDashes(simulation);
+    const rescuer = aiInternals(simulation).get("rescuer")!;
+    // A busy fight can leave both bodies in the generic traffic-jam avoidance
+    // map. Rescue is an emergency, so stale locomotion bookkeeping must not
+    // make the last living squadmate stand beside both bodies indefinitely.
+    rescuer.aiAvoidTargets.set("player", 1e9);
+    rescuer.aiAvoidTargets.set("downed-escort", 1e9);
+    // A downed player may still mark. Put that mark behind the east boundary so
+    // ordinary mark-following cannot "arrive"; rescue must outrank it outright.
+    simulation.applyInput("player", {
+      move: { x: 0, y: 0 },
+      dash: false,
+      ping: { kind: "here", position: { x: 500, y: 180 } },
+    });
+
+    runTicks(simulation, 240);
+
+    const bots = simulation.getSnapshot().bots;
+    const events = simulation.drainEvents();
+    expect(bots.find((bot) => bot.id === "player")?.state).toBe("alive");
+    expect(bots.find((bot) => bot.id === "downed-escort")?.state).toBe("alive");
+    expect(events).toContainEqual(expect.objectContaining({ type: "plea", botId: "downed-escort" }));
+    expect(events.filter((event) => event.type === "revived").map((event) => event.botId).sort())
+      .toEqual(["downed-escort", "player"]);
     simulation.dispose();
   });
 

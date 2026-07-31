@@ -1646,20 +1646,27 @@ export class DotBotSimulation {
       return true;
     }
     const stalledTarget = this.bots.get(objective.targetId);
+    const rescuingSquadmate =
+      objective.intent === "revive"
+      && stalledTarget?.state === "downed"
+      && areFriendly(bot, stalledTarget);
     if (
-      objective.intent === "escort" &&
-      stalledTarget?.state === "alive" &&
-      stalledTarget.squadId === bot.squadId &&
-      this.controllers.get(stalledTarget.id) === "human"
+      rescuingSquadmate
+      || (
+        objective.intent === "escort"
+        && stalledTarget?.state === "alive"
+        && stalledTarget.squadId === bot.squadId
+        && this.controllers.get(stalledTarget.id) === "human"
+      )
     ) {
       /**
-       * A doorway queue is not permission to abandon the player.
+       * A doorway queue is not permission to abandon the player or a rescue.
        *
-       * Blacklisting the human made the escort fall back to its original spawn.
-       * In a multi-floor building that meant deliberately taking the same stair
-       * back out, exactly the floor-flip loop the stall escape was meant to end.
-       * Clear and replan instead; the other bodies continue moving and the queue
-       * drains without changing the escort's mission.
+       * Blacklisting a human made the escort fall back to its original spawn.
+       * For a living human that could send it back over the same stair; for a
+       * downed squadmate it could leave the last escort standing beside two
+       * bodies without helping either. Clear and replan instead; the queue can
+       * drain without changing the escort's responsibility.
        */
       return true;
     }
@@ -2012,8 +2019,55 @@ export class DotBotSimulation {
     return false;
   }
 
+  /**
+   * A downed squadmate is an emergency, not an ordinary navigation candidate.
+   *
+   * Generic traffic-jam recovery temporarily avoids a target after a blocked
+   * approach. That is useful for hunts, marks, and patrol points; applying it to
+   * a rescue leaves the last living escort standing beside its squad while both
+   * bodies remain down. The body is still assigned to one nearest escort through
+   * `outclaimed`, but that escort keeps responsibility until the revive succeeds.
+   */
+  private friendlyReviveObjective(bot: InternalBot): AiTarget | null {
+    const sameBuilding = (target: { floorId: string; position: Vec2 }) => {
+      const botPlan = resolvePlan(this.map, bot.floorId, bot.position);
+      const targetPlan = resolvePlan(this.map, target.floorId, target.position);
+      return botPlan !== null && targetPlan !== null && botPlan.buildingId === targetPlan.buildingId;
+    };
+    const localOrVertical = (target: { floorId: string; position: Vec2 }) =>
+      this.canPerceive(bot, target.floorId, target.position) || sameBuilding(target);
+    const friendlyDowned = [...this.bots.values()]
+      .filter(
+        (target) =>
+          target.id !== bot.id
+          && target.state === "downed"
+          && areFriendly(bot, target)
+          && localOrVertical(target)
+          && !this.outclaimed(bot, target),
+      )
+      .sort((a, b) =>
+        this.strategicDistance(bot, a) - this.strategicDistance(bot, b)
+        || a.id.localeCompare(b.id))[0];
+
+    if (!friendlyDowned || this.strategicDistance(bot, friendlyDowned) >= 760) {
+      return null;
+    }
+    return makeAiTarget(
+      friendlyDowned.position,
+      friendlyDowned.floorId,
+      bot.radius * BODY_CHANNEL_STAND_OFF,
+      bot.radius * 3,
+      "revive",
+      friendlyDowned.id,
+    );
+  }
+
   private pickBotTarget(bot: InternalBot): AiTarget {
     if (bot.isAmbient) return this.pickAmbientTarget(bot);
+    // Rescue outranks loot, marks, combat, and ordinary escort movement. A same-
+    // squad body never needs to plea; friendship itself is the pickup request.
+    const revive = this.friendlyReviveObjective(bot);
+    if (revive) return revive;
     const capture = this.dotCaptureObjective(bot);
     if (capture) return capture;
     // A squad's marks steer its own AI members. Ambient greys are nobody's squadmates and
@@ -2029,17 +2083,6 @@ export class DotBotSimulation {
     const available = (target: { id: string }) => !bot.aiAvoidTargets.has(target.id);
     const rank = <T extends { floorId: string; position: Vec2 }>(values: T[]) =>
       values.sort((a, b) => this.strategicDistance(bot, a) - this.strategicDistance(bot, b))[0];
-
-    const friendlyDowned = rank(
-      [...this.bots.values()].filter(
-        (target) => target.id !== bot.id && target.state === "downed" && areFriendly(bot, target) && localOrVertical(target) && available(target)
-          && !this.outclaimed(bot, target),
-      ),
-    );
-
-    if (friendlyDowned && this.strategicDistance(bot, friendlyDowned) < 760) {
-      return makeAiTarget(friendlyDowned.position, friendlyDowned.floorId, bot.radius * BODY_CHANNEL_STAND_OFF, bot.radius * 3, "revive", friendlyDowned.id);
-    }
 
     const visibleHostile = rank(
       [...this.bots.values()].filter(
@@ -2543,7 +2586,7 @@ export class DotBotSimulation {
         bot.aiPath = [];
         bot.aiRepathMs = 0;
 
-        if (target.targetId) {
+        if (target.targetId && target.intent !== "revive") {
           bot.aiAvoidTargets.set(target.targetId, 1800 + this.nextRandom() * 1200);
         }
 
