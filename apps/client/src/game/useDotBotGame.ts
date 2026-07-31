@@ -8,6 +8,7 @@ import {
   KillCamPlayback,
   killCamCameraTarget,
   killCamDoorCatalog,
+  killCamLabel,
   killCamSnapshot,
   liveStateEndsKillCam,
 } from "./killCam";
@@ -551,7 +552,12 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           setKillCam(killCamRender ? {
             clip: killCamRender.clip,
             progress: killCamRender.progress,
-            label: killCamLabel(killCamRender.clip, session, killCamRender.sourceVisible),
+            label: killCamLabel(
+              killCamRender.clip,
+              killCamRender.sourceVisible && killCamRender.clip.sourceBotId
+                ? session.getEntityMeta?.(killCamRender.clip.sourceBotId)?.name
+                : undefined,
+            ),
           } : null);
           setNetworkDebug(session.getNetworkDebug?.() ?? null);
           lastHudUpdate = now;
@@ -1094,12 +1100,4 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
 function impactPan(listener: Vec2 | undefined, point: Vec2): number {
   if (!listener) return 0;
   return clamp((point.x - listener.x) / 320, -1, 1);
-}
-
-function killCamLabel(clip: KillCamClip, session: GameSession, sourceVisible: boolean): string {
-  const source = sourceVisible && clip.sourceBotId
-    ? session.getEntityMeta?.(clip.sourceBotId)?.name
-    : undefined;
-  const cause = clip.cause.kind === "environment" ? "IMPACT" : clip.cause.kind.toUpperCase();
-  return `${source ? `${source.toUpperCase()} · ` : ""}${cause} · CORE HIT`;
 }

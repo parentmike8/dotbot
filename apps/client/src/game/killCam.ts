@@ -5,6 +5,11 @@ import type { EntityMeta, KillCamActor, KillCamClip, KillCamFrame } from "@dotbo
 export const KILL_CAM_PLAYBACK_RATE = 0.25;
 const IMPACT_HOLD_MS = 600;
 
+export function killCamLabel(clip: KillCamClip, sourceName?: string): string {
+  const cause = clip.cause.kind === "environment" ? "IMPACT" : clip.cause.kind.toUpperCase();
+  return sourceName ? `DOWNED BY ${sourceName.toUpperCase()} · ${cause}` : cause;
+}
+
 export class KillCamPlayback {
   private elapsedRealMs = 0;
   private skipped = false;

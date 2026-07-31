@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { KillCamClip } from "@dotbot/protocol";
-import { KillCamPlayback, killCamCameraTarget, killCamSnapshot, liveStateEndsKillCam } from "./killCam";
+import {
+  KillCamPlayback,
+  killCamCameraTarget,
+  killCamLabel,
+  killCamSnapshot,
+  liveStateEndsKillCam,
+} from "./killCam";
 
 const clip: KillCamClip = {
   id: "victim-60",
@@ -37,6 +43,14 @@ const clip: KillCamClip = {
 };
 
 describe("KillCamPlayback", () => {
+  it("names the source and cause without restating the lethal core outcome", () => {
+    expect(killCamLabel(clip, "Quetzal")).toBe("DOWNED BY QUETZAL · DASH");
+    expect(killCamLabel({ ...clip, cause: { ...clip.cause, kind: "ram" } }, "Quetzal"))
+      .toBe("DOWNED BY QUETZAL · RAM");
+    expect(killCamLabel({ ...clip, cause: { ...clip.cause, kind: "mine" } })).toBe("MINE");
+    expect(killCamLabel({ ...clip, cause: { ...clip.cause, kind: "environment" } })).toBe("IMPACT");
+  });
+
   it("uses an isolated deterministic quarter-speed clock and never exposes the source before its visible frame", () => {
     const playback = new KillCamPlayback(clip);
     expect(playback.sample().source).toBeUndefined();
