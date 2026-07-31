@@ -72,9 +72,8 @@ jobs:
           mkdir -p "$build_root/server" "$build_root/node" dist-gamelift
           cp apps/server/dist/index.js "$build_root/server/index.js"
           cp dist-gamelift/gamelift-adapter "$build_root/gamelift-adapter"
-          cp deploy/gamelift-ec2/install.sh "$build_root/install.sh"
           cp deploy/gamelift-ec2/launch.sh "$build_root/launch.sh"
-          chmod 0555 "$build_root/install.sh" "$build_root/launch.sh" "$build_root/gamelift-adapter"
+          chmod 0555 "$build_root/launch.sh" "$build_root/gamelift-adapter"
 
           node_archive="node-v${NODE_VERSION}-linux-arm64.tar.xz"
           curl --fail --location --silent --show-error \
@@ -92,7 +91,6 @@ jobs:
           sha256sum \
             "$build_root/server/index.js" \
             "$build_root/gamelift-adapter" \
-            "$build_root/install.sh" \
             "$build_root/launch.sh" \
             "$build_root/node/bin/node" > "$build_root/SHA256SUMS"
 
