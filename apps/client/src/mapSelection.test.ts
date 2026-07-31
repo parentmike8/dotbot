@@ -3,6 +3,8 @@ import { downtownMap } from "@dotbot/game/content/downtown";
 import { quaysideMap } from "@dotbot/game/content/quaysideDepot";
 import { studioAreasForMap, studioStartForMap } from "@dotbot/game/content/sources";
 import { worldMap } from "@dotbot/game/content/world";
+import { defaultGameConfig } from "@dotbot/game/config";
+import { squadSpawnPosition } from "@dotbot/game/insertion";
 import { arrivalGroups, selectBaseMap, spawnAt } from "./mapSelection";
 
 const playerSpawn = (map: typeof worldMap) => map.botSpawns.find((spawn) => spawn.id === "player")!;
@@ -42,13 +44,17 @@ describe("choosing where a run starts", () => {
     expect(groups[0].points).toHaveLength(downtownMap.insertionPoints.length);
   });
 
-  it("moves only the player to the chosen point", () => {
+  it("moves the whole player squad into formation at the chosen point", () => {
     const target = worldMap.insertionPoints.find((point) => point.id === "tmp-spur")!;
     const moved = spawnAt(worldMap, "tmp-spur");
-    expect(playerSpawn(moved).position).toEqual(target.position);
-    // Every rival stays exactly where the region authored it.
-    const rivals = (map: typeof worldMap) => map.botSpawns.filter((spawn) => spawn.id !== "player");
-    expect(rivals(moved)).toEqual(rivals(worldMap));
+    const alpha = moved.botSpawns.filter((spawn) => spawn.squadId === "alpha");
+    expect(alpha.map((spawn) => spawn.position)).toEqual(
+      [0, 1, 2].map((index) => squadSpawnPosition(target, index, defaultGameConfig.botRadius)),
+    );
+
+    // Ambient patrols remain exactly where their region authored them.
+    const ambient = (map: typeof worldMap) => map.botSpawns.filter((spawn) => spawn.faction === "ambient");
+    expect(ambient(moved)).toEqual(ambient(worldMap));
   });
 
   /** `?at=fair` predates the picker and still has to land at the fairground. */
@@ -66,16 +72,20 @@ describe("choosing where a run starts", () => {
 
   /**
    * An arrival point is outdoor ground, so choosing one must CLEAR any interior floor the
-   * authored spawn carried — otherwise the player starts on a floor plan the point is not
+   * authored squad carried — otherwise a teammate starts on a floor plan the point is not
    * on, which is a spawn inside whatever mass happens to be there.
    */
-  it("puts the player on the arrival point's own floor, not the authored spawn's", () => {
+  it("puts every squad member on the arrival point's own floor, not an authored stale floor", () => {
     const indoors = {
       ...worldMap,
       botSpawns: worldMap.botSpawns.map((spawn) =>
-        spawn.id === "player" ? { ...spawn, floorId: "civic:F6" } : spawn),
+        spawn.squadId === "alpha" ? { ...spawn, floorId: "civic:F6" } : spawn),
     };
-    expect(playerSpawn(spawnAt(indoors, "tmp-trail")).floorId).toBeUndefined();
+    expect(
+      spawnAt(indoors, "tmp-trail").botSpawns
+        .filter((spawn) => spawn.squadId === "alpha")
+        .map((spawn) => spawn.floorId),
+    ).toEqual([undefined, undefined, undefined]);
   });
 
   it("still selects the map by ?map=, with the world as the default", () => {

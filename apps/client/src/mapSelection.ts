@@ -1,6 +1,8 @@
+import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { quaysideMap } from "@dotbot/game/content/quaysideDepot";
 import { worldMap } from "@dotbot/game/content/world";
+import { squadSpawnPosition } from "@dotbot/game/insertion";
 import type { InsertionPoint, MapDocument } from "@dotbot/game/types";
 
 /**
@@ -27,7 +29,7 @@ export function selectMapDocument(search: string): MapDocument {
 }
 
 /**
- * Start the player at a named arrival point instead of the authored spawn.
+ * Start the player's squad at a named arrival point instead of the authored spawn.
  *
  * `?at=fair` was the first use and the reason this exists: the world is 4200 x 3400 and
  * the player spawns in the city, so reviewing the far side of it meant a two-minute walk
@@ -39,8 +41,9 @@ export function selectMapDocument(search: string): MapDocument {
  * is a table of coordinates, so a region that gains an arrival point is reachable by both
  * without an edit to this file.
  *
- * `floorId: undefined` on purpose: an arrival point is outdoor ground, and carrying a stale
- * interior floor over from the authored spawn would drop the player through a wall.
+ * The human takes formation slot zero and their escorts take the same safe slots used by
+ * the authoritative multiplayer insertion system. `floorId: undefined` is meaningful:
+ * an outdoor arrival must clear any stale interior floor from every squad member.
  */
 export function spawnAt(map: MapDocument, key: string | null): MapDocument {
   if (!key) return map;
@@ -48,13 +51,25 @@ export function spawnAt(map: MapDocument, key: string | null): MapDocument {
   const arrival = map.insertionPoints.find((point) => point.id.toLowerCase() === wanted)
     ?? map.insertionPoints.find((point) => point.id.toLowerCase().startsWith(wanted));
   if (!arrival) return map;
+  const player = map.botSpawns.find((spawn) => spawn.controller === "human");
+  if (!player) return map;
+  const squad = [
+    player,
+    ...map.botSpawns.filter((spawn) => spawn.id !== player.id && spawn.squadId === player.squadId),
+  ];
+  const formationIndex = new Map(squad.map((spawn, index) => [spawn.id, index]));
   return {
     ...map,
-    botSpawns: map.botSpawns.map((spawn) =>
-      spawn.id === "player"
-        ? { ...spawn, position: { ...arrival.position }, floorId: arrival.floorId }
-        : spawn,
-    ),
+    botSpawns: map.botSpawns.map((spawn) => {
+      const memberIndex = formationIndex.get(spawn.id);
+      return memberIndex === undefined
+        ? spawn
+        : {
+            ...spawn,
+            position: squadSpawnPosition(arrival, memberIndex, defaultGameConfig.botRadius),
+            floorId: arrival.floorId,
+          };
+    }),
   };
 }
 
