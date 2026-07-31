@@ -173,6 +173,23 @@ func (l *lifecycle) onUpdateGameSession(value model.UpdateGameSession) {
 }
 
 func (l *lifecycle) onHealthCheck() bool {
+	select {
+	case <-l.terminating:
+		return false
+	default:
+	}
+	select {
+	case <-l.servingReady:
+		// Once Node is serving, report its deep health for the rest of the
+		// process lifetime.
+	default:
+		// ProcessReady must precede GetComputeCertificate, and Node cannot
+		// start TLS until that certificate is available. GameLift invokes the
+		// first health callback immediately after ProcessReady, so this brief
+		// bootstrap window must remain healthy. Session activation is still
+		// independently gated on servingReady in onStartGameSession.
+		return true
+	}
 	client, healthURL, _, _ := l.httpRuntimeSnapshot()
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, healthURL, nil)
 	if err != nil {

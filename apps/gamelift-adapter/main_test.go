@@ -141,8 +141,26 @@ func TestDeepHealth(t *testing.T) {
 	}))
 	defer game.Close()
 	process := newLifecycle(&fakeGameLift{}, game.URL, "")
+	process.markServingReady()
 	if !process.onHealthCheck() {
 		t.Fatal("expected healthy game server")
+	}
+}
+
+func TestBootstrapHealthDoesNotRaceTLSServerStartup(t *testing.T) {
+	process := newLifecycle(&fakeGameLift{}, "http://127.0.0.1:1/api/health", "")
+	if !process.onHealthCheck() {
+		t.Fatal("expected the registered process to remain healthy during TLS bootstrap")
+	}
+
+	process.markServingReady()
+	if process.onHealthCheck() {
+		t.Fatal("expected deep health to fail after the serving gate opens")
+	}
+
+	process.signalTermination()
+	if process.onHealthCheck() {
+		t.Fatal("expected a terminating process to report unhealthy")
 	}
 }
 
