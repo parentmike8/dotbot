@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { NORTH, brokenRingArcs, carryTickAngles, waterlineArc, waterlineSurface } from "./bodyMarks";
+import {
+  NORTH,
+  brokenRingArcs,
+  carryTickAngles,
+  visibleCarryTickCount,
+  waterlineArc,
+  waterlineSurface,
+} from "./bodyMarks";
 
 const LEVELS = [0.02, 0.08, 0.2, 0.35, 0.5, 0.65, 0.8, 0.92, 0.99];
 const PHASES = [0, 1, 2.5, 4, Math.PI * 2];
@@ -164,6 +171,35 @@ describe("carryTickAngles", () => {
     expect(span).toBeLessThanOrEqual(Math.PI * 0.62 + 1e-9);
     expect(span).toBeGreaterThan(Math.PI * 0.3);
     expect(carryTickAngles(40).at(-1)! - carryTickAngles(40)[0]).toBeLessThanOrEqual(Math.PI * 0.62 + 1e-9);
+  });
+});
+
+describe("visibleCarryTickCount", () => {
+  it("uses the revealed inventory after search, so an emptied picker draws no stale tick", () => {
+    expect(visibleCarryTickCount({
+      searched: true,
+      carriedCount: 1,
+      bays: [null, null, null],
+      hold: [],
+    })).toBe(0);
+  });
+
+  it("counts the same revealed bay and hold items the picker offers", () => {
+    expect(visibleCarryTickCount({
+      searched: true,
+      carriedCount: 9,
+      bays: [{ kind: "powerup", type: "health" }, null, { kind: "mine" }],
+      hold: [{ kind: "powerup", type: "radar" }],
+    })).toBe(3);
+  });
+
+  it("keeps the public summary before search, while rival contents are private", () => {
+    expect(visibleCarryTickCount({
+      searched: false,
+      carriedCount: 2,
+      bays: [null, null, null],
+      hold: [],
+    })).toBe(2);
   });
 });
 

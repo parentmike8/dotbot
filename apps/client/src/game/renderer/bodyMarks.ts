@@ -6,7 +6,7 @@
  * be wrong in a way a screenshot only hints at.
  */
 
-import type { Vec2 } from "@dotbot/game/types";
+import type { DotBotEntity, Vec2 } from "@dotbot/game/types";
 
 /** Straight up. Screen y grows downward, so north is negative. */
 export const NORTH = -Math.PI / 2;
@@ -29,6 +29,22 @@ export function carryTickAngles(count: number): number[] {
   const step = Math.min(CARRY_STEP, CARRY_SPAN / (count - 1));
   const start = NORTH - (step * (count - 1)) / 2;
   return Array.from({ length: count }, (_, index) => start + index * step);
+}
+
+/**
+ * Which inventory count a downed body's public carry ticks should show.
+ *
+ * Before a rival is searched, its item composition is private and the public
+ * summary is the only count the renderer may use. Once it is open, the picker
+ * and the body mark must read the same revealed bays/hold. Trusting the summary
+ * there lets an older non-zero count survive after the actual inventory has
+ * emptied, leaving exactly one false "still loot here" tick.
+ */
+export function visibleCarryTickCount(
+  body: Pick<DotBotEntity, "bays" | "hold" | "carriedCount" | "searched">,
+): number {
+  if (!body.searched) return body.carriedCount;
+  return body.bays.filter((item) => item !== null).length + body.hold.length;
 }
 
 /**

@@ -34,6 +34,7 @@ import {
 } from "./impactPrediction";
 import { drawDotDisc, drawDotGloss, drawDotMark } from "./dotArt";
 import { edgeArrow, squadArrowTargets, type Camera } from "./edgeArrow";
+import { visibleCarryTickCount } from "./bodyMarks";
 import { drawGroundShadow, drawWaterline } from "./grounding";
 import { markAge, type LiveMark } from "../pings";
 import {
@@ -1832,7 +1833,7 @@ export class GameRenderer {
         at: bot.position,
         radius: bot.radius,
         color,
-        carriedCount: bot.carriedCount,
+        carriedCount: visibleCarryTickCount(bot),
         searched: bot.searched,
        
         spin,
