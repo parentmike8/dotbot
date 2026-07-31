@@ -15,15 +15,19 @@ import (
 )
 
 type fakeGameLift struct {
-	activated bool
-	accepted  []string
-	removed   []string
-	described *model.PlayerSession
-	err       error
+	activated   bool
+	activatedCh chan struct{}
+	accepted    []string
+	removed     []string
+	described   *model.PlayerSession
+	err         error
 }
 
 func (f *fakeGameLift) ActivateGameSession() error {
 	f.activated = true
+	if f.activatedCh != nil {
+		close(f.activatedCh)
+	}
 	return f.err
 }
 func (f *fakeGameLift) AcceptPlayerSession(id string) error {
@@ -74,6 +78,7 @@ func (f *fakeGameLift) GetComputeCertificate() (result.GetComputeCertificateResu
 func TestStartSessionStoresBeforeActivation(t *testing.T) {
 	fake := &fakeGameLift{}
 	process := newLifecycle(fake, "http://unused", "")
+	process.markServingReady()
 	process.onStartGameSession(model.GameSession{GameSessionID: "session-1"})
 	if !fake.activated {
 		t.Fatal("expected GameLift activation")
@@ -81,6 +86,23 @@ func TestStartSessionStoresBeforeActivation(t *testing.T) {
 	snapshot := process.state.snapshot().(model.GameSession)
 	if snapshot.GameSessionID != "session-1" {
 		t.Fatalf("unexpected session id %q", snapshot.GameSessionID)
+	}
+}
+
+func TestStartSessionWaitsForServingReadiness(t *testing.T) {
+	fake := &fakeGameLift{activatedCh: make(chan struct{})}
+	process := newLifecycle(fake, "http://unused", "")
+	process.onStartGameSession(model.GameSession{GameSessionID: "session-1"})
+	select {
+	case <-fake.activatedCh:
+		t.Fatal("activated before the game server was serving")
+	default:
+	}
+	process.markServingReady()
+	select {
+	case <-fake.activatedCh:
+	case <-time.After(time.Second):
+		t.Fatal("session was not activated after serving readiness")
 	}
 }
 

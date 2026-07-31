@@ -26,9 +26,13 @@ The fleet inbound rule exposes TCP 7000-7001 only. Adapter ports bind to
 ## Lifecycle
 
 1. `launch.sh` starts the SDK adapter.
-2. The adapter initializes GameLift and obtains the generated certificate.
-3. The Node server starts with that certificate and serves HTTPS/WSS.
-4. The adapter reports `ProcessReady` only after the Node health check passes.
+2. The adapter initializes GameLift and registers `ProcessReady`; its health
+   callback remains false and session activation stays gated while Node is
+   unavailable.
+3. The adapter obtains the generated certificate, then the Node server starts
+   with that certificate and serves HTTPS/WSS.
+4. After the Node health check passes, the adapter reports healthy and allows
+   an assigned game session to activate.
 5. The adapter describes every player reservation, verifies that it belongs
    to this exact game session, then accepts it before lobby admission.
 6. A mobile network handoff keeps the reservation and player-controlled bot

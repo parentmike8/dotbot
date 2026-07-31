@@ -104,12 +104,15 @@ type lifecycle struct {
 	api            gameLiftAPI
 	state          *sessionState
 	runtime        *runtimeState
+	httpMu         sync.RWMutex
 	httpClient     *http.Client
 	healthURL      string
 	drainURL       string
 	drainStatusURL string
 	terminating    chan struct{}
 	terminate      sync.Once
+	servingReady   chan struct{}
+	ready          sync.Once
 	ending         sync.Once
 	endingErr      error
 }
@@ -124,11 +127,34 @@ func newLifecycle(api gameLiftAPI, healthURL, drainURL string) *lifecycle {
 		drainURL:       drainURL,
 		drainStatusURL: drainStatusURL(drainURL),
 		terminating:    make(chan struct{}),
+		servingReady:   make(chan struct{}),
 	}
 }
 
 func (l *lifecycle) onStartGameSession(value model.GameSession) {
 	l.state.setSession(value)
+	select {
+	case <-l.servingReady:
+		l.activateGameSession(value)
+	default:
+		go l.activateWhenServing(value)
+	}
+}
+
+func (l *lifecycle) activateWhenServing(value model.GameSession) {
+	timer := time.NewTimer(90 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-l.servingReady:
+		l.activateGameSession(value)
+	case <-timer.C:
+		log.Printf("game server did not become ready for session id=%s", value.GameSessionID)
+		l.signalTermination()
+	case <-l.terminating:
+	}
+}
+
+func (l *lifecycle) activateGameSession(value model.GameSession) {
 	if err := l.api.ActivateGameSession(); err != nil {
 		log.Printf("gamelift activate session failed: %v", err)
 		l.signalTermination()
@@ -137,17 +163,22 @@ func (l *lifecycle) onStartGameSession(value model.GameSession) {
 	log.Printf("gamelift session activated id=%s", value.GameSessionID)
 }
 
+func (l *lifecycle) markServingReady() {
+	l.ready.Do(func() { close(l.servingReady) })
+}
+
 func (l *lifecycle) onUpdateGameSession(value model.UpdateGameSession) {
 	l.state.setUpdate(value)
 	log.Printf("gamelift session updated id=%s", value.GameSession.GameSessionID)
 }
 
 func (l *lifecycle) onHealthCheck() bool {
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, l.healthURL, nil)
+	client, healthURL, _, _ := l.httpRuntimeSnapshot()
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, healthURL, nil)
 	if err != nil {
 		return false
 	}
-	response, err := l.httpClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return false
 	}
@@ -160,16 +191,17 @@ func (l *lifecycle) onProcessTerminate() {
 }
 
 func (l *lifecycle) drainAndTerminate() {
-	if l.drainURL == "" || l.drainStatusURL == "" {
+	client, _, drainURL, drainStatusURL := l.httpRuntimeSnapshot()
+	if drainURL == "" || drainStatusURL == "" {
 		l.signalTermination()
 		return
 	}
-	requestValue, err := http.NewRequestWithContext(context.Background(), http.MethodPost, l.drainURL, nil)
+	requestValue, err := http.NewRequestWithContext(context.Background(), http.MethodPost, drainURL, nil)
 	if err != nil {
 		l.signalTermination()
 		return
 	}
-	response, requestErr := l.httpClient.Do(requestValue)
+	response, requestErr := client.Do(requestValue)
 	if requestErr != nil {
 		log.Printf("game server drain request failed: %v", requestErr)
 		l.signalTermination()
@@ -193,11 +225,11 @@ func (l *lifecycle) drainAndTerminate() {
 			l.signalTermination()
 			return
 		case <-ticker.C:
-			statusRequest, statusErr := http.NewRequestWithContext(context.Background(), http.MethodGet, l.drainStatusURL, nil)
+			statusRequest, statusErr := http.NewRequestWithContext(context.Background(), http.MethodGet, drainStatusURL, nil)
 			if statusErr != nil {
 				continue
 			}
-			statusResponse, statusErr := l.httpClient.Do(statusRequest)
+			statusResponse, statusErr := client.Do(statusRequest)
 			if statusErr != nil {
 				continue
 			}
@@ -211,6 +243,31 @@ func (l *lifecycle) drainAndTerminate() {
 				return
 			}
 		}
+	}
+}
+
+func (l *lifecycle) httpRuntimeSnapshot() (*http.Client, string, string, string) {
+	l.httpMu.RLock()
+	defer l.httpMu.RUnlock()
+	return l.httpClient, l.healthURL, l.drainURL, l.drainStatusURL
+}
+
+func (l *lifecycle) configureTLSRuntime(serverName string, gamePort int, useDefaultHealth, useDefaultDrain bool) {
+	l.httpMu.Lock()
+	defer l.httpMu.Unlock()
+	l.httpClient = &http.Client{
+		Timeout: time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: serverName,
+		}},
+	}
+	if useDefaultHealth {
+		l.healthURL = fmt.Sprintf("https://127.0.0.1:%d/api/health", gamePort)
+	}
+	if useDefaultDrain {
+		l.drainURL = fmt.Sprintf("https://127.0.0.1:%d/api/gamelift/drain", gamePort)
+		l.drainStatusURL = drainStatusURL(l.drainURL)
 	}
 }
 
@@ -383,10 +440,20 @@ func run() error {
 		return fmt.Errorf("initialize GameLift SDK: %w", err)
 	}
 	defer server.Destroy()
+	if err := server.ProcessReady(server.ProcessParameters{
+		OnStartGameSession:  process.onStartGameSession,
+		OnUpdateGameSession: process.onUpdateGameSession,
+		OnProcessTerminate:  process.onProcessTerminate,
+		OnHealthCheck:       process.onHealthCheck,
+		Port:                gamePort,
+	}); err != nil {
+		return fmt.Errorf("register GameLift process: %w", err)
+	}
 	certificate, certificateErr := api.GetComputeCertificate()
 	requireTLS := strings.EqualFold(os.Getenv("REQUIRE_GAMELIFT_TLS"), "true")
 	if certificateErr != nil || certificate.CertificatePath == "" || certificate.ComputeName == "" {
 		if requireTLS {
+			_ = api.ProcessEnding()
 			if certificateErr != nil {
 				return fmt.Errorf("retrieve required GameLift TLS certificate: %w", certificateErr)
 			}
@@ -398,33 +465,22 @@ func run() error {
 		if requireTLS {
 			// The Node process exposes TLS only. Keep lifecycle traffic on loopback,
 			// while verifying the generated certificate against its GameLift DNS name.
-			process.httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-				ServerName: certificate.ComputeName,
-			}}
-			if os.Getenv("GAME_HEALTH_URL") == "" {
-				process.healthURL = fmt.Sprintf("https://127.0.0.1:%d/api/health", gamePort)
-			}
-			if os.Getenv("GAME_DRAIN_URL") == "" {
-				process.drainURL = fmt.Sprintf("https://127.0.0.1:%d/api/gamelift/drain", gamePort)
-				process.drainStatusURL = drainStatusURL(process.drainURL)
-			}
+			process.configureTLSRuntime(
+				certificate.ComputeName,
+				gamePort,
+				os.Getenv("GAME_HEALTH_URL") == "",
+				os.Getenv("GAME_DRAIN_URL") == "",
+			)
 		}
 	}
 	healthContext, cancelHealth := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelHealth()
-	if err := waitForHealthy(healthContext, process.httpClient, process.healthURL); err != nil {
+	client, healthURL, _, _ := process.httpRuntimeSnapshot()
+	if err := waitForHealthy(healthContext, client, healthURL); err != nil {
+		_ = api.ProcessEnding()
 		return err
 	}
-	if err := server.ProcessReady(server.ProcessParameters{
-		OnStartGameSession:  process.onStartGameSession,
-		OnUpdateGameSession: process.onUpdateGameSession,
-		OnProcessTerminate:  process.onProcessTerminate,
-		OnHealthCheck:       process.onHealthCheck,
-		Port:                gamePort,
-	}); err != nil {
-		return fmt.Errorf("register GameLift process: %w", err)
-	}
+	process.markServingReady()
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
