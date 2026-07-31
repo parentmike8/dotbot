@@ -1,4 +1,4 @@
-import { add, normalizeInputVector, zeroVec } from "@dotbot/game/math";
+import { add, clampInputVector, length, normalize, zeroVec } from "@dotbot/game/math";
 import type { InputCommand, Vec2 } from "@dotbot/game/types";
 
 export const movementKeyCodes = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
@@ -29,9 +29,10 @@ export function getKeyboardVector(keys: ReadonlySet<string>): Vec2 {
     move = add(move, { x: 1, y: 0 });
   }
 
-  return normalizeInputVector(move);
+  return clampInputVector(move);
 }
 
 export function mergeMoveVectors(primary: Vec2, secondary: Vec2): Vec2 {
-  return normalizeInputVector(add(primary, secondary));
+  const merged = clampInputVector(add(primary, secondary));
+  return length(primary) > 0 ? normalize(merged) : merged;
 }

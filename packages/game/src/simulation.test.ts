@@ -141,6 +141,28 @@ function snapshotDigest(snapshot: GameSnapshot): string {
 }
 
 describe("DotBotSimulation", () => {
+  it("preserves analog walking magnitude but keeps dash speed full", async () => {
+    const walking = await makeSimulation([playerSpawn()]);
+    walking.applyInput("player", { move: { x: 0.25, y: 0 }, dash: false });
+    walking.step();
+    const walked = walking.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(walked.position.x).toBeCloseTo(
+      100 + (defaultGameConfig.playerSpeed * 0.25) / defaultGameConfig.tickHz,
+      5,
+    );
+    walking.dispose();
+
+    const dashing = await makeSimulation([playerSpawn()]);
+    dashing.applyInput("player", { move: { x: 0.25, y: 0 }, dash: true });
+    dashing.step();
+    const dashed = dashing.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(dashed.position.x).toBeCloseTo(
+      100 + defaultGameConfig.dashSpeed / defaultGameConfig.tickHz,
+      5,
+    );
+    dashing.dispose();
+  });
+
   it("keeps the player inside map bounds", async () => {
     const simulation = await makeSimulation([playerSpawn({ position: { x: 70, y: 180 } })]);
 

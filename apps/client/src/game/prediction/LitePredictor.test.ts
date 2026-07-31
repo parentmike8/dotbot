@@ -56,6 +56,23 @@ describe("LitePredictor", () => {
     expect(predictor.current.position.y).toBeCloseTo(bot.position.y, 5);
   });
 
+  it("preserves analog walking magnitude but keeps predicted dash speed full", () => {
+    const partial = { move: { x: 0.25, y: 0 }, dash: false };
+    const walking = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    walking.step(partial);
+    expect(walking.current.position.x).toBeCloseTo(
+      1200 + (defaultGameConfig.playerSpeed * 0.25) / defaultGameConfig.tickHz,
+      5,
+    );
+
+    const dashing = new LitePredictor(downtownMap, defaultGameConfig, makeBot());
+    dashing.step({ ...partial, dash: true });
+    expect(dashing.current.position.x).toBeCloseTo(
+      1200 + defaultGameConfig.dashSpeed / defaultGameConfig.tickHz,
+      5,
+    );
+  });
+
   it("moves a full-size predicted bot through Mercy's standard ward-to-core doorway", () => {
     const start = { x: 570, y: 300 };
     const goal = { x: 700, y: 440 };

@@ -95,6 +95,29 @@ describe("NetSession item edges", () => {
     expect(deliveries[0]).toBe("reliable");
   });
 
+  it("sends partial analog magnitude unchanged over the wire", () => {
+    const sent: ClientMessage[] = [];
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    Object.assign(session as unknown as object, {
+      transport: {
+        send: (message: ClientMessage) => {
+          sent.push(message);
+        },
+      },
+      mapValue: downtownMap,
+      configValue: defaultGameConfig,
+      tickHz: 60,
+      handshakeReady: true,
+    });
+
+    session.sendInput({ move: { x: 0.25, y: -0.5 }, dash: false });
+    (session as unknown as { advancePrediction(ms: number): void }).advancePrediction((1000 / 60) * 2 + 1);
+
+    const input = sent.find((message): message is Extract<ClientMessage, { type: "input" }> => message.type === "input");
+    expect(input?.move).toEqual([0.25, -0.5]);
+    expect(input?.frames?.at(-1)?.move).toEqual([0.25, -0.5]);
+  });
+
   it("decodes contract payouts from the authoritative run manifest", () => {
     const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
     (session as unknown as { receive(message: unknown): void }).receive({

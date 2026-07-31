@@ -10,7 +10,7 @@ import {
   separationAxis,
   separationPush,
 } from "@dotbot/game/kinematics";
-import { clamp, normalizeInputVector } from "@dotbot/game/math";
+import { clamp, clampInputVector, normalize } from "@dotbot/game/math";
 import {
   DASH_HIT_FORGIVENESS_PX,
   DASH_CLINCH_TICKS,
@@ -271,7 +271,7 @@ export class LitePredictor {
   }
 
   private advance(state: PredictedOwnBot, input: InputCommand, elapsedMs: number, consumeDash: boolean): PredictedOwnBot {
-    const move = normalizeInputVector(input.move);
+    const move = clampInputVector(input.move);
     state.dashCooldownMs = Math.max(0, state.dashCooldownMs - elapsedMs);
     state.dashActiveMs = Math.max(0, state.dashActiveMs - elapsedMs);
 
@@ -287,7 +287,7 @@ export class LitePredictor {
     // Mirror the server: a dash rides the LAST aim, so releasing the keys
     // mid-dash no longer desyncs the predicted dash from the real one.
     if (Math.hypot(move.x, move.y) > 0.05 && consumeDash) {
-      this.lastAim = move;
+      this.lastAim = normalize(move);
     }
     const direction = this.channelFrozen ? { x: 0, y: 0 } : state.dashActiveMs > 0 ? this.lastAim : move;
     const speed = state.dashActiveMs > 0 ? this.config.dashSpeed : this.config.playerSpeed;

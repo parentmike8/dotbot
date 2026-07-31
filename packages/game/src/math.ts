@@ -44,9 +44,17 @@ export function colorToNumber(color: string): number {
   return Number.parseInt(color.replace("#", ""), 16);
 }
 
-export function normalizeInputVector(move: Vec2): Vec2 {
-  return normalize({
+/**
+ * Keeps analog input magnitude while capping the stick to its unit circle.
+ *
+ * Keyboard diagonals arrive as (±1, ±1) and are scaled down to full speed.
+ * A partial stick such as (0.25, 0) stays at quarter speed.
+ */
+export function clampInputVector(move: Vec2): Vec2 {
+  const clamped = {
     x: clamp(move.x, -1, 1),
     y: clamp(move.y, -1, 1),
-  });
+  };
+  const magnitude = length(clamped);
+  return magnitude > 1 ? scale(clamped, 1 / magnitude) : clamped;
 }

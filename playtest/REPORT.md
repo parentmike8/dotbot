@@ -58,9 +58,13 @@ With greys active, the scripted attacker could not complete ANY downed-verb chan
 - **Watch item for the human playtest:** downed bodies visually "drifting" while greys/attackers mill around them. Scripted data shows position drift at contact spacing; collider flags are provably correct (downed = sensor+disabled), so the mover is grey contact pressure on the *living* bots plus something unconfirmed. Needs eyes-on with the renderer.
 - Candidate tunings if humans confirm the pain: grey de-aggro radius around downed-interaction channels, or a short grey-attention cooldown after a squad wipes a grey.
 
-## 5. Input handling finding
+## 5. Input handling finding — resolved 2026-07-31
 
-`normalizeInputVector` renormalizes every nonzero move vector to full magnitude: **analog movement does not exist over the wire** — any joystick tilt is full speed. Keyboard play is unaffected (this is exactly what keyboard wants); touch players lose fine control. Decide whether that's a design position or a bug; the fix (clamp length to ≤1 instead of normalizing to =1) is one line in `math.ts` but changes touch feel everywhere.
+Touch input now preserves joystick magnitude end to end: partial tilt produces proportional
+walking speed, while keyboard cardinals and capped diagonals remain full speed. The server and
+client predictor normalize the stored aim direction separately, so a partial stick still fires
+a full-speed dash. Partial vectors are covered through input merging, wire delivery, authority,
+prediction, and dash tests.
 
 ## 6. Economy cross-check (static data + observed rates)
 
@@ -75,7 +79,7 @@ Insertion assignment + spacing, squad formation, match lifecycle, dot capture, e
 ## 8. Recommended actions (priority order)
 
 1. Snapshot slimming (dots-as-deltas first) — before any friends playtest with >4 players on real networks.
-2. Decide the analog-input question (one-line change, affects touch).
+2. ~~Decide the analog-input question (one-line change, affects touch).~~ **DONE 2026-07-31.**
 3. Eyes-on review of dash knockback distance and the downed-body drift during your browser session.
 4. Watch speedrun-vs-explore behavior in the first human playtest before touching the economy numbers.
 5. Entity-id randomization + merging mines into the dots array (wire-level disguise) before any non-friend players.

@@ -39,7 +39,7 @@ import {
   stairHalves,
 } from "./mapModel";
 import { canReviveBody, canTakeFromBody, interactionDotReach, withinDownedCoverRange, withinInteractionDotRange } from "./interactions";
-import { add, clamp, distance, length, normalize, normalizeInputVector, scale, subtract, zeroVec } from "./math";
+import { add, clamp, clampInputVector, distance, length, normalize, scale, subtract, zeroVec } from "./math";
 import { findNavigationPath, prewarmNavigation } from "./navigation";
 import { carriedCount, carriedItems, hasRoom, insertItem, removeCarriedAt } from "./inventory";
 import { botSpawnFaction } from "./faction";
@@ -633,7 +633,7 @@ export class DotBotSimulation {
 
     const current = this.inputs.get(botId);
     this.inputs.set(botId, {
-      move: normalizeInputVector(input.move),
+      move: clampInputVector(input.move),
       dash: (current?.dash ?? false) || input.dash,
       useBay: current?.useBay ?? input.useBay,
       swapBay: current?.swapBay ?? input.swapBay,
@@ -1045,7 +1045,9 @@ export class DotBotSimulation {
       bot.desiredMove = bot.activeSwap ? zeroVec() : aliveInput.move;
 
       if (length(aliveInput.move) > 0.05) {
-        bot.lastAim = aliveInput.move;
+        // Walking preserves analog magnitude; a dash consumes only the stick's
+        // direction and always travels at the authored dash speed.
+        bot.lastAim = normalize(aliveInput.move);
       }
 
       if (!dropped && aliveInput.useBay !== undefined && isSlot(bot.bays, aliveInput.useBay)) {

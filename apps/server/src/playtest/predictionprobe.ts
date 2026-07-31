@@ -16,7 +16,7 @@ import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { collectSolids } from "@dotbot/game/collision";
 import { integrateWithWalls } from "@dotbot/game/kinematics";
-import { clamp, normalizeInputVector } from "@dotbot/game/math";
+import { clamp, clampInputVector, normalize } from "@dotbot/game/math";
 import type { Vec2 } from "@dotbot/game/types";
 import type { ClientMessage, ServerMessage, WireInputFrame } from "@dotbot/protocol";
 import { createServer } from "../app";
@@ -36,14 +36,14 @@ let lastAim: Vec2 = { x: 1, y: 0 };
 /** Same math as LitePredictor.advance (walls only; the probe route stays in
  * open space so bot-separation and knockback never enter the measurement). */
 function stepMirror(state: MirrorState, frame: WireInputFrame): MirrorState {
-  const move = normalizeInputVector({ x: frame.move[0], y: frame.move[1] });
+  const move = clampInputVector({ x: frame.move[0], y: frame.move[1] });
   state.dashCooldownMs = Math.max(0, state.dashCooldownMs - tickMs);
   state.dashActiveMs = Math.max(0, state.dashActiveMs - tickMs);
   if (frame.dash && state.dashCooldownMs <= 0 && state.dashActiveMs <= 0) {
     state.dashActiveMs = config.dashDurationMs;
     state.dashCooldownMs = config.dashCooldownMs;
   }
-  if (Math.hypot(move.x, move.y) > 0.05) lastAim = move;
+  if (Math.hypot(move.x, move.y) > 0.05) lastAim = normalize(move);
   const direction = state.dashActiveMs > 0 ? lastAim : move;
   const speed = state.dashActiveMs > 0 ? config.dashSpeed : config.playerSpeed;
   const position = integrateWithWalls(

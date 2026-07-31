@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, typ
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { getKeyboardVector, mergeMoveVectors, movementKeyCodes } from "./input";
-import { clamp, normalizeInputVector } from "@dotbot/game/math";
+import { clamp, clampInputVector } from "@dotbot/game/math";
 import { GameRenderer, type InteractionChannelVisual } from "./renderer/GameRenderer";
 import {
   KillCamPlayback,
@@ -852,7 +852,7 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
     };
     const length = Math.hypot(raw.x, raw.y);
     const limited = length > joystickRadius ? { x: (raw.x / length) * joystickRadius, y: (raw.y / length) * joystickRadius } : raw;
-    const move = normalizeInputVector({
+    const move = clampInputVector({
       x: clamp(limited.x / joystickRadius, -1, 1),
       y: clamp(limited.y / joystickRadius, -1, 1),
     });
