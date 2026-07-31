@@ -2,7 +2,8 @@
 
 Working title: DotBot
 
-Status: concept spec for future web prototype
+Status: historical concept spec. Current decisions live in
+`dotbot-world-and-run-bible.md`; active work lives in `docs/backlog.md`.
 
 > **Superseded decisions (July 2026).** `dotbot-systems-spec.md` is now authoritative where it overlaps this document, and `dotbot-implementation-roadmap.md` defines build order. Specifically superseded here:
 > - **Revives**: no longer cost 1 Dot (§ Revive rules below). Revives are free; the cost is the long, loud, stationary channel. Revived bots return with one cracked shield plate.
@@ -672,7 +673,10 @@ type ScannableObject = {
 };
 ```
 
-## 25. Open Tuning Questions
+## 25. Historical tuning questions
+
+Historical discovery list. These prompts are retained for design context and are
+not active TODOs unless promoted to `docs/backlog.md`.
 
 - How fast should Dot Bots move?
 - How big should a Dot Bot be relative to a Dot?

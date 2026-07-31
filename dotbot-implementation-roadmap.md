@@ -1,8 +1,13 @@
 # DotBot: Implementation Roadmap — Base, Economy, Multiplayer & Systems
 
+> **Status: completed historical plan (2026-07-31).** M0 through M8, M6-B,
+> NET-1, PERF-1, and UX-1 have completion reports in [`handoffs/`](handoffs/).
+> This document preserves the intended sequence and architecture; it is not the
+> active backlog. See [`docs/backlog.md`](docs/backlog.md) for remaining work.
+
 ## Context
 
-The July 2026 ideation spec reframes DotBot from a score-race sandbox into a **squad extraction game**: dots are materiel, runs end by extracting or dying, progression lives in a persistent off-map base that doubles as the menu, and blueprints learned from the city unlock fabrication. The current build is a single-player browser sandbox (deterministic 60Hz TypeScript sim + Rapier, Pixi renderer, AI bots, the rebuilt Downtown map) with none of the meta systems and no networking.
+The July 2026 ideation spec reframed DotBot from a score-race sandbox into a **squad extraction game**: dots are materiel, runs end by extracting or dying, progression lives in a persistent off-map base that doubles as the menu, and blueprints learned from the city unlock fabrication. At the time, the build was a single-player browser sandbox with none of the meta systems and no networking. The milestones below record the plan that subsequently delivered those systems.
 
 Owner decisions from planning Q&A: **plan the whole spec now** (this document), **server-authoritative Node netcode** reusing the existing sim, **Node + Postgres self-hosted** backend in a shared-types monorepo, **2–3 squads** per match on the current map, **run timer** plus extract-or-die lifecycle, and sequencing driven by **"friends can playtest in the browser ASAP."**
 

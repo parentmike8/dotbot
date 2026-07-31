@@ -2,6 +2,13 @@
 
 Reviewed: 2026-06-16
 
+> **Status: historical proposal.** The repository retained TypeScript, Pixi,
+> Rapier, and Postgres, but the shipped realtime stack uses Fastify plus `ws`
+> rather than Colyseus, and voice chat was not adopted. See
+> [`docs/production-realtime-architecture.md`](docs/production-realtime-architecture.md)
+> for the current architecture and [`deploy/README.md`](deploy/README.md) for
+> operations.
+
 ## Recommendation
 
 Build DotBot web-first with a TypeScript monorepo:

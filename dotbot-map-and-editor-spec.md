@@ -1,6 +1,8 @@
 # DotBot - Map And Editor Spec
 
-Status: companion spec for Maps, object Scans, Base building, and future player-created Maps.
+Status: historical companion spec for Maps, object Scans, Base building, and
+future player-created Maps. Current map authority is
+`docs/map-building-contract.md`; active work is in `docs/backlog.md`.
 
 > **Superseded decisions (July 2026).** `dotbot-systems-spec.md` is now authoritative where it overlaps this document; `dotbot-implementation-roadmap.md` defines build order. Specifically superseded here:
 > - **"Scans" / scan progression (§8–§9)**: replaced by blueprint dots (systems spec §5) — spatially anchored via the `scannable` flag, extracted copies complete a permanent unlock. Scan-count tiers are replaced by copy-set sizes tuned by location risk.
@@ -695,7 +697,10 @@ Why:
 - One editor foundation supports Maps and Base building.
 - Player-created Maps are later, but the data model should allow them.
 
-## 19. Open Questions
+## 19. Historical discovery questions
+
+Historical discovery list. Current map authority is
+`docs/map-building-contract.md`, and active work lives in `docs/backlog.md`.
 
 - Should entering a building be instant or require a short hold?
 - Should floor changes be instant or require a tiny hold?

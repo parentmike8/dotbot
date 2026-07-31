@@ -513,7 +513,11 @@ export function buildRoofModel(building: Building): RoofModel {
       w: roof.w * 0.34,
       h: roof.h * 0.34,
     };
-    const g = new Graphics();
+    // Graphics only inherits child-container behavior as a deprecated Pixi 8
+    // compatibility path. Keep the lantern drawing and its clipped bars under a
+    // real Container so a future Pixi upgrade cannot silently drop the glazing.
+    const g = new Container();
+    const lantern = new Graphics();
     /**
      * The lantern is the SHAPE OF THE HALL, not a square on top of one.
      *
@@ -534,8 +538,8 @@ export function buildRoofModel(building: Building): RoofModel {
       const glass = ring.length >= 3 ? insetPolygon(ring, 3) : [];
       if (glass.length >= 3) {
         occludeShape(aoPad, ring, 8);
-        fillShape(g, ring, MAT.steelDark.top);
-        fillShape(g, glass, V.glass);
+        fillShape(lantern, ring, MAT.steelDark.top);
+        fillShape(lantern, glass, V.glass);
 
         const bars = new Graphics();
         const bounds = shapeBounds(glass);
@@ -554,12 +558,12 @@ export function buildRoofModel(building: Building): RoofModel {
         const barMask = new Graphics();
         fillShape(barMask, glass, 0xffffff);
         bars.mask = barMask;
-        g.addChild(barMask);
-        g.addChild(bars);
+        g.addChild(lantern, barMask, bars);
       }
     } else {
       occlude(aoPad, light, 8);
-      drawModelObject(g, pad, { id: `${building.id}-lantern`, kind: "skylight", ...light });
+      drawModelObject(lantern, pad, { id: `${building.id}-lantern`, kind: "skylight", ...light });
+      g.addChild(lantern);
     }
     equipment.addChild(g);
   } else if (!masonry && fp.w * fp.h >= 150_000) {

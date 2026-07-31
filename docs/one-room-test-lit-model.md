@@ -1,7 +1,8 @@
 # One-room test: the lit model
 
-Status: **vertical test.** One floor, one drawing language, production renderer.
-Not production-ready — see *Remaining gaps*.
+Status: **completed historical vertical test.** The approved drawing language is
+now the production `lit-model` renderer. The gaps below describe the test at the
+time; they are not the active backlog. See [`backlog.md`](backlog.md).
 
 ## What was tested
 
@@ -124,7 +125,7 @@ carries `foregroundFogGfx` with an alpha mask plus a per-sprite occlusion split
 to make **one** floor work; every additional storey multiplies that. Plan view
 does not have the problem to solve.
 
-## Remaining gaps
+## Remaining gaps at the time of the test
 
 Honest list. None of these are language problems:
 
@@ -168,7 +169,10 @@ This is **not** a ban on motion, and the rule as written here was later misread 
 way often enough to cost content. See `tone.ts` rule 4 and
 `docs/world-motion.md` for the corrected statement: animation is wanted.
 
-## Still to do
+## Follow-ups recorded at the time
+
+This list is retained to explain what the vertical test did not yet cover. It
+has been superseded by production integration and is not an active TODO list.
 
 - Object kinds still falling through to `genericBox`: beds, medical, residential
   seating and tables. Fourteen of them are the player base's, which is why the base

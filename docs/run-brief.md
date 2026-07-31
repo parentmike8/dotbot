@@ -1,5 +1,11 @@
 # Run brief — unattended session, 2026-07-30
 
+> **Status: completed historical run brief.** Its setup notes, server state, task
+> ordering, and “still open” language describe the 2026-07-30 session and must
+> not be treated as current instructions. See [`backlog.md`](backlog.md) for the
+> active list and [`map-building-contract.md`](map-building-contract.md) for the
+> current definition of done.
+
 The working brief for the current long autonomous run. Referenced by the active `/goal`.
 Read it in full before starting. It supplements, never replaces,
 `docs/map-building-contract.md` — §4.1 and §8 of the contract are the process authority.

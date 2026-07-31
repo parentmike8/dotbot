@@ -1,12 +1,15 @@
 # DotBot World & Run Bible
 
-Status: product-direction draft. Planning only; this is not an implementation request.
+Status: current product-direction authority. Implementation status and remaining
+work are tracked separately in `docs/backlog.md`.
 
-Last updated: 2026-07-21
+Last reviewed: 2026-07-31
 
 This is the plain-language source of truth for DotBot's city, progression, equipment, and map direction. When a simple everyday term works, use it. Avoid lore words for normal game functions.
 
-Older product documents still describe parts of the current build. Once this draft is approved, older documents should be marked as superseded where they conflict with it.
+Older product documents still describe the decisions available when they were
+written. This bible wins where they conflict; those documents are indexed as
+historical records in `docs/README.md`.
 
 ---
 

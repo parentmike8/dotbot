@@ -1,6 +1,9 @@
 # DotBot: Base Building, Economy & Systems Design Spec
 
-Design decisions from ideation session, July 2026. Written as a handoff for implementation. Sections are marked DECIDED, DIRECTIONAL (agreed in spirit, details flexible), or OPEN.
+Historical design decisions from the July 2026 ideation session. This document
+is retained as an implementation record; current product authority is
+`dotbot-world-and-run-bible.md`, and active work is in `docs/backlog.md`.
+Sections preserve their original DECIDED, DIRECTIONAL, or OPEN labels.
 
 > Implementation sequencing for this spec lives in `dotbot-implementation-roadmap.md`. Where this document contradicts `dotbot-game-spec.md` or `dotbot-map-and-editor-spec.md`, THIS document wins (see the superseded-decisions banners in those files).
 
@@ -156,7 +159,10 @@ There is no plain currency dot: powerups ARE the currency — you consume them a
 - Cross-squad revive/absorb of human players (v1)
 - Recruiting/reprogramming AI bots
 
-## 13. Open Questions (with owner rulings, July 2026)
+## 13. Owner rulings recorded in July 2026
+
+Historical decision log, not an active TODO list. Current decisions live in
+`dotbot-world-and-run-bible.md`; active work lives in `docs/backlog.md`.
 
 1. **Plain currency dot visual**: RESOLVED — there is no plain currency dot. Powerups are the currency; you consume them as currency.
 2. **Voice channels**: RESOLVED against (2026-07-28) — **click-to-mark pings instead**, and build them now. Left-click pings for your squad using the most recently chosen type; right-click opens the type picker, and choosing a type both fires that ping there and makes it the new left-click default. Three or four plain types (go here / enemy / loot). Owner's words: "Definitely, I like pings."
