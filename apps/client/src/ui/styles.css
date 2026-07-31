@@ -1046,85 +1046,77 @@ button {
 .loot-slot:not(:disabled):hover { background: var(--ink); color: var(--paper); }
 .loot-slot:disabled { cursor: default; opacity: 0.4; }
 
-.quick-coach {
-  position: absolute;
-  z-index: 7;
-  bottom: max(20px, env(safe-area-inset-bottom));
-  left: 50%;
-  display: flex;
-  width: min(600px, calc(100vw - 320px));
-  min-width: 470px;
-  align-items: stretch;
-  overflow: hidden;
-  transform: translateX(-50%);
-  border: 1px solid var(--hairline);
+.goal-intro-shell {
+  display: grid;
+  place-items: center;
+  padding: max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right))
+    max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+  background:
+    radial-gradient(circle at 50% 43%, rgba(255, 255, 255, 0.82), transparent 36%),
+    linear-gradient(var(--hairline) 1px, transparent 1px),
+    linear-gradient(90deg, var(--hairline) 1px, transparent 1px),
+    var(--paper);
+  background-size: auto, 56px 56px, 56px 56px, auto;
+}
+
+.goal-intro {
+  position: relative;
+  display: grid;
+  width: min(390px, 100%);
+  gap: 12px;
+  padding: clamp(22px, 6vw, 34px);
+  border: 1px solid var(--ink);
   background: var(--panel-glass);
   color: var(--ink);
-  pointer-events: none;
-  transition:
-    opacity 700ms ease,
-    transform 700ms ease;
-  backdrop-filter: blur(8px);
+  pointer-events: auto;
+  backdrop-filter: blur(10px);
 }
 
-.quick-coach.is-leaving {
-  opacity: 0;
-  transform: translate(-50%, 7px);
-}
-
-.coach-title {
-  display: grid;
-  align-items: center;
-  flex: 0 0 auto;
-  padding: 8px 11px;
-  border-right: 1px solid var(--ink);
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 1.3px;
-  line-height: 1.15;
-  text-transform: uppercase;
-}
-
-.quick-coach ol {
-  display: grid;
-  flex: 1;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.quick-coach li {
-  display: grid;
-  min-width: 0;
-  align-content: center;
-  gap: 2px;
-  padding: 7px 10px;
-}
-
-.quick-coach li + li {
-  border-left: 1px solid var(--hairline);
-}
-
-.quick-coach strong,
-.quick-coach li span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.quick-coach strong {
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 0.8px;
-}
-
-.quick-coach li span {
+.goal-intro-kicker {
   color: var(--muted-strong);
-  font-size: 7px;
-  font-weight: 750;
-  letter-spacing: 0.35px;
+  font: 850 8px/1 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.goal-intro h1 {
+  max-width: 330px;
+  margin: 0;
+  font-size: clamp(25px, 8vw, 38px);
+  line-height: 0.98;
+  letter-spacing: -0.035em;
+  text-transform: uppercase;
+}
+
+.goal-intro p {
+  max-width: 330px;
+  margin: 1px 0 5px;
+  color: var(--muted-strong);
+  font: 750 11px/1.55 var(--font-mono);
+}
+
+.goal-intro-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-strong);
+  font: 400 24px/1 var(--font-ui);
+  cursor: pointer;
+}
+
+.goal-intro-action {
+  min-height: 44px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  font: 900 9px/1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
 }
 
 .touch-controls {
@@ -1259,14 +1251,6 @@ button {
   }
 }
 
-@media (max-width: 920px) {
-  .quick-coach {
-    bottom: max(142px, calc(env(safe-area-inset-bottom) + 136px));
-    width: min(600px, calc(100vw - 36px));
-    min-width: 0;
-  }
-}
-
 @media (max-width: 620px) {
   .touch-controls {
     /* The bay bank becomes a bottom-centred tray at this width. Keep both
@@ -1313,36 +1297,6 @@ button {
 
   .floor-rail li {
     min-height: 18px;
-  }
-
-  .quick-coach {
-    display: block;
-    bottom: max(132px, calc(env(safe-area-inset-bottom) + 126px));
-    width: calc(100vw - 36px);
-  }
-
-  .coach-title {
-    display: block;
-    padding: 6px 8px;
-    border-right: 0;
-    border-bottom: 1px solid var(--hairline);
-    text-align: center;
-  }
-
-  .quick-coach ol {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .quick-coach li {
-    padding: 6px 9px;
-  }
-
-  .quick-coach li:nth-child(3) {
-    border-left: 0;
-  }
-
-  .quick-coach li:nth-child(n + 3) {
-    border-top: 1px solid var(--hairline);
   }
 
   .joystick {
@@ -1434,14 +1388,9 @@ button {
   .floor-rail li {
     min-height: 17px;
   }
-
-  .quick-coach {
-    bottom: 14px;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .quick-coach,
   .touch-controls {
     transition: none;
   }

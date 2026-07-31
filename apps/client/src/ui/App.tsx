@@ -14,9 +14,7 @@ import {
 import { hudSkinClass } from "./hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "./hud/hud";
 import { WorldMapOverlay } from "./WorldMapOverlay";
-
-const coachFadeAtMs = 12_000;
-const coachDismissAtMs = 15_000;
+import { GoalIntro, useGoalIntro } from "./GoalIntro";
 
 export function App() {
   // Remounting the session tears down and rebuilds the simulation and
@@ -33,6 +31,7 @@ export function App() {
     () => new URLSearchParams(window.location.search).get("at"),
   );
   const [picking, setPicking] = useState(false);
+  const goalIntro = useGoalIntro();
   const base = useMemo(() => selectBaseMap(window.location.search), []);
   const map = useMemo(() => spawnAt(base, spawnPointId), [base, spawnPointId]);
   const groups = useMemo(() => arrivalGroups(base), [base]);
@@ -59,7 +58,13 @@ export function App() {
     />
   ) : null;
 
-  return <GameSession key={session} map={map} onRestart={() => setPicking(true)} spawnPicker={picker} />;
+  return goalIntro.visible ? (
+    <main className={`app-shell goal-intro-shell ${hudSkinClass()}`} aria-label="DotBot introduction">
+      <GoalIntro onDismiss={goalIntro.dismiss} />
+    </main>
+  ) : (
+    <GameSession key={session} map={map} onRestart={() => setPicking(true)} spawnPicker={picker} />
+  );
 }
 
 function GameSession({
@@ -95,9 +100,6 @@ function GameSession({
     const spawnById = new Map(map.botSpawns.map((spawn) => [spawn.id, spawn]));
     return squadDownCounts(events, (botId) => spawnById.get(botId), playerId);
   }, [events, map, playerId]);
-  const coachPhase =
-    snapshot && snapshot.timeMs < coachDismissAtMs ? (snapshot.timeMs >= coachFadeAtMs ? "is-leaving" : "") : null;
-
   return (
     <main
       className={`app-shell ${hudSkinClass()}`}
@@ -188,30 +190,6 @@ function GameSession({
       {downed ? <DownedSelfView self={downed} onPlea={plea} onLeave={leaveRun} /> : null}
 
       <BodyPromptView prompt={prompt} onVerb={onVerb} onTake={takeFromBody} onTakeAll={(bodyId) => takeFromBody(bodyId, "all")} />
-
-      {coachPhase !== null ? (
-        <section className={`quick-coach ${coachPhase}`} aria-label="Quick start guide">
-          <span className="coach-title">Quick start</span>
-          <ol>
-            <li>
-              <strong>Move</strong>
-              <span>WASD / arrows</span>
-            </li>
-            <li>
-              <strong>Dash</strong>
-              <span>Space / button</span>
-            </li>
-            <li>
-              <strong>Collect</strong>
-              <span>Stand on a Dot</span>
-            </li>
-            <li>
-              <strong>Leave</strong>
-              <span>Stand on an exit pad</span>
-            </li>
-          </ol>
-        </section>
-      ) : null}
 
       <TouchControls
         joystick={joystick}
