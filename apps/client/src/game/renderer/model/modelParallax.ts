@@ -32,7 +32,16 @@ import { SHADOW_ALPHA, withViewPull, type ShadowPad } from "./tone";
  * rebuilding hundreds of world objects is not.
  */
 
-export const DEFAULT_OBJECT_PARALLAX_STRENGTH = 1;
+/**
+ * Production camera response.
+ *
+ * Full strength is intentionally kept as a lab setting: at 1, a tall object's top can
+ * rotate all the way from the fixed north view to camera-relative at the edge of play,
+ * which makes buildings and carved landmarks visibly change identity while walking past.
+ * A quarter-strength response preserves a small depth cue without making planted geometry
+ * look elastic.
+ */
+export const DEFAULT_OBJECT_PARALLAX_STRENGTH = 0.25;
 export const MAX_OBJECT_PARALLAX_STRENGTH = 2;
 /** Shared live-game/Studio camera movement threshold for object redraws. */
 export const OBJECT_PARALLAX_REDRAW_STEP = 24;
@@ -55,6 +64,8 @@ export type ParallaxObjectView = {
 };
 
 type ObjectParallaxProfile = {
+  /** Share of the shared camera-angle response this object is allowed to use. */
+  directionGain: number;
   /** Extra top-face travel, as a fraction of the primitive's authored lift. */
   faceGain: number;
   /** Maximum additional travel of an explicitly elevated group, in world units. */
@@ -68,7 +79,6 @@ const TALL_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
   "helterSkelter",
   "bigTop",
   "stele",
-  "serpentHead",
   "signalMast",
   "listeningPost",
   "column",
@@ -76,24 +86,44 @@ const TALL_KINDS: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
 
 function objectParallaxProfile(object: MapObject): ObjectParallaxProfile {
   if (FLAT_KINDS.has(object.kind) || !isSolidObject(object)) {
-    return { faceGain: 0, elevatedTravel: 0 };
+    return { directionGain: 0, faceGain: 0, elevatedTravel: 0 };
+  }
+  if (object.kind === "serpentHead") {
+    /**
+     * A low carved wedge planted against the temple stair, not an elevated landmark.
+     *
+     * Rotating its prism changed which triangular face formed the snout, so the bottom
+     * visibly changed shape as the player crossed the plaza. Its authored north-lit view
+     * is the carving's identity and must remain stable.
+     */
+    return { directionGain: 0, faceGain: 0, elevatedTravel: 0 };
   }
 
   const short = Math.min(object.w, object.h);
   if (object.kind === "tree") {
     return {
+      directionGain: 1,
       // The trunk stays conservative; the crown below carries the tree's height.
       faceGain: 0.18,
       elevatedTravel: Math.max(5, Math.min(14, short * 0.12)),
     };
   }
   if (object.kind === "lampPost") {
-    return { faceGain: 0.16, elevatedTravel: Math.max(7, Math.min(11, short * 0.7)) };
+    return {
+      directionGain: 1,
+      faceGain: 0.16,
+      elevatedTravel: Math.max(7, Math.min(11, short * 0.7)),
+    };
   }
   if (TALL_KINDS.has(object.kind)) {
-    return { faceGain: 0.82, elevatedTravel: Math.max(4, Math.min(12, short * 0.08)) };
+    return {
+      directionGain: 1,
+      faceGain: 0.82,
+      elevatedTravel: Math.max(4, Math.min(12, short * 0.08)),
+    };
   }
   return {
+    directionGain: 1,
     faceGain: 0.3,
     // Rides and any future reparented part stay attached, but low cover never gains
     // a large floating top merely because its glyph happens to own a child.
@@ -108,7 +138,8 @@ export function objectViewPull(
   strength: number,
 ): ViewPull {
   const centre = { x: object.x + object.w / 2, y: object.y + object.h / 2 };
-  return pullToward(centre, viewCentre, strength, objectParallaxProfile(object).faceGain);
+  const profile = objectParallaxProfile(object);
+  return pullToward(centre, viewCentre, strength * profile.directionGain, profile.faceGain);
 }
 
 const SCRATCH_PAD: ShadowPad = SHADOW_ALPHA.map(() => new Graphics());
@@ -120,7 +151,7 @@ export function redrawParallaxObject(
   strength: number,
 ): boolean {
   const profile = objectParallaxProfile(handle.object);
-  if (profile.faceGain <= 0 && profile.elevatedTravel <= 0) return false;
+  if (profile.directionGain <= 0 && profile.elevatedTravel <= 0) return false;
 
   const centre = {
     x: handle.object.x + handle.object.w / 2,

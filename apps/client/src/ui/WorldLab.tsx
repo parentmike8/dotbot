@@ -580,7 +580,7 @@ export function WorldLab() {
         }}
       >
         <span style={{ color: "#f4f5f6", padding: "3px 5px" }}>Parallax</span>
-        {[0, 0.5, 1, 2].map((value) => (
+        {[0, 0.25, 0.5, 1, 2].map((value) => (
           <a
             key={value}
             href={hrefAt(value)}

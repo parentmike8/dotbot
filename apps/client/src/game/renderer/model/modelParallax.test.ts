@@ -1,10 +1,12 @@
 import { Container, Graphics } from "pixi.js";
 import { describe, expect, it } from "vitest";
 import { downtownMap } from "@dotbot/game/content/downtown";
+import { worldMap } from "@dotbot/game/content/world";
 import type { Rect } from "@dotbot/game/types";
 import { buildOutdoorModel } from "./modelOutdoor";
 import {
   MAX_OBJECT_PARALLAX_STRENGTH,
+  objectViewPull,
   parseObjectParallaxStrength,
   redrawOutdoorObjects,
 } from "./modelParallax";
@@ -23,6 +25,13 @@ function containsNumber(value: unknown, wanted: number, seen = new Set<unknown>(
 }
 
 describe("object parallax rule", () => {
+  it("keeps the temple's ground-contact serpent heads in their authored shape", () => {
+    const head = worldMap.outdoor.objects.find((object) => object.kind === "serpentHead")!;
+    const viewCentre = { x: head.x - 600, y: head.y + 400 };
+
+    expect(objectViewPull(head, viewCentre, 1)).toEqual({ x: 0, y: -1, scale: 1 });
+  });
+
   it("gives every outdoor object one addressable redraw handle", () => {
     const outdoors = buildOutdoorModel(downtownMap);
     expect(outdoors.objectViews.size).toBe(downtownMap.outdoor.objects.length);
@@ -106,15 +115,21 @@ describe("object parallax rule", () => {
 });
 
 describe("the lab parallax control", () => {
+  it("ships a restrained quarter-strength response", () => {
+    expect(parseObjectParallaxStrength("")).toBe(0.25);
+    expect(parseObjectParallaxStrength("?solo")).toBe(0.25);
+  });
+
   it("keeps 0, 0.5, 1 and 2 as distinct strengths", () => {
     expect(parseObjectParallaxStrength("?parallax=0")).toBe(0);
+    expect(parseObjectParallaxStrength("?parallax=0.25")).toBe(0.25);
     expect(parseObjectParallaxStrength("?parallax=0.5")).toBe(0.5);
     expect(parseObjectParallaxStrength("?parallax=1")).toBe(1);
     expect(parseObjectParallaxStrength("?parallax=2")).toBe(2);
   });
 
   it("bounds malformed and extreme values without collapsing the useful range", () => {
-    expect(parseObjectParallaxStrength("?parallax=nope")).toBe(1);
+    expect(parseObjectParallaxStrength("?parallax=nope")).toBe(0.25);
     expect(parseObjectParallaxStrength("?parallax=-4")).toBe(0);
     expect(parseObjectParallaxStrength("?parallax=99")).toBe(MAX_OBJECT_PARALLAX_STRENGTH);
   });

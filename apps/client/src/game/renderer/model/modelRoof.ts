@@ -169,15 +169,16 @@ const PARALLAX_MAX = 26;
 
 /**
  * How far the roof of a block slides, given where it sits relative to the point
- * the camera is looking at.
+ * the camera is looking at and the shared production/lab strength.
  *
  * Real parallax: a point at height h over ground position P appears displaced
  * from P away from the camera's axis, in proportion to both the height and the
- * distance off-axis. Which is why the units are per-unit-of-each.
+ * distance off-axis. Which is why the units are per-unit-of-each. Production passes
+ * the restrained shared strength; `1` remains available for deliberate lab comparisons.
  */
-export function roofParallax(building: Building, viewCenter: Vec2): Vec2 {
+export function roofParallax(building: Building, viewCenter: Vec2, strength = 1): Vec2 {
   const fp = building.footprint;
-  const scale = storeyShadowLift(building) * PARALLAX_PER_UNIT;
+  const scale = storeyShadowLift(building) * PARALLAX_PER_UNIT * Math.max(0, strength);
   const dx = (fp.x + fp.w / 2 - viewCenter.x) * scale;
   const dy = (fp.y + fp.h / 2 - viewCenter.y) * scale;
   const distance = Math.hypot(dx, dy);

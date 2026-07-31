@@ -79,8 +79,8 @@ const PEEK_RANGE = 200;
  * rebuild off the frames that would gain nothing from it.
  */
 /**
- * Shared production/lab strength. `0` is an exact off switch; the shipped value is 1;
- * the lab preserves 0.5 and 2 as genuinely different review points.
+ * Shared production/lab strength. `0` is an exact off switch; production is the restrained
+ * default from `modelParallax`, while the lab preserves larger values as review points.
  *
  * The face-light blocker described here previously is resolved in `tone.volume`: every
  * exposed band is shaded by its own normal now. The remaining safety rule lives in
@@ -88,8 +88,7 @@ const PEEK_RANGE = 200;
  * geometry changes.
  */
 const PARALLAX_STRENGTH = (() => {
-  if (typeof window === "undefined") return 1;
-  return parseObjectParallaxStrength(window.location.search);
+  return parseObjectParallaxStrength(typeof window === "undefined" ? "" : window.location.search);
 })();
 const SHOW_COLLISION = typeof window !== "undefined"
   && new URLSearchParams(window.location.search).has("collision");
@@ -1352,7 +1351,9 @@ export class GameRenderer {
        * and actual is something a player can act on.
        */
       const standingOnIt = art.roofFloorId !== null && art.roofFloorId === playerFloorId;
-      const offset = standingOnIt ? { x: 0, y: 0 } : roofParallax(art.building, viewCenter);
+      const offset = standingOnIt
+        ? { x: 0, y: 0 }
+        : roofParallax(art.building, viewCenter, PARALLAX_STRENGTH);
       for (const mass of art.roofMasses) mass.position.set(offset.x, offset.y);
     }
   }
