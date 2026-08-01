@@ -6,11 +6,13 @@ import {
   PLATE_SET_REGISTRY,
   catalogRef,
   createVersionedRegistry,
+  domainItemKey,
   plateSetCountersDamage,
   plateSetShortensChannel,
   plateSetSuppressesSignal,
   resolveCatalogRef,
   validateEquipmentCatalogs,
+  type CoreDefinition,
 } from "./catalog";
 
 describe("versioned domain registries", () => {
@@ -26,6 +28,26 @@ describe("versioned domain registries", () => {
     expect(resolveCatalogRef(registry, reference)).toEqual({ id: "one", value: 1 });
     expect(() => resolveCatalogRef(registry, { ...reference, contentVersion: 2 })).toThrow(/content version/i);
     expect(() => createVersionedRegistry({ ...registry, entries: [{ id: "one" }, { id: "one" }] })).toThrow(/duplicate/i);
+    expect(() => createVersionedRegistry({
+      registryId: "test.unsafe-version",
+      schemaVersion: Number.MAX_SAFE_INTEGER + 1,
+      contentVersion: 1,
+      entries: [{ id: "one" }],
+    })).toThrow(/safe integer/i);
+  });
+
+  it("does not alias distinct versioned references into one inventory key", () => {
+    const left = {
+      kind: "catalog" as const,
+      catalogKind: "core" as const,
+      ref: { registryId: "a", schemaVersion: 1, contentVersion: 2, entryId: "3:item" },
+    };
+    const right = {
+      kind: "catalog" as const,
+      catalogKind: "core" as const,
+      ref: { registryId: "a:1", schemaVersion: 2, contentVersion: 3, entryId: "item" },
+    };
+    expect(domainItemKey(left)).not.toBe(domainItemKey(right));
   });
 
   it("clones and freezes registry data so later mutation cannot rewrite a version", () => {
@@ -44,6 +66,7 @@ describe("versioned domain registries", () => {
     ]);
     expect(PLATE_SET_REGISTRY.entries.map((entry) => entry.id)).toEqual(["ordinary", "stealth", "tech", "blast"]);
     expect(PLATE_SET_REGISTRY.entries.find((entry) => entry.id === "ordinary")).toMatchObject({ default: true, physical: false });
+    expect(PLATE_SET_REGISTRY.entries.filter((entry) => !entry.default).every((entry) => !entry.physical)).toBe(true);
     expect(PLATE_SET_REGISTRY.entries.find((entry) => entry.id === "stealth")?.capabilities)
       .toMatchObject({ suppressesSignals: ["radar", "noiseMarker"] });
     expect(PLATE_SET_REGISTRY.entries.find((entry) => entry.id === "tech")?.capabilities)
@@ -72,5 +95,21 @@ describe("versioned domain registries", () => {
     });
     expect(validateEquipmentCatalogs({ cores: noDefaultCores, plateSets: PLATE_SET_REGISTRY }).map((issue) => issue.code))
       .toEqual(expect.arrayContaining(["missing-default", "non-physical-special", "invalid-plate-count"]));
+
+    const renamedCores = createVersionedRegistry({
+      ...CORE_REGISTRY,
+      registryId: "renamed.cores",
+      contentVersion: 2,
+    });
+    expect(validateEquipmentCatalogs({ cores: renamedCores, plateSets: PLATE_SET_REGISTRY }).map((issue) => issue.code))
+      .toContain("registry-id");
+
+    const wrongKind = createVersionedRegistry<CoreDefinition>({
+      ...CORE_REGISTRY,
+      contentVersion: 2,
+      entries: [{ ...CORE_REGISTRY.entries[0]!, equipmentKind: "plateSet" } as unknown as CoreDefinition],
+    });
+    expect(validateEquipmentCatalogs({ cores: wrongKind, plateSets: PLATE_SET_REGISTRY }).map((issue) => issue.code))
+      .toContain("equipment-kind");
   });
 });

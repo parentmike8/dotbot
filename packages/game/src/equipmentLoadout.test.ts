@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { CORE_REGISTRY, PLATE_SET_REGISTRY, catalogRef, createVersionedRegistry, type CoreDefinition } from "./catalog";
+import {
+  CORE_REGISTRY,
+  PLATE_SET_REGISTRY,
+  catalogRef,
+  createVersionedRegistry,
+  type CoreDefinition,
+  type PlateSetDefinition,
+} from "./catalog";
 import {
   appendPhysicalItemHistory,
   bankExtractedItems,
@@ -8,6 +15,7 @@ import {
   reconcileLoadoutAfterLoss,
   removePhysicalItems,
   validateLoadout,
+  validatePhysicalItem,
   type LoadoutSelection,
   type PhysicalStorage,
 } from "./equipment";
@@ -30,11 +38,27 @@ const testCoreRegistry = createVersionedRegistry<CoreDefinition>({
     },
   ],
 });
-const equipmentCatalogs = { cores: testCoreRegistry, plateSets: PLATE_SET_REGISTRY };
+const testPlateSetRegistry = createVersionedRegistry<PlateSetDefinition>({
+  registryId: PLATE_SET_REGISTRY.registryId,
+  schemaVersion: PLATE_SET_REGISTRY.schemaVersion,
+  contentVersion: 2,
+  entries: [
+    ...PLATE_SET_REGISTRY.entries,
+    { id: "test-physical", equipmentKind: "plateSet", default: false, physical: true, capabilities: {} },
+  ],
+});
+const equipmentCatalogs = { cores: testCoreRegistry, plateSets: testPlateSetRegistry };
 
 describe("physical equipment and loadout seams", () => {
   it("banks extracted physical items without equipping the next run", () => {
-    const rareCore = createPhysicalItem("core-instance-1", catalogRef(testCoreRegistry, "test-light"), "core", provenance, equipmentCatalogs);
+    const foundCore = createPhysicalItem("core-instance-1", catalogRef(testCoreRegistry, "test-light"), "core", provenance, equipmentCatalogs);
+    expect(() => bankExtractedItems({ items: [] }, [foundCore], equipmentCatalogs)).toThrow(/extracted/i);
+    const rareCore = appendPhysicalItemHistory(foundCore, {
+      eventId: "extracted-1",
+      kind: "extracted",
+      ownerId: "player-a",
+      contextId: "match-1",
+    });
     expect(() => {
       (rareCore.definition as { entryId: string }).entryId = "mutated";
     }).toThrow();
@@ -48,7 +72,7 @@ describe("physical equipment and loadout seams", () => {
 
   it("equips stored Core and Plate Set instances, locks a snapshot, and rejects duplicate risk", () => {
     const core = createPhysicalItem("core-1", catalogRef(testCoreRegistry, "test-light"), "core", provenance, equipmentCatalogs);
-    const plates = createPhysicalItem("plates-1", catalogRef(PLATE_SET_REGISTRY, "stealth"), "plateSet", provenance, equipmentCatalogs);
+    const plates = createPhysicalItem("plates-1", catalogRef(testPlateSetRegistry, "test-physical"), "plateSet", provenance, equipmentCatalogs);
     const storage = { items: [core, plates] };
     const selection: LoadoutSelection = {
       core: { kind: "stored", instanceId: "core-1" },
@@ -111,6 +135,21 @@ describe("physical equipment and loadout seams", () => {
       { items: [core, core] },
       equipmentCatalogs,
     )).toEqual({ ok: false, reason: "duplicate-storage-instance", instanceId: "core-1" });
+
+    const valid = createPhysicalItem("valid", catalogRef(testCoreRegistry, "test-light"), "core", provenance, equipmentCatalogs);
+    expect(validatePhysicalItem({ ...valid, instanceId: "" }, equipmentCatalogs))
+      .toEqual({ ok: false, reason: "invalid-instance-id", instanceId: "" });
+    expect(validatePhysicalItem({ ...valid, history: [] }, equipmentCatalogs))
+      .toEqual({ ok: false, reason: "invalid-history", instanceId: "valid" });
+    expect(validatePhysicalItem({ ...valid, history: [valid.history[0]!, { ...valid.history[0]! }] }, equipmentCatalogs))
+      .toEqual({ ok: false, reason: "invalid-history", instanceId: "valid" });
+    expect(() => createPhysicalItem(
+      "born-lost",
+      catalogRef(testCoreRegistry, "test-light"),
+      "core",
+      { eventId: "lost-first", kind: "lost", ownerId: "player-a" },
+      equipmentCatalogs,
+    )).toThrow(/invalid-history/i);
   });
 
   it("rejects an empty queue lock id and freezes the accepted run snapshot", () => {
@@ -127,5 +166,25 @@ describe("physical equipment and loadout seams", () => {
     expect(() => {
       (result.lock.itemSnapshots[0]!.definition as { entryId: string }).entryId = "forged-after-lock";
     }).toThrow();
+  });
+
+  it("does not lock virtual defaults against an invalid equipment catalog", () => {
+    const noDefaultCores = createVersionedRegistry<CoreDefinition>({
+      registryId: CORE_REGISTRY.registryId,
+      schemaVersion: 1,
+      contentVersion: 2,
+      entries: [{
+        id: "test-light",
+        equipmentKind: "core",
+        default: false,
+        physical: true,
+        plateCount: { kind: "relative", direction: "fewer" },
+      }],
+    });
+    expect(validateLoadout(
+      { core: { kind: "default" }, plateSet: { kind: "default" }, carriedItemInstanceIds: [] },
+      { items: [] },
+      { cores: noDefaultCores, plateSets: PLATE_SET_REGISTRY },
+    )).toEqual({ ok: false, reason: "invalid-catalog", registryId: CORE_REGISTRY.registryId });
   });
 });

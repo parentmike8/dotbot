@@ -2,7 +2,7 @@ import {
   resolveCatalogRef,
   type CatalogRef,
 } from "./registry";
-import type { EquipmentCatalogs } from "./catalog";
+import { validateEquipmentCatalogs, type EquipmentCatalogs } from "./catalog";
 
 export type EquipmentKind = "core" | "plateSet";
 
@@ -68,7 +68,9 @@ export function appendPhysicalItemHistory(
   item: PhysicalItemInstance,
   event: PhysicalItemHistoryEvent,
 ): PhysicalItemInstance {
-  if (!event.eventId.trim()) throw new Error("Physical item history event id is required.");
+  if (!item.instanceId.trim()) throw new Error("Physical item instance id is required.");
+  if (!physicalItemHistoryValid(item.history, true)) throw new Error(`Invalid physical item history for ${item.instanceId}.`);
+  if (!historyEventValid(event)) throw new Error("Physical item history event is invalid.");
   const existing = item.history.find((entry) => entry.eventId === event.eventId);
   if (existing) {
     if (!sameHistoryEvent(existing, event)) {
@@ -91,6 +93,10 @@ export function bankExtractedItems(
   for (const item of extracted) {
     const validation = validatePhysicalItem(item, catalogs);
     if (!validation.ok) throw new Error(`Cannot bank physical item ${item.instanceId}: ${validation.reason}`);
+    const extraction = item.history.at(-1);
+    if (extraction?.kind !== "extracted" || !extraction.ownerId?.trim()) {
+      throw new Error(`Cannot bank physical item ${item.instanceId}: missing extracted ownership history.`);
+    }
     if (existing.has(item.instanceId)) throw new Error(`Physical item already stored: ${item.instanceId}`);
     existing.add(item.instanceId);
     banked.push(clonePhysicalItem(item));
@@ -116,10 +122,11 @@ export function removePhysicalItems(
 
 export type LoadoutValidation =
   | { ok: true }
+  | { ok: false; reason: "invalid-catalog"; registryId: string }
   | {
     ok: false;
     reason: "missing-instance" | "wrong-equipment-kind" | "duplicate-instance" | "duplicate-storage-instance"
-      | "catalog-mismatch" | "non-physical-definition" | "default-definition";
+      | "catalog-mismatch" | "non-physical-definition" | "default-definition" | "invalid-instance-id" | "invalid-history";
     instanceId: string;
   };
 
@@ -129,6 +136,12 @@ export function validatePhysicalItem(
   item: PhysicalItemInstance,
   catalogs: EquipmentCatalogs,
 ): LoadoutValidation {
+  const catalogIssue = validateEquipmentCatalogs(catalogs)[0];
+  if (catalogIssue) return { ok: false, reason: "invalid-catalog", registryId: catalogIssue.registryId };
+  if (!item.instanceId.trim()) return { ok: false, reason: "invalid-instance-id", instanceId: item.instanceId };
+  if (!physicalItemHistoryValid(item.history, true)) {
+    return { ok: false, reason: "invalid-history", instanceId: item.instanceId };
+  }
   let definition: { equipmentKind: EquipmentKind; physical: boolean; default: boolean };
   try {
     definition = item.equipmentKind === "core"
@@ -179,6 +192,8 @@ export function validatePhysicalStorage(
   storage: PhysicalStorage,
   catalogs: EquipmentCatalogs,
 ): LoadoutValidation {
+  const catalogIssue = validateEquipmentCatalogs(catalogs)[0];
+  if (catalogIssue) return { ok: false, reason: "invalid-catalog", registryId: catalogIssue.registryId };
   const storageIds = new Set<string>();
   for (const item of storage.items) {
     if (storageIds.has(item.instanceId)) {
@@ -279,4 +294,27 @@ function sameHistoryEvent(left: Readonly<PhysicalItemHistoryEvent>, right: Physi
     && left.kind === right.kind
     && left.ownerId === right.ownerId
     && left.contextId === right.contextId;
+}
+
+function historyEventValid(event: Readonly<PhysicalItemHistoryEvent>): boolean {
+  return Boolean(event.eventId.trim())
+    && (event.ownerId === undefined || Boolean(event.ownerId.trim()))
+    && (event.contextId === undefined || Boolean(event.contextId.trim()))
+    && (event.kind === "found" || event.kind === "fabricated" || event.kind === "extracted" || event.kind === "transferred" || event.kind === "lost");
+}
+
+function physicalItemHistoryValid(
+  history: readonly Readonly<PhysicalItemHistoryEvent>[],
+  requireAcquisitionFirst: boolean,
+): boolean {
+  if (history.length === 0) return false;
+  if (requireAcquisitionFirst && history[0]?.kind !== "found" && history[0]?.kind !== "fabricated" && history[0]?.kind !== "extracted") {
+    return false;
+  }
+  const eventIds = new Set<string>();
+  for (const event of history) {
+    if (!historyEventValid(event) || eventIds.has(event.eventId)) return false;
+    eventIds.add(event.eventId);
+  }
+  return true;
 }

@@ -18,11 +18,11 @@ export function createVersionedRegistry<T extends RegistryEntry>(
   registry: VersionedRegistry<T>,
 ): VersionedRegistry<T> {
   if (!registry.registryId.trim()) throw new Error("Registry id is required.");
-  if (!Number.isInteger(registry.schemaVersion) || registry.schemaVersion < 1) {
-    throw new Error("Registry schema version must be a positive integer.");
+  if (!Number.isSafeInteger(registry.schemaVersion) || registry.schemaVersion < 1) {
+    throw new Error("Registry schema version must be a positive safe integer.");
   }
-  if (!Number.isInteger(registry.contentVersion) || registry.contentVersion < 1) {
-    throw new Error("Registry content version must be a positive integer.");
+  if (!Number.isSafeInteger(registry.contentVersion) || registry.contentVersion < 1) {
+    throw new Error("Registry content version must be a positive safe integer.");
   }
   const ids = new Set<string>();
   for (const entry of registry.entries) {

@@ -5,10 +5,11 @@ import {
   activateContract,
   advanceContractGraph,
   createContractGraphState,
+  levelForProgress,
   validateContractGraphState,
   validateContractRegistry,
 } from "./authoredContracts";
-import { advanceAiObjective, createAiObjective } from "./objectives";
+import { advanceAiObjective, createAiObjective, validateObjectiveDefinition } from "./objectives";
 import { createVersionedRegistry } from "./registry";
 
 describe("authored Contract graph", () => {
@@ -25,6 +26,8 @@ describe("authored Contract graph", () => {
     let state = createContractGraphState(AUTHORED_CONTRACT_REGISTRY, TEST_LEVEL_CURVE);
     expect(state.contracts[first!.id]?.status).toBe("available");
     expect(state.contracts[second!.id]?.status).toBe("locked");
+    expect(activateContract(state, AUTHORED_CONTRACT_REGISTRY, "__proto__", TEST_LEVEL_CURVE))
+      .toEqual({ ok: false, reason: "unknown-contract" });
     expect(activateContract(state, AUTHORED_CONTRACT_REGISTRY, second!.id, TEST_LEVEL_CURVE)).toMatchObject({ ok: false, reason: "locked" });
 
     const activated = activateContract(state, AUTHORED_CONTRACT_REGISTRY, first!.id, TEST_LEVEL_CURVE);
@@ -96,6 +99,42 @@ describe("authored Contract graph", () => {
       .toContain("objective-progress");
     expect(() => advanceContractGraph(corrupt, AUTHORED_CONTRACT_REGISTRY, { kind: "locationReached", locationId: "elsewhere" }, TEST_LEVEL_CURVE))
       .toThrow(/objective-progress/i);
+
+    const invalidStatus = structuredClone(initial);
+    const second = AUTHORED_CONTRACT_REGISTRY.entries[1]!;
+    (invalidStatus.contracts[second.id] as { status: string }).status = "corrupt";
+    expect(validateContractGraphState(invalidStatus, AUTHORED_CONTRACT_REGISTRY, TEST_LEVEL_CURVE).map((issue) => issue.code))
+      .toContain("invalid-status");
+  });
+
+  it("rejects progress before activation and invalid Level inputs", () => {
+    const registry = createVersionedRegistry({
+      registryId: "contracts.inactive-progress",
+      schemaVersion: 1,
+      contentVersion: 1,
+      entries: [{
+        id: "root",
+        title: "Root",
+        prerequisiteIds: [],
+        objectives: [{ id: "visit-twice", kind: "visit" as const, locationId: "test", count: 2 }],
+        rewards: { items: [], levelProgress: 0 },
+      }],
+    });
+    const state = structuredClone(createContractGraphState(registry, TEST_LEVEL_CURVE));
+    state.contracts.root!.objectives[0]!.current = 1;
+    expect(validateContractGraphState(state, registry, TEST_LEVEL_CURVE).map((issue) => issue.code))
+      .toContain("inactive-progress");
+    expect(() => levelForProgress(-1, TEST_LEVEL_CURVE)).toThrow(/progress/i);
+    expect(() => levelForProgress(0, { thresholds: [{ level: 2, minimumProgress: 0 }] })).toThrow(/Level 1/i);
+  });
+
+  it("freezes the exported test Level curve at every depth", () => {
+    expect(Object.isFrozen(TEST_LEVEL_CURVE)).toBe(true);
+    expect(Object.isFrozen(TEST_LEVEL_CURVE.thresholds)).toBe(true);
+    expect(Object.isFrozen(TEST_LEVEL_CURVE.thresholds[0])).toBe(true);
+    expect(() => {
+      (TEST_LEVEL_CURVE.thresholds[0] as { minimumProgress: number }).minimumProgress = 99;
+    }).toThrow();
   });
 
   it("requires prerequisite closure when rebuilding completion state", () => {
@@ -107,6 +146,41 @@ describe("authored Contract graph", () => {
       .toThrow(/unknown completed/i);
     expect(() => createContractGraphState(AUTHORED_CONTRACT_REGISTRY, TEST_LEVEL_CURVE, [first.id, first.id]))
       .toThrow(/duplicate completed/i);
+  });
+
+  it("keeps registry ids safe when they overlap JavaScript object properties", () => {
+    const registry = createVersionedRegistry({
+      registryId: "contracts.object-key",
+      schemaVersion: 1,
+      contentVersion: 1,
+      entries: [{
+        id: "__proto__",
+        title: "Object key",
+        prerequisiteIds: [],
+        objectives: [{ id: "visit", kind: "visit" as const, locationId: "test", count: 1 }],
+        rewards: { items: [], levelProgress: 0 },
+      }],
+    });
+    const state = createContractGraphState(registry, TEST_LEVEL_CURVE);
+    expect(Object.hasOwn(state.contracts, "__proto__")).toBe(true);
+    expect(state.contracts.__proto__?.status).toBe("available");
+    expect(activateContract(state, registry, "__proto__", TEST_LEVEL_CURVE)).toMatchObject({
+      ok: true,
+      state: { contracts: { __proto__: { status: "active" } } },
+    });
+    expect(validateContractGraphState(
+      { ...state, contracts: {} },
+      registry,
+      TEST_LEVEL_CURVE,
+    ).map((issue) => issue.code)).toContain("missing-contract");
+
+    const malformed = structuredClone(state);
+    (malformed.contracts.__proto__ as unknown as { objectives: unknown }).objectives = null;
+    expect(validateContractGraphState(malformed, registry, TEST_LEVEL_CURVE).map((issue) => issue.code))
+      .toContain("objective-shape");
+    (malformed.contracts.__proto__ as unknown as { objectives: unknown }).objectives = [null];
+    expect(validateContractGraphState(malformed, registry, TEST_LEVEL_CURVE).map((issue) => issue.code))
+      .toContain("objective-shape");
   });
 
   it("requires every objective, ignores unrelated events, and matches versioned reward data", () => {
@@ -162,5 +236,16 @@ describe("shared AI objective semantics", () => {
       kind: "itemsExtracted",
       items: [{ itemId: "anything", quantity: 0.5 }],
     })).toThrow(/non-negative integers/i);
+
+    const tainted = { ...initial, contractId: "player-contract", rewards: { levelProgress: 99 }, level: 99 };
+    expect(advanceAiObjective(tainted, { kind: "interactionCompleted", targetId: "test-storage-locker" }))
+      .not.toMatchObject({ contractId: "player-contract", level: 99 });
+    expect(validateObjectiveDefinition({
+      id: "source",
+      kind: "extractItems",
+      itemId: "powerup:health",
+      sourceId: "",
+      count: 1,
+    }).map((issue) => issue.code)).toContain("missing-target");
   });
 });

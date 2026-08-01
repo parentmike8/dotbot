@@ -26,7 +26,10 @@ export function validateObjectiveDefinition(objective: AuthoredObjectiveDefiniti
     ? objective.targetId
     : objective.kind === "visit" ? objective.locationId : objective.itemId;
   if (!target.trim()) issues.push({ code: "missing-target" });
-  if (!Number.isInteger(objective.count) || objective.count < 1) issues.push({ code: "invalid-count" });
+  if (objective.kind === "extractItems" && objective.sourceId !== undefined && !objective.sourceId.trim()) {
+    issues.push({ code: "missing-target" });
+  }
+  if (!Number.isSafeInteger(objective.count) || objective.count < 1) issues.push({ code: "invalid-count" });
   return issues;
 }
 
@@ -46,12 +49,12 @@ export function advanceObjective(
   if (progress.objectiveId !== objective.id) throw new Error(`Objective progress mismatch for ${objective.id}.`);
   if (
     progress.required !== objective.count
-    || !Number.isInteger(progress.current)
+    || !Number.isSafeInteger(progress.current)
     || progress.current < 0
     || progress.current > progress.required
     || progress.completed !== (progress.current >= progress.required)
   ) throw new Error(`Invalid objective progress for ${objective.id}.`);
-  if (event.kind === "itemsExtracted" && event.items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 0)) {
+  if (event.kind === "itemsExtracted" && event.items.some((item) => !Number.isSafeInteger(item.quantity) || item.quantity < 0)) {
     throw new Error("Extracted objective item quantities must be non-negative integers.");
   }
   if (progress.completed) return { ...progress };
@@ -88,7 +91,8 @@ export function createAiObjective(id: string, objective: AuthoredObjectiveDefini
 
 export function advanceAiObjective(objective: AiObjective, event: ObjectiveDomainEvent): AiObjective {
   return {
-    ...objective,
+    id: objective.id,
+    objective: { ...objective.objective },
     progress: advanceObjective(objective.objective, objective.progress, event),
   };
 }

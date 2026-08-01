@@ -68,7 +68,7 @@ export function validateInteractionTarget(target: DomainInteractionTarget): Inte
       : `${requirement.kind}:${requirement.kind === "completedContract" ? requirement.contractId : requirement.capabilityId}`;
     if (requirements.has(key)) issues.push({ code: "duplicate-requirement", detail: key });
     requirements.add(key);
-    if (requirement.kind === "minimumLevel" && (!Number.isInteger(requirement.level) || requirement.level < 1)) {
+    if (requirement.kind === "minimumLevel" && (!Number.isSafeInteger(requirement.level) || requirement.level < 1)) {
       issues.push({ code: "invalid-level", detail: String(requirement.level) });
     }
     if (requirement.kind === "completedContract" && !requirement.contractId.trim()) {
@@ -88,7 +88,7 @@ export function authorizeInteraction(
 ): InteractionAuthorization {
   const issues = validateInteractionTarget(target);
   if (issues.length > 0) throw new Error(`Invalid interaction target ${target.id}: ${issues.map((issue) => issue.code).join(", ")}`);
-  if (!Number.isInteger(actor.level) || actor.level < 1) return { authorized: false, reason: "invalid-context" };
+  if (!Number.isSafeInteger(actor.level) || actor.level < 1) return { authorized: false, reason: "invalid-context" };
   for (const requirement of target.requirements) {
     if (requirement.kind === "minimumLevel" && actor.level < requirement.level) {
       return { authorized: false, reason: "level-required", requiredLevel: requirement.level, actualLevel: actor.level };

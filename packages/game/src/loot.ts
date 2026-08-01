@@ -29,7 +29,7 @@ export const LOOT_TABLE_REGISTRY = createVersionedRegistry<LootTableDefinition>(
 });
 
 export type LootTableIssue = {
-  code: "invalid-rolls" | "empty-entries" | "invalid-weight" | "invalid-quantity";
+  code: "invalid-rolls" | "empty-entries" | "invalid-weight" | "invalid-quantity" | "invalid-total-weight";
   tableId: string;
 };
 
@@ -38,13 +38,17 @@ export function validateLootTableRegistry(
 ): LootTableIssue[] {
   const issues: LootTableIssue[] = [];
   for (const table of registry.entries) {
-    if (!Number.isInteger(table.rolls) || table.rolls < 0) issues.push({ code: "invalid-rolls", tableId: table.id });
+    if (!Number.isSafeInteger(table.rolls) || table.rolls < 0) issues.push({ code: "invalid-rolls", tableId: table.id });
     if (table.rolls > 0 && table.entries.length === 0) issues.push({ code: "empty-entries", tableId: table.id });
     for (const entry of table.entries) {
       if (!Number.isFinite(entry.weight) || entry.weight <= 0) issues.push({ code: "invalid-weight", tableId: table.id });
-      if (!Number.isInteger(entry.output.quantity) || entry.output.quantity <= 0) {
+      if (!Number.isSafeInteger(entry.output.quantity) || entry.output.quantity <= 0) {
         issues.push({ code: "invalid-quantity", tableId: table.id });
       }
+    }
+    const totalWeight = table.entries.reduce((total, entry) => total + entry.weight, 0);
+    if (table.entries.length > 0 && (!Number.isFinite(totalWeight) || totalWeight <= 0)) {
+      issues.push({ code: "invalid-total-weight", tableId: table.id });
     }
   }
   return issues;
@@ -61,7 +65,13 @@ export function rollLootTable(
   const totalWeight = table.entries.reduce((total, entry) => {
     return total + entry.weight;
   }, 0);
-  const random = seededRandom(`${tableRef.contentVersion}|${table.id}|${seed}`);
+  const random = seededRandom(JSON.stringify([
+    tableRef.registryId,
+    tableRef.schemaVersion,
+    tableRef.contentVersion,
+    tableRef.entryId,
+    seed,
+  ]));
   const output: DomainItemStack[] = [];
   for (let roll = 0; roll < table.rolls; roll += 1) {
     let cursor = random() * totalWeight;

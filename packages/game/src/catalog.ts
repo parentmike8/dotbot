@@ -77,21 +77,21 @@ export const PLATE_SET_REGISTRY = createVersionedRegistry<PlateSetDefinition>({
       id: "stealth",
       equipmentKind: "plateSet",
       default: false,
-      physical: true,
+      physical: false,
       capabilities: { suppressesSignals: ["radar", "noiseMarker"] },
     },
     {
       id: "tech",
       equipmentKind: "plateSet",
       default: false,
-      physical: true,
+      physical: false,
       capabilities: { shortensChannels: ["revive", "bodyLoot"] },
     },
     {
       id: "blast",
       equipmentKind: "plateSet",
       default: false,
-      physical: true,
+      physical: false,
       capabilities: { countersDamage: ["mine"] },
     },
   ],
@@ -125,22 +125,35 @@ export type EquipmentCatalogIssue = {
   registryId: string;
   entryId?: string;
   code: "missing-default" | "multiple-defaults" | "missing-standard-black" | "missing-ordinary" | "invalid-default"
-    | "invalid-plate-count" | "physical-default" | "non-physical-special";
+    | "invalid-plate-count" | "physical-default" | "non-physical-special" | "registry-id" | "equipment-kind";
 };
 
 export function validateEquipmentCatalogs(catalogs: EquipmentCatalogs): EquipmentCatalogIssue[] {
   const issues: EquipmentCatalogIssue[] = [];
-  const validateDefaults = (registry: VersionedRegistry<CoreDefinition | PlateSetDefinition>) => {
+  if (catalogs.cores.registryId !== CORE_REGISTRY.registryId) {
+    issues.push({ registryId: catalogs.cores.registryId, code: "registry-id" });
+  }
+  if (catalogs.plateSets.registryId !== PLATE_SET_REGISTRY.registryId) {
+    issues.push({ registryId: catalogs.plateSets.registryId, code: "registry-id" });
+  }
+  const validateDefaults = (
+    registry: VersionedRegistry<CoreDefinition | PlateSetDefinition>,
+    requirePhysicalSpecials: boolean,
+  ) => {
     const defaults = registry.entries.filter((entry) => entry.default);
     if (defaults.length === 0) issues.push({ registryId: registry.registryId, code: "missing-default" });
     if (defaults.length > 1) issues.push({ registryId: registry.registryId, code: "multiple-defaults" });
     for (const entry of registry.entries) {
       if (entry.default && entry.physical) issues.push({ registryId: registry.registryId, entryId: entry.id, code: "physical-default" });
-      if (!entry.default && !entry.physical) issues.push({ registryId: registry.registryId, entryId: entry.id, code: "non-physical-special" });
+      if (requirePhysicalSpecials && !entry.default && !entry.physical) {
+        issues.push({ registryId: registry.registryId, entryId: entry.id, code: "non-physical-special" });
+      }
     }
   };
-  validateDefaults(catalogs.cores);
-  validateDefaults(catalogs.plateSets);
+  validateDefaults(catalogs.cores, true);
+  // Plate ownership is still a product decision. Capability scaffolds are not
+  // physical instances unless a later content version explicitly makes them so.
+  validateDefaults(catalogs.plateSets, false);
   const standard = catalogs.cores.entries.find((entry) => entry.id === "standard-black");
   if (!standard) {
     issues.push({ registryId: catalogs.cores.registryId, code: "missing-standard-black" });
@@ -164,8 +177,16 @@ export function validateEquipmentCatalogs(catalogs: EquipmentCatalogs): Equipmen
     issues.push({ registryId: catalogs.plateSets.registryId, entryId: ordinary.id, code: "invalid-default" });
   }
   for (const core of catalogs.cores.entries) {
-    if (core.plateCount.kind === "fixed" && (!Number.isInteger(core.plateCount.count) || core.plateCount.count < 1)) {
+    if (core.equipmentKind !== "core") {
+      issues.push({ registryId: catalogs.cores.registryId, entryId: core.id, code: "equipment-kind" });
+    }
+    if (core.plateCount.kind === "fixed" && (!Number.isSafeInteger(core.plateCount.count) || core.plateCount.count < 1)) {
       issues.push({ registryId: catalogs.cores.registryId, entryId: core.id, code: "invalid-plate-count" });
+    }
+  }
+  for (const plateSet of catalogs.plateSets.entries) {
+    if (plateSet.equipmentKind !== "plateSet") {
+      issues.push({ registryId: catalogs.plateSets.registryId, entryId: plateSet.id, code: "equipment-kind" });
     }
   }
   return issues;
@@ -175,7 +196,7 @@ export function domainItemKey(item: DomainItemSpec): string {
   if (item.kind === "powerup") return `powerup:${item.powerupType}`;
   if (item.kind === "mine") return "mine";
   const ref = item.ref;
-  return `${item.catalogKind}:${ref.registryId}:${ref.schemaVersion}:${ref.contentVersion}:${ref.entryId}`;
+  return JSON.stringify([item.catalogKind, ref.registryId, ref.schemaVersion, ref.contentVersion, ref.entryId]);
 }
 
 export function cloneDomainItemStack(stack: DomainItemStack): DomainItemStack {

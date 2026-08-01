@@ -57,7 +57,8 @@ migrated deliberately rather than silently changing under stored items.
 - Plate Sets: ordinary Plates are always present. Stealth, Tech, and Blast are
   scaffold entries with explicit capabilities: signal suppression, shortened
   interaction kinds, and mine-damage countering. They contain no final values or
-  visual decisions.
+  visual decisions. Their physical-versus-learned ownership model remains
+  deliberately unresolved; these scaffold entries are not physical instances.
 - Blueprints and base objects: the integration registry is intentionally limited
   to storage and a locker. It is separate from the current broad prototype
   furniture list.
@@ -68,21 +69,29 @@ migrated deliberately rather than silently changing under stored items.
   touching storage or a map.
 
 A physical item instance has a stable instance id, a versioned catalog
-reference, and append-only acquisition/ownership history. Rare Cores and Plate
-Sets therefore survive extraction, can be stored and equipped, and can be lost
-without collapsing into an aggregate count.
+reference, and append-only acquisition/ownership history. Rare Cores and any
+Plate Sets later designated as physical therefore survive extraction, can be
+stored and equipped, and can be lost without collapsing into an aggregate
+count. The same machinery does not decide that Plate ownership question.
 
 ### Extraction and loadout
 
 Extracted physical items bank into base storage. Banking returns new storage and
 does not alter the selected or locked loadout. Default black Core and ordinary
-Plates are virtual defaults and need no stored instance.
+Plates are virtual defaults and need no stored instance. Banking requires the
+instance's latest history event to record extraction and its owner; a merely
+found in-run instance cannot bypass extraction settlement into storage.
 
 A loadout selects either each default or a compatible stored physical instance.
 Pure validation checks existence, catalog kind, duplicates, and carried-item
 ownership. Queue integration must call `lockLoadoutAtPublicQueueEntry` once and
 persist that immutable snapshot for the run. This package does not call the
 matchmaker or mutate a player record.
+
+Until the Plate ownership decision in `docs/backlog.md` is resolved, the three
+non-default Plate capability scaffolds are not valid stored instances and must
+not be written into player loadouts. The physical Plate path is generic engine
+support for a later catalog version, not a choice to adopt that ownership model.
 
 ## Persistence handoff schema
 
@@ -114,8 +123,8 @@ Required transaction boundaries:
    Contract events, grants rewards and Level progress once, and clears the run
    lock in one idempotent transaction keyed by match settlement id.
 4. Loss clears only at-risk physical instances from the run. Missing rare Core
-   or Plate Set references resolve to the always-available defaults on the next
-   validation; they never synthesize replacement rare instances.
+   or physical Plate Set references resolve to the always-available defaults on
+   the next validation; they never synthesize replacement rare instances.
 
 Persist `registryId`, `schemaVersion`, `contentVersion`, and `entryId` on every
 catalog reference. Persist the authored Contract registry version beside graph
@@ -134,6 +143,10 @@ content.
   unique rare-equipment identity, previous owners, or provenance. Preserve them
   as ordinary legacy cargo and create physical instances only from an explicit
   acquisition/fabrication/extraction event after cutover.
+- Do not migrate or synthesize non-default Plate ownership from any current row.
+  The backlog still leaves physical instances versus learned persistent choice
+  unresolved; identity persistence must keep ordinary Plates as the default
+  until that product decision receives an explicit schema/content version.
 - The current server moves selected aggregate loadout items out of stash before
   match assembly. The physical-item integration must move the lock boundary to
   public queue entry without double-consuming those legacy rows.

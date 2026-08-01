@@ -42,9 +42,11 @@ export const FABRICATION_RECIPE_REGISTRY = createVersionedRegistry<FabricationRe
 export function inventoryFromStacks(stacks: readonly DomainItemStack[]): DomainInventory {
   const inventory: Record<string, number> = {};
   for (const stack of stacks) {
-    if (!Number.isInteger(stack.quantity) || stack.quantity <= 0) throw new Error("Item stack quantity must be a positive integer.");
+    if (!Number.isSafeInteger(stack.quantity) || stack.quantity <= 0) throw new Error("Item stack quantity must be a positive safe integer.");
     const key = domainItemKey(stack.item);
-    inventory[key] = (inventory[key] ?? 0) + stack.quantity;
+    const quantity = (inventory[key] ?? 0) + stack.quantity;
+    if (!Number.isSafeInteger(quantity)) throw new Error(`Item stack total exceeds the safe integer range: ${key}`);
+    inventory[key] = quantity;
   }
   return inventory;
 }
@@ -67,6 +69,11 @@ export function fabricate(
   if (recipe.requiresBlueprint && !context.learnedBlueprints?.some((reference) => sameCatalogRef(reference, recipe.requiresBlueprint!))) {
     return { ok: false, reason: "missing-blueprint", blueprint: { ...recipe.requiresBlueprint } };
   }
+  for (const [key, quantity] of Object.entries(inventory)) {
+    if (!Number.isSafeInteger(quantity) || quantity < 0) {
+      throw new Error(`Invalid fabrication inventory quantity for ${key}.`);
+    }
+  }
   const missing = recipe.inputs.filter((stack) => (inventory[domainItemKey(stack.item)] ?? 0) < stack.quantity)
     .map(cloneDomainItemStack);
   if (missing.length > 0) return { ok: false, reason: "missing-inputs", missing };
@@ -84,7 +91,7 @@ export function fabricate(
 }
 
 export type FabricationRecipeIssue = {
-  code: "empty-inputs" | "empty-outputs" | "invalid-quantity";
+  code: "empty-inputs" | "empty-outputs" | "invalid-quantity" | "duplicate-input";
   detail: string;
 };
 
@@ -93,9 +100,15 @@ export function validateRecipe(recipe: FabricationRecipeDefinition): Fabrication
   if (recipe.inputs.length === 0) issues.push({ code: "empty-inputs", detail: recipe.id });
   if (recipe.outputs.length === 0) issues.push({ code: "empty-outputs", detail: recipe.id });
   for (const stack of [...recipe.inputs, ...recipe.outputs]) {
-    if (!Number.isInteger(stack.quantity) || stack.quantity <= 0) {
+    if (!Number.isSafeInteger(stack.quantity) || stack.quantity <= 0) {
       issues.push({ code: "invalid-quantity", detail: `${recipe.id}:${domainItemKey(stack.item)}` });
     }
+  }
+  const inputKeys = new Set<string>();
+  for (const stack of recipe.inputs) {
+    const key = domainItemKey(stack.item);
+    if (inputKeys.has(key)) issues.push({ code: "duplicate-input", detail: `${recipe.id}:${key}` });
+    inputKeys.add(key);
   }
   return issues;
 }

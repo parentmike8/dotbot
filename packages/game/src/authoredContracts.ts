@@ -55,8 +55,10 @@ export type ContractGraphStateIssue = {
     | "missing-contract"
     | "unknown-contract"
     | "contract-id"
+    | "invalid-status"
     | "objective-shape"
     | "objective-progress"
+    | "inactive-progress"
     | "status-prerequisites"
     | "status-completion"
     | "level-progress";
@@ -64,13 +66,13 @@ export type ContractGraphStateIssue = {
   detail: string;
 };
 
-export const TEST_LEVEL_CURVE: LevelCurve = {
-  thresholds: [
-    { level: 1, minimumProgress: 0 },
-    { level: 2, minimumProgress: 10 },
-    { level: 3, minimumProgress: 30 },
-  ],
-};
+export const TEST_LEVEL_CURVE: LevelCurve = Object.freeze({
+  thresholds: Object.freeze([
+    Object.freeze({ level: 1, minimumProgress: 0 }),
+    Object.freeze({ level: 2, minimumProgress: 10 }),
+    Object.freeze({ level: 3, minimumProgress: 30 }),
+  ]),
+});
 
 /** Disposable integration content only. The real progression arc is deferred. */
 export const AUTHORED_CONTRACT_REGISTRY = createVersionedRegistry<AuthoredContractDefinition>({
@@ -134,11 +136,11 @@ export function validateContractRegistry(
         issues.push({ code: "invalid-objective", contractId: contract.id, detail: objective.id });
       }
     }
-    if (!Number.isInteger(contract.rewards.levelProgress) || contract.rewards.levelProgress < 0) {
+    if (!Number.isSafeInteger(contract.rewards.levelProgress) || contract.rewards.levelProgress < 0) {
       issues.push({ code: "invalid-reward", contractId: contract.id, detail: "Level progress must be a non-negative integer." });
     }
     for (const item of contract.rewards.items) {
-      if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+      if (!Number.isSafeInteger(item.quantity) || item.quantity < 1) {
         issues.push({ code: "invalid-reward", contractId: contract.id, detail: "Reward item quantity must be a positive integer." });
       }
     }
@@ -163,10 +165,9 @@ export function createContractGraphState(
     seenCompleted.add(contractId);
   }
   const completed = new Set(completedContractIds);
-  const contracts: Record<string, ContractProgressState> = {};
-  for (const contract of registry.entries) {
+  const contracts = Object.fromEntries(registry.entries.map((contract): [string, ContractProgressState] => {
     const isCompleted = completed.has(contract.id);
-    contracts[contract.id] = {
+    return [contract.id, {
       contractId: contract.id,
       status: isCompleted
         ? "completed"
@@ -175,8 +176,8 @@ export function createContractGraphState(
         const progress = createObjectiveProgress(objective);
         return isCompleted ? { ...progress, current: progress.required, completed: true } : progress;
       }),
-    };
-  }
+    }];
+  }));
   const state: ContractGraphState = {
     registry: {
       registryId: registry.registryId,
@@ -201,7 +202,7 @@ export function activateContract(
   levelCurve: LevelCurve,
 ): ActivateContractResult {
   assertContractGraphState(state, registry, levelCurve);
-  const current = state.contracts[contractId];
+  const current = ownContractProgress(state.contracts, contractId);
   if (!current) return { ok: false, reason: "unknown-contract" };
   if (current.status === "locked") return { ok: false, reason: "locked" };
   if (current.status === "active") return { ok: false, reason: "already-active" };
@@ -232,7 +233,7 @@ export function advanceContractGraph(
   const completedContractIds: string[] = [];
   const rewards = { items: [] as DomainItemStack[], levelProgress: 0 };
   for (const definition of registry.entries) {
-    const current = contracts[definition.id];
+    const current = ownContractProgress(contracts, definition.id);
     if (!current || current.status !== "active") continue;
     const objectives = definition.objectives.map((objective, index) =>
       advanceObjective(objective, current.objectives[index] ?? createObjectiveProgress(objective), event));
@@ -246,8 +247,8 @@ export function advanceContractGraph(
     }
   }
   for (const definition of registry.entries) {
-    const current = contracts[definition.id];
-    if (current?.status === "locked" && definition.prerequisiteIds.every((id) => contracts[id]?.status === "completed")) {
+    const current = ownContractProgress(contracts, definition.id);
+    if (current?.status === "locked" && definition.prerequisiteIds.every((id) => ownContractProgress(contracts, id)?.status === "completed")) {
       contracts[definition.id] = { ...current, status: "available" };
     }
   }
@@ -281,40 +282,60 @@ export function validateContractGraphState(
     if (!definitions.has(contractId)) issues.push({ code: "unknown-contract", contractId, detail: contractId });
   }
   for (const definition of registry.entries) {
-    const progress = state.contracts[definition.id];
-    if (!progress) {
+    const progress = ownContractProgress(state.contracts, definition.id);
+    if (!progress || typeof progress !== "object") {
       issues.push({ code: "missing-contract", contractId: definition.id, detail: definition.id });
       continue;
     }
     if (progress.contractId !== definition.id) {
       issues.push({ code: "contract-id", contractId: definition.id, detail: progress.contractId });
     }
-    if (progress.objectives.length !== definition.objectives.length) {
+    if (!isContractStatus(progress.status)) {
+      issues.push({ code: "invalid-status", contractId: definition.id, detail: String(progress.status) });
+    }
+    const objectiveProgresses = Array.isArray(progress.objectives) ? progress.objectives : [];
+    if (!Array.isArray(progress.objectives) || objectiveProgresses.length !== definition.objectives.length) {
       issues.push({ code: "objective-shape", contractId: definition.id, detail: "Objective count differs." });
     }
     for (const [index, objective] of definition.objectives.entries()) {
-      const objectiveProgress = progress.objectives[index];
-      if (!objectiveProgress || objectiveProgress.objectiveId !== objective.id || objectiveProgress.required !== objective.count) {
+      const objectiveProgress = objectiveProgresses[index];
+      if (
+        !objectiveProgress
+        || typeof objectiveProgress !== "object"
+        || objectiveProgress.objectiveId !== objective.id
+        || objectiveProgress.required !== objective.count
+      ) {
         issues.push({ code: "objective-shape", contractId: definition.id, detail: objective.id });
         continue;
       }
       if (
-        !Number.isInteger(objectiveProgress.current)
+        !Number.isSafeInteger(objectiveProgress.current)
         || objectiveProgress.current < 0
         || objectiveProgress.current > objectiveProgress.required
         || objectiveProgress.completed !== (objectiveProgress.current >= objectiveProgress.required)
       ) issues.push({ code: "objective-progress", contractId: definition.id, detail: objective.id });
     }
-    const prerequisitesComplete = definition.prerequisiteIds.every((id) => state.contracts[id]?.status === "completed");
+    const prerequisitesComplete = definition.prerequisiteIds.every((id) => ownContractProgress(state.contracts, id)?.status === "completed");
     if ((progress.status === "available" || progress.status === "active" || progress.status === "completed") !== prerequisitesComplete) {
       issues.push({ code: "status-prerequisites", contractId: definition.id, detail: progress.status });
     }
-    const objectivesComplete = progress.objectives.length > 0 && progress.objectives.every((objective) => objective.completed);
+    const objectivesComplete = objectiveProgresses.length > 0 && objectiveProgresses.every(
+      (objective) => objective !== null && typeof objective === "object" && objective.completed === true,
+    );
     if ((progress.status === "completed") !== objectivesComplete) {
       issues.push({ code: "status-completion", contractId: definition.id, detail: progress.status });
     }
+    if (
+      (progress.status === "locked" || progress.status === "available")
+      && objectiveProgresses.some((objective) =>
+        objective !== null
+        && typeof objective === "object"
+        && (objective.current !== 0 || objective.completed))
+    ) {
+      issues.push({ code: "inactive-progress", contractId: definition.id, detail: progress.status });
+    }
   }
-  if (!Number.isInteger(state.level.totalProgress) || state.level.totalProgress < 0) {
+  if (!Number.isSafeInteger(state.level.totalProgress) || state.level.totalProgress < 0) {
     issues.push({ code: "level-progress", detail: String(state.level.totalProgress) });
   } else if (state.level.level !== levelForProgress(state.level.totalProgress, levelCurve)) {
     issues.push({ code: "level-progress", detail: `Expected Level ${levelForProgress(state.level.totalProgress, levelCurve)}.` });
@@ -324,6 +345,9 @@ export function validateContractGraphState(
 
 export function levelForProgress(totalProgress: number, curve: LevelCurve): number {
   validateLevelCurve(curve);
+  if (!Number.isSafeInteger(totalProgress) || totalProgress < 0) {
+    throw new Error("Level progress must be a non-negative safe integer.");
+  }
   let level = curve.thresholds[0]!.level;
   for (const threshold of curve.thresholds) {
     if (totalProgress < threshold.minimumProgress) break;
@@ -335,16 +359,28 @@ export function levelForProgress(totalProgress: number, curve: LevelCurve): numb
 function validateLevelCurve(curve: LevelCurve): void {
   if (curve.thresholds.length === 0) throw new Error("Level curve requires at least one threshold.");
   if (curve.thresholds[0]?.minimumProgress !== 0) throw new Error("Level curve must begin at zero progress.");
+  if (curve.thresholds[0]?.level !== 1) throw new Error("Level curve must begin at Level 1.");
   let previousLevel = 0;
   let previousProgress = -1;
   for (const threshold of curve.thresholds) {
-    if (!Number.isInteger(threshold.level) || threshold.level <= previousLevel) throw new Error("Level curve levels must increase.");
-    if (!Number.isInteger(threshold.minimumProgress) || threshold.minimumProgress <= previousProgress) {
+    if (!Number.isSafeInteger(threshold.level) || threshold.level <= previousLevel) throw new Error("Level curve levels must increase.");
+    if (!Number.isSafeInteger(threshold.minimumProgress) || threshold.minimumProgress <= previousProgress) {
       throw new Error("Level curve progress thresholds must increase.");
     }
     previousLevel = threshold.level;
     previousProgress = threshold.minimumProgress;
   }
+}
+
+function isContractStatus(status: unknown): status is ContractStatus {
+  return status === "locked" || status === "available" || status === "active" || status === "completed";
+}
+
+function ownContractProgress(
+  contracts: Readonly<Record<string, ContractProgressState>>,
+  contractId: string,
+): ContractProgressState | undefined {
+  return Object.hasOwn(contracts, contractId) ? contracts[contractId] : undefined;
 }
 
 function assertContractGraphState(
