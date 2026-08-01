@@ -1,7 +1,7 @@
 import type { BayIndex, DownedVerb, DropCommand, GameConfig, MapDocument, PingKind, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
-export type RoomPhase = "lobby" | "countdown" | "live" | "ended";
+export type RoomPhase = "lobby" | "assembling" | "countdown" | "live" | "results" | "ended";
 
 /**
  * Delivery semantics are part of the game protocol, not a transport detail.
@@ -14,6 +14,28 @@ export type DeliveryClass = "reliable" | "latest";
 
 export const LOBBY_SQUADS = ["alpha", "bravo", "crew-3"] as const;
 export type LobbySquadId = (typeof LOBBY_SQUADS)[number];
+
+/** Six launch squads for the public extraction queue. Kept separate from the
+ * three-squad legacy room protocol so emergency rollback stays additive. */
+export const PUBLIC_EXTRACTION_SQUADS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"] as const;
+export type PublicExtractionSquadId = (typeof PUBLIC_EXTRACTION_SQUADS)[number];
+
+export type PlayerRole = {
+  roleId: string;
+  squadId: PublicExtractionSquadId;
+  slot: 0 | 1 | 2;
+  controller: "human" | "ai";
+  name: string;
+  playerId?: string;
+  partyId?: string;
+};
+
+export type PublicArenaMember = {
+  playerId: string;
+  name: string;
+  partyId: string;
+  queued: boolean;
+};
 
 export type LobbyMember = {
   playerId: string;
@@ -339,8 +361,16 @@ export type ClientMessage =
        * accepts it with the local Server SDK before admitting the peer. */
       playerSessionId?: string;
     }
+  | {
+      type: "quickPlayHello";
+      token: string;
+      name: string;
+      /** Required on the production GameLift path. */
+      playerSessionId?: string;
+    }
   | { type: "joinSquad"; squadId: LobbySquadId }
   | { type: "startMatch" }
+  | { type: "deployAgain" }
   | { type: "leaveRun" }
   /** Victim finished or skipped this exact replay; releases the server input gate. */
   | { type: "killCamDone"; clipId: string }
@@ -394,7 +424,25 @@ export type ServerMessage =
       hostId: string;
       locked: boolean;
     }
+  | {
+      type: "arenaWelcome";
+      playerId: string;
+      arenaId: string;
+      phase: Extract<RoomPhase, "assembling" | "countdown" | "live" | "results">;
+      members: PublicArenaMember[];
+      retiring: boolean;
+      assemblyStartedAt?: number;
+      assemblyDeadlineAt?: number;
+    }
   | { type: "lobby"; members: LobbyMember[]; hostId: string; locked: boolean }
+  | {
+      type: "arenaState";
+      phase: Extract<RoomPhase, "assembling" | "countdown" | "live" | "results">;
+      members: PublicArenaMember[];
+      retiring: boolean;
+      assemblyStartedAt?: number;
+      assemblyDeadlineAt?: number;
+    }
   | {
       type: "matchStart";
       map: MapDocument;
@@ -406,16 +454,20 @@ export type ServerMessage =
       insertionName: string;
       dotBaseline: WireDot[];
       intel?: MatchIntel;
+      /** Present on the additive public hot-arena path. */
+      matchId?: string;
+      roles?: PlayerRole[];
     }
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }
+  | { type: "roleController"; matchId: string; roleId: string; controller: "ai"; reason: "disconnect_timeout" }
   | { type: "ev"; events: WireSimEvent[] }
   /** Reliable and addressed only to the victim. Never broadcast. */
   | { type: "killCam"; clip: WireKillCamClip }
   | { type: "runOver"; reason: "extracted" | "died" | "timeout"; keptItems: WireItemCode[]; lostItems: WireItemCode[]; learnedBlueprints: string[]; contractCompletions?: Array<{ contractId: string; title: string; payout: WireItemCode[] }>; persistenceStatus?: "saved" | "failed" }
   | { type: "matchEnd"; reason: string }
   | { type: "pong"; cts: number; sts: number; tick?: number }
-  | { type: "err"; code: string; msg: string };
+  | { type: "err"; code: string; msg: string; retryable?: boolean };
 
 export function assertNever(value: never): never {
   throw new Error(`Unhandled message: ${JSON.stringify(value)}`);

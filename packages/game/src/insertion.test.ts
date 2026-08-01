@@ -55,6 +55,7 @@ describe("insertion assignment", () => {
     expect(() => validateInsertionMap({ ...downtownMap, insertionPoints: downtownMap.insertionPoints.slice(0, 4) }, 3, defaultGameConfig.botRadius))
       .toThrow(/squads \+ 2/);
     expect(() => validateInsertionMap(downtownMap, 3, defaultGameConfig.botRadius)).not.toThrow();
+    expect(() => validateInsertionMap(downtownMap, downtownMap.insertionPoints.length, defaultGameConfig.botRadius, 0)).not.toThrow();
   });
 
   it("checks insertion clearance against capsule barriers, not only legacy rectangles", () => {

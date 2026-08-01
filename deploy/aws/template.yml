@@ -91,6 +91,12 @@ Resources:
             ApiId: !Ref MatchmakerApi
             Path: /rooms
             Method: POST
+        QuickPlay:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref MatchmakerApi
+            Path: /quick-play
+            Method: POST
         JoinRoom:
           Type: HttpApi
           Properties:

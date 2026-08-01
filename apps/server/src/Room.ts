@@ -7,11 +7,12 @@ import { assignSquadInsertions, squadSpawnPosition, validateInsertionMap } from 
 import { isAmbientBotSpawn } from "@dotbot/game/faction";
 import type { BotSpawn, GameConfig, GameSnapshot, InputCommand, InsertionPoint, SimEvent } from "@dotbot/game/types";
 import { carriesAction, filterEventsForViewer, filterForViewer, itemFromCode, itemToCode, toEntityMeta, toViewerSnapshot, toWireEvent, toWireKillCamClip, toWireSnapshot, visiblePhysicsFloors } from "@dotbot/protocol";
-import { LOBBY_SQUADS } from "@dotbot/protocol";
-import type { ClientMessage, DeliveryClass, FullWireSnapshot, KillCamClip, LobbyMember, LobbySquadId, MatchIntel, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta, WireInputFrame } from "@dotbot/protocol";
+import { LOBBY_SQUADS, PUBLIC_EXTRACTION_SQUADS } from "@dotbot/protocol";
+import type { ClientMessage, DeliveryClass, FullWireSnapshot, KillCamClip, LobbyMember, LobbySquadId, MatchIntel, PlayerRole, PublicArenaMember, PublicExtractionSquadId, RoomPhase, ServerMessage, ViewerContext, WireDot, WireDotContextSync, WireDotDelta, WireInputFrame } from "@dotbot/protocol";
 import type { WireItemCode } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type RunManifest } from "./db";
 import { KillCamHistory } from "./killCam";
+import { assignPublicPlayerRoles, type PublicHuman } from "./hotArena";
 
 export interface RoomPeer {
   readonly id: string;
@@ -25,7 +26,8 @@ export interface RoomPeer {
   send(message: ServerMessage, delivery?: DeliveryClass, encoded?: string): void;
 }
 
-type Member = LobbyMember & {
+type Member = Omit<LobbyMember, "squadId"> & {
+  squadId: LobbySquadId | PublicExtractionSquadId;
   token: string;
   peer: RoomPeer | null;
   botId: string | null;
@@ -66,6 +68,8 @@ type Member = LobbyMember & {
   lastKillCam: KillCamClip | null;
   /** Exact replay still owning this victim's input surface. */
   activeKillCamId: string | null;
+  partyId: string;
+  queuedForNextRun: boolean;
 };
 
 export type RoomBandwidthHealth = {
@@ -73,6 +77,20 @@ export type RoomBandwidthHealth = {
   bytesPerSecond: number;
   members: number;
 };
+
+export type HotArenaOptions = {
+  assemblyMinMs?: number;
+  assemblyMaxMs?: number;
+  maxRuns?: number;
+  maxAgeMs?: number;
+  minInsertionSpacing?: number;
+};
+
+export type PublicPartyAdmissionDecision =
+  | { accepted: true }
+  | { accepted: false; code: "party_composition_full" | "party_invalid" | "arena_capacity"; retryable: boolean };
+
+type PublicJoinRejection = Exclude<PublicPartyAdmissionDecision, { accepted: true }>;
 
 type RoomOptions = {
   countdownMs?: number;
@@ -85,11 +103,28 @@ type RoomOptions = {
   matchIdFactory?: () => string;
   /** Mobile network handoff grace. Production defaults to 20 seconds. */
   connectionHandoffMs?: number;
+  /** Additive public quick-play lifecycle. Omit to retain legacy room/host behavior. */
+  hotArena?: HotArenaOptions;
+  onPublicAdmissionChange?: (state: { arenaId: string; open: boolean; closesAt?: number }) => void | Promise<void>;
+  onPublicMemberReleased?: (peerId: string) => void | Promise<void>;
 };
 
 const squads = LOBBY_SQUADS;
 const squadColors = ["#ff3b6b", "#2f80ed", "#9b51e0"] as const;
+const publicSquadColors: Record<PublicExtractionSquadId, string> = {
+  alpha: "#ff3b6b",
+  bravo: "#2f80ed",
+  charlie: "#9b51e0",
+  delta: "#f2994a",
+  echo: "#27ae60",
+  foxtrot: "#56ccf2",
+};
 const defaultConnectionHandoffMs = 20_000;
+const defaultHotArenaMinMs = 1_000;
+const defaultHotArenaMaxMs = 6_000;
+const defaultHotArenaMaxRuns = 20;
+const defaultHotArenaMaxAgeMs = 2 * 60 * 60_000;
+const defaultHotArenaMinInsertionSpacing = 350;
 
 export class Room {
   readonly code: string;
@@ -124,7 +159,19 @@ export class Room {
   private readonly connectionHandoffMs: number;
   private readonly matchIntel = new Map<string, MatchIntel>();
   private latestServerTick = 0;
-  private readonly killCamHistory = new KillCamHistory(downtownMap);
+  private killCamHistory = new KillCamHistory(downtownMap);
+  private readonly hotArena: Required<HotArenaOptions> | null;
+  private assemblyStartedAt: number | null = null;
+  private assemblyDeadlineAt: number | null = null;
+  private runCount = 0;
+  private currentRoles: PlayerRole[] = [];
+  private retiring = false;
+  private publicAdmissionOpen = false;
+  private publicAdmissionDeadline: number | null = null;
+  private publicAdmissionFailed = false;
+  private publicAdmissionLastAttemptAt = Number.NEGATIVE_INFINITY;
+  private readonly onPublicAdmissionChange?: RoomOptions["onPublicAdmissionChange"];
+  private readonly onPublicMemberReleased?: RoomOptions["onPublicMemberReleased"];
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
@@ -135,6 +182,10 @@ export class Room {
     this.aiWingmates = options.aiWingmates ?? true;
     this.matchIdFactory = options.matchIdFactory ?? randomUUID;
     this.connectionHandoffMs = options.connectionHandoffMs ?? defaultConnectionHandoffMs;
+    this.hotArena = options.hotArena ? normalizeHotArenaOptions(options.hotArena) : null;
+    this.onPublicAdmissionChange = options.onPublicAdmissionChange;
+    this.onPublicMemberReleased = options.onPublicMemberReleased;
+    if (this.hotArena) this.phase = "assembling";
     this.createdAt = this.now();
     this.lastTickAt = this.createdAt;
     this.bandwidthWindowStartedAt = this.createdAt;
@@ -149,7 +200,20 @@ export class Room {
   }
 
   get lobbyMembers(): LobbyMember[] {
-    return [...this.members.values()].map(({ playerId, name, squadId }) => ({ playerId, name, squadId }));
+    return [...this.members.values()].map(({ playerId, name, squadId }) => ({ playerId, name, squadId: squadId as LobbySquadId }));
+  }
+
+  get retirementRequested(): boolean {
+    return this.retiring;
+  }
+
+  get publicArenaMembers(): PublicArenaMember[] {
+    return [...this.members.values()].map(({ playerId, name, partyId, queuedForNextRun }) => ({
+      playerId,
+      name,
+      partyId,
+      queued: queuedForNextRun,
+    }));
   }
 
   get bandwidthHealth(): RoomBandwidthHealth {
@@ -162,10 +226,12 @@ export class Room {
   }
 
   get safeToTerminate(): boolean {
+    if (this.hotArena) return (this.phase === "assembling" || this.phase === "results") && this.persistenceSettled;
     return this.phase === "lobby" || (this.phase === "ended" && this.persistenceSettled);
   }
 
   get readyForDisposal(): boolean {
+    if (this.hotArena) return this.retiring && this.safeToTerminate;
     return this.phase === "ended" && this.persistenceSettled;
   }
 
@@ -174,9 +240,42 @@ export class Room {
     else await Promise.allSettled([...this.pendingPersistence]);
   }
 
-  join(peer: RoomPeer, token: string, requestedName: string, resolvedPlayerId?: string, preferredSquad?: LobbySquadId): Member | null {
+  evaluatePublicPartyAdmission(party: readonly PublicHuman[]): PublicPartyAdmissionDecision {
+    if (!this.hotArena || this.retiring || (this.phase !== "assembling" && this.phase !== "countdown" && this.phase !== "results")) {
+      return { accepted: false, code: "arena_capacity", retryable: true };
+    }
+    if (party.length < 1 || party.length > 3 || new Set(party.map((member) => member.partyId)).size !== 1
+      || new Set(party.map((member) => member.playerId)).size !== party.length
+      || party.some((member) => this.members.has(member.playerId))) {
+      return { accepted: false, code: "party_invalid", retryable: false };
+    }
+    if (this.members.size + party.length > 18) return { accepted: false, code: "party_composition_full", retryable: true };
+    try {
+      assignPublicPlayerRoles([
+        ...[...this.members.values()].map((member) => ({ playerId: member.playerId, name: member.name, partyId: member.partyId })),
+        ...party,
+      ], "admission");
+      return { accepted: true };
+    } catch {
+      return { accepted: false, code: "party_composition_full", retryable: true };
+    }
+  }
+
+  join(
+    peer: RoomPeer,
+    token: string,
+    requestedName: string,
+    resolvedPlayerId?: string,
+    preferredSquad?: LobbySquadId,
+    partyId?: string,
+    onPublicRejected?: (rejection: PublicJoinRejection) => void,
+  ): Member | null {
     const existing = this.memberByToken.get(token);
     if (existing) {
+      if (resolvedPlayerId && existing.playerId !== resolvedPlayerId) {
+        onPublicRejected?.({ accepted: false, code: "party_invalid", retryable: false });
+        return null;
+      }
       if (existing.peer && existing.peer.id !== peer.id) return null;
       existing.peer = peer;
       existing.name = sanitizeName(requestedName);
@@ -208,7 +307,14 @@ export class Room {
       return existing;
     }
 
-    if (this.phase !== "lobby" || this.members.size >= squads.length * 3) {
+    if (resolvedPlayerId && this.members.has(resolvedPlayerId)) {
+      onPublicRejected?.({ accepted: false, code: "party_invalid", retryable: false });
+      return null;
+    }
+
+    const publicAdmissionOpen = this.hotArena && (this.phase === "assembling" || this.phase === "countdown" || this.phase === "results") && !this.retiring;
+    if ((!this.hotArena && this.phase !== "lobby") || (this.hotArena && !publicAdmissionOpen) || this.members.size >= (this.hotArena ? 18 : squads.length * 3)) {
+      if (this.hotArena) onPublicRejected?.({ accepted: false, code: "arena_capacity", retryable: true });
       return null;
     }
 
@@ -217,7 +323,7 @@ export class Room {
       playerId: resolvedPlayerId ?? `p-${token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || index}`,
       token,
       name: sanitizeName(requestedName),
-      squadId: this.availableSquad(preferredSquad),
+      squadId: this.hotArena ? "alpha" : this.availableSquad(preferredSquad),
       peer,
       botId: null,
       inputQueue: [],
@@ -240,26 +346,50 @@ export class Room {
       dotState: new Map(),
       lastKillCam: null,
       activeKillCamId: null,
+      partyId: this.hotArena ? sanitizePartyId(partyId, resolvedPlayerId ?? token) : `legacy-${resolvedPlayerId ?? token}`,
+      queuedForNextRun: true,
     };
+    if (this.hotArena) {
+      if ([...this.members.values()].filter((candidate) => candidate.partyId === member.partyId).length >= 3) {
+        onPublicRejected?.({ accepted: false, code: "party_invalid", retryable: false });
+        return null;
+      }
+      try {
+        assignPublicPlayerRoles([...this.members.values(), member].map((candidate) => ({
+          playerId: candidate.playerId,
+          name: candidate.name,
+          partyId: candidate.partyId,
+        })), "admission");
+      } catch {
+        this.releasePublicParty(member.partyId);
+        onPublicRejected?.({ accepted: false, code: "party_composition_full", retryable: true });
+        return null;
+      }
+    }
     this.members.set(member.playerId, member);
     this.memberByToken.set(token, member);
-    if (!this.hostId) {
+    if (!this.hotArena && !this.hostId) {
       this.hostId = member.playerId;
     }
     this.sendWelcome(member);
     this.broadcastLobby();
+    if (this.hotArena) this.beginPublicAssemblyIfNeeded();
     return member;
   }
 
   receive(
     playerId: string,
-    message: Exclude<ClientMessage, { type: "hello" | "baseHello" | "baseInput" }>,
+    message: Exclude<ClientMessage, { type: "hello" | "quickPlayHello" | "baseHello" | "baseInput" }>,
   ): void {
     const member = this.members.get(playerId);
     if (!member) return;
 
     switch (message.type) {
       case "startMatch":
+        if (this.hotArena) {
+          member.peer?.send({ type: "err", code: "automatic_start", msg: "Public quick play starts automatically." });
+          return;
+        }
         if (playerId !== this.hostId) {
           member.peer?.send({ type: "err", code: "not_host", msg: "Only the host can start the match." });
           return;
@@ -271,6 +401,10 @@ export class Room {
         this.beginCountdown();
         return;
       case "joinSquad": {
+        if (this.hotArena) {
+          member.peer?.send({ type: "err", code: "automatic_squads", msg: "Public quick play keeps parties together automatically." });
+          return;
+        }
         if (this.phase !== "lobby") {
           member.peer?.send({ type: "err", code: "bad_phase", msg: "Squads lock when the host starts the match." });
           return;
@@ -288,6 +422,19 @@ export class Room {
         this.broadcastLobby();
         return;
       }
+      case "deployAgain":
+        if (!this.hotArena || this.phase !== "results") {
+          member.peer?.send({ type: "err", code: "bad_phase", msg: "Deploy again is available after a public run." });
+          return;
+        }
+        if (this.retiring) {
+          member.peer?.send({ type: "err", code: "arena_retiring", msg: "This arena is retiring. Quick play will place the next deployment elsewhere." });
+          return;
+        }
+        this.queueParty(member.partyId);
+        if (this.persistenceSettled) this.enterPublicAssembly();
+        else this.broadcastLobby();
+        return;
       case "leaveRun":
         this.leaveRun(member);
         return;
@@ -328,9 +475,15 @@ export class Room {
     const member = [...this.members.values()].find((candidate) => candidate.peer?.id === peerId);
     if (!member) return;
     member.peer = null;
-    member.disconnectedAt = Date.now();
+    member.disconnectedAt = this.now();
 
-    if (this.phase === "lobby") {
+    if (this.phase === "lobby" || (this.hotArena && (this.phase === "assembling" || this.phase === "results"))) {
+      this.scheduleHandoff(member);
+      this.broadcastLobby();
+      return;
+    }
+
+    if (this.hotArena && this.phase === "countdown") {
       this.scheduleHandoff(member);
       this.broadcastLobby();
       return;
@@ -344,32 +497,61 @@ export class Room {
 
   private scheduleHandoff(member: Member): void {
     if (member.handoffTimer) clearTimeout(member.handoffTimer);
-    const disconnectedAt = member.disconnectedAt ?? Date.now();
+    const disconnectedAt = member.disconnectedAt ?? this.now();
     member.disconnectedAt = disconnectedAt;
-    const remainingMs = Math.max(0, this.connectionHandoffMs - (Date.now() - disconnectedAt));
+    const remainingMs = Math.max(0, this.connectionHandoffMs - (this.now() - disconnectedAt));
     member.handoffTimer = setTimeout(() => this.expireHandoff(member), remainingMs);
   }
 
   private expireHandoff(member: Member): void {
     member.handoffTimer = null;
     if (member.peer) return;
-    if (this.phase === "lobby") {
+    if (this.phase === "lobby" || (this.hotArena && (this.phase === "assembling" || this.phase === "countdown" || this.phase === "results"))) {
       this.members.delete(member.playerId);
       this.memberByToken.delete(member.token);
       if (member.playerId === this.hostId) this.hostId = this.members.keys().next().value ?? "";
+      if (this.hotArena && this.readyMembers().length === 0) this.resetPublicAssembly();
       this.broadcastLobby();
       return;
     }
     if (this.phase !== "live" || !member.botId || !member.inRun) return;
     this.memberByToken.delete(member.token);
     this.simulation?.setController(member.botId, "ai");
+    if (this.hotArena && this.matchId) {
+      const role = this.currentRoles.find((candidate) => candidate.playerId === member.playerId);
+      if (role) {
+        role.controller = "ai";
+        this.broadcast({
+          type: "roleController",
+          matchId: this.matchId,
+          roleId: role.roleId,
+          controller: "ai",
+          reason: "disconnect_timeout",
+        });
+      }
+    }
     this.recordDisconnected(member);
     const allHandoffsExpired = [...this.members.values()].every((candidate) => candidate.peer || candidate.handoffTimer === null);
-    if (this.connectedCount === 0 && allHandoffsExpired) this.end("all_humans_disconnected");
+    if (!this.hotArena && this.connectedCount === 0 && allHandoffsExpired) this.end("all_humans_disconnected");
   }
 
   tick(now = this.now()): number[] {
     this.rollBandwidthWindow(now);
+    if (this.hotArena) {
+      if (this.publicAdmissionFailed && now - this.publicAdmissionLastAttemptAt >= 500) {
+        this.publishPublicAdmission(this.publicAdmissionOpen, this.publicAdmissionDeadline ?? undefined);
+      }
+      if (!this.retiring && now - this.createdAt >= this.hotArena.maxAgeMs) {
+        this.retiring = true;
+        this.publishPublicAdmission(false);
+        if (this.phase === "assembling" || this.phase === "results") this.broadcastLobby();
+      }
+      if (this.phase === "assembling" || this.phase === "countdown") {
+        this.tickPublicAssembly(now);
+        this.lastTickAt = now;
+        return [];
+      }
+    }
     if (this.phase !== "live" || !this.simulation) {
       this.lastTickAt = now;
       return [];
@@ -428,6 +610,7 @@ export class Room {
   }
 
   dispose(): void {
+    this.publishPublicAdmission(false);
     for (const member of this.members.values()) {
       if (member.handoffTimer) clearTimeout(member.handoffTimer);
     }
@@ -547,6 +730,154 @@ export class Room {
     }
   }
 
+  private readyMembers(): Member[] {
+    return [...this.members.values()].filter((member) => member.queuedForNextRun && (member.peer !== null || member.handoffTimer !== null));
+  }
+
+  private queueParty(partyId: string): void {
+    for (const candidate of this.members.values()) {
+      if (candidate.partyId === partyId && (candidate.peer || candidate.handoffTimer)) candidate.queuedForNextRun = true;
+    }
+  }
+
+  private beginPublicAssemblyIfNeeded(): void {
+    if (!this.hotArena || this.phase !== "assembling" || !this.persistenceSettled || this.retiring || this.readyMembers().length === 0 || this.assemblyStartedAt !== null) return;
+    this.assemblyStartedAt = this.now();
+    this.assemblyDeadlineAt = this.assemblyStartedAt + this.hotArena.assemblyMaxMs;
+    this.phase = "assembling";
+    this.publishPublicAdmission(true, this.assemblyDeadlineAt);
+    this.broadcastLobby();
+  }
+
+  private enterPublicAssembly(): void {
+    if (!this.hotArena || this.retiring) return;
+    this.releaseUnqueuedMembers();
+    this.phase = "assembling";
+    this.assemblyStartedAt = null;
+    this.assemblyDeadlineAt = null;
+    this.beginPublicAssemblyIfNeeded();
+  }
+
+  private releaseUnqueuedMembers(): void {
+    for (const member of [...this.members.values()]) {
+      if (member.queuedForNextRun) continue;
+      this.releasePublicMember(member, "redeploy_not_selected", "This party did not opt into the next run. Re-enter quick play to deploy.");
+    }
+  }
+
+  private releasePublicParty(partyId: string): void {
+    for (const member of [...this.members.values()]) {
+      if (member.partyId !== partyId) continue;
+      this.releasePublicMember(member, "party_composition_full", "This party no longer fits in this assembly. Re-enter quick play together.", true);
+    }
+    if (this.readyMembers().length === 0) this.resetPublicAssembly();
+    this.broadcastLobby();
+  }
+
+  private releasePublicMember(member: Member, code: string, msg: string, retryable = false): void {
+    if (member.handoffTimer) clearTimeout(member.handoffTimer);
+    this.members.delete(member.playerId);
+    this.memberByToken.delete(member.token);
+    const peer = member.peer;
+    member.peer = null;
+    member.streaming = false;
+    if (!peer) return;
+    peer.send({ type: "err", code, msg, ...(retryable ? { retryable: true } : {}) });
+    void (async () => this.onPublicMemberReleased?.(peer.id))().catch((error) => {
+      console.error(`[arena ${this.code}] failed to release player ${member.playerId}. ${errorMessage(error)}`);
+    });
+  }
+
+  private resetPublicAssembly(): void {
+    if (!this.hotArena) return;
+    this.phase = "assembling";
+    this.assemblyStartedAt = null;
+    this.assemblyDeadlineAt = null;
+    this.publishPublicAdmission(false);
+  }
+
+  private publishPublicAdmission(open: boolean, closesAt?: number): void {
+    const deadline = open ? closesAt ?? null : null;
+    if (!this.hotArena) return;
+    const now = this.now();
+    const sameState = this.publicAdmissionOpen === open && this.publicAdmissionDeadline === deadline;
+    if (sameState && (!this.publicAdmissionFailed || now - this.publicAdmissionLastAttemptAt < 500)) return;
+    this.publicAdmissionOpen = open;
+    this.publicAdmissionDeadline = deadline;
+    this.publicAdmissionFailed = false;
+    this.publicAdmissionLastAttemptAt = now;
+    void (async () => this.onPublicAdmissionChange?.({
+      arenaId: this.code,
+      open,
+      ...(deadline === null ? {} : { closesAt: deadline }),
+    }))().catch((error) => {
+      if (this.publicAdmissionOpen === open && this.publicAdmissionDeadline === deadline) this.publicAdmissionFailed = true;
+      console.error(`[arena ${this.code}] failed to publish admission=${open}. ${errorMessage(error)}`);
+    });
+  }
+
+  private tickPublicAssembly(now: number): void {
+    if (!this.hotArena || this.matchStartPromise || this.retiring) return;
+    if (this.readyMembers().length === 0) {
+      if (this.assemblyStartedAt !== null) {
+        this.resetPublicAssembly();
+        this.broadcastLobby();
+      }
+      return;
+    }
+    if (this.assemblyStartedAt === null || this.assemblyDeadlineAt === null) {
+      this.assemblyStartedAt = now;
+      this.assemblyDeadlineAt = now + this.hotArena.assemblyMaxMs;
+      this.broadcastLobby();
+      return;
+    }
+    const minimumReached = now - this.assemblyStartedAt >= this.hotArena.assemblyMinMs;
+    if (!minimumReached) return;
+    if (this.phase === "assembling") {
+      this.phase = "countdown";
+      this.broadcastLobby();
+    }
+    const humanCapacityReached = this.readyMembers().length === PUBLIC_EXTRACTION_SQUADS.length * 3;
+    if (!humanCapacityReached && now < this.assemblyDeadlineAt) return;
+    this.publishPublicAdmission(false);
+    this.matchStartPromise = this.startMatch()
+      .catch((error) => this.failPublicStart(error))
+      .finally(() => {
+        this.matchStartPromise = null;
+      });
+  }
+
+  private async failPublicStart(error: unknown): Promise<void> {
+    console.error(`[arena ${this.code}] public run failed before live; retiring arena. ${errorMessage(error)}`);
+    const failedMatchId = this.matchId;
+    const endedAt = this.now();
+    this.simulation?.dispose();
+    this.simulation = null;
+    this.matchId = null;
+    this.currentRoles = [];
+    this.persistenceSettled = failedMatchId === null;
+    this.phase = "assembling";
+    this.retiring = true;
+    this.publishPublicAdmission(false);
+    this.broadcast({ type: "err", code: "arena_configuration_invalid", msg: "This arena could not start safely. Re-enter quick play." });
+    this.broadcastLobby();
+    if (!failedMatchId) return;
+    const pending = [...this.pendingPersistence];
+    const recovery = Promise.allSettled(pending).then(async () => {
+      await this.persistence.finishMatch({
+        matchId: failedMatchId,
+        endedAt: new Date(endedAt),
+        summary: { reason: "configuration_failure", participants: [] },
+      });
+    }).catch((finishError) => {
+      console.warn(`[persistence] failed to close aborted match ${failedMatchId}; arena will still retire. ${errorMessage(finishError)}`);
+    }).finally(() => {
+      this.persistenceSettled = true;
+    });
+    this.endPromise = recovery;
+    await recovery;
+  }
+
   private beginCountdown(): void {
     this.phase = "countdown";
     this.broadcastLobby();
@@ -555,12 +886,36 @@ export class Room {
 
   private async startMatch(): Promise<void> {
     if (this.phase !== "countdown") return;
+    if (this.hotArena && this.retiring) return;
+    const runMembers = this.hotArena ? this.readyMembers() : [...this.members.values()];
+    if (runMembers.length === 0) {
+      if (this.hotArena) this.resetPublicAssembly();
+      else this.phase = "lobby";
+      return;
+    }
     const simulation = await DotBotSimulation.create({ map: downtownMap, config: this.config });
+    this.killCamHistory = new KillCamHistory(downtownMap);
+    this.simulation = simulation;
     for (const spawn of downtownMap.botSpawns) simulation.removeBot(spawn.id);
 
-    validateInsertionMap(downtownMap, squads.length, this.config.botRadius);
+    const runSquads = this.hotArena ? PUBLIC_EXTRACTION_SQUADS : squads;
+    validateInsertionMap(downtownMap, runSquads.length, this.config.botRadius, this.hotArena ? 0 : 2);
     const assignmentSeed = this.matchIdFactory();
     this.matchId = assignmentSeed;
+    this.endPromise = null;
+    this.persistenceSettled = true;
+    this.currentRoles = this.hotArena ? assignPublicPlayerRoles(runMembers.map((member) => ({
+      playerId: member.playerId,
+      name: member.name,
+      partyId: member.partyId,
+    })), assignmentSeed) : [];
+    if (this.hotArena) {
+      for (const role of this.currentRoles) {
+        if (role.controller !== "human" || !role.playerId) continue;
+        const member = this.members.get(role.playerId);
+        if (member) member.squadId = role.squadId;
+      }
+    }
     this.matchOutcomes.clear();
     this.matchIntel.clear();
     let loadouts = new Map<string, WireItemCode[]>();
@@ -570,7 +925,7 @@ export class Room {
         roomCode: this.code,
         mapId: downtownMap.id,
         startedAt: new Date(this.now()),
-        playerIds: [...this.members.values()].filter((member) => member.persistenceEligible).map((member) => member.playerId),
+        playerIds: runMembers.filter((member) => member.persistenceEligible).map((member) => member.playerId),
       });
       loadouts = new Map(Object.entries(started.loadouts));
     } catch (error) {
@@ -578,10 +933,16 @@ export class Room {
       this.matchId = null;
       if (this.persistence.live) {
         simulation.dispose();
-        this.phase = "lobby";
+        this.simulation = null;
+        if (this.hotArena) {
+          this.resetPublicAssembly();
+          this.beginPublicAssemblyIfNeeded();
+        } else {
+          this.phase = "lobby";
+        }
         this.broadcast({ type: "err", code: "storage_unavailable", msg: "The match could not start safely. Your loadout was not consumed; try again." });
         this.broadcastLobby();
-        for (const member of this.members.values()) {
+        for (const member of runMembers) {
           if (!member.peer && !member.handoffTimer) this.scheduleHandoff(member);
         }
         return;
@@ -590,7 +951,7 @@ export class Room {
 
     const insertionPreferences = new Map<string, string | null>();
     const intelObjects = new Map<string, import("@dotbot/game/types").BaseObjectKind[]>();
-    for (const member of this.members.values()) {
+    for (const member of runMembers) {
       try {
         insertionPreferences.set(member.playerId, await this.persistence.getInsertionPreference(member.playerId));
       } catch (error) {
@@ -605,28 +966,32 @@ export class Room {
       }
     }
 
-    const activeSquads = squads.filter((squadId) => [...this.members.values()].some((member) => member.squadId === squadId));
+    const activeSquads = this.hotArena
+      ? [...PUBLIC_EXTRACTION_SQUADS]
+      : squads.filter((squadId) => runMembers.some((member) => member.squadId === squadId));
     const insertionAssignments = assignSquadInsertions({
       squads: activeSquads.map((squadId) => ({
         squadId,
-        members: [...this.members.values()]
+        members: runMembers
           .filter((member) => member.squadId === squadId)
           .map((member) => ({ playerId: member.playerId, preference: insertionPreferences.get(member.playerId) ?? null })),
       })),
       points: downtownMap.insertionPoints,
       matchId: assignmentSeed,
-      minSpacing: this.config.minInsertionSpacing,
+      minSpacing: this.hotArena?.minInsertionSpacing ?? this.config.minInsertionSpacing,
     });
     const insertionBySquad = new Map(insertionAssignments.map((assignment) => [assignment.squadId, assignment.point]));
 
     const squadCounts = new Map<string, number>();
-    for (const member of this.members.values()) {
+    const roleByPlayerId = new Map(this.currentRoles.flatMap((role) => role.playerId ? [[role.playerId, role] as const] : []));
+    for (const member of runMembers) {
       const squadIndex = squads.indexOf(member.squadId as (typeof squads)[number]);
       const count = squadCounts.get(member.squadId) ?? 0;
+      const slot = this.hotArena ? roleByPlayerId.get(member.playerId)?.slot ?? count : count;
       const insertion = insertionBySquad.get(member.squadId)!;
       const botId = `human-${member.playerId}`;
       simulation.spawnBot(
-        makeSpawn(botId, member.name, member.squadId, squadColors[squadIndex], insertion, count, loadouts.get(member.playerId) ?? [], this.config.botRadius),
+        makeSpawn(botId, member.name, member.squadId, this.hotArena ? publicSquadColors[member.squadId as PublicExtractionSquadId] : squadColors[squadIndex], insertion, slot, loadouts.get(member.playerId) ?? [], this.config.botRadius),
         member.peer ? "human" : "frozen",
       );
       member.botId = botId;
@@ -644,17 +1009,29 @@ export class Room {
       member.persistenceEligible = true;
       member.persistedOutcome = null;
       member.insertionName = insertion.name;
+      member.queuedForNextRun = false;
       squadCounts.set(member.squadId, count + 1);
     }
 
-    for (const [squadId, count] of squadCounts) {
-      if (!this.aiWingmates || count >= 2) continue;
-      const squadIndex = squads.indexOf(squadId as (typeof squads)[number]);
-      const insertion = insertionBySquad.get(squadId)!;
-      simulation.spawnBot(
-        makeSpawn(`ai-${squadId}`, `${squadId} wing`, squadId, squadColors[squadIndex], insertion, count, [], this.config.botRadius),
-        "ai",
-      );
+    if (this.hotArena) {
+      for (const role of this.currentRoles) {
+        if (role.controller !== "ai") continue;
+        const insertion = insertionBySquad.get(role.squadId)!;
+        simulation.spawnBot(
+          makeSpawn(role.roleId, role.name, role.squadId, publicSquadColors[role.squadId], insertion, role.slot, [], this.config.botRadius),
+          "ai",
+        );
+      }
+    } else {
+      for (const [squadId, count] of squadCounts) {
+        if (!this.aiWingmates || count >= 2) continue;
+        const squadIndex = squads.indexOf(squadId as (typeof squads)[number]);
+        const insertion = insertionBySquad.get(squadId)!;
+        simulation.spawnBot(
+          makeSpawn(`ai-${squadId}`, `${squadId} wing`, squadId, squadColors[squadIndex], insertion, count, [], this.config.botRadius),
+          "ai",
+        );
+      }
     }
     for (const spawn of downtownMap.botSpawns.filter(isAmbientBotSpawn)) {
       simulation.spawnBot(spawn, "ai");
@@ -668,7 +1045,7 @@ export class Room {
     }));
     const blueprintDots = spawnSnapshot.dots.filter((dot) => dot.active && dot.item.kind === "blueprint")
       .sort((left, right) => left.id.localeCompare(right.id));
-    for (const member of this.members.values()) {
+    for (const member of runMembers) {
       const owned = intelObjects.get(member.playerId) ?? [];
       const intel: MatchIntel = {};
       if (owned.includes("listeningPost")) intel.greyDensity = greyDensity;
@@ -693,13 +1070,28 @@ export class Room {
     this.accumulatorMs = 0;
     this.lastTickAt = this.now();
     this.phase = "live";
-    for (const member of this.members.values()) {
+    this.assemblyStartedAt = null;
+    this.assemblyDeadlineAt = null;
+    for (const member of runMembers) {
       if (!member.peer && !member.handoffTimer) this.scheduleHandoff(member);
       this.sendMatchStart(member);
     }
   }
 
   private sendWelcome(member: Member): void {
+    if (this.hotArena) {
+      member.peer?.send({
+        type: "arenaWelcome",
+        playerId: member.playerId,
+        arenaId: this.code,
+        phase: this.publicPhase(),
+        members: this.publicArenaMembers,
+        retiring: this.retiring,
+        ...(this.assemblyStartedAt === null ? {} : { assemblyStartedAt: this.assemblyStartedAt }),
+        ...(this.assemblyDeadlineAt === null ? {} : { assemblyDeadlineAt: this.assemblyDeadlineAt }),
+      });
+      return;
+    }
     member.peer?.send({
       type: "welcome",
       playerId: member.playerId,
@@ -712,7 +1104,23 @@ export class Room {
   }
 
   private broadcastLobby(): void {
+    if (this.hotArena) {
+      this.broadcast({
+        type: "arenaState",
+        phase: this.publicPhase(),
+        members: this.publicArenaMembers,
+        retiring: this.retiring,
+        ...(this.assemblyStartedAt === null ? {} : { assemblyStartedAt: this.assemblyStartedAt }),
+        ...(this.assemblyDeadlineAt === null ? {} : { assemblyDeadlineAt: this.assemblyDeadlineAt }),
+      });
+      return;
+    }
     this.broadcast({ type: "lobby", members: this.lobbyMembers, hostId: this.hostId, locked: this.phase !== "lobby" });
+  }
+
+  private publicPhase(): "assembling" | "countdown" | "live" | "results" {
+    if (this.phase === "assembling" || this.phase === "countdown" || this.phase === "live" || this.phase === "results") return this.phase;
+    throw new Error(`Invalid public arena phase ${this.phase}.`);
   }
 
   private squadSize(squadId: LobbySquadId): number {
@@ -742,6 +1150,7 @@ export class Room {
       insertionName: member.insertionName ?? "UNKNOWN",
       dotBaseline: filtered.dots,
       intel: this.matchIntel.get(member.playerId),
+      ...(this.hotArena && this.matchId ? { matchId: this.matchId, roles: this.currentRoles } : {}),
     });
     const own = snapshot.bots.find((bot) => bot.id === member.botId);
     if (own?.state === "downed" && member.lastKillCam && member.activeKillCamId === member.lastKillCam.id) {
@@ -773,8 +1182,9 @@ export class Room {
       if (!member.botId) continue;
       const bot = snapshot.bots.find((candidate) => candidate.id === member.botId);
       if (!bot || bot.squadId === member.squadId) continue;
-      const squadId = bot.squadId as LobbySquadId;
-      if (!squads.includes(squadId)) continue;
+      const allowedSquads: readonly string[] = this.hotArena ? PUBLIC_EXTRACTION_SQUADS : squads;
+      if (!allowedSquads.includes(bot.squadId)) continue;
+      const squadId = bot.squadId as LobbySquadId | PublicExtractionSquadId;
       member.squadId = squadId;
       changed.push(toEntityMeta(bot));
     }
@@ -832,6 +1242,10 @@ export class Room {
   }
 
   private end(reason: string): void {
+    if (this.hotArena) {
+      this.endHotRun(reason);
+      return;
+    }
     if (this.phase === "ended") return;
     if (reason === "all_humans_disconnected") {
       for (const member of this.members.values()) {
@@ -859,6 +1273,64 @@ export class Room {
       }
     }).finally(() => {
       this.persistenceSettled = true;
+    });
+  }
+
+  private endHotRun(reason: string): void {
+    if (this.phase === "results") return;
+    if (this.phase !== "live") return;
+    if (reason === "all_humans_disconnected") {
+      for (const member of this.members.values()) {
+        if (member.inRun && !member.peer) this.recordDisconnected(member);
+      }
+    }
+    const completedMatchId = this.matchId;
+    this.phase = "results";
+    this.endedAt = this.now();
+    this.persistenceSettled = false;
+    const pending = [...this.pendingPersistence];
+    let finishFailed = false;
+    this.endPromise = Promise.allSettled(pending).then(async () => {
+      this.broadcast({ type: "matchEnd", reason });
+      if (!completedMatchId) return;
+      try {
+        await this.persistence.finishMatch({
+          matchId: completedMatchId,
+          endedAt: new Date(this.endedAt ?? this.now()),
+          summary: {
+            reason,
+            participants: [...this.matchOutcomes].map(([playerId, outcome]) => ({ playerId, outcome })),
+          },
+        });
+      } catch (error) {
+        finishFailed = true;
+        console.warn(`[persistence] failed to finish match ${completedMatchId}; arena will retire between runs. ${errorMessage(error)}`);
+        this.broadcast({ type: "err", code: "storage_unavailable", msg: "This run could not be closed safely. Re-enter quick play." });
+      }
+    }).finally(() => {
+      this.persistenceSettled = true;
+      this.runCount += 1;
+      this.simulation?.dispose();
+      this.simulation = null;
+      this.matchId = null;
+      this.currentRoles = [];
+      for (const member of [...this.members.values()]) {
+        member.botId = null;
+        member.inRun = false;
+        member.streaming = false;
+        member.runOver = null;
+        member.lastKillCam = null;
+        member.activeKillCamId = null;
+        if (!member.peer && !member.handoffTimer) {
+          this.members.delete(member.playerId);
+          this.memberByToken.delete(member.token);
+        }
+      }
+      if (finishFailed || this.runCount >= this.hotArena!.maxRuns || this.now() - this.createdAt >= this.hotArena!.maxAgeMs) {
+        this.retiring = true;
+      }
+      if (!this.retiring && this.readyMembers().length > 0) this.enterPublicAssembly();
+      else this.broadcastLobby();
     });
   }
 
@@ -1150,6 +1622,32 @@ function sanitizeName(name: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeHotArenaOptions(options: HotArenaOptions): Required<HotArenaOptions> {
+  const normalized = {
+    assemblyMinMs: options.assemblyMinMs ?? defaultHotArenaMinMs,
+    assemblyMaxMs: options.assemblyMaxMs ?? defaultHotArenaMaxMs,
+    maxRuns: options.maxRuns ?? defaultHotArenaMaxRuns,
+    maxAgeMs: options.maxAgeMs ?? defaultHotArenaMaxAgeMs,
+    minInsertionSpacing: options.minInsertionSpacing ?? defaultHotArenaMinInsertionSpacing,
+  };
+  if (!Number.isFinite(normalized.assemblyMinMs) || normalized.assemblyMinMs < 1_000) {
+    throw new Error("Public assembly must run for at least one second.");
+  }
+  if (!Number.isFinite(normalized.assemblyMaxMs) || normalized.assemblyMaxMs > 6_000 || normalized.assemblyMaxMs < normalized.assemblyMinMs) {
+    throw new Error("Public assembly must finish between its minimum and six seconds.");
+  }
+  if (!Number.isInteger(normalized.maxRuns) || normalized.maxRuns < 1) throw new Error("Hot-arena maxRuns must be a positive integer.");
+  if (!Number.isFinite(normalized.maxAgeMs) || normalized.maxAgeMs < normalized.assemblyMaxMs) throw new Error("Hot-arena maxAgeMs is too small.");
+  if (!Number.isFinite(normalized.minInsertionSpacing) || normalized.minInsertionSpacing < 0) throw new Error("Hot-arena insertion spacing must be non-negative.");
+  return normalized;
+}
+
+function sanitizePartyId(value: string | undefined, fallback: string): string {
+  const normalized = value?.trim();
+  if (normalized && normalized.length <= 128 && /^[a-zA-Z0-9._:-]+$/.test(normalized)) return normalized;
+  return `solo-${fallback.replace(/[^a-zA-Z0-9._:-]/g, "").slice(0, 96) || "player"}`;
 }
 
 function stableIndex(seed: string, length: number): number {

@@ -7,7 +7,7 @@ import {
   TerminateGameSessionCommand,
 } from "@aws-sdk/client-gamelift";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, type DeleteCommandInput, type UpdateCommandInput } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 
 const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -17,17 +17,38 @@ const database = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
 const secrets = new SecretsManagerClient({ region });
 let relaySecretPromise: Promise<string> | null = null;
 
-type InternalEvent = { source: "dotbot-game-server"; operation: string; args: unknown };
+type PersistenceInternalEvent = { source: "dotbot-game-server"; operation: string; args: unknown };
+type ArenaInternalEvent = { source: "dotbot-arena-server"; operation: "setAdmission"; args: unknown };
+type InternalEvent = PersistenceInternalEvent | ArenaInternalEvent;
 type RoomRecord = { pk: string; gameSessionId?: string; status: "creating" | "active"; expiresAt: number };
-type Identity = { playerId: string; name: string };
+type Identity = { playerId: string; name: string; partyId?: string };
+type PublicArenaRecord = RoomRecord & {
+  arenaId?: string;
+  buildId?: string;
+  region?: string;
+  admissionClosesAt?: number;
+  owner?: string;
+};
+export type QuickPlayTicket = {
+  playerId: string;
+  playerName: string;
+  partyId: string;
+  buildId: string;
+  region: string;
+  latencyMs: number;
+};
 
 export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Promise<APIGatewayProxyResultV2 | { result?: unknown; error?: string }> {
   if (isInternalEvent(event)) {
     try {
-      return { result: await relayPersistence(event.operation, event.args) };
+      return { result: event.source === "dotbot-arena-server"
+        ? await updateArenaAdmission(event.args)
+        : await relayPersistence(event.operation, event.args) };
     } catch (error) {
-      console.error("persistence relay failed", error);
-      return { error: "Authoritative persistence is temporarily unavailable." };
+      console.error("game-server internal operation failed", error);
+      return { error: event.source === "dotbot-arena-server"
+        ? "Arena availability could not be updated."
+        : "Authoritative persistence is temporarily unavailable." };
     }
   }
 
@@ -39,6 +60,7 @@ export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Pr
     }
     const payload = parseBody(event.body);
     const identity = await authenticate(payload.token);
+    if (route === "POST /quick-play") return response(200, await quickPlay(identity, payload));
     if (route === "POST /rooms") return response(201, await createRoom(identity));
     if (route === "POST /rooms/{roomCode}/join") {
       return response(200, await joinRoom(normalizeRoomCode(event.pathParameters?.roomCode), identity));
@@ -54,8 +76,242 @@ export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Pr
   }
 }
 
+async function quickPlay(identity: Identity, payload: Record<string, unknown>): Promise<ConnectionAllocation> {
+  const allowedRegions = (process.env.QUICK_PLAY_REGIONS ?? process.env.GAME_LOCATION ?? process.env.GAMELIFT_REGION ?? region)
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const ticket = normalizeQuickPlayTicket(payload, identity, allowedRegions);
+  const fleetId = requiredEnv("FLEET_ID");
+  const tableName = requiredEnv("TABLE_NAME");
+  const key = publicArenaKey(ticket);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const existing = (await database.send(new GetCommand({ TableName: tableName, Key: { pk: key } }))).Item as PublicArenaRecord | undefined;
+    if (existing?.status === "active" && existing.gameSessionId && existing.arenaId
+      && existing.buildId === ticket.buildId && existing.region === ticket.region
+      && (existing.admissionClosesAt ?? 0) > Date.now()) {
+      try {
+        return await allocatePublicPlayer(existing.gameSessionId, existing.arenaId, identity, ticket);
+      } catch (error) {
+        if (!isClosedGameSessionError(error) && !isFullGameSessionError(error)) throw error;
+        await database.send(new DeleteCommand(stalePublicArenaDeleteRequest(
+          tableName,
+          key,
+          existing.gameSessionId,
+          existing.arenaId,
+        ))).catch(() => undefined);
+      }
+    }
+
+    const owner = randomUUID();
+    const expiresAt = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
+    try {
+      await database.send(new PutCommand({
+        TableName: tableName,
+        Item: { pk: key, status: "creating", owner, buildId: ticket.buildId, region: ticket.region, expiresAt },
+        ConditionExpression: "attribute_not_exists(pk) OR expiresAt < :nowSeconds OR admissionClosesAt < :nowMillis",
+        ExpressionAttributeValues: { ":nowSeconds": Math.floor(Date.now() / 1000), ":nowMillis": Date.now() },
+      }));
+    } catch (error) {
+      if (awsErrorName(error) === "ConditionalCheckFailedException") continue;
+      throw error;
+    }
+
+    let gameSessionId: string | undefined;
+    try {
+      const arenaId = generateRoomCode();
+      const created = await gameLift.send(new CreateGameSessionCommand({
+        FleetId: fleetId,
+        Location: ticket.region,
+        MaximumPlayerSessionCount: 18,
+        Name: `DotBot public ${arenaId}`,
+        CreatorId: identity.playerId,
+        GameProperties: [
+          { Key: "mode", Value: "public-hot-arena" },
+          { Key: "arenaId", Value: arenaId },
+          { Key: "buildId", Value: ticket.buildId },
+          { Key: "region", Value: ticket.region },
+        ],
+      }));
+      gameSessionId = created.GameSession?.GameSessionId;
+      if (!gameSessionId) throw new Error("GameLift returned no game session id.");
+      const admissionClosesAt = Date.now() + 6_000;
+      await database.send(new UpdateCommand({
+        TableName: tableName,
+        Key: { pk: key },
+        UpdateExpression: "SET gameSessionId = :session, arenaId = :arena, admissionClosesAt = :closes, #status = :active",
+        ConditionExpression: "owner = :owner",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: {
+          ":session": gameSessionId,
+          ":arena": arenaId,
+          ":closes": admissionClosesAt,
+          ":active": "active",
+          ":owner": owner,
+        },
+      }));
+      return await allocatePublicPlayer(gameSessionId, arenaId, identity, ticket);
+    } catch (error) {
+      await database.send(new DeleteCommand({
+        TableName: tableName,
+        Key: { pk: key },
+        ConditionExpression: "owner = :owner",
+        ExpressionAttributeValues: { ":owner": owner },
+      })).catch(() => undefined);
+      if (gameSessionId) {
+        await gameLift.send(new TerminateGameSessionCommand({
+          GameSessionId: gameSessionId,
+          TerminationMode: "TRIGGER_ON_PROCESS_TERMINATE",
+        })).catch((cleanupError) => console.error("failed to terminate orphaned public arena", cleanupError));
+      }
+      if (isFleetWakingError(error)) throw new MatchmakerError(503, "Dedicated game server is waking up. This can take about a minute.", true);
+      throw error;
+    }
+  }
+  throw new MatchmakerError(503, "Public quick play is busy. Try again.", true);
+}
+
+async function allocatePublicPlayer(gameSessionId: string, arenaId: string, identity: Identity, ticket: QuickPlayTicket): Promise<ConnectionAllocation> {
+  const allocation = await gameLift.send(new CreatePlayerSessionCommand({
+    GameSessionId: gameSessionId,
+    PlayerId: identity.playerId,
+    PlayerData: JSON.stringify({
+      mode: "public-hot-arena",
+      arenaId,
+      partyId: ticket.partyId,
+      buildId: ticket.buildId,
+      region: ticket.region,
+    }),
+  }));
+  const session = allocation.PlayerSession;
+  if (!session?.PlayerSessionId || !session.Port) throw new Error("GameLift returned incomplete connection details.");
+  const host = session.DnsName || session.IpAddress;
+  if (!host) throw new Error("GameLift returned no connection host.");
+  return {
+    mode: "public-hot-arena",
+    arenaId,
+    playerSessionId: session.PlayerSessionId,
+    websocketUrl: secureWebSocketUrl(host, session.Port),
+    expiresAt: session.CreationTime?.toISOString(),
+  };
+}
+
+export function normalizeQuickPlayTicket(payload: Record<string, unknown>, identity: Identity, allowedRegions: readonly string[]): QuickPlayTicket {
+  const buildId = typeof payload.buildId === "string" ? payload.buildId.trim() : "";
+  const partyId = identity.partyId?.trim() || `solo-${identity.playerId}`;
+  if (!safeMetadata(buildId, 64) || !safeMetadata(partyId, 128)) throw new MatchmakerError(400, "Quick-play build or party metadata is invalid.");
+  const latencies = payload.latencies;
+  if (!latencies || typeof latencies !== "object" || Array.isArray(latencies)) throw new MatchmakerError(400, "Regional latency measurements are required.");
+  const candidates = allowedRegions.map((candidate) => ({
+    region: candidate,
+    latencyMs: (latencies as Record<string, unknown>)[candidate],
+  })).filter((candidate): candidate is { region: string; latencyMs: number } =>
+    typeof candidate.latencyMs === "number" && Number.isFinite(candidate.latencyMs)
+      && candidate.latencyMs >= 0 && candidate.latencyMs <= 5_000);
+  if (candidates.length === 0) throw new MatchmakerError(400, "No compatible regional latency measurement was supplied.");
+  candidates.sort((left, right) => left.latencyMs - right.latencyMs || allowedRegions.indexOf(left.region) - allowedRegions.indexOf(right.region));
+  return {
+    playerId: identity.playerId,
+    playerName: identity.name,
+    partyId,
+    buildId,
+    region: candidates[0].region,
+    latencyMs: candidates[0].latencyMs,
+  };
+}
+
+export function publicArenaKey(ticket: Pick<QuickPlayTicket, "region" | "buildId">): string {
+  return `PUBLIC#${ticket.region}#${ticket.buildId}`;
+}
+
+export function stalePublicArenaDeleteRequest(
+  tableName: string,
+  key: string,
+  gameSessionId: string,
+  arenaId: string,
+): DeleteCommandInput {
+  return {
+    TableName: tableName,
+    Key: { pk: key },
+    ConditionExpression: "gameSessionId = :session AND arenaId = :arena",
+    ExpressionAttributeValues: { ":session": gameSessionId, ":arena": arenaId },
+  };
+}
+
 function isInternalEvent(event: APIGatewayProxyEventV2 | InternalEvent): event is InternalEvent {
-  return "source" in event && event.source === "dotbot-game-server";
+  return "source" in event && (event.source === "dotbot-game-server" || event.source === "dotbot-arena-server");
+}
+
+async function updateArenaAdmission(args: unknown): Promise<{ updated: true }> {
+  const parsed = parseArenaAdmissionUpdate(args, Date.now());
+  await database.send(new UpdateCommand(arenaAdmissionUpdateRequest(parsed, requiredEnv("TABLE_NAME"), Date.now())));
+  return { updated: true };
+}
+
+export function arenaAdmissionUpdateRequest(
+  parsed: ReturnType<typeof parseArenaAdmissionUpdate>,
+  tableName: string,
+  now: number,
+): UpdateCommandInput {
+  const { arenaId, buildId, region: targetRegion, gameSessionId, closesAt, revision, open } = parsed;
+  const key = { pk: publicArenaKey({ region: targetRegion, buildId }) };
+  const common = {
+    TableName: tableName,
+    Key: key,
+    ExpressionAttributeNames: { "#status": "status", "#region": "region" },
+  };
+  if (open) {
+    return {
+      ...common,
+      UpdateExpression: "SET gameSessionId = :session, arenaId = :arena, buildId = :build, #region = :region, admissionClosesAt = :closes, admissionRevision = :revision, expiresAt = :expires, #status = :active REMOVE #owner",
+      ConditionExpression: "attribute_not_exists(pk) OR admissionClosesAt < :now OR (arenaId = :arena AND (attribute_not_exists(admissionRevision) OR admissionRevision < :revision))",
+      ExpressionAttributeNames: { ...common.ExpressionAttributeNames, "#owner": "owner" },
+      ExpressionAttributeValues: {
+        ":session": gameSessionId,
+        ":closes": closesAt,
+        ":active": "active",
+        ":arena": arenaId,
+        ":build": buildId,
+        ":region": targetRegion,
+        ":revision": revision,
+        ":now": now,
+        ":expires": Math.floor(now / 1000) + 6 * 60 * 60,
+      },
+    };
+  }
+  return {
+    ...common,
+    UpdateExpression: "SET admissionClosesAt = :closes, admissionRevision = :revision",
+    ConditionExpression: "#status = :active AND arenaId = :arena AND gameSessionId = :session AND buildId = :build AND #region = :region AND (attribute_not_exists(admissionRevision) OR admissionRevision < :revision)",
+    ExpressionAttributeValues: {
+      ":session": gameSessionId,
+      ":closes": closesAt,
+      ":active": "active",
+      ":arena": arenaId,
+      ":build": buildId,
+      ":region": targetRegion,
+      ":revision": revision,
+    },
+  };
+}
+
+export function parseArenaAdmissionUpdate(args: unknown, now: number): { arenaId: string; buildId: string; region: string; gameSessionId: string; open: boolean; closesAt: number; revision: number } {
+  if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Invalid arena admission update.");
+  const value = args as Record<string, unknown>;
+  const arenaId = typeof value.arenaId === "string" ? value.arenaId.trim().toUpperCase() : "";
+  const buildId = typeof value.buildId === "string" ? value.buildId.trim() : "";
+  const targetRegion = typeof value.region === "string" ? value.region.trim() : "";
+  const gameSessionId = typeof value.gameSessionId === "string" ? value.gameSessionId.trim() : "";
+  const open = value.open === true;
+  const closesAt = open && typeof value.closesAt === "number" ? value.closesAt : 0;
+  const revision = value.revision;
+  if (!/^[A-HJ-NP-Z2-9]{4}$/.test(arenaId) || !safeMetadata(buildId, 64) || !safeMetadata(targetRegion, 64) || !safeMetadata(gameSessionId, 256)
+    || !Number.isInteger(revision) || (revision as number) < 1
+    || (open && (!Number.isFinite(closesAt) || closesAt < now - 1_000 || closesAt > now + 6_500))) {
+    throw new Error("Invalid arena admission update.");
+  }
+  return { arenaId, buildId, region: targetRegion, gameSessionId, open, closesAt, revision: revision as number };
 }
 
 async function createRoom(identity: Identity): Promise<ConnectionAllocation> {
@@ -161,7 +417,9 @@ async function authenticate(token: unknown): Promise<Identity> {
   if (!responseValue.ok) throw new MatchmakerError(401, "Player authentication failed.");
   const identity = await responseValue.json() as Partial<Identity>;
   if (!identity.playerId || !identity.name) throw new MatchmakerError(401, "Player authentication failed.");
-  return { playerId: identity.playerId, name: identity.name };
+  const partyId = typeof identity.partyId === "string" ? identity.partyId.trim() : undefined;
+  if (partyId && !safeMetadata(partyId, 128)) throw new MatchmakerError(401, "Player authentication failed.");
+  return { playerId: identity.playerId, name: identity.name, ...(partyId ? { partyId } : {}) };
 }
 
 async function relayPersistence(operation: string, args: unknown): Promise<unknown> {
@@ -254,12 +512,18 @@ function requiredEnv(name: string): string {
   return value;
 }
 
+function safeMetadata(value: string, maxLength: number): boolean {
+  return value.length > 0 && value.length <= maxLength && /^[a-zA-Z0-9._:-]+$/.test(value);
+}
+
 class MatchmakerError extends Error {
   constructor(readonly status: number, message: string, readonly retryable = false) { super(message); }
 }
 
 type ConnectionAllocation = {
-  roomCode: string;
+  mode?: "public-hot-arena";
+  roomCode?: string;
+  arenaId?: string;
   playerSessionId: string;
   websocketUrl: string;
   expiresAt?: string;

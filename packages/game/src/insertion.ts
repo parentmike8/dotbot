@@ -100,9 +100,10 @@ export function squadSpawnPosition(point: InsertionPoint, memberIndex: number, b
   return { x: point.position.x + offset.x, y: point.position.y + offset.y };
 }
 
-export function validateInsertionMap(map: MapDocument, squadCount: number, botRadius: number): void {
-  if (map.insertionPoints.length < squadCount + 2) {
-    throw new Error(`Map ${map.id} needs at least squads + 2 insertion points (${squadCount + 2}).`);
+export function validateInsertionMap(map: MapDocument, squadCount: number, botRadius: number, reservePointCount = 2): void {
+  if (!Number.isInteger(reservePointCount) || reservePointCount < 0) throw new Error("Insertion reserve point count must be a non-negative integer.");
+  if (map.insertionPoints.length < squadCount + reservePointCount) {
+    throw new Error(`Map ${map.id} needs at least squads + ${reservePointCount} insertion points (${squadCount + reservePointCount}).`);
   }
   if (new Set(map.insertionPoints.map((point) => point.id)).size !== map.insertionPoints.length) {
     throw new Error(`Map ${map.id} has duplicate insertion point ids.`);

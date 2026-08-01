@@ -70,6 +70,27 @@ func TestPlayerSessionMustBelongToCurrentGameSession(t *testing.T) {
 		t.Fatalf("unexpected admission result status=%d accepted=%#v", response.Code, fake.accepted)
 	}
 }
+
+func TestAcceptedPlayerSessionReturnsTrustedPlayerData(t *testing.T) {
+	described := (model.PlayerSession{
+		PlayerSessionID: "player-session-1",
+		PlayerID:        "player-1",
+		PlayerData:      `{"mode":"public-hot-arena","arenaId":"H0T1"}`,
+		GameSessionID:   "session-1",
+	}).WithStatus(model.PlayerReserved)
+	fake := &fakeGameLift{described: &described}
+	process := newLifecycle(fake, "http://unused", "")
+	process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+	requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/accept", strings.NewReader(`{"playerSessionId":"player-session-1"}`))
+	response := httptest.NewRecorder()
+
+	process.handler().ServeHTTP(response, requestValue)
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"playerData"`) || !strings.Contains(response.Body.String(), `public-hot-arena`) {
+		t.Fatalf("unexpected admission response status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func (f *fakeGameLift) ProcessEnding() error { return f.err }
 func (f *fakeGameLift) GetComputeCertificate() (result.GetComputeCertificateResult, error) {
 	return result.GetComputeCertificateResult{CertificatePath: "/certs", ComputeName: "compute.example"}, f.err

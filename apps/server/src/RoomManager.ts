@@ -23,6 +23,17 @@ export type RoomManagerOptions = {
   sessionRoomCode?: () => Promise<string>;
   endedRoomTtlMs?: number;
   onRoomExpired?: () => void | Promise<void>;
+  hotArena?: import("./Room").HotArenaOptions;
+  onPublicAdmissionChange?: (state: { arenaId: string; open: boolean; closesAt?: number }) => void | Promise<void>;
+  onPublicMemberReleased?: (peerId: string) => void | Promise<void>;
+};
+
+export type PublicPlayerAdmission = {
+  playerId: string;
+  arenaId: string;
+  partyId: string;
+  buildId: string;
+  region: string;
 };
 
 export class RoomManager {
@@ -146,13 +157,86 @@ export class RoomManager {
     return true;
   }
 
-  async handleMessage(peer: RoomPeer, message: ClientMessage, expectedPlayerId?: string): Promise<boolean> {
+  async handleQuickPlayHello(
+    peer: RoomPeer,
+    message: Extract<ClientMessage, { type: "quickPlayHello" }>,
+    admission?: PublicPlayerAdmission,
+  ): Promise<boolean> {
+    if (!this.options.hotArena) {
+      peer.send({ type: "err", code: "quick_play_unavailable", msg: "Public quick play is not enabled on this server." });
+      return false;
+    }
+    if (!this.persistence.live) {
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Authoritative base progress could not be verified. Try again." });
+      return false;
+    }
+    let identity;
+    try {
+      identity = await this.persistence.resolveOrRegisterPlayer(message.token, message.name);
+    } catch (error) {
+      console.warn(`[persistence] identity lookup failed; rejecting public admission. ${errorMessage(error)}`);
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
+      return false;
+    }
+    if (admission && identity.playerId !== admission.playerId) {
+      peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
+      return false;
+    }
+    try {
+      const tutorial = await this.persistence.getBaseTutorialForPlayer(identity.playerId);
+      if (!tutorial || !isBaseTutorialComplete(tutorial)) {
+        peer.send({ type: "err", code: "tutorial_required", msg: "Complete the base introduction before deploying." });
+        return false;
+      }
+    } catch (error) {
+      console.warn(`[persistence] tutorial lookup failed; rejecting public admission. ${errorMessage(error)}`);
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Base progress could not be verified. Try again." });
+      return false;
+    }
+    const assignedArenaId = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : undefined;
+    if (admission && assignedArenaId && admission.arenaId !== assignedArenaId) {
+      peer.send({ type: "err", code: "arena_mismatch", msg: "This reservation belongs to a different arena." });
+      return false;
+    }
+    const arenaId = admission?.arenaId ?? assignedArenaId ?? "PUB1";
+    const room = this.join(arenaId) ?? this.createRoom(arenaId);
+    let rejection: { code: string; retryable: boolean } | undefined;
+    const member = room.join(
+      peer,
+      message.token,
+      identity.name,
+      identity.playerId,
+      undefined,
+      admission?.partyId ?? identity.playerId,
+      (value) => { rejection = value; },
+    );
+    if (!member) {
+      peer.send({
+        type: "err",
+        code: rejection?.code ?? "arena_unavailable",
+        msg: rejection?.code === "party_composition_full"
+          ? "This arena cannot fit the intact party. Retry quick play together."
+          : rejection?.code === "arena_capacity"
+            ? "This arena cannot accept another party. Retry quick play together."
+          : "That arena is live, full, or retiring. Re-enter quick play.",
+        ...(rejection?.retryable ? { retryable: true } : {}),
+      });
+      return false;
+    }
+    this.peerRooms.set(peer.id, { room, playerId: member.playerId });
+    return true;
+  }
+
+  async handleMessage(peer: RoomPeer, message: ClientMessage, expected?: string | PublicPlayerAdmission): Promise<boolean> {
     if (message.type === "baseHello" || message.type === "baseInput") {
       peer.send({ type: "err", code: "bad_message", msg: "Base tutorial messages use the base session." });
       return false;
     }
     if (message.type === "hello") {
-      return this.handleHello(peer, message, expectedPlayerId);
+      return this.handleHello(peer, message, typeof expected === "string" ? expected : expected?.playerId);
+    }
+    if (message.type === "quickPlayHello") {
+      return this.handleQuickPlayHello(peer, message, typeof expected === "string" ? undefined : expected);
     }
     const binding = this.peerRooms.get(peer.id);
     if (!binding) {
@@ -175,9 +259,10 @@ export class RoomManager {
     for (const [code, room] of this.roomMap) {
       this.tickSamples.push(...room.tick(now));
       if (this.tickSamples.length > 2000) this.tickSamples.splice(0, this.tickSamples.length - 2000);
-      const emptyLobbyExpired = room.phase === "lobby" && room.connectedCount === 0 && now - room.createdAt >= 10 * 60_000;
+      const emptyLobbyExpired = (room.phase === "lobby" || room.phase === "assembling") && room.connectedCount === 0 && now - room.createdAt >= 10 * 60_000;
       const endedExpired = room.readyForDisposal && room.endedAt !== null && now - room.endedAt >= (this.options.endedRoomTtlMs ?? 30_000);
-      if (emptyLobbyExpired || endedExpired) {
+      const publicRetirementReady = Boolean(this.options.hotArena && room.readyForDisposal);
+      if (emptyLobbyExpired || endedExpired || publicRetirementReady) {
         room.dispose();
         this.roomMap.delete(code);
         if (this.options.sessionRoomCode) {

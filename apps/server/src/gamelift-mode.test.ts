@@ -80,6 +80,116 @@ describe("GameLift dedicated server mode", () => {
     await vi.waitFor(() => expect(request.mock.calls.some(([input]) => String(input).endsWith("/v1/player-sessions/remove"))).toBe(true));
     await app.close();
   });
+
+  it("admits the additive public handshake from trusted player-session metadata without exposing a room code", async () => {
+    process.env.NODE_ENV = "test";
+    const request = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/v1/session")) {
+        return new Response(JSON.stringify({
+          GameSessionId: "session-public",
+          GameProperties: { mode: "public-hot-arena", arenaId: "A2BC", buildId: "web-42", region: "ca-central-1" },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/v1/player-sessions/accept")) {
+        return new Response(JSON.stringify({
+          playerId: "p-token-public",
+          playerData: JSON.stringify({
+            mode: "public-hot-arena",
+            arenaId: "A2BC",
+            partyId: "party-public",
+            buildId: "web-42",
+            region: "ca-central-1",
+          }),
+        }), { status: 200 });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const { app } = await createServer({
+      persistence: new CompletedTestPersistence(),
+      gameLift: new GameLiftSessionGate({ fetch: request }),
+      publicQuickPlay: true,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      playerSessionReconnectMs: 10,
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP address");
+    const url = `ws://127.0.0.1:${address.port}/ws`;
+
+    const wrongMode = await connect(url);
+    wrongMode.send(JSON.stringify({ type: "hello", token: "token-public", name: "Pilot", roomCode: "A2BC", playerSessionId: "psess-wrong" }));
+    expect(await waitForMessage(wrongMode, "err")).toMatchObject({ code: "wrong_session_mode" });
+    expect(request.mock.calls.some(([input]) => String(input).endsWith("/v1/player-sessions/accept"))).toBe(false);
+
+    const accepted = await connect(url);
+    accepted.send(JSON.stringify({
+      type: "quickPlayHello",
+      token: "token-public",
+      name: "Pilot",
+      playerSessionId: "psess-public",
+    }));
+    const welcome = await waitForMessage(accepted, "arenaWelcome");
+    expect(welcome).toMatchObject({ arenaId: "A2BC", phase: "assembling", retiring: false });
+    expect(welcome).not.toHaveProperty("roomCode");
+    accepted.close();
+    await new Promise<void>((resolve) => accepted.once("close", () => resolve()));
+    await vi.waitFor(() => expect(request.mock.calls.some(([input]) => String(input).endsWith("/v1/player-sessions/remove"))).toBe(true));
+    await app.close();
+  });
+
+  it("serializes concurrent claims for the same GameLift player session", async () => {
+    process.env.NODE_ENV = "test";
+    let releaseAccept!: () => void;
+    const acceptGate = new Promise<void>((resolve) => { releaseAccept = resolve; });
+    const request = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/v1/session")) {
+        return new Response(JSON.stringify({
+          GameSessionId: "session-1",
+          GameProperties: { roomCode: "A2BC" },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/v1/player-sessions/accept")) {
+        await acceptGate;
+        return new Response(JSON.stringify({ playerId: "p-token-race" }), { status: 200 });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const { app } = await createServer({
+      persistence: new CompletedTestPersistence(),
+      gameLift: new GameLiftSessionGate({ fetch: request }),
+      playerSessionReconnectMs: 10,
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP address");
+    const url = `ws://127.0.0.1:${address.port}/ws`;
+    const first = await connect(url);
+    const second = await connect(url);
+    const hello = JSON.stringify({
+      type: "hello",
+      token: "token-race",
+      name: "Pilot",
+      roomCode: "A2BC",
+      playerSessionId: "psess-race",
+    });
+    first.send(hello);
+    await vi.waitFor(() => expect(request.mock.calls.filter(([input]) => String(input).endsWith("/v1/player-sessions/accept"))).toHaveLength(1));
+    const secondError = waitForMessage(second, "err");
+    second.send(hello);
+    expect(await secondError).toMatchObject({ code: "player_session_in_use" });
+    expect(request.mock.calls.filter(([input]) => String(input).endsWith("/v1/player-sessions/remove"))).toHaveLength(0);
+
+    const firstWelcome = waitForMessage(first, "welcome");
+    releaseAccept();
+    expect(await firstWelcome).toMatchObject({ roomCode: "A2BC" });
+    expect(request.mock.calls.filter(([input]) => String(input).endsWith("/v1/player-sessions/accept"))).toHaveLength(1);
+    first.close();
+    await new Promise<void>((resolve) => first.once("close", () => resolve()));
+    await vi.waitFor(() => expect(second.readyState).toBe(WebSocket.CLOSED));
+    await app.close();
+  });
 });
 
 async function connect(url: string): Promise<WebSocket> {

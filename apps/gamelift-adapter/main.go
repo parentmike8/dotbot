@@ -366,7 +366,10 @@ func (l *lifecycle) acceptPlayerSessionHandler(response http.ResponseWriter, req
 		return
 	}
 	response.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(response).Encode(map[string]string{"playerId": playerSession.PlayerID})
+	_ = json.NewEncoder(response).Encode(map[string]string{
+		"playerId":   playerSession.PlayerID,
+		"playerData": playerSession.PlayerData,
+	})
 }
 
 func (l *lifecycle) playerSessionHandler(action func(string) error) http.HandlerFunc {

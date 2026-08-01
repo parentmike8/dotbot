@@ -397,8 +397,10 @@ function exhaustClient(message: ClientMessage): string {
     case "baseHello": return message.token;
     case "baseInput": return String(message.seq);
     case "hello": return message.token;
+    case "quickPlayHello": return message.token;
     case "joinSquad": return message.squadId;
     case "startMatch": return message.type;
+    case "deployAgain": return message.type;
     case "leaveRun": return message.type;
     case "killCamDone": return message.clipId;
     case "input": return String(message.seq);
@@ -412,10 +414,13 @@ function exhaustServer(message: ServerMessage): string {
     case "baseWelcome": return message.tutorial.phase;
     case "baseState": return message.tutorial.phase;
     case "welcome": return message.playerId;
+    case "arenaWelcome": return message.playerId;
     case "lobby": return message.hostId;
+    case "arenaState": return message.phase;
     case "matchStart": return message.yourBotId;
     case "snap": return String(message.tick);
     case "meta": return String(message.add.length);
+    case "roleController": return message.roleId;
     case "ev": return String(message.events.length);
     case "killCam": return message.clip.i;
     case "runOver": return message.reason;

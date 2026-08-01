@@ -74,7 +74,7 @@ export class NoopPersistence implements Persistence {
     return { manifest: input.manifest };
   }
   async recordOutcome(_input: Parameters<Persistence["recordOutcome"]>[0]): Promise<void> {}
-  async finishMatch(): Promise<void> {}
+  async finishMatch(_input: Parameters<Persistence["finishMatch"]>[0]): Promise<void> {}
   async claimRelayRequest(_requestId: string, _expiresAt: Date): Promise<boolean> {
     throw new Error("Replay protection requires live persistence.");
   }

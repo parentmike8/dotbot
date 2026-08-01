@@ -4,7 +4,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Socket } from "node:net";
-import { WebSocketServer, type RawData } from "ws";
+import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import { itemFromCode, type ClientMessage, type ServerMessage, type WireItemCode } from "@dotbot/protocol";
 import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById } from "@dotbot/game/content/recipes";
@@ -15,12 +15,16 @@ import { createPersistence, type Persistence } from "./db";
 import { BaseTutorialAuthority } from "./BaseTutorialAuthority";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
 import { GameLiftSessionGate } from "./GameLiftSessionGate";
+import type { ArenaDirectory } from "./ArenaDirectory";
 
 export type CreateServerOptions = RoomManagerOptions & {
   databaseUrl?: string | null;
   persistence?: Persistence;
   gameLift?: GameLiftSessionGate;
   playerSessionReconnectMs?: number;
+  /** Explicit additive launch-spine seam. False preserves emergency rollback. */
+  publicQuickPlay?: boolean;
+  arenaDirectory?: ArenaDirectory;
 };
 
 export async function createServer(options: CreateServerOptions = {}) {
@@ -33,20 +37,33 @@ export async function createServer(options: CreateServerOptions = {}) {
   const baseTutorialAuthority = new BaseTutorialAuthority(persistence);
   const gameLift = options.gameLift;
   const playerSessionReconnectMs = options.playerSessionReconnectMs ?? 20_000;
+  const publicQuickPlay = options.publicQuickPlay ?? false;
   const activePlayerSessions = new Map<string, {
     playerId: string;
+    publicAdmission?: import("./GameLiftSessionGate").PublicPlayerAdmission;
     peerId: string | null;
     removalTimer: ReturnType<typeof setTimeout> | null;
   }>();
+  const pendingPlayerSessions = new Set<string>();
+  const publicPeerSockets = new Map<string, WebSocket>();
+  let releasePublicPeer = (_peerId: string): void => {};
   let draining = false;
   const rooms = new RoomManager({
     ...options,
     persistence,
     connectionHandoffMs: playerSessionReconnectMs,
     ...(gameLift ? {
-      sessionRoomCode: () => gameLift.roomCode(),
+      sessionRoomCode: () => publicQuickPlay ? gameLift.arenaId() : gameLift.roomCode(),
       endedRoomTtlMs: 5_000,
       onRoomExpired: () => gameLift.endProcess(),
+    } : {}),
+    ...(publicQuickPlay ? { hotArena: options.hotArena ?? {} } : {}),
+    ...(publicQuickPlay && options.arenaDirectory ? { onPublicAdmissionChange: (state: { arenaId: string; open: boolean; closesAt?: number }) => options.arenaDirectory!.publish(state) } : {}),
+    ...(publicQuickPlay ? {
+      onPublicMemberReleased: (peerId: string) => {
+        releasePublicPeer(peerId);
+        return options.onPublicMemberReleased?.(peerId);
+      },
     } : {}),
   });
   const requireCompletedIntroduction = async (token: string, reply: FastifyReply): Promise<boolean> => {
@@ -337,6 +354,12 @@ export async function createServer(options: CreateServerOptions = {}) {
     if (immediate) await remove();
     else entry.removalTimer = setTimeout(() => void remove(), playerSessionReconnectMs);
   };
+  releasePublicPeer = (peerId: string) => {
+    for (const [playerSessionId, entry] of activePlayerSessions) {
+      if (entry.peerId === peerId) void removePlayerSession(playerSessionId, peerId, true);
+    }
+    publicPeerSockets.get(peerId)?.close(1000, "Re-enter quick play");
+  };
 
   app.server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://localhost");
@@ -365,6 +388,7 @@ export async function createServer(options: CreateServerOptions = {}) {
         if (ws.readyState === ws.OPEN) ws.send(encoded ?? JSON.stringify(message));
       },
     };
+    if (publicQuickPlay) publicPeerSockets.set(peer.id, ws);
     const processMessage = async (data: RawData) => {
       let message: ClientMessage;
       try {
@@ -432,7 +456,7 @@ export async function createServer(options: CreateServerOptions = {}) {
           peer.send({ type: "err", code: "bad_message", msg: "A base session accepts tutorial input only." });
           return;
         }
-        if (gameLift && message.type === "hello") {
+        if (gameLift && (message.type === "hello" || message.type === "quickPlayHello")) {
           if (acceptedPlayerSessionId) {
             peer.send({ type: "err", code: "bad_message", msg: "This connection already has a player session." });
             return;
@@ -442,8 +466,14 @@ export async function createServer(options: CreateServerOptions = {}) {
             ws.close(1008, "Player session required");
             return;
           }
+          let attemptedAdapterAcceptance = false;
           try {
             const playerSessionId = message.playerSessionId.trim();
+            if (publicQuickPlay !== (message.type === "quickPlayHello")) {
+              peer.send({ type: "err", code: "wrong_session_mode", msg: publicQuickPlay ? "Use the public quick-play handshake." : "Use the rollback room handshake." });
+              ws.close(1008, "Wrong session mode");
+              return;
+            }
             let session = activePlayerSessions.get(playerSessionId);
             if (session?.peerId) {
               peer.send({ type: "err", code: "player_session_in_use", msg: "This player session is already connected." });
@@ -455,16 +485,31 @@ export async function createServer(options: CreateServerOptions = {}) {
               session.removalTimer = null;
             }
             if (!session) {
-              session = {
-                playerId: await gameLift.acceptPlayerSession(playerSessionId),
-                peerId: null,
-                removalTimer: null,
-              };
-              activePlayerSessions.set(playerSessionId, session);
+              if (pendingPlayerSessions.has(playerSessionId)) {
+                peer.send({ type: "err", code: "player_session_in_use", msg: "This player session is already connecting." });
+                ws.close(1008, "Player session already connecting");
+                return;
+              }
+              pendingPlayerSessions.add(playerSessionId);
+              attemptedAdapterAcceptance = true;
+              try {
+                const publicAdmission = publicQuickPlay
+                  ? await gameLift.acceptPublicPlayerSession(playerSessionId)
+                  : undefined;
+                session = {
+                  playerId: publicAdmission?.playerId ?? await gameLift.acceptPlayerSession(playerSessionId),
+                  ...(publicAdmission ? { publicAdmission } : {}),
+                  peerId: null,
+                  removalTimer: null,
+                };
+                activePlayerSessions.set(playerSessionId, session);
+              } finally {
+                pendingPlayerSessions.delete(playerSessionId);
+              }
             }
             session.peerId = peer.id;
             acceptedPlayerSessionId = playerSessionId;
-            const joined = await rooms.handleMessage(peer, message, session.playerId);
+            const joined = await rooms.handleMessage(peer, message, session.publicAdmission ?? session.playerId);
             if (!joined) {
               await removePlayerSession(playerSessionId, peer.id, true);
               acceptedPlayerSessionId = null;
@@ -477,6 +522,13 @@ export async function createServer(options: CreateServerOptions = {}) {
             if (acceptedPlayerSessionId) {
               await removePlayerSession(acceptedPlayerSessionId, peer.id, true);
               acceptedPlayerSessionId = null;
+            } else if (attemptedAdapterAcceptance && message.playerSessionId?.trim()) {
+              // The adapter accepts before returning trusted PlayerData. If
+              // metadata parsing or the following admission step fails, undo
+              // that possible acceptance even though no local binding exists.
+              await gameLift.removePlayerSession(message.playerSessionId.trim()).catch((error) => {
+                app.log.warn({ err: error }, "failed to remove rejected GameLift player session");
+              });
             }
             peer.send({ type: "err", code: "player_session_rejected", msg: "GameLift rejected this player session." });
             ws.close(1008, "Player session rejected");
@@ -484,7 +536,7 @@ export async function createServer(options: CreateServerOptions = {}) {
           }
         }
         const joined = await rooms.handleMessage(peer, message);
-        if (message.type === "hello" && joined) connectionMode = "game";
+        if ((message.type === "hello" || message.type === "quickPlayHello") && joined) connectionMode = "game";
       } catch {
         peer.send({ type: "err", code: "server_unavailable", msg: "The allocated game session is not ready." });
       }
@@ -497,6 +549,7 @@ export async function createServer(options: CreateServerOptions = {}) {
       inbound = inbound.then(() => processMessage(data));
     });
     ws.on("close", () => {
+      publicPeerSockets.delete(peer.id);
       baseTutorialAuthority.disconnect(peer.id);
       rooms.disconnect(peer.id);
       if (gameLift && acceptedPlayerSessionId) {
@@ -514,9 +567,11 @@ export async function createServer(options: CreateServerOptions = {}) {
       const sessions = [...activePlayerSessions.keys()];
       for (const entry of activePlayerSessions.values()) if (entry.removalTimer) clearTimeout(entry.removalTimer);
       activePlayerSessions.clear();
+      pendingPlayerSessions.clear();
       await Promise.allSettled(sessions.map((playerSessionId) => gameLift.removePlayerSession(playerSessionId)));
     }
     await persistence.close();
+    options.arenaDirectory?.close();
   });
 
   return { app, rooms, persistence };

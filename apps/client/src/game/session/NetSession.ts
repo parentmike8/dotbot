@@ -387,6 +387,17 @@ export class NetSession implements GameSession {
           locked: message.locked,
         });
         return;
+      case "arenaWelcome":
+        // Mechanical compatibility for the additive server path. The public
+        // launch UI/session owner will consume arena state in its own lane.
+        if (this.connectTimeoutTimer) clearTimeout(this.connectTimeoutTimer);
+        this.connectTimeoutTimer = null;
+        this.handshakeReady = true;
+        this.reconnectAttempt = 0;
+        this.reconnectStartedAt = null;
+        this.options.onError?.("");
+        this.playerIdValue = message.playerId;
+        return;
       case "lobby":
         this.options.onLobby?.({
           roomCode: this.roomCode || this.options.roomCode,
@@ -395,6 +406,9 @@ export class NetSession implements GameSession {
           playerId: this.playerIdValue,
           locked: message.locked,
         });
+        return;
+      case "arenaState":
+      case "roleController":
         return;
       case "matchStart":
         this.snapshots = [];
