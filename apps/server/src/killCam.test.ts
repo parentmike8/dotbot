@@ -42,8 +42,8 @@ function bot(id: string, position: { x: number; y: number }, overrides: Partial<
     searched: false,
     pleaded: false,
     radarActiveMs: 500,
-    radarPings: [{ x: 500, y: 50, ageMs: 0 }],
-    dashOverchargeCharges: 1,
+    radarPings: [{ botId: "rival", floorId: "outdoor", x: 500, y: 50, ageMs: 0 }],
+    dashOverchargeMs: 1_000,
     incognitoMs: 0,
     dashCooldownMs: 0,
     dashActiveMs: 0,
@@ -123,6 +123,25 @@ describe("KillCamHistory", () => {
     expect(mine.sourceBotId).toBeUndefined();
     expect(mine.cause.kind).toBe("mine");
     expect(JSON.stringify(mine)).not.toContain("killer");
+  });
+
+  it("keeps an invisible rival out of historical sight until physical contact", () => {
+    const history = new KillCamHistory(map, { historyTicks: 240 });
+    const hidden = snapshot(12, 100, { x: 180, y: 100 });
+    hidden.bots = hidden.bots.map((entry) =>
+      entry.id === "killer" ? { ...entry, incognitoMs: 500 } : entry);
+    history.record(hidden);
+    const contact = snapshot(15, 100, { x: 145, y: 100 });
+    contact.bots = contact.bots.map((entry) =>
+      entry.id === "killer" ? { ...entry, incognitoMs: 450 } : entry);
+    history.record(contact);
+
+    const clip = history.createClip("victim", "killer", {
+      ...dashCause,
+      position: { x: 145, y: 100 },
+    })!;
+    expect(clip.frames[0].source).toBeUndefined();
+    expect(clip.frames[1].source?.id).toBe("killer");
   });
 
   it("prunes by tick and copies recorded state instead of retaining mutable snapshots", () => {

@@ -203,7 +203,7 @@ export function killCamSnapshot(
       pleaded: false,
       radarActiveMs: 0,
       radarPings: [],
-      dashOverchargeCharges: 0,
+      dashOverchargeMs: 0,
       incognitoMs: 0,
       dashCooldownMs: 0,
       dashActiveMs: actor.dashActiveMs,

@@ -7,7 +7,7 @@ function bot(id: string, x: number): DotBotEntity {
     id, name: id, squadId: "alpha", isAmbient: false, color: "#fff", state: "alive",
     position: { x, y: 100 }, radius: 24, floorId: "outdoor", facing: 0, moving: false,
     maxShields: 3, shields: 3, shieldSegments: [1, 1, 1], bays: [null, null, null, null],
-    hold: [], carriedCount: 0, searched: false, pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0,
+    hold: [], carriedCount: 0, searched: false, pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeMs: 0,
     incognitoMs: 0, dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
   };
 }
@@ -84,16 +84,80 @@ describe("fixed-delay interpolation", () => {
   it("keeps radar-ping interpolation identical on the non-empty path", () => {
     const older = snapshot(0, 0);
     const newer = snapshot(3, 30);
-    older.bots[0].radarPings = [{ x: 25, y: 40, ageMs: 10 }];
-    newer.bots[0].radarPings = [{ x: 25, y: 40, ageMs: 40 }];
+    older.bots[0].radarPings = [{ botId: "target", floorId: "outdoor", x: 25, y: 40, ageMs: 10 }];
+    newer.bots[0].radarPings = [{ botId: "target", floorId: "outdoor", x: 25, y: 40, ageMs: 40 }];
 
     const sampled = sampleTimeline([
       { tick: 0, snapshot: older },
       { tick: 3, snapshot: newer },
     ], 1.5, 3)!;
 
-    expect(sampled.snapshot.bots[0].radarPings).toEqual([{ x: 25, y: 40, ageMs: 25 }]);
+    expect(sampled.snapshot.bots[0].radarPings).toEqual([{
+      botId: "target", floorId: "outdoor", x: 25, y: 40, ageMs: 25,
+    }]);
     expect(sampled.snapshot.bots[0].radarPings).not.toBe(older.bots[0].radarPings);
+  });
+
+  it("treats newer omission and addition as authoritative at the snapshot boundary", () => {
+    const older = snapshot(0, 0);
+    const newer = snapshot(3, 30);
+    older.bots.push(bot("hidden", 80));
+    newer.bots.push(bot("newly-visible", 120));
+    older.bots[0].radarPings = [{
+      botId: "hidden",
+      floorId: "outdoor",
+      x: 80,
+      y: 100,
+      ageMs: 20,
+    }];
+    older.mines = [{
+      id: "detonated",
+      position: { x: 40, y: 50 },
+      radius: 10,
+      placedByBotId: "remote",
+      squadId: "alpha",
+      floorId: "outdoor",
+      placedAtMs: 0,
+      revealedToBotIds: [],
+    }];
+    older.noises = [{
+      id: "expired",
+      kind: "dash",
+      position: { x: 40, y: 70 },
+      floorId: "outdoor",
+      loudness: 0.8,
+      ageMs: 800,
+      ttlMs: 900,
+    }];
+
+    const timeline = [{ tick: 0, snapshot: older }, { tick: 3, snapshot: newer }];
+    const beforeBoundary = sampleTimeline(timeline, 2.9, 3)!.snapshot;
+    expect(beforeBoundary.bots.some(({ id }) => id === "hidden")).toBe(true);
+    expect(beforeBoundary.bots.some(({ id }) => id === "newly-visible")).toBe(false);
+
+    for (const renderTick of [3, 4]) {
+      const authoritative = sampleTimeline(timeline, renderTick, 3)!.snapshot;
+      expect(authoritative.bots.map(({ id }) => id).sort()).toEqual(["newly-visible", "remote"]);
+      expect(authoritative.bots.find(({ id }) => id === "remote")?.radarPings).toEqual([]);
+      expect(authoritative.mines).toEqual([]);
+      expect(authoritative.noises).toEqual([]);
+    }
+  });
+
+  it("switches a bot to its authoritative floor at the newer snapshot boundary", () => {
+    const older = snapshot(0, 0);
+    const newer = snapshot(3, 30);
+    newer.bots[0] = { ...newer.bots[0], floorId: "tower:F1" };
+    const timeline = [{ tick: 0, snapshot: older }, { tick: 3, snapshot: newer }];
+
+    expect(sampleTimeline(timeline, 2.9, 3)?.snapshot.bots[0]).toMatchObject({
+      floorId: "outdoor",
+      position: { x: 0, y: 100 },
+    });
+    expect(sampleTimeline(timeline, 3, 3)?.snapshot.bots[0]).toMatchObject({
+      floorId: "tower:F1",
+      position: { x: 30, y: 100 },
+    });
   });
 
   it("observes entity replacement, addition, and freshest-state mutation after a cache warmup", () => {
@@ -132,8 +196,8 @@ describe("fixed-delay interpolation", () => {
   it("invalidates every indexed collection while preserving live nested mutations", () => {
     const older = snapshot(0, 0);
     const newer = snapshot(3, 30);
-    older.bots[0].radarPings = [{ x: 25, y: 40, ageMs: 0 }];
-    newer.bots[0].radarPings = [{ x: 25, y: 40, ageMs: 30 }];
+    older.bots[0].radarPings = [{ botId: "target", floorId: "outdoor", x: 25, y: 40, ageMs: 0 }];
+    newer.bots[0].radarPings = [{ botId: "target", floorId: "outdoor", x: 25, y: 40, ageMs: 30 }];
     older.dots = [{
       id: "dot",
       position: { x: 20, y: 30 },

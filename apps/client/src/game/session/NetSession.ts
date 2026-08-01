@@ -440,6 +440,10 @@ export class NetSession implements GameSession {
         this.rejectStart = null;
         return;
       case "snap": {
+        const newestTick = this.snapshots.at(-1)?.tick;
+        // Latest-state datagrams may reorder. A stale frame must not resurrect
+        // hidden bodies, expired contacts, detonated mines, or old dot deltas.
+        if (newestTick !== undefined && message.tick <= newestTick) return;
         const arrivedAt = this.recordSnapshotArrival();
         if (this.serverClockTick === null) this.setServerClock(message.tick, arrivedAt);
         if (this.intelValue && message.intel !== undefined) {
@@ -840,6 +844,7 @@ export class NetSession implements GameSession {
       floorId: predicted.floorId,
       dashCooldownMs: predicted.dashCooldownMs,
       dashActiveMs: predicted.dashActiveMs,
+      dashOverchargeMs: predicted.dashOverchargeMs,
     };
   }
 

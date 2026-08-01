@@ -91,7 +91,7 @@ function welcome(): Extract<ServerMessage, { type: "baseWelcome" }> {
     position: { x: 260, y: 640 }, radius: 24, state: "alive" as const, floorId: "outdoor",
     facing: 0, moving: false, maxShields: 3, shields: 3, shieldSegments: [1, 1, 1],
     bays: [], hold: [], carriedCount: 0, searched: false, pleaded: false, radarActiveMs: 0,
-    radarPings: [], dashOverchargeCharges: 0, incognitoMs: 0, dashCooldownMs: 0,
+    radarPings: [], dashOverchargeMs: 0, incognitoMs: 0, dashCooldownMs: 0,
     dashActiveMs: 0, invulnerabilityMs: 0,
   };
   return {

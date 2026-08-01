@@ -1,5 +1,5 @@
 import { downtownMap } from "@dotbot/game/content/downtown";
-import type { CoverageSnapshot, NoiseEvent } from "@dotbot/game/types";
+import type { CoverageSnapshot, MapDocument, NoiseEvent } from "@dotbot/game/types";
 import { describe, expect, it } from "vitest";
 import type { EntityMeta, FullWireSnapshot, WireBot } from "./messages";
 import { filterEventsForViewer, filterForViewer } from "./interest";
@@ -17,16 +17,16 @@ const meta: EntityMeta[] = [
 const bots: WireBot[] = [
   bot("viewer", "outdoor", 500, 500, {
     b: ["h", null, null, null], bs: ["mercy", null, null, null], ir: 3,
-    c: 1, r: [100, [{ x: 10, y: 20, ageMs: 0 }]],
+    c: 1, r: [100, [["street-enemy", 10, 20, "outdoor", 0]]],
   }),
   bot("mate", "lot6:B1", 500, 1200, {
     b: ["r", null, null, null], bs: ["lot6", null, null, null], ir: 4,
-    c: 1, r: [100, [{ x: 30, y: 40, ageMs: 0 }]],
+    c: 1, r: [100, [["street-enemy", 30, 40, "outdoor", 0]]],
   }),
-  bot("street-enemy", "outdoor", 1000, 660, {
+  bot("street-enemy", "outdoor", 540, 500, {
     b: ["d", null, null, null], h: ["b:bed"],
     bs: ["yard", null, null, null], hs: ["mercy"], ir: 7,
-    c: 2, r: [100, [{ x: 50, y: 60, ageMs: 0 }]],
+    c: 2, r: [100, [["viewer", 50, 60, "outdoor", 0]]],
   }),
   bot("upper-enemy", "mercy:F1", 400, 250),
 ];
@@ -46,6 +46,30 @@ const mines: FullWireSnapshot["mines"] = [
   { id: "mine-alpha-0", position: { x: 620, y: 500 }, radius: 10, placedByBotId: "viewer", squadId: "a", floorId: "outdoor", placedAtMs: 10, revealedToBotIds: ["street-enemy"] },
 ];
 const wire: FullWireSnapshot = { tick: 1, bots, dots, mines, coverages, noises };
+
+const occlusionMap: MapDocument = {
+  id: "interest-occlusion",
+  name: "Interest occlusion",
+  width: 500,
+  height: 360,
+  outdoor: {
+    roads: [],
+    parks: [],
+    walls: [
+      { id: "north", x: 0, y: 0, w: 500, h: 20 },
+      { id: "south", x: 0, y: 340, w: 500, h: 20 },
+      { id: "west", x: 0, y: 0, w: 20, h: 360 },
+      { id: "east", x: 480, y: 0, w: 20, h: 360 },
+      { id: "divider", x: 240, y: 60, w: 12, h: 240 },
+    ],
+    objects: [],
+    dotSpawns: [],
+  },
+  buildings: [],
+  extractionPoints: [],
+  insertionPoints: [],
+  botSpawns: [],
+};
 
 describe("filterForViewer", () => {
   it("includes the viewer floor, excludes other-floor enemies, and always includes squadmates", () => {
@@ -119,6 +143,84 @@ describe("filterForViewer", () => {
     expect(filtered.bots.find((entry) => entry.i === "street-enemy")?.r).toBeUndefined();
   });
 
+  it("withholds exact rival bodies behind walls or invisibility while retaining viewer-private radar contacts", () => {
+    const privateMeta: EntityMeta[] = [
+      { id: "viewer", name: "Viewer", squadId: "a", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "mate", name: "Mate", squadId: "a", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "visible", name: "Visible", squadId: "b", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "hidden", name: "Hidden", squadId: "b", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "invisible", name: "Invisible", squadId: "b", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "ambient", name: "Ambient", squadId: "grey", isAmbient: true, maxShields: 3, radius: 24 },
+    ];
+    const privateWire: FullWireSnapshot = {
+      tick: 4,
+      bots: [
+        bot("viewer", "outdoor", 100, 180, {
+          r: [500, [["hidden", 400, 180, "outdoor", 20]]],
+          o: 500,
+          ic: 500,
+        }),
+        bot("mate", "outdoor", 100, 260),
+        bot("visible", "outdoor", 100, 300),
+        bot("hidden", "outdoor", 400, 180, { o: 900, ic: 900 }),
+        bot("invisible", "outdoor", 180, 180, { ic: 900 }),
+        bot("ambient", "outdoor", 100, 100),
+      ],
+      dots: [],
+      mines: [],
+      coverages: [],
+      noises: [],
+    };
+
+    const filtered = filterForViewer(privateWire, privateMeta, {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    expect(filtered.bots.map(({ i }) => i)).toEqual(["viewer", "mate", "visible", "ambient"]);
+    expect(filtered.bots.find(({ i }) => i === "viewer")?.r?.[1]).toEqual([
+      ["hidden", 400, 180, "outdoor", 20],
+    ]);
+    expect(filtered.bots.find(({ i }) => i === "hidden")).toBeUndefined();
+    expect(filtered.rivalsAlive).toBe(3);
+
+    const contactWire = {
+      ...privateWire,
+      bots: privateWire.bots.map((entry) => entry.i === "invisible" ? { ...entry, p: [145, 180] as [number, number] } : entry),
+    };
+    const atContact = filterForViewer(contactWire, privateMeta, {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    const disclosed = atContact.bots.find(({ i }) => i === "invisible")!;
+    expect(disclosed).toBeDefined();
+    expect(disclosed.ic).toBeUndefined();
+    expect(disclosed.o).toBeUndefined();
+
+    const crossFloorMeta = [...privateMeta, {
+      id: "invisible-upper", name: "Upper invisible", squadId: "b", isAmbient: false, maxShields: 3, radius: 24,
+    }];
+    const crossFloorWire: FullWireSnapshot = {
+      ...privateWire,
+      bots: [
+        { ...privateWire.bots[0], s: "downed" },
+        privateWire.bots[1],
+        bot("invisible-upper", "tower:F1", 100, 260, { ic: 900 }),
+      ],
+    };
+    const spectating = filterForViewer(crossFloorWire, crossFloorMeta, {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      spectatedBotId: "mate",
+      squadPhysicsFloorIds: new Set(["outdoor", "tower:F1"]),
+    });
+    expect(spectating.bots.some(({ i }) => i === "invisible-upper")).toBe(false);
+  });
+
   it("shows squad mines as X data, disguises them with seam data for rivals, and reveals only to the radar firer", () => {
     const squad = filterForViewer(wire, meta, {
       map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor"]),
@@ -141,6 +243,40 @@ describe("filterForViewer", () => {
     });
     expect(rival.mines[0]).toMatchObject({ presentation: "disguised", seam: true });
     expect(rival.mines[0].disguise).toMatch(/health|radar|dashOvercharge|incognito/);
+  });
+
+  it("withholds rival mines behind walls unless personally radar-revealed", () => {
+    const mineWire: FullWireSnapshot = {
+      tick: 1,
+      bots: [bot("viewer", "outdoor", 100, 180)],
+      dots: [],
+      mines: [{
+        id: "hidden-mine",
+        position: { x: 400, y: 180 },
+        radius: 10,
+        floorId: "outdoor",
+        placedAtMs: 0,
+        placedByBotId: "enemy",
+        squadId: "b",
+      }],
+      coverages: [],
+      noises: [],
+    };
+    const viewerMeta = [meta[0]];
+    const context = {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    };
+    expect(filterForViewer(mineWire, viewerMeta, context).mines).toEqual([]);
+
+    mineWire.mines[0].revealedToBotIds = ["viewer"];
+    const revealed = filterForViewer(mineWire, viewerMeta, context).mines;
+    expect(revealed).toHaveLength(1);
+    expect(revealed[0]).toMatchObject({ presentation: "revealed" });
+    expect(revealed[0].placedByBotId).toBeUndefined();
+    expect(revealed[0].squadId).toBeUndefined();
   });
 
   it("uses classifyNoise floor-leak and loudness semantics", () => {
@@ -198,6 +334,22 @@ describe("filterForViewer", () => {
     const event = { type: "mineSensor" as const, botId: "viewer", squadId: "a", mineId: "mine-alpha-0", position: { x: 1, y: 2 }, floorId: "outdoor" };
     expect(filterEventsForViewer([event], meta, new Set(["viewer"]), "a")).toEqual([event]);
     expect(filterEventsForViewer([event], meta, new Set(["viewer"]), "b")).toEqual([]);
+  });
+
+  it("never discloses a mine owner's identity through the victim's down event", () => {
+    const event = {
+      type: "downed" as const,
+      botId: "viewer",
+      byBotId: "hidden-owner",
+      cause: {
+        kind: "mine" as const,
+        tick: 10,
+        position: { x: 1, y: 2 },
+        direction: { x: 1, y: 0 },
+      },
+    };
+    expect(filterEventsForViewer([event], meta, new Set(["viewer"]), "a"))
+      .toEqual([{ ...event, byBotId: undefined }]);
   });
 
   it("broadcasts pleas across squad and floor interest boundaries", () => {

@@ -29,7 +29,7 @@ const makeBot = (overrides: Partial<DotBotEntity> = {}): DotBotEntity => ({
   pleaded: false,
   radarActiveMs: 0,
   radarPings: [],
-  dashOverchargeCharges: 0,
+  dashOverchargeMs: 0,
   incognitoMs: 0,
   dashCooldownMs: 0,
   dashActiveMs: 0,
@@ -71,6 +71,49 @@ describe("LitePredictor", () => {
       1200 + defaultGameConfig.dashSpeed / defaultGameConfig.tickHz,
       5,
     );
+  });
+
+  it("predicts timed dash overcharge with cooldown held at zero through repeated dashes", () => {
+    const config = { ...defaultGameConfig, dashOverchargeDurationMs: 400 };
+    const predictor = new LitePredictor(
+      downtownMap,
+      config,
+      makeBot({ dashCooldownMs: 900, dashOverchargeMs: 400 }),
+    );
+
+    predictor.step({ move: { x: 1, y: 0 }, dash: true });
+    expect(predictor.current.dashActiveMs).toBeGreaterThan(0);
+    expect(predictor.current.dashCooldownMs).toBe(0);
+    expect(predictor.current.dashOverchargeMs).toBeGreaterThan(0);
+
+    for (let tick = 0; tick < 12; tick += 1) predictor.step(moveRight);
+    predictor.step({ move: { x: 1, y: 0 }, dash: true });
+    expect(predictor.current.dashActiveMs).toBeGreaterThan(0);
+    expect(predictor.current.dashCooldownMs).toBe(0);
+
+    for (let tick = 0; tick < 30; tick += 1) predictor.step(moveRight);
+    expect(predictor.current.dashOverchargeMs).toBe(0);
+    predictor.step({ move: { x: 1, y: 0 }, dash: true });
+    expect(predictor.current.dashCooldownMs).toBeGreaterThan(0);
+  });
+
+  it("predicts same-frame authoritative dash-overcharge activation before the dash edge", () => {
+    const predictor = new LitePredictor(
+      downtownMap,
+      defaultGameConfig,
+      makeBot({
+        bays: [{ kind: "powerup", type: "dashOvercharge" }, null, null],
+        dashCooldownMs: 900,
+      }),
+    );
+    predictor.step({ move: { x: 1, y: 0 }, dash: true, useBay: 0 });
+    expect(predictor.current).toMatchObject({
+      dashActiveMs: expect.any(Number),
+      dashCooldownMs: 0,
+      bays: [null, null, null],
+    });
+    expect(predictor.current.dashActiveMs).toBeGreaterThan(0);
+    expect(predictor.current.dashOverchargeMs).toBeGreaterThan(59_000);
   });
 
   it("moves a full-size predicted bot through Mercy's standard ward-to-core doorway", () => {

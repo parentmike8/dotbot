@@ -167,7 +167,7 @@ describe("LocalSession run-state ownership", () => {
         pleaded: false,
         radarActiveMs: 0,
         radarPings: [],
-        dashOverchargeCharges: 0,
+        dashOverchargeMs: 0,
         incognitoMs: 0,
         dashCooldownMs: 0,
         dashActiveMs: 0,
@@ -189,7 +189,7 @@ describe("LocalSession run-state ownership", () => {
       carriedCount: 1,
       searched: false,
       pleaded: false,
-      radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0, incognitoMs: 0,
+      radarActiveMs: 0, radarPings: [], dashOverchargeMs: 0, incognitoMs: 0,
       dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
     }]);
     const { session } = scriptedSession({ events: [], snapshot: downed });
@@ -282,7 +282,7 @@ function testBot(
     pleaded: false,
     radarActiveMs: 0,
     radarPings: [],
-    dashOverchargeCharges: 0,
+    dashOverchargeMs: 0,
     incognitoMs: 0,
     dashCooldownMs: 0,
     dashActiveMs: 0,

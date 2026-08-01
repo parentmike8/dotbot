@@ -1556,15 +1556,13 @@ export class Room {
   }
 
   private includedBotIds(member: Member, snapshot: GameSnapshot): Set<string> {
-    const own = snapshot.bots.find((bot) => bot.id === member.botId);
-    // Downed is when a member starts watching their squad instead of themselves.
-    const spectator = !own || own.state === "downed";
-    const floors = spectator
-      ? this.squadPhysicsFloorIds(member, snapshot)
-      : new Set([physicsFloorId(downtownMap, own.floorId)]);
-    return new Set(snapshot.bots
-      .filter((bot) => bot.squadId === member.squadId || floors.has(physicsFloorId(downtownMap, bot.floorId)))
-      .map((bot) => bot.id));
+    const wire = toWireSnapshot(snapshot);
+    const filtered = filterForViewer(
+      wire,
+      snapshot.bots.map(toEntityMeta),
+      this.viewerContext(member, snapshot),
+    );
+    return new Set(filtered.bots.map((bot) => bot.i));
   }
 
   private sendStream(member: Member, message: ServerMessage, delivery: DeliveryClass = "reliable"): void {

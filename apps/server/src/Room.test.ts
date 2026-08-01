@@ -180,10 +180,33 @@ describe("Room GIVE UP", () => {
 
     const internals = room as unknown as {
       members: Map<string, { botId: string; inRun: boolean }>;
-      simulation: { bots: Map<string, { state: string; shields: number }> };
+      simulation: {
+        bots: Map<string, {
+          id: string;
+          squadId: string;
+          floorId: string;
+          position: { x: number; y: number };
+          state: string;
+          shields: number;
+        }>;
+        mines: Map<string, unknown>;
+      };
     };
     const member = internals.members.get("p1")!;
     const bot = internals.simulation.bots.get(member.botId)!;
+    internals.simulation.mines.set("mine-give-up", {
+      id: "mine-give-up",
+      position: { ...bot.position },
+      radius: 10,
+      placedByBotId: bot.id,
+      squadId: bot.squadId,
+      floorId: bot.floorId,
+      placedAtMs: 10,
+      revealedToBotIds: [],
+      armedAtTick: 1,
+      sensorElapsedMs: 0,
+      revealMsByBotId: new Map(),
+    });
     bot.state = "downed";
     bot.shields = 0;
 
@@ -199,6 +222,7 @@ describe("Room GIVE UP", () => {
     });
     expect(room.phase).toBe("live");
     expect(internals.members.get("p1")?.inRun).toBe(false);
+    expect(internals.simulation.mines.size).toBe(0);
     expect(internals.members.get("p4")?.inRun).toBe(true);
     const richer = room as unknown as {
       simulation: { getSnapshot(): import("@dotbot/game/types").GameSnapshot };
@@ -557,6 +581,76 @@ describe("Room input stream", () => {
     expect(room.join(afterGc.peer, "drop-token", "Dropper", "drop-player", "alpha")).not.toBeNull();
     expect(afterGc.messages.find((message) => message.type === "matchStart")?.dotBaseline)
       .not.toContainEqual(expect.objectContaining({ id: dropped.id }));
+    room.dispose();
+  });
+
+  it("reconnects to current private effect timers, radar contacts, and owned mines", async () => {
+    const room = new Room("POWR", {
+      countdownMs: 0,
+      persistence: new NoopPersistence(),
+      aiWingmates: false,
+    });
+    const original = collectingPeer("power-original");
+    room.join(original.peer, "power-token", "Powered", "power-player", "alpha");
+    room.receive("power-player", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+
+    const internals = room as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: {
+        bots: Map<string, {
+          id: string;
+          squadId: string;
+          floorId: string;
+          position: { x: number; y: number };
+          radarActiveMs: number;
+          radarPings: Array<{ botId: string; floorId: string; x: number; y: number; ageMs: number }>;
+          dashOverchargeMs: number;
+          incognitoMs: number;
+        }>;
+        mines: Map<string, unknown>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+      broadcastSnapshot(snapshot: import("@dotbot/game/types").GameSnapshot): void;
+    };
+    const member = internals.members.get("power-player")!;
+    const bot = internals.simulation.bots.get(member.botId)!;
+    bot.radarActiveMs = 5_000;
+    bot.radarPings = [{ botId: "known-rival", floorId: bot.floorId, ...bot.position, ageMs: 250 }];
+    bot.dashOverchargeMs = 43_000;
+    bot.incognitoMs = 6_000;
+    internals.simulation.mines.set("mine-reconnect", {
+      id: "mine-reconnect",
+      position: { ...bot.position },
+      radius: 10,
+      placedByBotId: bot.id,
+      squadId: bot.squadId,
+      floorId: bot.floorId,
+      placedAtMs: 10,
+      revealedToBotIds: [],
+      armedAtTick: 1,
+      sensorElapsedMs: 0,
+      revealMsByBotId: new Map(),
+    });
+
+    room.disconnect(original.peer.id);
+    const reconnected = collectingPeer("power-reconnected");
+    expect(room.join(reconnected.peer, "power-token", "Powered", "power-player", "alpha")).not.toBeNull();
+    internals.broadcastSnapshot(internals.simulation.getSnapshot());
+
+    const snap = reconnected.messages.filter((message) => message.type === "snap").at(-1);
+    const own = snap?.bots.find((entry) => entry.i === member.botId);
+    expect(own).toMatchObject({
+      r: [5_000, [["known-rival", bot.position.x, bot.position.y, bot.floorId, 250]]],
+      o: 43_000,
+      ic: 6_000,
+    });
+    expect(snap?.mines).toContainEqual(expect.objectContaining({
+      id: "mine-reconnect",
+      placedByBotId: bot.id,
+      squadId: "alpha",
+      presentation: "squad",
+    }));
     room.dispose();
   });
 

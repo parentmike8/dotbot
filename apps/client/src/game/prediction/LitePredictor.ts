@@ -23,7 +23,7 @@ import type { DoorEntity, DotBotEntity, GameConfig, InputCommand, MapDocument, S
 
 export type PredictedOwnBot = Pick<
   DotBotEntity,
-  "id" | "position" | "radius" | "floorId" | "facing" | "dashCooldownMs" | "dashActiveMs" | "shieldSegments" | "moving"
+  "id" | "position" | "radius" | "floorId" | "facing" | "bays" | "dashCooldownMs" | "dashActiveMs" | "dashOverchargeMs" | "shieldSegments" | "moving"
 >;
 
 export type PredictedDashContact = {
@@ -122,6 +122,7 @@ const cloneState = (bot: PredictedOwnBot): PredictedOwnBot => ({
   // and a plate array shared across the prediction boundary is a mutation waiting
   // to be blamed on the netcode.
   shieldSegments: [...bot.shieldSegments],
+  bays: bot.bays.map((item) => item && { ...item }),
 });
 
 /**
@@ -267,17 +268,41 @@ export class LitePredictor {
       },
       dashCooldownMs: this.state.dashCooldownMs + (next.dashCooldownMs - this.state.dashCooldownMs) * alpha,
       dashActiveMs: this.state.dashActiveMs + (next.dashActiveMs - this.state.dashActiveMs) * alpha,
+      dashOverchargeMs: this.state.dashOverchargeMs + (next.dashOverchargeMs - this.state.dashOverchargeMs) * alpha,
     };
   }
 
   private advance(state: PredictedOwnBot, input: InputCommand, elapsedMs: number, consumeDash: boolean): PredictedOwnBot {
     const move = clampInputVector(input.move);
-    state.dashCooldownMs = Math.max(0, state.dashCooldownMs - elapsedMs);
+    state.dashOverchargeMs = Math.max(0, state.dashOverchargeMs - elapsedMs);
+    state.dashCooldownMs = state.dashOverchargeMs > 0
+      ? 0
+      : Math.max(0, state.dashCooldownMs - elapsedMs);
     state.dashActiveMs = Math.max(0, state.dashActiveMs - elapsedMs);
 
-    if (consumeDash && input.dash && state.dashCooldownMs <= 0 && state.dashActiveMs <= 0) {
+    if (
+      consumeDash
+      && input.useBay !== undefined
+      && Number.isInteger(input.useBay)
+      && input.useBay >= 0
+      && input.useBay < state.bays.length
+    ) {
+      const item = state.bays[input.useBay];
+      if (item?.kind === "powerup" && item.type === "dashOvercharge") {
+        state.bays[input.useBay] = null;
+        state.dashOverchargeMs = this.config.dashOverchargeDurationMs;
+        state.dashCooldownMs = 0;
+      }
+    }
+
+    if (
+      consumeDash
+      && input.dash
+      && (state.dashOverchargeMs > 0 || state.dashCooldownMs <= 0)
+      && state.dashActiveMs <= 0
+    ) {
       state.dashActiveMs = this.config.dashDurationMs;
-      state.dashCooldownMs = this.config.dashCooldownMs;
+      state.dashCooldownMs = state.dashOverchargeMs > 0 ? 0 : this.config.dashCooldownMs;
       this.dashBlockedTargets.clear();
       for (const [targetId, ticks] of this.contactDwell) {
         if (ticks >= DASH_CLINCH_TICKS) this.dashBlockedTargets.add(targetId);

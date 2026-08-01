@@ -400,6 +400,59 @@ describe("NetSession item edges", () => {
     expect(snapshots[1].snapshot.dots).toMatchObject([{ id: "upper", captureProgressMs: 0 }]);
   });
 
+  it("ignores late latest-state frames before they can resurrect private state or stale dot deltas", () => {
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    const receive = (message: unknown) => (session as unknown as { receive(message: unknown): void }).receive(message);
+    receive({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "viewer",
+      meta: [{ id: "viewer", name: "Ada", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
+      tickHz: 60,
+      endTick: 3600,
+      insertionName: "TEST",
+      dotBaseline: [{ id: "outside", position: { x: 1, y: 2 }, radius: 10, floorId: "outdoor", it: "h", active: true }],
+    });
+    receive({
+      type: "snap",
+      tick: 6,
+      ack: 0,
+      bots: [{ i: "viewer", p: [60, 0], o: 40_000, ic: 5_000 }],
+      dotDeltas: [{ id: "outside", captureProgressMs: 500 }],
+      mines: [],
+    });
+    receive({
+      type: "snap",
+      tick: 3,
+      ack: 0,
+      bots: [{ i: "viewer", p: [999, 0], r: [5_000, [["expired", 900, 0, "outdoor", 0]]] }],
+      dotDeltas: [{ id: "outside", captureProgressMs: 0 }],
+      mines: [{
+        id: "detonated",
+        position: { x: 100, y: 100 },
+        radius: 10,
+        floorId: "outdoor",
+        placedAtMs: 0,
+        presentation: "revealed",
+      }],
+    });
+
+    const internals = session as unknown as {
+      snapshots: Array<{ tick: number; snapshot: import("@dotbot/game/types").GameSnapshot }>;
+      dotStore: Map<string, { captureProgressMs?: number }>;
+    };
+    expect(internals.snapshots).toHaveLength(1);
+    expect(internals.snapshots[0]).toMatchObject({
+      tick: 6,
+      snapshot: {
+        bots: [expect.objectContaining({ position: { x: 60, y: 0 }, dashOverchargeMs: 40_000, incognitoMs: 5_000 })],
+        mines: [],
+      },
+    });
+    expect(internals.dotStore.get("outside")?.captureProgressMs).toBe(500);
+  });
+
   it("reconnects with the same GameLift reservation after a brief mobile network handoff", async () => {
     vi.useFakeTimers();
     const transports: FakeTransport[] = [];

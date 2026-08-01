@@ -1,5 +1,8 @@
-import { classifyNoise, physicsFloorId } from "@dotbot/game/mapModel";
+import { classifyNoise, contextKey, doorEntityCollisionRect, physicsFloorId } from "@dotbot/game/mapModel";
+import { distance } from "@dotbot/game/math";
+import { contactReach } from "@dotbot/game/shields";
 import type { MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
+import { hasLineOfSight, OUTDOOR_SIGHT, seesOutdoors } from "@dotbot/game/visibility";
 import type { EntityMeta, FullWireSnapshot, MatchIntel, WireBot } from "./messages";
 
 export type ViewerContext = {
@@ -39,10 +42,24 @@ export function filterForViewer(
   const observer = isSpectating ? spectatedBot : ownBot;
   const visibleFloors = visiblePhysicsFloors(wire, viewerCtx);
 
-  const bots = wire.bots.filter((bot) =>
-    metaById.get(bot.i)?.squadId === viewerCtx.squadId
-      || visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor")),
-  ).map((bot) => {
+  const rivalsAlive = wire.bots.filter((bot) => {
+    const botMeta = metaById.get(bot.i);
+    return botMeta
+      && !botMeta.isAmbient
+      && botMeta.squadId !== viewerCtx.squadId
+      && (bot.s ?? "alive") === "alive";
+  }).length;
+  const bots = wire.bots.filter((bot) => {
+    const botMeta = metaById.get(bot.i);
+    if (botMeta?.squadId === viewerCtx.squadId) return true;
+    if (!observer || !visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor"))) return false;
+    if ((bot.ic ?? 0) > 0) {
+      const observerMeta = metaById.get(observer.i);
+      return physicsFloorId(viewerCtx.map, observer.fl ?? "outdoor") === physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor")
+        && Boolean(observerMeta && botMeta && botsPhysicallyTouch(observer, observerMeta, bot, botMeta));
+    }
+    return ordinarilyVisible(wire, viewerCtx.map, observer, wirePosition(bot), bot.fl ?? "outdoor");
+  }).map((bot) => {
     /**
      * What a rival carries is private right up until their body is searched.
      *
@@ -60,12 +77,19 @@ export function filterForViewer(
       hs: inventoryVisible ? bot.hs : undefined,
       ir: inventoryVisible ? bot.ir : undefined,
       r: bot.i === viewerCtx.viewerBotId ? bot.r : undefined,
+      o: bot.i === viewerCtx.viewerBotId ? bot.o : undefined,
+      ic: bot.i === viewerCtx.viewerBotId ? bot.ic : undefined,
     };
   });
   const includedBotIds = new Set(bots.map((bot) => bot.i));
   const dots = wire.dots.filter((dot) => visibleFloors.has(physicsFloorId(viewerCtx.map, dot.floorId)));
   const mines = wire.mines
-    .filter((mine) => visibleFloors.has(physicsFloorId(viewerCtx.map, mine.floorId)))
+    .filter((mine) => {
+      if (!visibleFloors.has(physicsFloorId(viewerCtx.map, mine.floorId))) return false;
+      if (mine.squadId === viewerCtx.squadId) return true;
+      if (viewerCtx.viewerBotId && mine.revealedToBotIds?.includes(viewerCtx.viewerBotId)) return true;
+      return Boolean(observer && ordinarilyVisible(wire, viewerCtx.map, observer, mine.position, mine.floorId));
+    })
     .map((mine) => {
       const squadMine = mine.squadId === viewerCtx.squadId;
       const radarRevealed = Boolean(viewerCtx.viewerBotId && mine.revealedToBotIds?.includes(viewerCtx.viewerBotId));
@@ -100,7 +124,7 @@ export function filterForViewer(
     ) !== null,
   ));
 
-  return { ...wire, bots, dots, mines, coverages, noises, intel: viewerCtx.intel };
+  return { ...wire, bots, dots, mines, coverages, noises, rivalsAlive, intel: viewerCtx.intel };
 }
 
 export function visiblePhysicsFloors(
@@ -131,7 +155,9 @@ export function filterEventsForViewer(
     if (event.type === "pinged") return event.squadId === squadId;
     if (event.type === "mineRotated") return metaById.get(event.botId)?.squadId === squadId;
     return event.type === "plea" || visibleBot(event.botId) || ("byBotId" in event && visibleBot(event.byBotId));
-  });
+  }).map((event) => event.type === "downed" && event.cause?.kind === "mine"
+    ? { ...event, byBotId: undefined }
+    : event);
 }
 
 function deterministicMineDisguise(id: string): "health" | "radar" | "dashOvercharge" | "incognito" {
@@ -145,6 +171,45 @@ function deterministicMineDisguise(id: string): "health" | "radar" | "dashOverch
 
 function wirePosition(bot: WireBot): Vec2 {
   return { x: bot.p[0], y: bot.p[1] };
+}
+
+function ordinarilyVisible(
+  wire: Pick<FullWireSnapshot, "doors">,
+  map: MapDocument,
+  observer: WireBot,
+  targetPosition: Vec2,
+  targetFloorId: string,
+): boolean {
+  const observerFloorId = observer.fl ?? "outdoor";
+  if (physicsFloorId(map, observerFloorId) !== physicsFloorId(map, targetFloorId)) return false;
+  const dynamicOccluders = (wire.doors ?? [])
+    .filter((door) => door.blocking && door.floorId === physicsFloorId(map, observerFloorId))
+    .map(doorEntityCollisionRect);
+  const observerPosition = wirePosition(observer);
+  const observerContext = contextKey(map, observerFloorId, observerPosition);
+  const targetContext = contextKey(map, targetFloorId, targetPosition);
+  if (observerContext === targetContext) {
+    if (physicsFloorId(map, observerFloorId) === "outdoor"
+      && distance(observerPosition, targetPosition) > OUTDOOR_SIGHT) return false;
+    return hasLineOfSight(map, observerContext, observerPosition, targetPosition, dynamicOccluders);
+  }
+  return seesOutdoors(map, observerFloorId, observerPosition, targetFloorId, targetPosition, dynamicOccluders);
+}
+
+function botsPhysicallyTouch(
+  observer: WireBot,
+  observerMeta: EntityMeta,
+  target: WireBot,
+  targetMeta: EntityMeta,
+): boolean {
+  const observerPosition = wirePosition(observer);
+  const targetPosition = wirePosition(target);
+  const toward = Math.atan2(targetPosition.y - observerPosition.y, targetPosition.x - observerPosition.x);
+  const observerSegments = observer.sh ?? Array(observerMeta.maxShields).fill(1);
+  const targetSegments = target.sh ?? Array(targetMeta.maxShields).fill(1);
+  const contactDistance = contactReach(observerMeta.radius, observer.f ?? 0, observerSegments, toward)
+    + contactReach(targetMeta.radius, target.f ?? 0, targetSegments, toward + Math.PI);
+  return distance(observerPosition, targetPosition) <= contactDistance + 1;
 }
 
 function physicsFloorForBot(bots: readonly WireBot[], map: MapDocument, botId: string): string {

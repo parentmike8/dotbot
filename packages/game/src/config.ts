@@ -84,7 +84,7 @@ export const defaultGameConfig: GameConfig = {
   mineSensePingMs: 2000,
   maxActiveMines: 3,
   signalIntelDurationMs: 60_000,
-  dashOverchargeUses: 3,
+  dashOverchargeDurationMs: 60_000,
   incognitoDurationMs: 10_000,
   powerupNoiseLoudness: 0.3,
   swapDurationMs: 2000,

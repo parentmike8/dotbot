@@ -18,7 +18,7 @@ const snapshot: GameSnapshot = {
       position: { x: 100, y: 200 }, radius: 24, state: "alive", floorId: "mercy:F1",
       facing: 0, moving: false, maxShields: 3, shields: 3, shieldSegments: [1, 1, 1],
       bays: [null, null, null, null], hold: [], carriedCount: 0, searched: false,
-      pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0,
+      pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeMs: 0,
       incognitoMs: 0, dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
     },
     {
@@ -26,7 +26,7 @@ const snapshot: GameSnapshot = {
       position: { x: 500, y: 600 }, radius: 24, state: "alive", floorId: "civic:F7",
       facing: 0, moving: false, maxShields: 3, shields: 3, shieldSegments: [1, 1, 1],
       bays: [null, null, null, null], hold: [], carriedCount: 0, searched: false,
-      pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0,
+      pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeMs: 0,
       incognitoMs: 0, dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
     },
     {
@@ -34,7 +34,7 @@ const snapshot: GameSnapshot = {
       position: { x: 700, y: 800 }, radius: 24, state: "alive", floorId: OUTDOOR_FLOOR_ID,
       facing: 0, moving: false, maxShields: 3, shields: 3, shieldSegments: [1, 1, 1],
       bays: [null, null, null, null], hold: [], carriedCount: 0, searched: false,
-      pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0,
+      pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeMs: 0,
       incognitoMs: 0, dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
     },
   ],

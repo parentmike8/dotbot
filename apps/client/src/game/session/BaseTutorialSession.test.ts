@@ -162,7 +162,7 @@ function snapshot(
         position: playerPosition, radius: 24, state: "alive", floorId: "outdoor", facing: 0,
         moving: false, maxShields: 3, shields: 3, shieldSegments: [1, 1, 1], bays: [],
         hold: [], carriedCount: 0, searched: false, pleaded: false, radarActiveMs: 0,
-        radarPings: [], dashOverchargeCharges: 0, incognitoMs: 0, dashCooldownMs: 0,
+        radarPings: [], dashOverchargeMs: 0, incognitoMs: 0, dashCooldownMs: 0,
         dashActiveMs: 0, invulnerabilityMs: 0,
       },
       {
@@ -170,7 +170,7 @@ function snapshot(
         color: "#777", position: { x: 260, y: 536 }, radius: 24, state: targetState,
         floorId: "outdoor", facing: 0, moving: false, maxShields: 1, shields: 0,
         shieldSegments: [0], bays: [], hold: [], carriedCount: 0, searched: false,
-        pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeCharges: 0,
+        pleaded: false, radarActiveMs: 0, radarPings: [], dashOverchargeMs: 0,
         incognitoMs: 0, dashCooldownMs: 0, dashActiveMs: 0, invulnerabilityMs: 0,
       },
     ],

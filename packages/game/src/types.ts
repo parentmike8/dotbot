@@ -120,7 +120,12 @@ export type ContractDefinition = {
   payout: { items: Item[] };
 };
 
-export type RadarPing = Vec2 & { ageMs: number };
+/** A sampled, viewer-private Radar return. It is stale by `ageMs`, not a live body. */
+export type RadarContact = Vec2 & {
+  botId: string;
+  floorId: string;
+  ageMs: number;
+};
 
 export type MineEntity = GameEntity & {
   placedByBotId: string;
@@ -912,8 +917,8 @@ export type DotBotEntity = GameEntity & {
    */
   pleaded: boolean;
   radarActiveMs: number;
-  radarPings: RadarPing[];
-  dashOverchargeCharges: number;
+  radarPings: RadarContact[];
+  dashOverchargeMs: number;
   incognitoMs: number;
   dashCooldownMs: number;
   dashActiveMs: number;
@@ -1019,7 +1024,7 @@ export type GameConfig = {
   mineSensePingMs: number;
   maxActiveMines: number;
   signalIntelDurationMs: number;
-  dashOverchargeUses: number;
+  dashOverchargeDurationMs: number;
   incognitoDurationMs: number;
   powerupNoiseLoudness: number;
   swapDurationMs: number;
@@ -1061,6 +1066,8 @@ export type GameSnapshot = {
   noises: NoiseEvent[];
   /** Optional only for rolling compatibility with snapshots from older rooms. */
   doors?: DoorEntity[];
+  /** Viewer-authorized global count; network snapshots set it before body filtering. */
+  rivalsAlive?: number;
   debug: {
     tickHz: number;
     tickCount: number;

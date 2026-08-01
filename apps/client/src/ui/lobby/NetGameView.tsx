@@ -99,7 +99,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
 
       <RunReadout
         remainingRunMs={remainingRunMs}
-        rivals={rivalsAlive(snapshot?.bots, player?.squadId)}
+        rivals={snapshot?.rivalsAlive ?? rivalsAlive(snapshot?.bots, player?.squadId)}
         onSettings={toggleSettings}
       >
         <button
@@ -216,7 +216,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
           dashProgress={dashProgress}
           dashDisabled={
             runResult !== null || !player || player.state !== "alive"
-            || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)
+            || (player.dashCooldownMs > 0 && player.dashOverchargeMs <= 0)
           }
         />
       ) : null}

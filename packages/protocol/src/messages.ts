@@ -1,4 +1,4 @@
-import type { BayIndex, DownedVerb, DropCommand, GameConfig, MapDocument, PingKind, PowerupType, RadarPing, TakeCommand } from "@dotbot/game/types";
+import type { BayIndex, DownedVerb, DropCommand, GameConfig, MapDocument, PingKind, PowerupType, TakeCommand } from "@dotbot/game/types";
 import type { WireItemCode } from "./items";
 
 export type RoomPhase = "lobby" | "assembling" | "countdown" | "live" | "results" | "ended";
@@ -55,6 +55,14 @@ export type EntityMeta = {
   color?: string;
 };
 
+export type WireRadarContact = [
+  botId: string,
+  x: number,
+  y: number,
+  floorId: string,
+  ageMs: number,
+];
+
 export type WireBot = {
   i: string;
   p: [number, number];
@@ -80,7 +88,8 @@ export type WireBot = {
   pl?: true;
   d?: [number, number];
   iv?: number;
-  r?: [number, RadarPing[]?];
+  r?: [number, WireRadarContact[]?];
+  /** Remaining timed dash-overcharge effect. */
   o?: number;
   ic?: number;
 };
@@ -134,6 +143,8 @@ export type FullWireSnapshot = {
   coverages: import("@dotbot/game/types").CoverageSnapshot[];
   noises: import("@dotbot/game/types").NoiseEvent[];
   doors?: import("@dotbot/game/types").DoorEntity[];
+  /** Viewer-authorized count populated by the interest filter. */
+  rivalsAlive?: number;
   /** Viewer-private match intel; omitted for players without an intel object. */
   intel?: MatchIntel;
 };
@@ -153,6 +164,7 @@ export type WireSnapshot = {
   coverages?: import("@dotbot/game/types").CoverageSnapshot[];
   noises?: import("@dotbot/game/types").NoiseEvent[];
   doors?: import("@dotbot/game/types").DoorEntity[];
+  rivalsAlive?: number;
   /** Viewer-private match intel; omitted for players without an intel object. */
   intel?: MatchIntel;
 };
