@@ -18,6 +18,100 @@ export {
   openingCutGeometry,
 } from "./doorwayClearance";
 export { CONTRACT_ACTIVE_CAP, CONTRACT_OFFER_COUNT, contractDayStamp, contractObjectiveLabel, contractSatisfied, deriveContractTemplates, generateContractOffers } from "./contracts";
+export {
+  AUTHORED_CONTRACT_REGISTRY,
+  TEST_LEVEL_CURVE,
+  activateContract,
+  advanceContractGraph,
+  createContractGraphState,
+  levelForProgress,
+  validateContractGraphState,
+  validateContractRegistry,
+} from "./authoredContracts";
+export type {
+  AuthoredContractDefinition,
+  ActivateContractResult,
+  ContractAdvanceResult,
+  ContractGraphState,
+  ContractGraphStateIssue,
+  ContractProgressState,
+  ContractRegistryIssue,
+  ContractStatus,
+  LevelCurve,
+  LevelProgress,
+} from "./authoredContracts";
+export { advanceAiObjective, advanceObjective, createAiObjective, createObjectiveProgress, validateObjectiveDefinition } from "./objectives";
+export type { AiObjective, AuthoredObjectiveDefinition, ObjectiveDomainEvent, ObjectiveIssue, ObjectiveProgress } from "./objectives";
+export {
+  BASE_OBJECT_REGISTRY,
+  BLUEPRINT_REGISTRY,
+  CORE_REGISTRY,
+  DEFAULT_EQUIPMENT_CATALOGS,
+  PLATE_SET_REGISTRY,
+  catalogRef,
+  createVersionedRegistry,
+  plateSetCountersDamage,
+  plateSetShortensChannel,
+  plateSetSuppressesSignal,
+  resolveCatalogRef,
+  validateEquipmentCatalogs,
+} from "./catalog";
+export type {
+  BaseObjectDefinition,
+  BlueprintDefinition,
+  CatalogRef,
+  CoreDefinition,
+  DomainItemSpec,
+  DomainItemStack,
+  DomainRegistry,
+  EquipmentCatalogs,
+  EquipmentCatalogIssue,
+  PlateSetDefinition,
+  PlateSetCapability,
+  VersionedRegistry,
+} from "./catalog";
+export { LOOT_TABLE_REGISTRY, rollLootTable, validateLootTableRegistry } from "./loot";
+export type { LootTableDefinition, LootTableEntry, LootTableIssue } from "./loot";
+export { FABRICATION_RECIPE_REGISTRY, fabricate, inventoryFromStacks, validateRecipe } from "./fabrication";
+export type {
+  DomainInventory,
+  FabricationContext,
+  FabricationRecipeDefinition,
+  FabricationRecipeIssue,
+  FabricationStationKind,
+} from "./fabrication";
+export {
+  appendPhysicalItemHistory,
+  bankExtractedItems,
+  createPhysicalItem,
+  lockLoadoutAtPublicQueueEntry,
+  reconcileLoadoutAfterLoss,
+  removePhysicalItems,
+  validatePhysicalItem,
+  validatePhysicalStorage,
+  validateLoadout,
+} from "./equipment";
+export type {
+  EquipmentKind,
+  EquipmentSelection,
+  LoadoutValidation,
+  LoadoutSelection,
+  LockedLoadoutSelection,
+  LockLoadoutResult,
+  LockedLoadout,
+  PhysicalItemHistoryEvent,
+  PhysicalItemInstance,
+  PhysicalStorage,
+} from "./equipment";
+export { authorizeInteraction, validateInteractionTarget } from "./interactions";
+export type {
+  DomainInteractionTarget,
+  InteractionAccessContext,
+  InteractionAuthorization,
+  InteractionChannelDefinition,
+  InteractionRequirement,
+  InteractionTargetIssue,
+} from "./interactions";
 export { downtownMap } from "./content/downtown";
 export { auditPatrolRoutes } from "./patrol";
 export { botSpawnFaction, isAmbientBotSpawn } from "./faction";

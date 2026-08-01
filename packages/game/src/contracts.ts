@@ -1,7 +1,13 @@
 import { floorHeight } from "./mapModel";
 import type { ContractDefinition, ContractObjective, Item, MapDocument, PowerupType } from "./types";
 
+/**
+ * @deprecated Migrate to the authored Contract graph. Legacy compatibility for
+ * current server/client adoption only; daily generation and rerolls are not
+ * part of the target model.
+ */
 export const CONTRACT_OFFER_COUNT = 3;
+/** @deprecated Migrate active-state policy to the authored Contract integration. */
 export const CONTRACT_ACTIVE_CAP = 2;
 
 const PAYOUT_KNOBS = {
@@ -10,6 +16,7 @@ const PAYOUT_KNOBS = {
   blueprintBonusAt: 6,
 } as const;
 
+/** @deprecated Daily Contracts are a legacy compatibility path. */
 export function contractDayStamp(date = new Date()): string {
   return date.toISOString().slice(0, 10);
 }
@@ -21,6 +28,7 @@ type ContractTemplate = {
   difficulty: number;
 };
 
+/** @deprecated Authored Contracts must not be derived from production map content. */
 export function deriveContractTemplates(map: MapDocument): ContractTemplate[] {
   const powerupTypes = new Set<PowerupType>();
   for (const spawn of [
@@ -70,6 +78,7 @@ export function deriveContractTemplates(map: MapDocument): ContractTemplate[] {
 }
 
 /** Deterministic for player/day; reroll is an explicit, persisted generation. */
+/** @deprecated Daily offers remain only until server/client persistence adoption. */
 export function generateContractOffers(map: MapDocument, playerId: string, dayStamp: string, reroll = 0): ContractDefinition[] {
   const templates = deriveContractTemplates(map);
   if (templates.length < CONTRACT_OFFER_COUNT) throw new Error("Map data does not derive enough contract templates.");
@@ -91,6 +100,7 @@ export function generateContractOffers(map: MapDocument, playerId: string, daySt
   }));
 }
 
+/** @deprecated Use objective domain events and `advanceContractGraph`. */
 export function contractSatisfied(contract: ContractDefinition, cargo: Item[]): boolean {
   const objective = contract.objective;
   if (objective.kind === "extractBlueprint") {
@@ -102,6 +112,7 @@ export function contractSatisfied(contract: ContractDefinition, cargo: Item[]): 
   return cargo.filter((item) => item.sourceBuildingId === objective.buildingId).length >= objective.count;
 }
 
+/** @deprecated Authored content owns its objective presentation later. */
 export function contractObjectiveLabel(contract: ContractDefinition, map: MapDocument): string {
   const objective = contract.objective;
   const building = "buildingId" in objective ? map.buildings.find((entry) => entry.id === objective.buildingId)?.name ?? objective.buildingId : null;

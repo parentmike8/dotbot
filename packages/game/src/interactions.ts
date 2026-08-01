@@ -1,5 +1,107 @@
 import { distance } from "./math";
 import type { DotBotEntity, Vec2 } from "./types";
+import type { FabricationStationKind } from "./fabrication";
+import type { CatalogRef } from "./registry";
+
+export type InteractionRequirement =
+  | { kind: "minimumLevel"; level: number }
+  | { kind: "completedContract"; contractId: string }
+  | { kind: "capability"; capabilityId: string };
+
+export type InteractionChannelDefinition = {
+  kind: "stationary";
+  durationMs: number;
+  noise: { kind: "interaction"; emitted: true };
+};
+
+type DomainInteractionBase = {
+  id: string;
+  dot: "grey";
+  requirements: readonly InteractionRequirement[];
+  channel: InteractionChannelDefinition;
+};
+
+export type DomainInteractionTarget = DomainInteractionBase & (
+  | { kind: "door"; doorwayId: string }
+  | { kind: "lootContainer"; lootTable: CatalogRef }
+  | { kind: "fabricationStation"; stationKind: FabricationStationKind }
+  | { kind: "baseObject"; objectId: string }
+  | { kind: "worldFunction"; functionId: string }
+);
+
+export type InteractionAccessContext = {
+  level: number;
+  completedContractIds?: ReadonlySet<string>;
+  capabilityIds?: ReadonlySet<string>;
+};
+
+export type InteractionAuthorization =
+  | { authorized: true; targetId: string }
+  | { authorized: false; reason: "invalid-context" }
+  | { authorized: false; reason: "level-required"; requiredLevel: number; actualLevel: number }
+  | { authorized: false; reason: "contract-required"; contractId: string }
+  | { authorized: false; reason: "capability-required"; capabilityId: string };
+
+export type InteractionTargetIssue = {
+  code: "missing-id" | "missing-target" | "invalid-channel-duration" | "invalid-level" | "duplicate-requirement";
+  detail: string;
+};
+
+export function validateInteractionTarget(target: DomainInteractionTarget): InteractionTargetIssue[] {
+  const issues: InteractionTargetIssue[] = [];
+  if (!target.id.trim()) issues.push({ code: "missing-id", detail: "interaction" });
+  const targetId = target.kind === "door"
+    ? target.doorwayId
+    : target.kind === "baseObject"
+      ? target.objectId
+      : target.kind === "worldFunction"
+        ? target.functionId
+        : target.kind === "lootContainer" ? target.lootTable.entryId : target.stationKind;
+  if (!targetId.trim()) issues.push({ code: "missing-target", detail: target.kind });
+  if (!Number.isFinite(target.channel.durationMs) || target.channel.durationMs <= 0) {
+    issues.push({ code: "invalid-channel-duration", detail: String(target.channel.durationMs) });
+  }
+  const requirements = new Set<string>();
+  for (const requirement of target.requirements) {
+    const key = requirement.kind === "minimumLevel"
+      ? requirement.kind
+      : `${requirement.kind}:${requirement.kind === "completedContract" ? requirement.contractId : requirement.capabilityId}`;
+    if (requirements.has(key)) issues.push({ code: "duplicate-requirement", detail: key });
+    requirements.add(key);
+    if (requirement.kind === "minimumLevel" && (!Number.isInteger(requirement.level) || requirement.level < 1)) {
+      issues.push({ code: "invalid-level", detail: String(requirement.level) });
+    }
+    if (requirement.kind === "completedContract" && !requirement.contractId.trim()) {
+      issues.push({ code: "missing-target", detail: requirement.kind });
+    }
+    if (requirement.kind === "capability" && !requirement.capabilityId.trim()) {
+      issues.push({ code: "missing-target", detail: requirement.kind });
+    }
+  }
+  return issues;
+}
+
+/** Pure access decision. Runtime range, channel interruption, and effects stay authoritative elsewhere. */
+export function authorizeInteraction(
+  actor: InteractionAccessContext,
+  target: DomainInteractionTarget,
+): InteractionAuthorization {
+  const issues = validateInteractionTarget(target);
+  if (issues.length > 0) throw new Error(`Invalid interaction target ${target.id}: ${issues.map((issue) => issue.code).join(", ")}`);
+  if (!Number.isInteger(actor.level) || actor.level < 1) return { authorized: false, reason: "invalid-context" };
+  for (const requirement of target.requirements) {
+    if (requirement.kind === "minimumLevel" && actor.level < requirement.level) {
+      return { authorized: false, reason: "level-required", requiredLevel: requirement.level, actualLevel: actor.level };
+    }
+    if (requirement.kind === "completedContract" && !actor.completedContractIds?.has(requirement.contractId)) {
+      return { authorized: false, reason: "contract-required", contractId: requirement.contractId };
+    }
+    if (requirement.kind === "capability" && !actor.capabilityIds?.has(requirement.capabilityId)) {
+      return { authorized: false, reason: "capability-required", capabilityId: requirement.capabilityId };
+    }
+  }
+  return { authorized: true, targetId: target.id };
+}
 
 /**
  * Center-to-center reach at which the visible bot and interaction-dot circles
