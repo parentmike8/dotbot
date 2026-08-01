@@ -58,7 +58,7 @@ import {
   parseObjectParallaxStrength,
   redrawOutdoorObjects,
 } from "./model/modelParallax";
-import { animateAmbient, driftLeaves, fadeTrail, stampTrail, trailStep } from "./model/modelMotion";
+import { animateAmbient, driftLeaves, fadeTrail, resetTrailMarks, stampTrail, trailStep } from "./model/modelMotion";
 import { driftWater } from "./model/modelWater";
 import { GRD } from "./model/modelGround";
 import { isInWater } from "@dotbot/game/water";
@@ -386,6 +386,48 @@ export class GameRenderer {
         // The renderer may already have nulled its canvas reference.
       }
     }
+  }
+
+  /** Clear presentation state whose clocks and identities belong to one run.
+   * Hot arenas reuse the renderer, and the next simulation restarts at time
+   * zero; retaining any of these would replay old signals or smooth a reused
+   * runtime id from its previous body. */
+  resetForNewRun(): void {
+    this.pleaSignals.clear();
+    this.mineSignals.clear();
+    this.impactFlashes.length = 0;
+    for (const view of this.botViews.values()) view.root.destroy({ children: true });
+    this.botViews.clear();
+    for (const view of this.impactViews.values()) view.root.destroy({ children: true });
+    this.impactViews.clear();
+    this.trailAnchors.clear();
+    resetTrailMarks(this.art.trails);
+    this.maskedGfx.clear();
+    this.doorGfx.clear();
+    this.collisionGfx.clear();
+    this.dynamicGfx.clear();
+    this.screenGfx.clear();
+    this.visionMaskGfx.clear();
+    this.fogGfx.clear();
+    this.foregroundFogGfx.clear();
+    this.impactLayer.visible = false;
+    this.art.trails.view.visible = false;
+    this.signLayer.visible = false;
+    this.wadeLevel = 0;
+    this.wadeLayer.alpha = 0;
+    this.wadeLayer.visible = false;
+    this.squadMarks = [];
+    this.lastViewer = null;
+    this.lastTimeMs = 0;
+    this.lastCamera = { x: 0, y: 0, scale: 1 };
+    this.cameraCenter = null;
+    this.lastCameraTarget = null;
+    this.cameraVelocity = { x: 0, y: 0 };
+    this.cameraImpulse = { x: 0, y: 0 };
+    this.lastCameraAt = performance.now();
+    this.replayCameraActive = false;
+    this.lastParallaxCentre = { x: Number.NaN, y: Number.NaN };
+    this.lastParallaxFloorId = undefined;
   }
 
   /**

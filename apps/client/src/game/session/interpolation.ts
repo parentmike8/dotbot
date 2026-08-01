@@ -257,10 +257,19 @@ function interpolateBot(bot: DotBotEntity, next: DotBotEntity | undefined, alpha
       };
     });
   }
+  const authorized = alpha >= 1 ? next : bot;
   return {
-    ...bot,
+    // Position and countdowns may interpolate, but every discrete field must
+    // switch from the older viewer-authorized entity to the newer one at the
+    // authoritative boundary. In particular, a same-id recruitment can turn a
+    // fully visible squad inventory into a redacted rival inventory without a
+    // floor change; retaining `bot` here kept that private state alive.
+    ...authorized,
     position: interpolatePoint(bot.position, next.position, alpha),
     facing: lerpAngle(bot.facing, next.facing, alpha),
+    shieldSegments: [...authorized.shieldSegments],
+    bays: authorized.bays.map((item) => item && { ...item }),
+    hold: authorized.hold.map((item) => ({ ...item })),
     radarActiveMs: lerp(bot.radarActiveMs, next.radarActiveMs, alpha),
     radarPings,
     dashOverchargeMs: lerp(bot.dashOverchargeMs, next.dashOverchargeMs, alpha),

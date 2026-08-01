@@ -1378,19 +1378,11 @@ export class DotBotSimulation {
 
   private detonateMine(mine: InternalMine, target: InternalBot): void {
     this.mines.delete(mine.id);
-    const owner = this.bots.get(mine.placedByBotId);
     if (!this.mineIsHostileTo(mine, target)) return;
-    if (owner) {
-      if (target.factionKind === "ambient" && owner.factionKind !== "ambient") {
-        // The device is what the grey sensed. Do not grant it the remote owner's
-        // live position (especially while that owner is invisible elsewhere).
-        this.acquireAmbientAlert(target, owner, mine.position, mine.floorId);
-      } else {
-        this.recordHostileAction(owner, target);
-      }
-    }
-    // The device is the source. Its owner being invisible elsewhere cannot
-    // silence an explosion or attach their identity to its visual noise ring.
+    // The device is the source. Never key AI alerts or escort hostility to its
+    // hidden owner: target selection would reveal the placement squad even
+    // though the owner and squad are correctly redacted from every wire event.
+    // The owner's invisibility elsewhere also cannot silence the local blast.
     this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation);
     if (target.invulnerabilityMs > 0) return;
     // A mine is a point source: the authored plate cell it sits in takes it, or
@@ -1456,13 +1448,13 @@ export class DotBotSimulation {
    * is 25 distance checks instead of 625, and at the scale this is meant to
    * survive the difference is the whole point.
    */
-  private humanPositions(): Vec2[] {
-    const at: Vec2[] = [];
+  private humanBots(): InternalBot[] {
+    const humans: InternalBot[] = [];
     for (const bot of this.bots.values()) {
       if (bot.state !== "alive") continue;
-      if (this.controllers.get(bot.id) === "human") at.push(bot.position);
+      if (this.controllers.get(bot.id) === "human") humans.push(bot);
     }
-    return at;
+    return humans;
   }
 
   /**
@@ -1499,14 +1491,18 @@ export class DotBotSimulation {
   }
 
   private updateBotAi(): void {
-    const humans = this.humanPositions();
+    const humans = this.humanBots();
     const active: InternalBot[] = [];
     for (const bot of this.bots.values()) {
       if (this.controllers.get(bot.id) !== "ai" || bot.state !== "alive") continue;
 
       let nearest = Infinity;
       for (const human of humans) {
-        const away = distance(bot.position, human);
+        // Invisibility denies rival live tracking, including the performance
+        // scheduler. Same-squad escorts keep their normal cadence and behavior;
+        // concealment is not meant to sever the player's own squad.
+        if (human.incognitoMs > 0 && !areFriendly(bot, human)) continue;
+        const away = distance(bot.position, human.position);
         if (away < nearest) nearest = away;
       }
       bot.aiAttention = nearest;
@@ -2869,7 +2865,7 @@ export class DotBotSimulation {
       if (length(away) < 0.5) return;
       bot.lastAim = away;
       bot.dashActiveMs = this.config.dashDurationMs;
-      bot.dashCooldownMs = this.config.dashCooldownMs;
+      bot.dashCooldownMs = bot.dashOverchargeMs > 0 ? 0 : this.config.dashCooldownMs;
       this.recordDashStartContacts(bot);
       this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
       return;
@@ -2894,7 +2890,9 @@ export class DotBotSimulation {
     }
     bot.lastAim = toHostile;
     bot.dashActiveMs = this.config.dashDurationMs;
-    bot.dashCooldownMs = this.config.dashCooldownMs + 250 + this.nextRandom() * 450;
+    bot.dashCooldownMs = bot.dashOverchargeMs > 0
+      ? 0
+      : this.config.dashCooldownMs + 250 + this.nextRandom() * 450;
     this.recordDashStartContacts(bot);
     this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
   }

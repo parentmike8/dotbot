@@ -680,6 +680,95 @@ describe("DotBotSimulation", () => {
     plateless.dispose();
   });
 
+  it("never attributes a hidden mine owner or squad through AI hostility", async () => {
+    const escortTarget = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({
+          id: "mine-owner",
+          squadId: "bravo",
+          position: { x: 300, y: 180 },
+        }),
+        allySpawn({
+          id: "alpha-escort",
+          controller: "ai",
+          position: { x: 100, y: 180 },
+        }),
+        enemySpawn({
+          id: "charlie-rival",
+          controller: "human",
+          isAmbient: false,
+          squadId: "charlie",
+          position: { x: 400, y: 180 },
+        }),
+      ]),
+      config: testConfig,
+    });
+    const escortInternals = escortTarget as unknown as {
+      bots: Map<string, unknown>;
+      mines: Map<string, unknown>;
+      squadHostilityUntil: Map<string, number>;
+      isHostileForAi(actor: unknown, target: unknown): boolean;
+    };
+    escortInternals.mines.set("mine-private-escort", {
+      id: "mine-private-escort",
+      position: { x: 100, y: 180 },
+      radius: 10,
+      placedByBotId: "mine-owner",
+      squadId: "bravo",
+      floorId: "outdoor",
+      placedAtMs: 0,
+      revealedToBotIds: [],
+      armedAtTick: 0,
+      sensorElapsedMs: 0,
+      revealMsByBotId: new Map(),
+    });
+    escortTarget.step();
+    const escort = escortInternals.bots.get("alpha-escort")!;
+    const mineOwner = escortInternals.bots.get("mine-owner")!;
+    expect(escortInternals.squadHostilityUntil).toEqual(new Map());
+    expect(escortInternals.isHostileForAi(escort, mineOwner)).toBe(false);
+    escortTarget.dispose();
+
+    const ambientTarget = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({
+          id: "mine-owner",
+          squadId: "bravo",
+          position: { x: 440, y: 180 },
+        }),
+        enemySpawn({
+          id: "ambient-target",
+          controller: "ai",
+          position: { x: 60, y: 180 },
+        }),
+      ]),
+      config: testConfig,
+    });
+    const ambientInternals = ambientTarget as unknown as {
+      bots: Map<string, { aiAlert?: unknown; incognitoMs: number }>;
+      mines: Map<string, unknown>;
+      squadHostilityUntil: Map<string, number>;
+    };
+    ambientInternals.bots.get("mine-owner")!.incognitoMs = 10_000;
+    ambientInternals.mines.set("mine-private-ambient", {
+      id: "mine-private-ambient",
+      position: { x: 60, y: 180 },
+      radius: 10,
+      placedByBotId: "mine-owner",
+      squadId: "bravo",
+      floorId: "outdoor",
+      placedAtMs: 0,
+      revealedToBotIds: [],
+      armedAtTick: 0,
+      sensorElapsedMs: 0,
+      revealMsByBotId: new Map(),
+    });
+    ambientTarget.step();
+    expect(ambientInternals.bots.get("ambient-target")?.aiAlert).toBeUndefined();
+    expect(ambientInternals.squadHostilityUntil).toEqual(new Map());
+    ambientTarget.dispose();
+  });
+
   it("resolves simultaneous mine overlaps once and chooses the nearest/id tie deterministically", async () => {
     const simulation = await DotBotSimulation.create({
       map: makeMap([
@@ -1065,6 +1154,40 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("keeps AI takeover dash cooldown at zero while overcharge is active", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ position: { x: 100, y: 180 } }),
+      enemySpawn({
+        id: "takeover",
+        controller: "human",
+        isAmbient: false,
+        position: { x: 220, y: 180 },
+      }),
+    ]);
+    const internals = simulation as unknown as {
+      bots: Map<string, { dashOverchargeMs: number; dashCooldownMs: number }>;
+      squadHostilityUntil: Map<string, number>;
+      tryAiDash: (bot: unknown, target: { intent: "hunt"; targetId: string; position: Vec2 }) => void;
+    };
+    const takeover = internals.bots.get("takeover")!;
+    takeover.dashOverchargeMs = 1_000;
+    takeover.dashCooldownMs = 0;
+
+    simulation.setController("takeover", "ai");
+    internals.squadHostilityUntil.set("squad:alpha->squad:rival-1", 10_000);
+    internals.tryAiDash(takeover, {
+      intent: "hunt",
+      targetId: "player",
+      position: { x: 100, y: 180 },
+    });
+
+    const authoritative = simulation.getSnapshot().bots.find((bot) => bot.id === "takeover")!;
+    expect(authoritative.dashActiveMs).toBeGreaterThan(0);
+    expect(authoritative.dashOverchargeMs).toBeGreaterThan(0);
+    expect(authoritative.dashCooldownMs).toBe(0);
+    simulation.dispose();
+  });
+
   it("does not stack an overcharged dash onto the dash already in flight", async () => {
     const simulation = await DotBotSimulation.create({
       map: makeMap([playerSpawn({ bays: [overchargeItem, null, null, null] })]),
@@ -1137,6 +1260,31 @@ describe("DotBotSimulation", () => {
     });
     runTicks(simulation, 10);
     expect(internals.pickBotTarget(ambient)).toMatchObject({ intent: "hunt", targetId: "player" });
+    simulation.dispose();
+  });
+
+  it("does not let an invisible human's live position drive AI scheduling", async () => {
+    const simulation = await makeSimulation([
+      playerSpawn({ bays: [incognitoItem, null, null, null], position: { x: 100, y: 180 } }),
+      allySpawn({ id: "escort", position: { x: 160, y: 180 } }),
+      enemySpawn({ controller: "ai", position: { x: 220, y: 180 } }),
+    ]);
+    const internals = simulation as unknown as {
+      bots: Map<string, { position: Vec2; aiAttention: number }>;
+    };
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    simulation.step();
+    expect(internals.bots.get("player")!.position).toEqual({ x: 100, y: 180 });
+    expect(internals.bots.get("enemy")!.aiAttention).toBe(Infinity);
+    expect(internals.bots.get("escort")!.aiAttention).toBeCloseTo(60);
+
+    const escortBefore = { ...internals.bots.get("escort")!.position };
+    internals.bots.get("player")!.position = { x: 380, y: 180 };
+    simulation.step();
+    expect(internals.bots.get("enemy")!.aiAttention).toBe(Infinity);
+    expect(internals.bots.get("escort")!.aiAttention).toBeCloseTo(
+      Math.hypot(380 - escortBefore.x, 180 - escortBefore.y),
+    );
     simulation.dispose();
   });
 

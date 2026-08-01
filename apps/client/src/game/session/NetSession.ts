@@ -87,6 +87,7 @@ export class NetSession implements GameSession {
   private resolveStart: (() => void) | null = null;
   private rejectStart: ((error: Error) => void) | null = null;
   private runState: RunState = { phase: "live" };
+  private runGeneration = 0;
   private endTick = Number.MAX_SAFE_INTEGER;
   private insertionNameValue = "";
   private warnedClockDrift = false;
@@ -347,6 +348,10 @@ export class NetSession implements GameSession {
     return this.runState;
   }
 
+  getRunGeneration(): number {
+    return this.runGeneration;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.handshakeReady = false;
@@ -397,6 +402,7 @@ export class NetSession implements GameSession {
         this.reconnectStartedAt = null;
         this.options.onError?.("");
         this.playerIdValue = message.playerId;
+        if (message.phase === "results") this.resetRunTransportState();
         return;
       case "lobby":
         this.options.onLobby?.({
@@ -411,33 +417,8 @@ export class NetSession implements GameSession {
       case "roleController":
         return;
       case "matchStart":
-        this.snapshots = [];
-        this.events = [];
-        this.killCams = [];
-        this.replayActive = false;
-        this.activeKillCamId = null;
-        this.serverClockTick = null;
-        this.serverClockClientMs = 0;
-        this.lastRenderTick = Number.NEGATIVE_INFINITY;
-        this.lastRenderedRemote = null;
-        this.lastOwnRenderedPosition = null;
-        this.predictor = null;
-        this.predictionEnabled = false;
-        this.predictionAccumulatorMs = 0;
-        this.correctionOffset = { x: 0, y: 0 };
-        this.impactTelemetry = createImpactTelemetry();
-        this.impactPredictionSeq = 0;
-        this.lastImpactFxAtMs = Number.NEGATIVE_INFINITY;
-        this.interpolationDelayMs = maximumInterpolationDelayMs;
-        this.snapshotIntervalsMs.splice(0);
-        this.lastSnapshotArrivalMs = null;
-        this.correctionTimesMs.splice(0);
-        this.bufferDepthSnapshots = 0;
-        this.predictionErrorPx = 0;
-        this.warnedClockDrift = false;
-        // A new authoritative run must not inherit a queued bay activation,
-        // body action, or held movement from the prior run/reconnect window.
-        this.clearInputsForHandoff();
+        this.runGeneration += 1;
+        this.resetRunTransportState();
         this.mapValue = message.map;
         this.configValue = message.config;
         this.playerIdValue = message.yourBotId;
@@ -610,6 +591,40 @@ export class NetSession implements GameSession {
     this.queuedPing = undefined;
     this.edgeAwaitingFlush = false;
     this.pendingInputs = [];
+  }
+
+  /** Scrub all viewer-private and actionable state at an authoritative run boundary. */
+  private resetRunTransportState(): void {
+    this.snapshots = [];
+    this.events = [];
+    this.killCams = [];
+    this.replayActive = false;
+    this.activeKillCamId = null;
+    this.serverClockTick = null;
+    this.serverClockClientMs = 0;
+    this.lastRenderTick = Number.NEGATIVE_INFINITY;
+    this.lastRenderedRemote = null;
+    this.lastOwnRenderedPosition = null;
+    this.predictor = null;
+    this.predictionEnabled = false;
+    this.predictionAccumulatorMs = 0;
+    this.correctionOffset = { x: 0, y: 0 };
+    this.impactTelemetry = createImpactTelemetry();
+    this.impactPredictionSeq = 0;
+    this.lastImpactFxAtMs = Number.NEGATIVE_INFINITY;
+    this.interpolationDelayMs = maximumInterpolationDelayMs;
+    this.snapshotIntervalsMs.splice(0);
+    this.lastSnapshotArrivalMs = null;
+    this.correctionTimesMs.splice(0);
+    this.bufferDepthSnapshots = 0;
+    this.predictionErrorPx = 0;
+    this.warnedClockDrift = false;
+    this.intelValue = undefined;
+    this.metaIndex.clear();
+    this.dotStore.clear();
+    // A new authoritative run or results reconnect must not inherit a queued
+    // bay activation, body action, or held movement from the prior stream.
+    this.clearInputsForHandoff();
   }
 
   private scheduleReconnect(): void {

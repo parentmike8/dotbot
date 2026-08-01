@@ -365,6 +365,14 @@ export class Room {
       this.sendWelcome(existing);
       if (this.phase === "live") {
         this.sendMatchStart(existing);
+      } else if (this.phase === "results") {
+        // While settlement still owns the simulation, replay the full run
+        // baseline before the cached outcome so a reused NetSession drops all
+        // prior snapshots, actions, events, and replay state. After settlement
+        // the outcome alone is sufficient for a fresh session and still keeps
+        // the authoritative result available until the next run begins.
+        if (this.simulation && existing.botId) this.sendMatchStart(existing);
+        else if (existing.runOver) existing.peer?.send(existing.runOver);
       }
       return existing;
     }
@@ -1496,7 +1504,6 @@ export class Room {
         member.botId = null;
         member.inRun = false;
         member.streaming = false;
-        member.runOver = null;
         member.lastKillCam = null;
         member.activeKillCamId = null;
         if (!member.peer && !member.handoffTimer) {

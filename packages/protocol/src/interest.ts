@@ -107,7 +107,11 @@ export function filterForViewer(
         ...(!squadMine ? { disguise: deterministicMineDisguise(mine.id) } : {}),
         ...(!squadMine && !radarRevealed ? { seam: true as const } : {}),
       };
-    });
+    })
+    // Map insertion order is placement order. Once owner and timestamp are
+    // redacted, preserving it would still reveal which opaque mine came first.
+    // Opaque IDs provide a stable presentation order with no placement signal.
+    .sort((left, right) => left.id.localeCompare(right.id));
   const coverages = wire.coverages.filter((coverage) =>
     // A channel is actor state. Never disclose a hidden actor merely because
     // its target is visible; likewise, a bot target must independently be in
@@ -160,8 +164,30 @@ export function filterEventsForViewer(
     // that somebody is watching it.
     if (event.type === "pinged") return event.squadId === squadId;
     if (event.type === "mineRotated") return metaById.get(event.botId)?.squadId === squadId;
-    return event.type === "plea" || visibleBot(event.botId) || ("byBotId" in event && visibleBot(event.byBotId));
-  }).map((event) => event.type === "downed" && event.cause?.kind === "mine"
+    // Pleas deliberately publish their own position: the call for help is the
+    // mechanic. Every ordinary event instead requires every body identity it
+    // names to be independently authorized. Allowing either endpoint leaked a
+    // hidden attacker through a visible victim (and vice versa), along with
+    // exact contact geometry from hit and dash events.
+    if (event.type === "plea") return true;
+    if (event.type === "downed") {
+      if (!visibleBot(event.botId)) return false;
+      if (event.cause?.kind === "mine" || event.cause?.kind === "environment") return true;
+      return !event.byBotId || visibleBot(event.byBotId);
+    }
+    if (
+      event.type === "hit"
+      || event.type === "dashContact"
+      || event.type === "searched"
+      || event.type === "looted"
+      || event.type === "revived"
+      || event.type === "recruited"
+    ) {
+      return visibleBot(event.botId) && visibleBot(event.byBotId);
+    }
+    return visibleBot(event.botId);
+  }).map((event) => event.type === "downed"
+    && (event.cause?.kind === "mine" || event.cause?.kind === "environment")
     ? { ...event, byBotId: undefined }
     : event);
 }

@@ -84,6 +84,7 @@ describe("KillCamHistory", () => {
       bot("mate", { x: 330, y: 140 }, { state: "downed" }),
       bot("visible-party", { x: 210 + offset, y: 120 }),
       bot("hidden-party", { x: 320, y: 150 }),
+      bot("invisible-party", { x: 230 + offset, y: 160 }, { incognitoMs: 500 }),
     ];
     history.record(snapshot(3, 200, { x: 320, y: 100 }, extras(0)));
     history.record(snapshot(6, 202, { x: 310, y: 100 }, extras(2)));
@@ -100,6 +101,7 @@ describe("KillCamHistory", () => {
 
     const encoded = JSON.stringify(clip);
     expect(encoded).not.toContain("hidden-party");
+    expect(encoded).not.toContain("invisible-party");
     expect(encoded).not.toContain("health");
     expect(encoded).not.toContain("radar");
     expect(encoded).not.toContain("radarPings");

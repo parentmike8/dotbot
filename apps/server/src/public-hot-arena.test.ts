@@ -13,6 +13,7 @@ class RunBoundaryPersistence extends NoopPersistence {
   readonly rosters: string[][] = [];
   readonly outcomes: Array<{ matchId: string; playerId: string; outcome: string }> = [];
   readonly finishes: string[] = [];
+  readonly finishInputs: Array<Parameters<Persistence["finishMatch"]>[0]> = [];
 
   override async getBaseTutorialForPlayer() { return completedBaseTutorialState; }
   override async startMatch(input: Parameters<NoopPersistence["startMatch"]>[0]) {
@@ -22,6 +23,7 @@ class RunBoundaryPersistence extends NoopPersistence {
   }
   override async finishMatch(input: Parameters<Persistence["finishMatch"]>[0]) {
     this.finishes.push(input.matchId);
+    this.finishInputs.push(structuredClone(input));
   }
   override async recordOutcome(input: Parameters<Persistence["recordOutcome"]>[0]) {
     this.outcomes.push(input);
@@ -241,7 +243,7 @@ describe("public quick-play Room mode", () => {
     expect(room.publicArenaMembers).toEqual(before);
   });
 
-  it("requires explicit DEPLOY AGAIN and creates a fresh persistence boundary on the same room", async () => {
+  it("requires explicit DEPLOY AGAIN and clears active effects and mines before the fresh run", async () => {
     let now = 0;
     const persistence = new RunBoundaryPersistence();
     const ids = [
@@ -259,9 +261,51 @@ describe("public quick-play Room mode", () => {
     now = 1_000;
     room.tick(now);
     await vi.waitFor(() => expect(room.phase).toBe("live"));
+    const firstRun = (room as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: {
+        bots: Map<string, {
+          id: string;
+          squadId: string;
+          floorId: string;
+          position: { x: number; y: number };
+          radarActiveMs: number;
+          radarPings: Array<{ botId: string; floorId: string; x: number; y: number; ageMs: number }>;
+          dashOverchargeMs: number;
+          incognitoMs: number;
+        }>;
+        mines: Map<string, unknown>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+    });
+    const firstSimulation = firstRun.simulation;
+    const firstBot = firstSimulation.bots.get(firstRun.members.get("pilot")!.botId)!;
+    firstBot.radarActiveMs = 8_000;
+    firstBot.radarPings = [{
+      botId: "stale-rival",
+      floorId: firstBot.floorId,
+      ...firstBot.position,
+      ageMs: 100,
+    }];
+    firstBot.dashOverchargeMs = 60_000;
+    firstBot.incognitoMs = 10_000;
+    firstSimulation.mines.set("mine-00000000-0000-4000-8000-000000000021", {
+      id: "mine-00000000-0000-4000-8000-000000000021",
+      position: { ...firstBot.position },
+      radius: 10,
+      placedByBotId: firstBot.id,
+      squadId: firstBot.squadId,
+      floorId: firstBot.floorId,
+      placedAtMs: 100,
+      revealedToBotIds: [],
+      armedAtTick: Number.MAX_SAFE_INTEGER,
+      sensorElapsedMs: 0,
+      revealMsByBotId: new Map(),
+    });
     (room as unknown as { end(reason: string): void }).end("complete");
     await room.waitForPersistence();
     expect(room.phase).toBe("results");
+    expect(firstSimulation.getSnapshot()).toMatchObject({ bots: [], mines: [], coverages: [], noises: [] });
     now = 20_000;
     room.tick(now);
     expect(room.phase).toBe("results");
@@ -271,11 +315,105 @@ describe("public quick-play Room mode", () => {
     now += 1_000;
     room.tick(now);
     await vi.waitFor(() => expect(room.phase).toBe("live"));
+    const secondRun = (room as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: {
+        bots: Map<string, {
+          radarActiveMs: number;
+          radarPings: unknown[];
+          dashOverchargeMs: number;
+          incognitoMs: number;
+        }>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+    });
+    expect(secondRun.simulation).not.toBe(firstSimulation);
+    expect(secondRun.simulation.bots.get(secondRun.members.get("pilot")!.botId)).toMatchObject({
+      radarActiveMs: 0,
+      radarPings: [],
+      dashOverchargeMs: 0,
+      incognitoMs: 0,
+    });
+    expect(secondRun.simulation.getSnapshot().mines).toEqual([]);
+    expect(pilot.messages.filter((message) => message.type === "matchStart").map((message) => message.matchId)).toEqual([
+      "00000000-0000-4000-8000-000000000021",
+      "00000000-0000-4000-8000-000000000022",
+    ]);
     expect(persistence.starts).toEqual([
       "00000000-0000-4000-8000-000000000021",
       "00000000-0000-4000-8000-000000000022",
     ]);
     expect(persistence.finishes).toEqual(["00000000-0000-4000-8000-000000000021"]);
+    expect(persistence.finishInputs[0].summary).toEqual({
+      reason: "complete",
+      participantCount: 0,
+      outcomes: {},
+    });
+    const persistedBoundary = JSON.stringify(persistence.finishInputs[0]);
+    expect(persistedBoundary).not.toContain(firstBot.id);
+    expect(persistedBoundary).not.toContain("mine-00000000-0000-4000-8000-000000000021");
+    expect(persistedBoundary).not.toMatch(/radar|incognito|dashOvercharge|mine/i);
+  });
+
+  it("replays the authoritative outcome on reconnect before and after results settlement", async () => {
+    let now = 0;
+    const persistence = new DeferredFinishPersistence();
+    const room = new Room("RCOR", {
+      now: () => now,
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000, maxRuns: 4 },
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000023",
+    });
+    const pilot = collectingPeer("result-original");
+    room.join(pilot.peer, "result-token", "Pilot", "pilot", undefined, "party");
+    now = 1_000;
+    room.tick(now);
+    await vi.waitFor(() => expect(room.phase).toBe("live"));
+
+    const live = room as unknown as {
+      simulation: { getSnapshot(): import("@dotbot/game/types").GameSnapshot };
+      timeoutRun(bots: import("@dotbot/game/types").GameSnapshot["bots"]): void;
+    };
+    live.timeoutRun(live.simulation.getSnapshot().bots);
+    await vi.waitFor(() => expect(pilot.messages).toContainEqual(expect.objectContaining({
+      type: "runOver",
+      reason: "timeout",
+    })));
+    expect(room.phase).toBe("results");
+
+    room.disconnect(pilot.peer.id);
+    const settling = collectingPeer("result-settling");
+    expect(room.join(
+      settling.peer,
+      "result-token",
+      "Pilot",
+      "pilot",
+      undefined,
+      "party",
+    )).not.toBeNull();
+    expect(settling.messages.map((message) => message.type)).toEqual([
+      "arenaWelcome",
+      "matchStart",
+      "runOver",
+    ]);
+    expect(settling.messages.at(-1)).toMatchObject({ type: "runOver", reason: "timeout" });
+
+    persistence.release();
+    await room.waitForPersistence();
+    expect(room.phase).toBe("results");
+
+    room.disconnect(settling.peer.id);
+    const settled = collectingPeer("result-settled");
+    expect(room.join(
+      settled.peer,
+      "result-token",
+      "Pilot",
+      "pilot",
+      undefined,
+      "party",
+    )).not.toBeNull();
+    expect(settled.messages.map((message) => message.type)).toEqual(["arenaWelcome", "runOver"]);
+    expect(settled.messages.at(-1)).toMatchObject({ type: "runOver", reason: "timeout" });
   });
 
   it("releases connected non-opted-in parties before reopening assembly capacity", async () => {
@@ -443,6 +581,195 @@ describe("public quick-play Room mode", () => {
       expect(room.join(collectingPeer("too-late").peer, "token", "Pilot", "pilot", undefined, "party")).toBeNull();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("keeps Radar, Invisibility, and mines viewer-private through hot-arena reconnect and AI takeover", async () => {
+    let now = 0;
+    const room = new Room("PWRH", {
+      now: () => now,
+      persistence: new RunBoundaryPersistence(),
+      connectionHandoffMs: 20,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000034",
+    });
+    const radar = collectingPeer("radar-peer");
+    const invisible = collectingPeer("invisible-peer");
+    room.join(radar.peer, "radar-token", "Radar", "RADR-2345", undefined, "radar-party");
+    room.join(invisible.peer, "invisible-token", "Invisible", "HIDE-2345", undefined, "invisible-party");
+    now = 1_000;
+    room.tick(now);
+    await vi.waitFor(() => expect(room.phase).toBe("live"));
+
+    const internals = room as unknown as {
+      members: Map<string, { botId: string; squadId: string }>;
+      simulation: {
+        controllers: Map<string, string>;
+        bots: Map<string, {
+          id: string;
+          squadId: string;
+          floorId: string;
+          position: { x: number; y: number };
+          isAmbient: boolean;
+          radarActiveMs: number;
+          radarPings: Array<{ botId: string; floorId: string; x: number; y: number; ageMs: number }>;
+          dashOverchargeMs: number;
+          incognitoMs: number;
+        }>;
+        mines: Map<string, unknown>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+      broadcastSnapshot(snapshot: import("@dotbot/game/types").GameSnapshot): void;
+    };
+    const radarMember = internals.members.get("RADR-2345")!;
+    const invisibleMember = internals.members.get("HIDE-2345")!;
+    const radarBot = internals.simulation.bots.get(radarMember.botId)!;
+    const invisibleBot = internals.simulation.bots.get(invisibleMember.botId)!;
+    radarBot.floorId = invisibleBot.floorId;
+    radarBot.position = { x: invisibleBot.position.x + 80, y: invisibleBot.position.y };
+    const radarTarget = [...internals.simulation.bots.values()].find((bot) =>
+      !bot.isAmbient
+      && bot.id !== radarBot.id
+      && bot.id !== invisibleBot.id
+      && bot.squadId !== radarBot.squadId)!;
+
+    radarBot.radarActiveMs = 8_000;
+    radarBot.radarPings = [{
+      botId: radarTarget.id,
+      floorId: radarTarget.floorId,
+      ...radarTarget.position,
+      ageMs: 250,
+    }];
+    radarBot.dashOverchargeMs = 45_000;
+    invisibleBot.incognitoMs = 6_000;
+    invisibleBot.dashOverchargeMs = 30_000;
+    const mineId = "mine-00000000-0000-4000-8000-000000000034";
+    internals.simulation.mines.set(mineId, {
+      id: mineId,
+      position: { ...invisibleBot.position },
+      radius: 10,
+      placedByBotId: invisibleBot.id,
+      squadId: invisibleBot.squadId,
+      floorId: invisibleBot.floorId,
+      placedAtMs: 321,
+      revealedToBotIds: [],
+      armedAtTick: Number.MAX_SAFE_INTEGER,
+      sensorElapsedMs: 0,
+      revealMsByBotId: new Map([[radarBot.id, 8_000]]),
+    });
+
+    radar.messages.length = 0;
+    invisible.messages.length = 0;
+    internals.broadcastSnapshot(internals.simulation.getSnapshot());
+    const radarSnapshot = radar.messages.find((message) => message.type === "snap");
+    const invisibleSnapshot = invisible.messages.find((message) => message.type === "snap");
+    const radarMines = radarSnapshot?.mines ?? [];
+    expect(radarSnapshot?.bots.find((bot) => bot.i === radarBot.id)).toMatchObject({
+      r: [8_000, [[radarTarget.id, radarTarget.position.x, radarTarget.position.y, radarTarget.floorId, 250]]],
+      o: 45_000,
+    });
+    expect(radarSnapshot?.bots.some((bot) => bot.i === invisibleBot.id)).toBe(false);
+    expect(radarSnapshot?.mines).toContainEqual(expect.objectContaining({
+      id: mineId,
+      presentation: "revealed",
+      placedAtMs: 0,
+    }));
+    expect(radarMines.find((mine) => mine.id === mineId)?.placedByBotId).toBeUndefined();
+    expect(radarMines.find((mine) => mine.id === mineId)?.squadId).toBeUndefined();
+    expect(invisibleSnapshot?.bots.find((bot) => bot.i === invisibleBot.id)).toMatchObject({
+      o: 30_000,
+      ic: 6_000,
+    });
+    const radarBodyForInvisible = invisibleSnapshot?.bots.find((bot) => bot.i === radarBot.id);
+    expect(radarBodyForInvisible).toBeDefined();
+    expect(radarBodyForInvisible?.r).toBeUndefined();
+    expect(radarBodyForInvisible?.o).toBeUndefined();
+    expect(invisibleSnapshot?.mines).toContainEqual(expect.objectContaining({
+      id: mineId,
+      presentation: "squad",
+      placedByBotId: invisibleBot.id,
+      squadId: invisibleBot.squadId,
+      placedAtMs: 321,
+    }));
+
+    room.disconnect(radar.peer.id);
+    const reconnected = collectingPeer("radar-reconnected");
+    expect(room.join(
+      reconnected.peer,
+      "radar-token",
+      "Radar",
+      "RADR-2345",
+      undefined,
+      "radar-party",
+    )).not.toBeNull();
+    internals.broadcastSnapshot(internals.simulation.getSnapshot());
+    const reconnectSnapshot = reconnected.messages.filter((message) => message.type === "snap").at(-1);
+    expect(reconnectSnapshot?.bots.find((bot) => bot.i === radarBot.id)).toMatchObject({
+      r: [8_000, [[radarTarget.id, radarTarget.position.x, radarTarget.position.y, radarTarget.floorId, 250]]],
+      o: 45_000,
+    });
+    expect(reconnectSnapshot?.bots.some((bot) => bot.i === invisibleBot.id)).toBe(false);
+    const reconnectMine = (reconnectSnapshot?.mines ?? []).find((mine) => mine.id === mineId);
+    expect(reconnectMine).toMatchObject({ presentation: "revealed", placedAtMs: 0 });
+    expect(reconnectMine?.placedByBotId).toBeUndefined();
+    expect(reconnectMine?.squadId).toBeUndefined();
+
+    vi.useFakeTimers();
+    try {
+      room.disconnect(invisible.peer.id);
+      expect(internals.simulation.controllers.get(invisibleBot.id)).toBe("frozen");
+      await vi.advanceTimersByTimeAsync(19);
+      const invisibleReconnected = collectingPeer("invisible-reconnected");
+      expect(room.join(
+        invisibleReconnected.peer,
+        "invisible-token",
+        "Invisible",
+        "HIDE-2345",
+        undefined,
+        "invisible-party",
+      )).not.toBeNull();
+      expect(internals.members.get("HIDE-2345")?.botId).toBe(invisibleBot.id);
+      expect(internals.simulation.controllers.get(invisibleBot.id)).toBe("human");
+      expect(internals.simulation.bots.get(invisibleBot.id)).toMatchObject({
+        incognitoMs: 6_000,
+        dashOverchargeMs: 30_000,
+      });
+      expect(internals.simulation.mines.has(mineId)).toBe(true);
+      internals.broadcastSnapshot(internals.simulation.getSnapshot());
+      const invisibleReconnectSnapshot = invisibleReconnected.messages
+        .filter((message) => message.type === "snap").at(-1);
+      expect(invisibleReconnectSnapshot?.bots.find((bot) => bot.i === invisibleBot.id)).toMatchObject({
+        o: 30_000,
+        ic: 6_000,
+      });
+      expect(invisibleReconnectSnapshot?.mines).toContainEqual(expect.objectContaining({
+        id: mineId,
+        presentation: "squad",
+        placedByBotId: invisibleBot.id,
+        squadId: invisibleBot.squadId,
+        placedAtMs: 321,
+      }));
+
+      room.disconnect(invisibleReconnected.peer.id);
+      expect(internals.simulation.controllers.get(invisibleBot.id)).toBe("frozen");
+      await vi.advanceTimersByTimeAsync(20);
+      expect(internals.simulation.controllers.get(invisibleBot.id)).toBe("ai");
+      expect(internals.simulation.bots.get(invisibleBot.id)).toMatchObject({
+        incognitoMs: 6_000,
+        dashOverchargeMs: 30_000,
+      });
+      expect(internals.simulation.mines.has(mineId)).toBe(true);
+      internals.broadcastSnapshot(internals.simulation.getSnapshot());
+      const takeoverSnapshot = reconnected.messages.filter((message) => message.type === "snap").at(-1);
+      const takeoverMines = takeoverSnapshot?.mines ?? [];
+      expect(takeoverSnapshot?.bots.some((bot) => bot.i === invisibleBot.id)).toBe(false);
+      expect(takeoverMines.find((mine) => mine.id === mineId)).toMatchObject({
+        presentation: "revealed",
+        placedAtMs: 0,
+      });
+    } finally {
+      vi.useRealTimers();
+      room.dispose();
     }
   });
 

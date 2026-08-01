@@ -1,6 +1,6 @@
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { contextKey } from "@dotbot/game/mapModel";
-import type { CoverageSnapshot, MapDocument, NoiseEvent } from "@dotbot/game/types";
+import type { CoverageSnapshot, MapDocument, NoiseEvent, SimEvent } from "@dotbot/game/types";
 import { hasLineOfSight } from "@dotbot/game/visibility";
 import { describe, expect, it } from "vitest";
 import type { EntityMeta, FullWireSnapshot, WireBot } from "./messages";
@@ -380,6 +380,41 @@ describe("filterForViewer", () => {
     expect(revealed[0].squadId).toBeUndefined();
   });
 
+  it("does not preserve hidden rival mine placement order", () => {
+    const later = {
+      id: "mine-f0000000-0000-4000-8000-000000000002",
+      position: { x: 530, y: 500 },
+      radius: 10,
+      placedByBotId: "street-enemy",
+      squadId: "b",
+      floorId: "outdoor",
+      placedAtMs: 900,
+    };
+    const earlier = {
+      ...later,
+      id: "mine-10000000-0000-4000-8000-000000000001",
+      position: { x: 520, y: 500 },
+      placedAtMs: 100,
+    };
+    const context = {
+      map: downtownMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    };
+    const ids = (ordered: FullWireSnapshot["mines"]) => filterForViewer(
+      { ...wire, mines: ordered },
+      meta,
+      context,
+    ).mines.map((mine) => ({ id: mine.id, placedAtMs: mine.placedAtMs }));
+
+    expect(ids([later, earlier])).toEqual(ids([earlier, later]));
+    expect(ids([later, earlier])).toEqual([
+      { id: earlier.id, placedAtMs: 0 },
+      { id: later.id, placedAtMs: 0 },
+    ]);
+  });
+
   it("uses classifyNoise floor-leak and loudness semantics", () => {
     const filtered = filterForViewer(wire, meta, {
       map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor", "lot6:B1"]),
@@ -399,13 +434,57 @@ describe("filterForViewer", () => {
     expect(filtered.dots).toEqual([]);
   });
 
-  it("includes events tied to an included bot or the viewer squad", () => {
+  it("includes events only when every referenced body is authorized", () => {
     const events = filterEventsForViewer([
       { type: "downed", botId: "street-enemy", byBotId: "viewer" },
       { type: "looted", botId: "upper-enemy", byBotId: "street-enemy", items: [] },
       { type: "revived", botId: "mate", byBotId: "mate" },
     ], meta, new Set(["viewer", "mate"]), "a");
-    expect(events.map((event) => event.type)).toEqual(["downed", "revived"]);
+    expect(events.map((event) => event.type)).toEqual(["revived"]);
+  });
+
+  it("withholds two-body events when either actor or target is hidden", () => {
+    const eventPairs: Array<[SimEvent, SimEvent]> = [
+      [
+        { type: "hit", botId: "viewer", byBotId: "upper-enemy", result: "plateBreak", position: { x: 1, y: 2 }, direction: { x: 1, y: 0 }, tick: 10 },
+        { type: "hit", botId: "upper-enemy", byBotId: "viewer", result: "plateBreak", position: { x: 1, y: 2 }, direction: { x: 1, y: 0 }, tick: 10 },
+      ],
+      [
+        { type: "dashContact", botId: "viewer", byBotId: "upper-enemy", result: "bump", position: { x: 1, y: 2 }, direction: { x: 1, y: 0 }, tick: 10 },
+        { type: "dashContact", botId: "upper-enemy", byBotId: "viewer", result: "bump", position: { x: 1, y: 2 }, direction: { x: 1, y: 0 }, tick: 10 },
+      ],
+      [
+        { type: "downed", botId: "viewer", byBotId: "upper-enemy" },
+        { type: "downed", botId: "upper-enemy", byBotId: "viewer" },
+      ],
+      [
+        { type: "searched", botId: "viewer", byBotId: "upper-enemy" },
+        { type: "searched", botId: "upper-enemy", byBotId: "viewer" },
+      ],
+      [
+        { type: "looted", botId: "viewer", byBotId: "upper-enemy", items: [] },
+        { type: "looted", botId: "upper-enemy", byBotId: "viewer", items: [] },
+      ],
+      [
+        { type: "revived", botId: "viewer", byBotId: "upper-enemy" },
+        { type: "revived", botId: "upper-enemy", byBotId: "viewer" },
+      ],
+      [
+        { type: "recruited", botId: "viewer", byBotId: "upper-enemy", fromSquadId: "a", squadId: "b" },
+        { type: "recruited", botId: "upper-enemy", byBotId: "viewer", fromSquadId: "b", squadId: "a" },
+      ],
+    ];
+    const oneBodyAuthorized = eventPairs.flat();
+
+    expect(filterEventsForViewer(oneBodyAuthorized, meta, new Set(["viewer"]), "a")).toEqual([]);
+    expect(filterEventsForViewer([
+      { type: "downed", botId: "viewer", byBotId: "environment", cause: { kind: "environment", tick: 10, position: { x: 1, y: 2 }, direction: { x: 1, y: 0 } } },
+    ], meta, new Set(["viewer"]), "a")).toEqual([{
+      type: "downed",
+      botId: "viewer",
+      byBotId: undefined,
+      cause: { kind: "environment", tick: 10, position: { x: 1, y: 2 }, direction: { x: 1, y: 0 } },
+    }]);
   });
 
   it("delivers a squad mark to that squad only", () => {

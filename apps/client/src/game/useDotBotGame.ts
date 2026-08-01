@@ -30,6 +30,7 @@ import type { NetworkDebugStats } from "./session/netgraph";
 import { WORLD_MAP_PING_FLOOR } from "./worldMap/worldMap";
 import type { EntityMeta, KillCamClip } from "@dotbot/protocol";
 import { initialHudOverlays, transitionHudOverlay, type HudOverlayEvent } from "./hudOverlayLifecycle";
+import { runGenerationAdvanced, startsNewRun } from "./runBoundary";
 
 export type RunOutcome = "extracted" | "died" | "timeout";
 
@@ -284,6 +285,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         renderer.setPlacementSlotsVisible(placementVisibilityRef.current);
       }
       const initialSnapshot = session.update(0);
+      let lastRunTimeMs = initialSnapshot?.timeMs ?? 0;
+      let observedRunGeneration = session.getRunGeneration?.();
       setSnapshot(initialSnapshot);
       playerSquadId = initialSnapshot?.bots.find((bot) => bot.id === session.playerId)?.squadId ?? null;
 
@@ -303,6 +306,52 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         ensureKillCamRenderer(session.map);
       };
 
+      const resetForNewRun = (): void => {
+        runEndedRef.current = false;
+        renderer.resetForNewRun();
+        killCamRendererRef.current?.resetForNewRun();
+        keysRef.current.clear();
+        joystickRef.current = emptyJoystick;
+        setJoystickView(emptyJoystick);
+        dashQueuedRef.current = false;
+        useBayQueuedRef.current = undefined;
+        swapQueuedRef.current = undefined;
+        dropQueuedRef.current = undefined;
+        downedVerbRef.current = undefined;
+        takeQueuedRef.current = undefined;
+        pleaQueuedRef.current = false;
+        pingQueuedRef.current = undefined;
+        spectateCycleQueuedRef.current = false;
+        spectatedBotIdRef.current = null;
+        interactionChannelRef.current = null;
+        bodyActionRef.current = null;
+        marksRef.current = [];
+        renderer.setSquadMarks([]);
+        killCamPlaybackRef.current?.skip();
+        killCamPlaybackRef.current = null;
+        lastKillCamClipRef.current = null;
+        killCamReplayQueuedRef.current = null;
+        killCamObservedDownedRef.current = false;
+        session.setReplayActive?.(false);
+        applyHudOverlayEvent("endReplay");
+        applyHudOverlayEvent("closeWorldMap");
+        applyHudOverlayEvent("closeInventory");
+        setPingPicker(null);
+        setSnapshot(null);
+        setEvents([]);
+        setRunResult(null);
+        setSpectating(null);
+        setKillCam(null);
+        setNetworkDebug(null);
+        playerSquadId = null;
+        lastRunTimeMs = 0;
+        lastHudUpdate = 0;
+        if (longPressRef.current !== null) {
+          window.clearTimeout(longPressRef.current);
+          longPressRef.current = null;
+        }
+      };
+
       const loop = (now: number) => {
         if (disposed) {
           return;
@@ -318,6 +367,18 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           fpsWindowStart = now;
           frameCounter = 0;
         }
+
+        // A hot arena reuses this hook and session after the result screen.
+        // matchStart has already reset NetSession to live; clear every local
+        // run-bound view before the first input or frame of the new simulation.
+        const currentRunGeneration = session.getRunGeneration?.();
+        if (
+          runGenerationAdvanced(observedRunGeneration, currentRunGeneration)
+          || startsNewRun(runEndedRef.current, session.getRunState())
+        ) {
+          resetForNewRun();
+        }
+        if (currentRunGeneration !== undefined) observedRunGeneration = currentRunGeneration;
 
         if (runEndedRef.current) {
           session.sendInput({ move: { x: 0, y: 0 }, dash: false });
@@ -353,6 +414,8 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         pingQueuedRef.current = undefined;
         session.setMeasuredFps?.(fps);
         const nextSnapshot = session.update(elapsedMs);
+        if (nextSnapshot) lastRunTimeMs = nextSnapshot.timeMs;
+        const runState = session.getRunState();
         const queuedReplay = killCamReplayQueuedRef.current;
         if (queuedReplay) {
           killCamReplayQueuedRef.current = null;
@@ -401,6 +464,27 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
         const nextMarks = collectPings(marksRef.current, frameEvents, now);
         if (nextMarks !== marksRef.current) marksRef.current = nextMarks;
         rendererRef.current?.setSquadMarks(nextMarks);
+
+        // A reconnect or stream handoff can deliver runOver without a buffered
+        // snapshot. Observe authority before the no-snapshot return so the
+        // result boundary exists and the next deploy can reset it.
+        if (!runEndedRef.current && runState.phase === "over") {
+          const result: RunResult = {
+            outcome: runState.reason,
+            keptItems: runState.keptItems,
+            lostItems: runState.lostItems,
+            learnedBlueprints: runState.learnedBlueprints,
+            contractCompletions: runState.contractCompletions ?? [],
+            persistenceStatus: runState.persistenceStatus,
+            runTimeMs: lastRunTimeMs,
+          };
+          runEndedRef.current = true;
+          keysRef.current.clear();
+          joystickRef.current = emptyJoystick;
+          setJoystickView(emptyJoystick);
+          setRunResult(result);
+          applyHudOverlayEvent("closeInventory");
+        }
 
         if (!nextSnapshot) {
           session.recordClientFrame?.(elapsedMs, performance.now() - frameWorkStartedAt);
@@ -510,25 +594,6 @@ export function useDotBotGame(options: UseDotBotGameOptions = {}) {
           killCamObservedDownedRef.current = false;
         }
         if (currentPlayer) playerSquadId = currentPlayer.squadId;
-        const runState = session.getRunState();
-
-        if (!runEndedRef.current && runState.phase === "over") {
-          const result: RunResult = {
-            outcome: runState.reason,
-            keptItems: runState.keptItems,
-            lostItems: runState.lostItems,
-            learnedBlueprints: runState.learnedBlueprints,
-            contractCompletions: runState.contractCompletions ?? [],
-            persistenceStatus: runState.persistenceStatus,
-            runTimeMs: nextSnapshot.timeMs,
-          };
-          runEndedRef.current = true;
-          keysRef.current.clear();
-          joystickRef.current = emptyJoystick;
-          setJoystickView(emptyJoystick);
-          setRunResult(result);
-          applyHudOverlayEvent("closeInventory");
-        }
 
         // Watching begins the moment you go down, not when the run ends: you
         // follow a squadmate who is still up, and once none are the camera falls

@@ -148,6 +148,57 @@ describe("fixed-delay interpolation", () => {
     });
   });
 
+  it("revokes same-floor squad inventory fields at the authoritative boundary", () => {
+    const older = snapshot(0, 0);
+    const newer = snapshot(3, 30);
+    older.bots[0] = {
+      ...older.bots[0],
+      squadId: "alpha",
+      moving: true,
+      bays: [{ kind: "powerup", type: "radar" }, null, null, null],
+      hold: [{ kind: "mine" }],
+      inventoryRevision: 7,
+      carriedCount: 2,
+      searched: true,
+      pleaded: true,
+    };
+    newer.bots[0] = {
+      ...newer.bots[0],
+      squadId: "bravo",
+      moving: false,
+      bays: [null, null, null, null],
+      hold: [],
+      inventoryRevision: undefined,
+      carriedCount: 2,
+      searched: false,
+      pleaded: false,
+    };
+    const timeline = [{ tick: 0, snapshot: older }, { tick: 3, snapshot: newer }];
+
+    expect(sampleTimeline(timeline, 2.9, 3)?.snapshot.bots[0]).toMatchObject({
+      squadId: "alpha",
+      moving: true,
+      bays: [{ kind: "powerup", type: "radar" }, null, null, null],
+      hold: [{ kind: "mine" }],
+      inventoryRevision: 7,
+      searched: true,
+      pleaded: true,
+    });
+    const revoked = sampleTimeline(timeline, 3, 3)!.snapshot.bots[0];
+    expect(revoked).toMatchObject({
+      squadId: "bravo",
+      moving: false,
+      bays: [null, null, null, null],
+      hold: [],
+      carriedCount: 2,
+      searched: false,
+      pleaded: false,
+    });
+    expect(revoked.inventoryRevision).toBeUndefined();
+    expect(revoked.bays).not.toBe(newer.bots[0].bays);
+    expect(revoked.hold).not.toBe(newer.bots[0].hold);
+  });
+
   it("treats newer omission and addition as authoritative at the snapshot boundary", () => {
     const older = snapshot(0, 0);
     const newer = snapshot(3, 30);
