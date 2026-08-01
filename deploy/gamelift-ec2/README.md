@@ -44,7 +44,10 @@ The fleet inbound rule exposes TCP 7000-7001 only. Adapter ports bind to
    cleanly.
 
 The fleet must be created with `CertificateType=GENERATED`, On-Demand
-capacity, active-session protection, a hard maximum of one instance, and
-managed scale-to-zero. The GameLift fleet/build live in `ca-central-1`; the
-small allocation/persistence Lambda remains in `us-east-1` and is reached with
-short-lived fleet-role credentials from `/local/credentials/credentials`.
+capacity, active-session protection, one continuously warm instance, and a
+hard maximum of one instance. The GameLift fleet/build live in
+`ca-central-1`; the small allocation/persistence Lambda remains in `us-east-1`
+and is reached with short-lived fleet-role credentials from
+`/local/credentials/credentials`. Use the explicit emergency-stop script when
+capacity should be taken to zero; automatic EC2 scale-from-zero latency is not
+compatible with public quick play.

@@ -125,8 +125,10 @@ a substitute for regional placement.
 
 The live AWS price checked on 2026-07-31 for GameLift `c6gn.large` in Canada
 Central was **$0.121 USD/hour**, or about **$88.33 for 730 continuously active
-hours** before bandwidth and minor control-plane usage. Managed idle
-scale-to-zero should make a quiet month materially lower.
+hours** before bandwidth and minor control-plane usage. Public quick play keeps
+one instance warm because EC2 scale-from-zero latency is longer than the
+seconds-long deployment contract. The explicit emergency-stop path can take
+capacity to zero whenever public quick play is disabled.
 
 The AWS account has a `$200 USD/month` budget with actual-spend alerts at 50%,
 80%, and 100%, plus a forecasted 100% alert. Fleet activation rechecks the

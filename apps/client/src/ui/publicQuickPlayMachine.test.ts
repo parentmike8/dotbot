@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PlayerRole, PublicArenaMember } from "@dotbot/protocol";
 import {
+  assemblyProgressPercent,
   initialPublicQuickPlayState,
   assemblySecondsRemaining,
   fetchDeploymentConfig,
@@ -10,6 +11,7 @@ import {
   publicQuickPlayResume,
   publicQuickPlayStateFromResume,
   publicPartyStatusLabel,
+  publicQueueSecondsElapsed,
   publicQueueTimedOut,
   selectDeploymentMode,
   shouldCancelBeforeBaseReturn,
@@ -341,6 +343,22 @@ describe("public quick-play client state machine", () => {
     expect(assemblySecondsRemaining(6_001, 1_000)).toBe(6);
     expect(assemblySecondsRemaining(3_001, 1_000)).toBe(3);
     expect(assemblySecondsRemaining(999, 1_000)).toBe(1);
+  });
+
+  it("reports honest queue elapsed time without displaying negative time", () => {
+    expect(publicQueueSecondsElapsed(undefined, 5_000)).toBe(0);
+    expect(publicQueueSecondsElapsed(5_000, 4_000)).toBe(0);
+    expect(publicQueueSecondsElapsed(1_000, 1_999)).toBe(0);
+    expect(publicQueueSecondsElapsed(1_000, 2_000)).toBe(1);
+    expect(publicQueueSecondsElapsed(1_000, 63_400)).toBe(62);
+  });
+
+  it("bounds the assembly loading bar from zero through one hundred percent", () => {
+    expect(assemblyProgressPercent(undefined, 7_000, 1_000)).toBe(0);
+    expect(assemblyProgressPercent(1_000, 1_000, 1_000)).toBe(0);
+    expect(assemblyProgressPercent(1_000, 7_000, 0)).toBe(0);
+    expect(assemblyProgressPercent(1_000, 7_000, 4_000)).toBe(50);
+    expect(assemblyProgressPercent(1_000, 7_000, 8_000)).toBe(100);
   });
 
   it("fences a queue timeout for whole-party cancellation before another claim", () => {

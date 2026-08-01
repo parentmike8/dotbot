@@ -28,6 +28,6 @@ gcloud run deploy "$SERVICE" \
   --session-affinity \
   --add-cloudsql-instances "$SQL_INSTANCE" \
   --set-secrets "DATABASE_URL=dotbot-database-url:latest,DOTBOT_RELAY_SECRET=dotbot-persistence-relay:latest" \
-  --set-env-vars "NODE_ENV=production"
+  --update-env-vars "NODE_ENV=production"
 
 gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format="value(status.url)"

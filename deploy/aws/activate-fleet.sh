@@ -107,11 +107,14 @@ while true; do
   sleep 15
 done
 
-# Enforce a hard one-instance ceiling. Managed capacity can scale an idle fleet
-# to zero and wake one instance when a new game session is requested.
+# Enforce one continuously warm instance and a hard one-instance ceiling.
+# Public quick play promises a seconds-long deployment path; GameLift managed
+# scale-to-zero has a multi-minute EC2 cold start and therefore cannot sit on
+# the player-facing request path. emergency-stop.sh remains the explicit,
+# reversible way to take paid capacity to zero.
 aws gamelift update-fleet-capacity "${profile_args[@]}" --region "$region" \
-  --fleet-id "$fleet_id" --desired-instances 1 --max-size 1 \
-  --managed-capacity-configuration ScaleInAfterInactivityMinutes=30,ZeroCapacityStrategy=SCALE_TO_AND_FROM_ZERO >/dev/null
+  --fleet-id "$fleet_id" --desired-instances 1 --min-size 1 --max-size 1 \
+  --managed-capacity-configuration ZeroCapacityStrategy=MANUAL >/dev/null
 
 aws cloudformation update-stack "${profile_args[@]}" --region "$control_plane_region" \
   --stack-name dotbot-production-control-plane \
@@ -124,4 +127,4 @@ aws cloudformation update-stack "${profile_args[@]}" --region "$control_plane_re
 aws cloudformation wait stack-update-complete "${profile_args[@]}" --region "$control_plane_region" \
   --stack-name dotbot-production-control-plane
 
-echo "Fleet $fleet_id is active in $region on $instance_type: max=1 with idle scale-to-zero. Gameplay cutover is still OFF."
+echo "Fleet $fleet_id is active in $region on $instance_type: one warm instance, max=1. Gameplay cutover is still OFF."

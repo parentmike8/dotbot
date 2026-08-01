@@ -71,10 +71,12 @@ CONFIRM_DOTBOT_PRODUCTION_MIGRATION=dot-bot-c39fc ./deploy/migrate-production.sh
 7. Run `deploy/aws/cutover.sh` to enable GameLift allocation on the same public
    domain.
 
-The fleet script enforces an On-Demand `c6gn.large`, a hard maximum of one
-instance, two room processes, and managed scale-to-zero after 30 idle minutes.
-The first room after an idle scale-down automatically waits and retries while
-AWS wakes the instance. Never raise the process count or instance ceiling
+The fleet script enforces an On-Demand `c6gn.large`, one continuously warm
+instance, a hard maximum of one instance, and two room processes. This is the
+minimum capacity compatible with the player-facing seconds-long deployment
+promise; an EC2 scale-from-zero wake takes minutes. Use
+`deploy/aws/emergency-stop.sh` to take capacity explicitly to zero when public
+quick play is disabled. Never raise the process count or instance ceiling
 without measured 60 Hz tick, network, and memory headroom.
 
 Cutover rollback does not require a redeploy:

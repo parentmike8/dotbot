@@ -12,6 +12,7 @@ import {
   type PublicPartyAllocationStatus,
 } from "../publicPartyQueue";
 import {
+  assemblyProgressPercent,
   assemblySecondsRemaining,
   initialPublicQuickPlayState,
   parsePublicQuickPlayResume,
@@ -20,6 +21,7 @@ import {
   publicQuickPlayResume,
   publicQuickPlayStateFromResume,
   publicPartyStatusLabel,
+  publicQueueSecondsElapsed,
   publicQueueTimedOut,
   shouldCancelBeforeBaseReturn,
   startPublicQuickPlayOperations,
@@ -53,6 +55,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
   const sessionRef = useRef<NetSession | null>(null);
   const [playing, setPlaying] = useState(false);
   const [message, setMessage] = useState("");
+  const [waitingForCapacity, setWaitingForCapacity] = useState(false);
   const [party, setParty] = useState<PartyState | null>(null);
   const [isPartyLeader, setIsPartyLeader] = useState<boolean | null>(null);
   const partyLeaderRef = useRef<boolean | null>(null);
@@ -127,6 +130,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
     } else if (stateRef.current.phase !== "idle" && stateRef.current.phase !== "results" && stateRef.current.phase !== "error") return;
     const operationId = resumed?.operationId ?? crypto.randomUUID();
     if (!resumed) dispatch({ type: "claim", operationId, intent, now: Date.now() });
+    setWaitingForCapacity(false);
     setMessage(partyLeaderRef.current === false ? "WAITING FOR PARTY LEADER" : "LOCKING PARTY LOADOUT");
     let token: string;
     try {
@@ -162,6 +166,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
           return;
         }
         dispatch({ type: "allocated", operationId, allocation: result.allocation });
+        setWaitingForCapacity(false);
         setMessage("CONNECTING TO PUBLIC ASSEMBLY");
         await connect(operationId, result.allocation, token);
         return;
@@ -181,6 +186,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
             return;
           }
           dispatch({ type: "allocated", operationId, allocation: recovered });
+          setWaitingForCapacity(false);
           await connect(operationId, recovered, token);
           return;
         }
@@ -194,9 +200,15 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
           dispatch({ type: "failed", operationId, message: queueErrorMessage(error), retryable: false });
           return;
         }
+        const fleetWaking = error instanceof PublicPartyQueueError
+          && error.status === 503
+          && error.message.toLowerCase().includes("waking");
+        setWaitingForCapacity(fleetWaking);
         setMessage(partyLeaderRef.current === false
           ? "WAITING FOR PARTY LEADER · PARTY STAYS INTACT"
-          : "PUBLIC ASSEMBLY IS WAKING · RETRYING");
+          : fleetWaking
+            ? "SERVER WAKING · DEPLOYMENT WILL CONTINUE AUTOMATICALLY"
+            : "FINDING PUBLIC ARENA · RETRYING");
         await delay(error instanceof PublicPartyQueueError && error.status === 503 ? 3_000 : 750);
       }
     }
@@ -550,6 +562,8 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
         <PartyStatus party={party} isLeader={isPartyLeader} allocationSize={state.allocation?.partySize} />
         {state.phase === "assembling" ? <AssemblyRoster members={assemblyMembers} /> : null}
 
+        <DeploymentProgress state={state} clock={clock} waitingForCapacity={waitingForCapacity} />
+
         <p className={state.error ? "lobby-error public-queue-status" : "public-queue-status"} role={state.error ? "alert" : "status"} aria-live="polite">
           {state.error?.message.toUpperCase() || message || phaseMessage(state)}
         </p>
@@ -566,6 +580,59 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
         </div>
       </section>
     </main>
+  );
+}
+
+function DeploymentProgress({
+  state,
+  clock,
+  waitingForCapacity,
+}: {
+  state: PublicQuickPlayState;
+  clock: number;
+  waitingForCapacity: boolean;
+}) {
+  if (state.phase !== "claiming" && state.phase !== "connecting" && state.phase !== "assembling") return null;
+
+  if (state.phase === "assembling") {
+    const seconds = assemblySecondsRemaining(state.arena?.assemblyDeadlineAt, clock);
+    const percent = assemblyProgressPercent(
+      state.arena?.assemblyStartedAt,
+      state.arena?.assemblyDeadlineAt,
+      clock,
+    );
+    return (
+      <div
+        className="public-deployment-progress"
+        role="progressbar"
+        aria-label="Deployment countdown"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`Deploying in ${seconds} seconds`}
+      >
+        <div className="public-deployment-progress-track"><span style={{ width: `${percent}%` }} /></div>
+        <strong>DEPLOYING IN {seconds}</strong>
+      </div>
+    );
+  }
+
+  const elapsed = publicQueueSecondsElapsed(state.startedAt, clock);
+  const label = waitingForCapacity
+    ? "SERVER WAKING"
+    : state.phase === "connecting"
+      ? "CONNECTING TO ARENA"
+      : "FINDING PUBLIC ARENA";
+  return (
+    <div
+      className="public-deployment-progress is-indeterminate"
+      role="progressbar"
+      aria-label={label.toLowerCase()}
+      aria-valuetext={`${label}, ${elapsed} seconds elapsed`}
+    >
+      <div className="public-deployment-progress-track"><span /></div>
+      <strong>{label} · {elapsed}S</strong>
+    </div>
   );
 }
 

@@ -268,6 +268,22 @@ export function assemblySecondsRemaining(deadlineAt: number | undefined, now = D
   return Math.max(1, Math.min(6, Math.ceil((deadlineAt - now) / 1_000)));
 }
 
+export function publicQueueSecondsElapsed(startedAt: number | undefined, now = Date.now()): number {
+  if (startedAt === undefined || !Number.isFinite(startedAt) || !Number.isFinite(now)) return 0;
+  return Math.max(0, Math.floor((now - startedAt) / 1_000));
+}
+
+export function assemblyProgressPercent(
+  startedAt: number | undefined,
+  deadlineAt: number | undefined,
+  now = Date.now(),
+): number {
+  if (startedAt === undefined || deadlineAt === undefined || deadlineAt <= startedAt
+    || !Number.isFinite(startedAt) || !Number.isFinite(deadlineAt) || !Number.isFinite(now)) return 0;
+  const progress = ((now - startedAt) / (deadlineAt - startedAt)) * 100;
+  return Math.max(0, Math.min(100, Math.round(progress)));
+}
+
 export function publicQuickPlayResume(state: PublicQuickPlayState): PublicQuickPlayResume | null {
   if (!state.operationId || !state.intent) return null;
   if (state.phase === "claiming" && Number.isSafeInteger(state.startedAt) && state.startedAt! >= 0) {

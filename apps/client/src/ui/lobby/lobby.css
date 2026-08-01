@@ -46,6 +46,11 @@
 .public-party-status { display: grid; gap: 5px; margin: 0 0 18px; padding: 10px 0; border-top: 1.5px solid var(--ink); border-bottom: 1.5px solid var(--ink); text-transform: uppercase; }
 .public-party-status strong { font-size: 11px; letter-spacing: .12em; }
 .public-party-status span { color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .08em; }
+.public-deployment-progress { display: grid; gap: 7px; margin: 15px 0 4px; }
+.public-deployment-progress-track { position: relative; height: 8px; overflow: hidden; border: 1.5px solid var(--ink); background: var(--paper); }
+.public-deployment-progress-track > span { display: block; height: 100%; background: var(--ink); transition: width 160ms linear; }
+.public-deployment-progress > strong { font: 850 9px/1.4 ui-monospace, monospace; letter-spacing: .09em; text-transform: uppercase; }
+.public-deployment-progress.is-indeterminate .public-deployment-progress-track > span { position: absolute; width: 32%; animation: public-deployment-loading 1.1s ease-in-out infinite; }
 .public-queue-status { min-height: 18px; margin: 14px 0; font: 850 10px/1.5 ui-monospace, monospace; letter-spacing: .09em; text-transform: uppercase; }
 .public-queue-actions { display: grid; gap: 7px; }
 .public-assembly-roster { margin-top: 4px; }
@@ -54,6 +59,8 @@
 .public-assembly-roster li { display: flex; min-height: 28px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid rgba(17,17,17,.16); font-size: 9px; text-transform: uppercase; }
 .public-assembly-roster em { padding: 2px 4px; background: var(--ink); color: var(--paper); font-size: 7px; font-style: normal; letter-spacing: .08em; }
 .public-assembly-roster .lobby-ai { color: var(--muted); }
+@keyframes public-deployment-loading { from { transform: translateX(-110%); } to { transform: translateX(330%); } }
+@media (prefers-reduced-motion: reduce) { .public-deployment-progress.is-indeterminate .public-deployment-progress-track > span { width: 100%; animation: none; opacity: .35; } }
 
 .net-game-connection {
   position: fixed;
