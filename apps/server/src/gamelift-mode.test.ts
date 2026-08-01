@@ -34,6 +34,29 @@ afterEach(() => {
 });
 
 describe("GameLift dedicated server mode", () => {
+  it("strips stale hot-arena options when public quick play is explicitly off", async () => {
+    process.env.NODE_ENV = "test";
+    const messages: ServerMessage[] = [];
+    const { app, rooms } = await createServer({
+      persistence: new CompletedTestPersistence(),
+      publicQuickPlay: false,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+    });
+    const admitted = await rooms.handleQuickPlayHello({
+      id: "feature-off-peer",
+      send: (message) => messages.push(message),
+    }, {
+      type: "quickPlayHello",
+      token: "feature-off-token",
+      name: "Feature off",
+      playerSessionId: "psess-feature-off",
+    });
+    expect(admitted).toBe(false);
+    expect(messages).toContainEqual(expect.objectContaining({ type: "err", code: "quick_play_unavailable" }));
+    expect(rooms.rooms).toBe(0);
+    await app.close();
+  });
+
   it("requires an accepted player session and pins the process to one allocated room", async () => {
     process.env.NODE_ENV = "test";
     const request = vi.fn<typeof fetch>(async (input) => {

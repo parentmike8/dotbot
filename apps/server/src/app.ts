@@ -11,7 +11,7 @@ import { recipeById } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import type { BaseLayout, Item, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import { isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
-import { createPersistence, type AccountSummary, type Persistence, type PublicPlayer, type VerifiedExternalIdentity } from "./db";
+import { createPersistence, PersistenceConflictError, type AccountSummary, type Persistence, type PublicPlayer, type VerifiedExternalIdentity } from "./db";
 import { createFirebaseIdentityVerifier, type FirebaseIdentityVerifier } from "./identity/FirebaseIdentityVerifier";
 import { formatPublicPlayerId, normalizePublicPlayerId } from "./identity/publicPlayerId";
 import { MemoryIdentityRateLimiter, type IdentityRateLimitAction, type IdentityRateLimiter } from "./identity/IdentityRateLimiter";
@@ -19,6 +19,7 @@ import { BaseTutorialAuthority } from "./BaseTutorialAuthority";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
 import { GameLiftSessionGate, requiresPlayerSessionRemoval } from "./GameLiftSessionGate";
 import type { ArenaDirectory } from "./ArenaDirectory";
+import { isAggregateMatchSummary } from "./matchSummary";
 
 export type CreateServerOptions = RoomManagerOptions & {
   databaseUrl?: string | null;
@@ -47,8 +48,11 @@ export async function createServer(options: CreateServerOptions = {}) {
       ? candidateStatus
       : 500;
     if (statusCode === 500) {
-      request.log.error({ errorName: error instanceof Error ? error.name : "UnknownError" }, "unhandled request failure");
-      return reply.code(500).send({ error: "The request could not be completed safely." });
+      request.log.error({ errorName: safeErrorName(error) }, "unhandled request failure");
+      const storageRoute = /^\/api\/(?:auth|account|social)(?:\/|$)/.test(request.url);
+      return reply.code(storageRoute ? 503 : 500).send({
+        error: storageRoute ? "Authoritative storage is temporarily unavailable." : "The request could not be completed safely.",
+      });
     }
     return reply.code(statusCode).send({ error: error instanceof Error ? error.message : "Invalid request." });
   });
@@ -78,20 +82,22 @@ export async function createServer(options: CreateServerOptions = {}) {
     ...options,
     persistence,
     connectionHandoffMs: playerSessionReconnectMs,
+    hotArena: publicQuickPlay ? options.hotArena ?? {} : undefined,
+    onPublicAdmissionChange: publicQuickPlay && options.arenaDirectory
+      ? (state: { arenaId: string; open: boolean; closesAt?: number }) => options.arenaDirectory!.publish(state)
+      : undefined,
+    onPublicMemberReleased: publicQuickPlay
+      ? (release: import("./Room").PublicMemberRelease) => {
+          releasePublicMember(release);
+          return options.onPublicMemberReleased?.(release);
+        }
+      : undefined,
     ...(gameLift ? {
       sessionRoomCode: () => publicQuickPlay ? gameLift.arenaId() : gameLift.roomCode(),
       endedRoomTtlMs: 5_000,
       onRoomExpired: () => {
         draining = true;
         return gameLift.endProcess();
-      },
-    } : {}),
-    ...(publicQuickPlay ? { hotArena: options.hotArena ?? {} } : {}),
-    ...(publicQuickPlay && options.arenaDirectory ? { onPublicAdmissionChange: (state: { arenaId: string; open: boolean; closesAt?: number }) => options.arenaDirectory!.publish(state) } : {}),
-    ...(publicQuickPlay ? {
-      onPublicMemberReleased: (release: import("./Room").PublicMemberRelease) => {
-        releasePublicMember(release);
-        return options.onPublicMemberReleased?.(release);
       },
     } : {}),
   });
@@ -164,7 +170,7 @@ export async function createServer(options: CreateServerOptions = {}) {
         // boundary so mixed GameLift revisions retain their established key.
         return { playerId: identity.playerId, name: identity.name };
       } catch (error) {
-        request.log.warn({ errorName: error instanceof Error ? error.name : "UnknownError" }, "matchmaker authentication failed");
+        request.log.warn({ errorName: safeErrorName(error) }, "matchmaker authentication failed");
         return reply.code(503).send({ error: "Authoritative persistence is temporarily unavailable." });
       }
     });
@@ -180,7 +186,7 @@ export async function createServer(options: CreateServerOptions = {}) {
         if (!claimed) return reply.code(409).send({ error: "Persistence relay request was already processed." });
         return { result: await dispatchPersistenceRelay(persistence, request.body) };
       } catch (error) {
-        request.log.warn({ errorName: error instanceof Error ? error.name : "UnknownError" }, "persistence relay operation failed");
+        request.log.warn({ errorName: safeErrorName(error) }, "persistence relay operation failed");
         return reply.code(error instanceof RelayPayloadError ? 400 : 503).send({
           error: error instanceof RelayPayloadError ? error.message : "Authoritative persistence is temporarily unavailable.",
         });
@@ -227,8 +233,12 @@ export async function createServer(options: CreateServerOptions = {}) {
         merged: result.merged,
         replayed: result.replayed,
       };
-    } catch {
-      return reply.code(409).send({ error: "Account linking could not be completed safely." });
+    } catch (error) {
+      if (error instanceof PersistenceConflictError) {
+        return reply.code(409).send({ error: "Account linking could not be completed safely." });
+      }
+      request.log.warn({ errorName: safeErrorName(error) }, "account linking persistence failure");
+      return reply.code(503).send({ error: "Authoritative storage is temporarily unavailable." });
     }
   });
 
@@ -289,8 +299,12 @@ export async function createServer(options: CreateServerOptions = {}) {
       const deleted = await persistence.deleteLinkedAccount(token, verified);
       if (!deleted) return reply.code(404).send({ error: "Unknown device token." });
       return reply.code(204).send();
-    } catch {
-      return reply.code(409).send({ error: "Verified account deletion could not be completed safely." });
+    } catch (error) {
+      if (error instanceof PersistenceConflictError) {
+        return reply.code(409).send({ error: "Verified account deletion could not be completed safely." });
+      }
+      request.log.warn({ errorName: safeErrorName(error) }, "account deletion persistence failure");
+      return reply.code(503).send({ error: "Authoritative storage is temporarily unavailable." });
     }
   });
 
@@ -1037,11 +1051,7 @@ function isRunOutcome(value: unknown): value is "died" | "timeout" | "disconnect
 }
 
 function isRelaySummary(value: unknown): boolean {
-  try {
-    return JSON.stringify(value).length <= 64_000;
-  } catch {
-    return false;
-  }
+  return isAggregateMatchSummary(value);
 }
 
 class RelayPayloadError extends Error {}
@@ -1149,4 +1159,9 @@ function errorMessage(error: unknown): string {
     return "The request could not be completed safely.";
   }
   return message;
+}
+
+function safeErrorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : "";
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name) ? name : "UnknownError";
 }

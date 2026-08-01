@@ -704,10 +704,28 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect((await sql!<Array<{ count: number }>>`
       select count(*)::int as count from match_participants where match_id = ${matchId}
     `)[0].count).toBe(18);
-    await expect(persistence.finishMatch({ matchId, endedAt: new Date(), summary: { reason: "premature" } }))
+    await expect(persistence.finishMatch({
+      matchId,
+      endedAt: new Date(),
+      summary: { reason: "premature", participantCount: 18, outcomes: { timeout: 18 } },
+    }))
       .rejects.toThrow(/unsettled participant/i);
     await Promise.all(roster.map((player) => persistence.recordOutcome({ matchId, playerId: player.playerId, outcome: "timeout" })));
-    await expect(persistence.finishMatch({ matchId, endedAt: new Date(), summary: { reason: "timeout" } })).resolves.toBeUndefined();
+    await expect(persistence.finishMatch({
+      matchId,
+      endedAt: new Date(),
+      summary: {
+        reason: "timeout",
+        participantCount: 18,
+        outcomes: { timeout: 18 },
+        participantIds: roster.map((player) => player.playerId),
+      },
+    })).rejects.toThrow(/aggregate outcome counts/i);
+    await expect(persistence.finishMatch({
+      matchId,
+      endedAt: new Date(),
+      summary: { reason: "timeout", participantCount: 18, outcomes: { timeout: 18 } },
+    })).resolves.toBeUndefined();
     await app.close();
   });
 });

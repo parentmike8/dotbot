@@ -41,8 +41,20 @@ class DeferredFinishPersistence extends RunBoundaryPersistence {
 }
 
 class FailedFinishPersistence extends RunBoundaryPersistence {
+  recovered = false;
+  attempts = 0;
+
   override async finishMatch(): Promise<void> {
-    throw new Error("finish unavailable");
+    this.attempts += 1;
+    if (!this.recovered) {
+      const error = new Error("00000000-0000-4000-8000-999999999999 secret-finish-detail");
+      error.name = "00000000-0000-4000-8000-999999999999";
+      throw error;
+    }
+  }
+
+  recover(): void {
+    this.recovered = true;
   }
 }
 
@@ -72,8 +84,16 @@ class FailedStartPersistence extends RunBoundaryPersistence {
 }
 
 class FailedOutcomePersistence extends RunBoundaryPersistence {
+  recovered = false;
+  outcomeAttempts = 0;
+
   override async recordOutcome(): Promise<void> {
-    throw new Error("outcome unavailable");
+    this.outcomeAttempts += 1;
+    if (!this.recovered) throw new Error("outcome unavailable");
+  }
+
+  recover(): void {
+    this.recovered = true;
   }
 }
 
@@ -632,12 +652,15 @@ describe("public quick-play Room mode", () => {
     expect(persistence.starts).toHaveLength(1);
   });
 
-  it("retires between runs when the completed run cannot be durably finished", async () => {
+  it("remains unsafe after a failed finish and recovers the exact boundary before retirement", async () => {
     let now = 0;
+    const persistence = new FailedFinishPersistence();
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const room = new Room("FAIL", {
       now: () => now,
-      persistence: new FailedFinishPersistence(),
+      persistence,
       hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000042",
     });
     room.join(collectingPeer("pilot").peer, "token", "Pilot", "pilot", undefined, "party");
     now = 1_000;
@@ -648,6 +671,17 @@ describe("public quick-play Room mode", () => {
 
     expect(room.phase).toBe("results");
     expect(room.retirementRequested).toBe(true);
+    expect(room.safeToTerminate).toBe(false);
+    expect(room.readyForDisposal).toBe(false);
+    expect(JSON.stringify(warnings.mock.calls)).not.toContain("999999999999");
+    expect(JSON.stringify(warnings.mock.calls)).not.toContain("secret-finish-detail");
+
+    persistence.recover();
+    now += 5_000;
+    room.tick(now);
+    await room.waitForPersistence();
+    expect(persistence.attempts).toBe(2);
+    expect(room.safeToTerminate).toBe(true);
     expect(room.readyForDisposal).toBe(true);
   });
 
@@ -676,7 +710,7 @@ describe("public quick-play Room mode", () => {
     expect(room.readyForDisposal).toBe(true);
   });
 
-  it("retires after a participant outcome exhausts persistence retries", async () => {
+  it("retains and retries an exhausted participant outcome before finishing the boundary", async () => {
     let now = 0;
     const persistence = new FailedOutcomePersistence();
     const released: string[] = [];
@@ -697,8 +731,15 @@ describe("public quick-play Room mode", () => {
 
     expect(room.phase).toBe("results");
     expect(room.retirementRequested).toBe(true);
-    expect(room.readyForDisposal).toBe(true);
+    expect(room.readyForDisposal).toBe(false);
     expect(released).toEqual(["pilot-peer"]);
+
+    persistence.recover();
+    now += 5_000;
+    room.tick(now);
+    await room.waitForPersistence();
+    expect(persistence.outcomeAttempts).toBe(3);
+    expect(room.readyForDisposal).toBe(true);
   });
 
   it("retries failed arena-directory opens and closes without reversing the desired state", async () => {

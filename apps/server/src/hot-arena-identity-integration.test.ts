@@ -137,6 +137,74 @@ describe("hot arena and identity integration", () => {
     await manager.stop();
   });
 
+  it("refreshes canonical identity after an account merges during admission awaits", async () => {
+    const retiredGuestId = "00000000-0000-4000-8000-000000000019";
+    const canonicalPlayerId = "00000000-0000-4000-8000-000000000020";
+    let merged = false;
+    let tutorialLookups = 0;
+    let releaseTutorials!: () => void;
+    const tutorialGate = new Promise<void>((resolve) => { releaseTutorials = resolve; });
+    class MergeDuringAdmissionPersistence extends IntegratedPersistence {
+      override async getBaseTutorialForPlayer() {
+        tutorialLookups += 1;
+        await tutorialGate;
+        return { ...completedBaseTutorialState };
+      }
+    }
+    const persistence = new MergeDuringAdmissionPersistence((token, name) => {
+      if (!merged && token === "source-device") return { playerId: retiredGuestId, publicPlayerId: "GUES2345", name };
+      return {
+        playerId: canonicalPlayerId,
+        previousPlayerIds: [retiredGuestId],
+        publicPlayerId: "LINK2345",
+        previousPublicPlayerIds: ["GUES2345"],
+        name,
+      };
+    });
+    const manager = new RoomManager({
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+    });
+    const sourceMessages: ServerMessage[] = [];
+    const targetMessages: ServerMessage[] = [];
+    const source = manager.handleQuickPlayHello(testPeer("source-peer", sourceMessages), {
+      type: "quickPlayHello",
+      token: "source-device",
+      name: "Source",
+      playerSessionId: "psess-source",
+    }, {
+      playerId: retiredGuestId,
+      arenaId: "RACE",
+      partyId: "party-source",
+      buildId: "web-42",
+      region: "ca-central-1",
+    });
+    const target = manager.handleQuickPlayHello(testPeer("target-peer", targetMessages), {
+      type: "quickPlayHello",
+      token: "target-device",
+      name: "Target",
+      playerSessionId: "psess-target",
+    }, {
+      playerId: canonicalPlayerId,
+      arenaId: "RACE",
+      partyId: "party-target",
+      buildId: "web-42",
+      region: "ca-central-1",
+    });
+    await vi.waitFor(() => expect(tutorialLookups).toBe(2));
+    merged = true;
+    releaseTutorials();
+
+    const admitted = await Promise.all([source, target]);
+    expect(admitted.filter(Boolean)).toHaveLength(1);
+    expect(manager.join("RACE")?.publicArenaMembers).toEqual([
+      expect.objectContaining({ playerId: "LINK-2345" }),
+    ]);
+    expect(`${JSON.stringify(sourceMessages)}${JSON.stringify(targetMessages)}`).not.toContain(canonicalPlayerId);
+    expect(`${JSON.stringify(sourceMessages)}${JSON.stringify(targetMessages)}`).not.toContain(retiredGuestId);
+    await manager.stop();
+  });
+
   it("accepts only canonical or trusted retired reservation aliases", () => {
     const identity: PlayerIdentity = {
       playerId: "00000000-0000-4000-8000-000000000020",

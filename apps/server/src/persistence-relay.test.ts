@@ -8,6 +8,7 @@ class RelayTestPersistence extends NoopPersistence {
   readonly claims = new Set<string>();
   readonly outcomes: unknown[] = [];
   readonly starts: Array<Parameters<NoopPersistence["startMatch"]>[0]> = [];
+  readonly finishes: Array<Parameters<NoopPersistence["finishMatch"]>[0]> = [];
 
   override async claimRelayRequest(requestId: string): Promise<boolean> {
     if (this.claims.has(requestId)) return false;
@@ -22,6 +23,10 @@ class RelayTestPersistence extends NoopPersistence {
   override async startMatch(input: Parameters<NoopPersistence["startMatch"]>[0]) {
     this.starts.push(input);
     return super.startMatch(input);
+  }
+
+  override async finishMatch(input: Parameters<NoopPersistence["finishMatch"]>[0]): Promise<void> {
+    this.finishes.push(input);
   }
 }
 
@@ -149,6 +154,53 @@ describe("authoritative persistence relay", () => {
     });
     expect(rejected.statusCode).toBe(400);
     expect(persistence.starts).toHaveLength(1);
+    await app.close();
+  });
+
+  it("accepts only aggregate match summaries and rejects identifier-bearing payloads", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.DOTBOT_RELAY_SECRET = relaySecret;
+    const persistence = new RelayTestPersistence();
+    const { app } = await createServer({ persistence });
+    const body = {
+      operation: "finishMatch",
+      args: {
+        matchId: randomUUID(),
+        endedAt: new Date().toISOString(),
+        summary: {
+          reason: "all_humans_disconnected",
+          participantCount: 2,
+          outcomes: { disconnected: 2 },
+        },
+      },
+    };
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/internal/game-persistence",
+      headers: signedHeaders(body, "game-persistence"),
+      payload: body,
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(persistence.finishes).toHaveLength(1);
+
+    const internalPlayerId = randomUUID();
+    const leaking = {
+      ...body,
+      args: {
+        ...body.args,
+        matchId: randomUUID(),
+        summary: { ...body.args.summary, participantIds: [internalPlayerId] },
+      },
+    };
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/internal/game-persistence",
+      headers: signedHeaders(leaking, "game-persistence"),
+      payload: leaking,
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.body).not.toContain(internalPlayerId);
+    expect(persistence.finishes).toHaveLength(1);
     await app.close();
   });
 

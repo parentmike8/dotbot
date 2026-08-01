@@ -29,6 +29,7 @@ import type {
   MatchStartResult,
   VerifiedExternalIdentity,
 } from "./Persistence";
+import { PersistenceConflictError } from "./Persistence";
 import {
   baseLayouts,
   baseUpgrades,
@@ -49,6 +50,7 @@ import {
   relayRequests,
   stashItems,
 } from "./schema";
+import { isAggregateMatchSummary } from "../matchSummary";
 import { allocateUniquePublicPlayerId, generatePublicPlayerId, normalizePublicPlayerId, type PublicPlayerIdFactory } from "../identity/publicPlayerId";
 
 export class PostgresPersistence implements Persistence {
@@ -136,7 +138,7 @@ export class PostgresPersistence implements Persistence {
           currentDevice = legacy;
         }
       }
-      if (!currentDevice) throw new Error("Unknown device token.");
+      if (!currentDevice) throw new PersistenceConflictError("Unknown device token.");
       const lockedPlayers = await tx.select({
         id: players.id,
         name: players.displayName,
@@ -152,12 +154,12 @@ export class PostgresPersistence implements Persistence {
       if (!sourcePlayer) {
         // A replay after a merge resolves the moved device to the canonical
         // player before entering this transaction.
-        throw new Error("Unknown device token.");
+        throw new PersistenceConflictError("Unknown device token.");
       }
       const [sourceExternal] = await tx.select({ id: externalIdentities.id, issuer: externalIdentities.issuer, subject: externalIdentities.subject })
         .from(externalIdentities).where(eq(externalIdentities.playerId, sourcePlayer.id)).for("update");
       if (sourceExternal && (sourceExternal.issuer !== identity.issuer || sourceExternal.subject !== identity.subject)) {
-        throw new Error("This device is already linked to a different account.");
+        throw new PersistenceConflictError("This device is already linked to a different account.");
       }
       let [external] = await tx.select({ id: externalIdentities.id, playerId: externalIdentities.playerId })
         .from(externalIdentities)
@@ -188,7 +190,7 @@ export class PostgresPersistence implements Persistence {
           tutorialPhase: players.baseTutorialPhase,
           tutorialRevision: players.baseTutorialRevision,
         }).from(players).where(eq(players.id, targetPlayerId)).for("update");
-        if (!targetPlayer) throw new Error("Linked account is unavailable.");
+        if (!targetPlayer) throw new PersistenceConflictError("Linked account is unavailable.");
         await this.mergeGuestTransaction(tx, sourcePlayer, targetPlayer, identity);
         merged = true;
       }
@@ -200,7 +202,7 @@ export class PostgresPersistence implements Persistence {
       return { targetPlayerId, merged, replayed };
     });
     const account = await this.accountSummary(result.targetPlayerId);
-    if (!account) throw new Error("Linked account is unavailable.");
+    if (!account) throw new PersistenceConflictError("Linked account is unavailable.");
     return { account, merged: result.merged, replayed: result.replayed };
   }
 
@@ -260,7 +262,7 @@ export class PostgresPersistence implements Persistence {
           eq(externalIdentities.issuer, identity.issuer),
           eq(externalIdentities.subject, identity.subject),
       )).for("update");
-      if (!external) throw new Error("Verified identity does not own this DotBot account.");
+      if (!external) throw new PersistenceConflictError("Verified identity does not own this DotBot account.");
       const participantMatches = await tx.select({ matchId: matchParticipants.matchId }).from(matchParticipants)
         .where(eq(matchParticipants.playerId, actor.id));
       if (participantMatches.length > 0) {
@@ -962,6 +964,7 @@ export class PostgresPersistence implements Persistence {
   }
 
   async finishMatch(input: { matchId: string; endedAt: Date; summary: unknown }): Promise<void> {
+    if (!isAggregateMatchSummary(input.summary)) throw new Error("Match summary must contain aggregate outcome counts only.");
     await this.db.transaction(async (tx) => {
       const active = await tx.select({ playerId: matchParticipants.playerId })
         .from(matchParticipants)
@@ -1087,7 +1090,7 @@ export class PostgresPersistence implements Persistence {
       : [];
     const sourceOutcomeByMatch = new Map(sourceMatches.map((match) => [match.matchId, match.outcome]));
     if (targetOverlaps.some((match) => match.outcome === "active" || sourceOutcomeByMatch.get(match.matchId) === "active")) {
-      throw new Error("Account linking must wait until the overlapping active match ends.");
+      throw new PersistenceConflictError("Account linking must wait until the overlapping active match ends.");
     }
     const conflicts = {
       source: {

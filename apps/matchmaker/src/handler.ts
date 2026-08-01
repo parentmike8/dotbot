@@ -66,6 +66,9 @@ export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Pr
     if (route === "POST /quick-play" && !isPublicQuickPlayEnabled()) {
       return response(404, { error: "Route not found." });
     }
+    if (isPublicQuickPlayEnabled() && (route === "POST /rooms" || route === "POST /rooms/{roomCode}/join")) {
+      return response(404, { error: "Route not found." });
+    }
     const payload = parseBody(event.body);
     const identity = await authenticate(payload.token);
     if (route === "POST /quick-play") return response(200, await quickPlay(identity, payload));
@@ -179,7 +182,7 @@ async function quickPlay(identity: Identity, payload: Record<string, unknown>): 
         await gameLift.send(new TerminateGameSessionCommand({
           GameSessionId: gameSessionId,
           TerminationMode: "TRIGGER_ON_PROCESS_TERMINATE",
-        })).catch((cleanupError) => console.error("failed to terminate orphaned public arena", cleanupError));
+        })).catch((cleanupError) => console.error("failed to terminate orphaned public arena", { errorName: safeErrorName(cleanupError) }));
       }
       if (isFleetWakingError(error)) throw new MatchmakerError(503, "Dedicated game server is waking up. This can take about a minute.", true);
       throw error;
@@ -566,7 +569,8 @@ function awsErrorName(error: unknown): string {
 }
 
 function safeErrorName(error: unknown): string {
-  return awsErrorName(error) || (error instanceof Error ? error.name : "UnknownError");
+  const name = awsErrorName(error) || (error instanceof Error ? error.name : "");
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name) ? name : "UnknownError";
 }
 
 function normalizeRoomCode(value: string | undefined): string {

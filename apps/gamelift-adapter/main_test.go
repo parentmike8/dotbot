@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,13 +16,18 @@ import (
 )
 
 type fakeGameLift struct {
-	activated   bool
-	activatedCh chan struct{}
-	accepted    []string
-	removed     []string
-	described   *model.PlayerSession
-	err         error
-	removeErr   error
+	activated     bool
+	activatedCh   chan struct{}
+	accepted      []string
+	removed       []string
+	described     *model.PlayerSession
+	err           error
+	removeErr     error
+	acceptEntered chan struct{}
+	acceptGate    chan struct{}
+	removeEntered chan struct{}
+	acceptOnce    sync.Once
+	removeOnce    sync.Once
 }
 
 func (f *fakeGameLift) ActivateGameSession() error {
@@ -32,10 +38,19 @@ func (f *fakeGameLift) ActivateGameSession() error {
 	return f.err
 }
 func (f *fakeGameLift) AcceptPlayerSession(id string) error {
+	if f.acceptEntered != nil {
+		f.acceptOnce.Do(func() { close(f.acceptEntered) })
+	}
+	if f.acceptGate != nil {
+		<-f.acceptGate
+	}
 	f.accepted = append(f.accepted, id)
 	return f.err
 }
 func (f *fakeGameLift) RemovePlayerSession(id string) error {
+	if f.removeEntered != nil {
+		f.removeOnce.Do(func() { close(f.removeEntered) })
+	}
 	f.removed = append(f.removed, id)
 	if f.removeErr != nil {
 		return f.removeErr
@@ -165,13 +180,8 @@ func TestPlayerSessionEndpoints(t *testing.T) {
 	}
 }
 
-func TestRemovalReconcilesReservedOrAlreadyTerminalSession(t *testing.T) {
+func TestRemovalReconcilesAlreadyTerminalSession(t *testing.T) {
 	for name, described := range map[string]model.PlayerSession{
-		"reserved": (model.PlayerSession{
-			PlayerSessionID: "player-session-1",
-			PlayerID:        "player-1",
-			GameSessionID:   "session-1",
-		}).WithStatus(model.PlayerReserved),
 		"completed": (model.PlayerSession{
 			PlayerSessionID: "player-session-1",
 			PlayerID:        "player-1",
@@ -196,6 +206,64 @@ func TestRemovalReconcilesReservedOrAlreadyTerminalSession(t *testing.T) {
 				t.Fatalf("unexpected reconciled removal status=%d removed=%#v", response.Code, fake.removed)
 			}
 		})
+	}
+}
+
+func TestRemovalDoesNotMaskAReservedSessionFailure(t *testing.T) {
+	described := (model.PlayerSession{
+		PlayerSessionID: "player-session-1",
+		PlayerID:        "player-1",
+		GameSessionID:   "session-1",
+	}).WithStatus(model.PlayerReserved)
+	fake := &fakeGameLift{described: &described, removeErr: errors.New("remove failed")}
+	process := newLifecycle(fake, "http://unused", "")
+	process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+	requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/remove", strings.NewReader(`{"playerSessionId":"player-session-1"}`))
+	response := httptest.NewRecorder()
+
+	process.handler().ServeHTTP(response, requestValue)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("reserved removal failure was masked with status=%d", response.Code)
+	}
+}
+
+func TestAcceptAndRemoveAreSerializedForTheSamePlayerSession(t *testing.T) {
+	fake := &fakeGameLift{
+		acceptEntered: make(chan struct{}),
+		acceptGate:    make(chan struct{}),
+		removeEntered: make(chan struct{}),
+	}
+	process := newLifecycle(fake, "http://unused", "")
+	process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+	handler := process.handler()
+	acceptDone := make(chan int, 1)
+	go func() {
+		requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/accept", strings.NewReader(`{"playerSessionId":"player-session-1"}`))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, requestValue)
+		acceptDone <- response.Code
+	}()
+	<-fake.acceptEntered
+	removeDone := make(chan int, 1)
+	go func() {
+		requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/remove", strings.NewReader(`{"playerSessionId":"player-session-1"}`))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, requestValue)
+		removeDone <- response.Code
+	}()
+
+	select {
+	case <-fake.removeEntered:
+		t.Fatal("remove overtook an in-flight accept for the same player session")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(fake.acceptGate)
+	if status := <-acceptDone; status != http.StatusOK {
+		t.Fatalf("unexpected accept status=%d", status)
+	}
+	if status := <-removeDone; status != http.StatusNoContent {
+		t.Fatalf("unexpected removal status=%d", status)
 	}
 }
 

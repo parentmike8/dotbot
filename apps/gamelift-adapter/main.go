@@ -118,6 +118,14 @@ type lifecycle struct {
 	ready          sync.Once
 	ending         sync.Once
 	endingErr      error
+	playerSessions sync.Map
+}
+
+func (l *lifecycle) lockPlayerSession(playerSessionID string) func() {
+	value, _ := l.playerSessions.LoadOrStore(playerSessionID, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	mutex.Lock()
+	return mutex.Unlock
 }
 
 func newLifecycle(api gameLiftAPI, healthURL, drainURL string) *lifecycle {
@@ -351,6 +359,8 @@ func (l *lifecycle) acceptPlayerSessionHandler(response http.ResponseWriter, req
 	if !ok {
 		return
 	}
+	unlock := l.lockPlayerSession(playerSessionID)
+	defer unlock()
 	describeRequest := request.NewDescribePlayerSessions()
 	describeRequest.PlayerSessionID = playerSessionID
 	described, err := l.api.DescribePlayerSessions(describeRequest)
@@ -380,6 +390,8 @@ func (l *lifecycle) removePlayerSessionHandler(response http.ResponseWriter, req
 	if !ok {
 		return
 	}
+	unlock := l.lockPlayerSession(playerSessionID)
+	defer unlock()
 	if err := l.api.RemovePlayerSession(playerSessionID); err == nil {
 		response.WriteHeader(http.StatusNoContent)
 		return
@@ -410,7 +422,7 @@ func (l *lifecycle) removePlayerSessionHandler(response http.ResponseWriter, req
 		return
 	}
 	switch playerSession.GetStatus() {
-	case model.PlayerReserved, model.PlayerCompleted, model.PlayerTimedout:
+	case model.PlayerCompleted, model.PlayerTimedout:
 		response.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(response, "player session rejected", http.StatusUnauthorized)

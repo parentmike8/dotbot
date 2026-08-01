@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "./app";
-import { NoopPersistence } from "./db";
+import { NoopPersistence, PersistenceConflictError } from "./db";
 import type {
   AccountSummary,
   FriendEntry,
@@ -43,7 +43,7 @@ class IdentityTestPersistence extends NoopPersistence {
   }
 
   override async linkAccount(token: string, verified: VerifiedExternalIdentity): Promise<LinkAccountResult> {
-    if (token !== "guest-token") throw new Error("Unknown device token.");
+    if (token !== "guest-token") throw new PersistenceConflictError("Unknown device token.");
     this.linkCalls.push(verified);
     const replayed = this.linked;
     this.linked = true;
@@ -107,7 +107,7 @@ class IdentityTestPersistence extends NoopPersistence {
 
   override async deleteLinkedAccount(token: string, verified: VerifiedExternalIdentity): Promise<boolean> {
     if (token !== "guest-token") return false;
-    if (verified.subject !== identity.subject) throw new Error("Verified identity does not own this DotBot account.");
+    if (verified.subject !== identity.subject) throw new PersistenceConflictError("Verified identity does not own this DotBot account.");
     this.deleted = true;
     return true;
   }
@@ -297,7 +297,7 @@ describe("identity and social control-plane routes", () => {
       url: "/api/auth/link",
       headers: { "x-device-token": "guest-token", authorization: "Bearer firebase-token" },
     });
-    expect(response.statusCode).toBe(409);
+    expect(response.statusCode).toBe(503);
     expect(response.body).not.toContain(internalPlayerId);
     expect(response.body).not.toContain("firebase-user-1");
     expect(response.body).not.toContain("guest-token");
@@ -325,7 +325,7 @@ describe("identity and social control-plane routes", () => {
         payload: { publicPlayerId: "JKLM-NPQR" },
       }),
     ]) {
-      expect(response.statusCode).toBe(500);
+      expect(response.statusCode).toBe(503);
       expect(response.body).not.toContain(internalPlayerId);
       expect(response.body).not.toContain("firebase-user-1");
       expect(response.body).not.toContain("guest-token");

@@ -161,6 +161,18 @@ export class RoomManager {
       peer.send({ type: "err", code: "room_not_found", msg: "That room is hosted by a different game session." });
       return false;
     }
+    try {
+      identity = await this.persistence.resolveOrRegisterPlayer(message.token, message.name);
+    } catch {
+      console.warn("[persistence] final identity lookup failed; rejecting admission.");
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
+      return false;
+    }
+    if (!isPeerActive() || peer.isOpen?.() === false) return false;
+    if (!matchesReservedPlayerIdentity(identity, expectedPlayerId)) {
+      peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
+      return false;
+    }
     const room = assignedCode
       ? this.join(assignedCode) ?? this.createRoom(assignedCode)
       : message.roomCode ? this.join(message.roomCode) : this.createRoom();
@@ -236,6 +248,23 @@ export class RoomManager {
     if (!isPeerActive() || peer.isOpen?.() === false) return false;
     if (admission && assignedArenaId && admission.arenaId !== assignedArenaId) {
       peer.send({ type: "err", code: "arena_mismatch", msg: "This reservation belongs to a different arena." });
+      return false;
+    }
+    try {
+      // Linking can commit while tutorial or arena metadata is awaited. Refresh
+      // immediately before the synchronous Room mutation so a retired guest
+      // and its canonical account cannot enter from two stale snapshots.
+      identity = await this.persistence.resolveOrRegisterPlayer(message.token, message.name);
+    } catch (error) {
+      console.warn("[persistence] final identity lookup failed; rejecting public admission.", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
+      return false;
+    }
+    if (!isPeerActive() || peer.isOpen?.() === false) return false;
+    if (!matchesReservedPlayerIdentity(identity, admission?.playerId)) {
+      peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
       return false;
     }
     const arenaId = admission?.arenaId ?? assignedArenaId ?? "PUB1";

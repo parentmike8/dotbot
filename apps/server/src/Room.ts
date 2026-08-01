@@ -100,6 +100,18 @@ export type PublicPartyAdmissionDecision =
 
 type PublicJoinRejection = Exclude<PublicPartyAdmissionDecision, { accepted: true }>;
 
+type PendingPersistenceSettlement = {
+  matchId: string;
+  settle: () => Promise<void>;
+  failureMessage: string;
+};
+
+type PendingPersistenceOperation = {
+  key: string;
+  matchId: string;
+  settle: () => Promise<void>;
+};
+
 class PublicStartRetiredError extends Error {}
 
 export type PublicMemberRelease = {
@@ -141,6 +153,7 @@ const defaultHotArenaMaxMs = 6_000;
 const defaultHotArenaMaxRuns = 20;
 const defaultHotArenaMaxAgeMs = 2 * 60 * 60_000;
 const defaultHotArenaMinInsertionSpacing = 350;
+const persistenceSettlementRetryMs = 5_000;
 
 export class Room {
   readonly code: string;
@@ -171,6 +184,10 @@ export class Room {
   private persistenceSettled = true;
   private runPersistenceFailed = false;
   private endPromise: Promise<void> | null = null;
+  private pendingPersistenceSettlement: PendingPersistenceSettlement | null = null;
+  private readonly pendingPersistenceOperations = new Map<string, PendingPersistenceOperation>();
+  private persistenceSettlementRetryAt = Number.POSITIVE_INFINITY;
+  private persistenceSettlementRetryInFlight = false;
   private readonly matchOutcomes = new Map<string, string>();
   private readonly aiWingmates: boolean;
   private readonly matchIdFactory: () => string;
@@ -605,6 +622,7 @@ export class Room {
   tick(now = this.now()): number[] {
     if (this.disposed) return [];
     this.rollBandwidthWindow(now);
+    this.retryPersistenceSettlement(now);
     if (this.hotArena) {
       if (this.publicAdmissionFailed && now - this.publicAdmissionLastAttemptAt >= 500) {
         this.publishPublicAdmission(this.publicAdmissionOpen, this.publicAdmissionDeadline ?? undefined);
@@ -867,7 +885,7 @@ export class Room {
       playerId: member.playerId,
       reservationPlayerId: member.publicReservationPlayerId,
     }))().catch((error) => {
-      console.error(`[arena ${this.code}] failed to release player ${member.playerId}. ${errorMessage(error)}`);
+      console.error(`[arena ${this.code}] failed to release player ${member.playerId}. ${safeErrorName(error)}`);
     });
   }
 
@@ -895,7 +913,7 @@ export class Room {
       ...(deadline === null ? {} : { closesAt: deadline }),
     }))().catch((error) => {
       if (this.publicAdmissionOpen === open && this.publicAdmissionDeadline === deadline) this.publicAdmissionFailed = true;
-      console.error(`[arena ${this.code}] failed to publish admission=${open}. ${errorMessage(error)}`);
+      console.error(`[arena ${this.code}] failed to publish admission=${open}. ${safeErrorName(error)}`);
     });
   }
 
@@ -932,7 +950,7 @@ export class Room {
 
   private async failPublicStart(error: unknown): Promise<void> {
     const retirementInterruptedStart = error instanceof PublicStartRetiredError;
-    console.error(`[arena ${this.code}] public run ${retirementInterruptedStart ? "was interrupted by retirement" : "failed before live"}; retiring arena. ${errorMessage(error)}`);
+    console.error(`[arena ${this.code}] public run ${retirementInterruptedStart ? "was interrupted by retirement" : "failed before live"}; retiring arena. ${safeErrorName(error)}`);
     const failedMatchId = this.matchId;
     const failedMembers = this.currentRoles.flatMap((role) => {
       if (!role.playerId) return [];
@@ -953,34 +971,31 @@ export class Room {
       : { type: "err", code: "arena_configuration_invalid", msg: "This arena could not start safely. Re-enter quick play." });
     this.broadcastLobby();
     if (!failedMatchId) return;
-    for (const member of failedMembers) {
+    const outcomeInputs = failedMembers.map((member) => {
       this.matchOutcomes.set(member.playerId, "disconnected");
-      const recovery = this.persistence.recordOutcome({
+      return {
         matchId: failedMatchId,
         playerId: member.persistencePlayerId,
-        outcome: "disconnected",
-      }).catch((outcomeError) => {
-        this.runPersistenceFailed = true;
-        console.warn(`[persistence] failed to settle aborted start for ${member.playerId}. ${errorMessage(outcomeError)}`);
-      });
-      this.trackPersistence(recovery);
-    }
-    const pending = [...this.pendingPersistence];
-    const recovery = Promise.allSettled(pending).then(async () => {
-      await this.persistence.finishMatch({
-        matchId: failedMatchId,
-        endedAt: new Date(endedAt),
-        summary: {
-          reason: retirementInterruptedStart ? "retirement_before_live" : "configuration_failure",
-          participantCount: failedMembers.length,
-          outcomes: failedMembers.length > 0 ? { disconnected: failedMembers.length } : {},
-        },
-      });
-    }).catch((finishError) => {
-      console.warn(`[persistence] failed to close aborted match ${failedMatchId}; arena will still retire. ${errorMessage(finishError)}`);
-    }).finally(() => {
-      this.persistenceSettled = true;
+        outcome: "disconnected" as const,
+      };
     });
+    const finishInput = {
+      matchId: failedMatchId,
+      endedAt: new Date(endedAt),
+      summary: {
+        reason: retirementInterruptedStart ? "retirement_before_live" : "configuration_failure",
+        participantCount: failedMembers.length,
+        outcomes: failedMembers.length > 0 ? { disconnected: failedMembers.length } : {},
+      },
+    };
+    const recovery = this.settlePersistenceBoundary({
+      matchId: failedMatchId,
+      settle: async () => {
+        await Promise.all(outcomeInputs.map((input) => this.persistence.recordOutcome(input)));
+        await this.persistence.finishMatch(finishInput);
+      },
+      failureMessage: `[persistence] failed to settle aborted match ${failedMatchId}; arena remains unsafe to terminate.`,
+    }).then(() => undefined);
     this.endPromise = recovery;
     await recovery;
   }
@@ -1063,7 +1078,7 @@ export class Room {
         this.simulation = null;
         return;
       }
-      console.warn(`[persistence] failed to start match ${this.matchId}. ${errorMessage(error)}`);
+      console.warn(`[persistence] failed to start match ${this.matchId}. ${safeErrorName(error)}`);
       if (this.persistence.live) {
         simulation.dispose();
         this.simulation = null;
@@ -1410,28 +1425,27 @@ export class Room {
     this.phase = "ended";
     this.endedAt = this.now();
     this.persistenceSettled = false;
+    const completedMatchId = this.matchId;
     const pending = [...this.pendingPersistence];
     this.endPromise = Promise.allSettled(pending).then(async () => {
       this.broadcast({ type: "matchEnd", reason });
-      if (!this.matchId) return;
-      try {
-        await this.persistence.finishMatch({
-          matchId: this.matchId,
-          endedAt: new Date(this.endedAt ?? this.now()),
-          summary: {
-            reason,
-            participantCount: this.matchOutcomes.size,
-            outcomes: [...this.matchOutcomes.values()].reduce<Record<string, number>>((counts, outcome) => {
-              counts[outcome] = (counts[outcome] ?? 0) + 1;
-              return counts;
-            }, {}),
-          },
-        });
-      } catch {
-        console.warn(`[persistence] failed to finish match ${this.matchId}; teardown continued.`);
+      if (!completedMatchId) {
+        this.persistenceSettled = true;
+        return;
       }
-    }).finally(() => {
-      this.persistenceSettled = true;
+      const finishInput = {
+        matchId: completedMatchId,
+        endedAt: new Date(this.endedAt ?? this.now()),
+        summary: this.aggregateMatchSummary(reason),
+      };
+      await this.settlePersistenceBoundary({
+        matchId: completedMatchId,
+        settle: async () => {
+          await this.settlePendingPersistenceOperations(completedMatchId);
+          await this.persistence.finishMatch(finishInput);
+        },
+        failureMessage: `[persistence] failed to finish match ${completedMatchId}; room remains unsafe to terminate.`,
+      });
     });
   }
 
@@ -1452,27 +1466,27 @@ export class Room {
     this.endPromise = Promise.allSettled(pending).then(async () => {
       if (this.runPersistenceFailed) finishFailed = true;
       this.broadcast({ type: "matchEnd", reason });
-      if (!completedMatchId) return;
-      try {
-        await this.persistence.finishMatch({
-          matchId: completedMatchId,
-          endedAt: new Date(this.endedAt ?? this.now()),
-          summary: {
-            reason,
-            participantCount: this.matchOutcomes.size,
-            outcomes: [...this.matchOutcomes.values()].reduce<Record<string, number>>((counts, outcome) => {
-              counts[outcome] = (counts[outcome] ?? 0) + 1;
-              return counts;
-            }, {}),
-          },
-        });
-      } catch (error) {
+      if (!completedMatchId) {
+        this.persistenceSettled = true;
+        return;
+      }
+      const settled = await this.settlePersistenceBoundary({
+        matchId: completedMatchId,
+        settle: async () => {
+          await this.settlePendingPersistenceOperations(completedMatchId);
+          await this.persistence.finishMatch({
+            matchId: completedMatchId,
+            endedAt: new Date(this.endedAt ?? this.now()),
+            summary: this.aggregateMatchSummary(reason),
+          });
+        },
+        failureMessage: `[persistence] failed to finish match ${completedMatchId}; arena remains unsafe to terminate.`,
+      });
+      if (!settled) {
         finishFailed = true;
-        console.warn(`[persistence] failed to finish match ${completedMatchId}; arena will retire between runs. ${errorMessage(error)}`);
         this.broadcast({ type: "err", code: "storage_unavailable", msg: "This run could not be closed safely. Re-enter quick play." });
       }
     }).finally(() => {
-      this.persistenceSettled = true;
       this.runCount += 1;
       this.simulation?.dispose();
       this.simulation = null;
@@ -1629,8 +1643,19 @@ export class Room {
     member.activeKillCamId = null;
     if (member.persistenceEligible) this.matchOutcomes.set(member.playerId, message.reason);
     const persistenceRequired = Boolean(this.matchId && member.persistenceEligible && this.persistence.live);
-    const persistenceWrite = this.persistRunOutcome(member, message, cargo)
+    const persistenceMatchId = this.matchId;
+    const persistenceMessage = {
+      ...message,
+      keptItems: [...message.keptItems],
+      lostItems: [...message.lostItems],
+      learnedBlueprints: [...message.learnedBlueprints],
+    };
+    const persistenceCargo = [...cargo];
+    const operationKey = persistenceMatchId ? `${persistenceMatchId}:${member.persistencePlayerId}` : null;
+    const persist = () => this.persistRunOutcome(member, persistenceMessage, persistenceCargo, persistenceMatchId);
+    const persistenceWrite = persist()
       .then((manifest) => {
+        if (operationKey) this.pendingPersistenceOperations.delete(operationKey);
         message.keptItems = manifest.keptItems;
         message.lostItems = manifest.lostItems;
         message.learnedBlueprints = manifest.learnedBlueprints;
@@ -1640,7 +1665,14 @@ export class Room {
       })
       .catch((error) => {
         this.runPersistenceFailed = true;
-        console.warn(`[persistence] failed to record ${message.reason} for ${member.playerId}; extracted items were not credited. ${errorMessage(error)}`);
+        if (persistenceMatchId && operationKey && member.persistenceEligible) {
+          this.pendingPersistenceOperations.set(operationKey, {
+            key: operationKey,
+            matchId: persistenceMatchId,
+            settle: async () => { await persist(); },
+          });
+        }
+        console.warn(`[persistence] failed to record ${message.reason} for ${member.playerId}; extracted items were not credited. ${safeErrorName(error)}`);
         message.lostItems = [...message.lostItems, ...message.keptItems];
         message.keptItems = [];
         message.learnedBlueprints = [];
@@ -1713,7 +1745,12 @@ export class Room {
     this.completeIfNoActiveMembers();
   }
 
-  private async persistRunOutcome(member: Member, message: Extract<ServerMessage, { type: "runOver" }>, cargo: import("@dotbot/game/types").Item[]): Promise<RunManifest> {
+  private async persistRunOutcome(
+    member: Member,
+    message: Extract<ServerMessage, { type: "runOver" }>,
+    cargo: import("@dotbot/game/types").Item[],
+    matchId: string | null = this.matchId,
+  ): Promise<RunManifest> {
     const unchanged: RunManifest = {
       reason: message.reason,
       keptItems: message.keptItems,
@@ -1722,7 +1759,7 @@ export class Room {
       cargo,
       contractCompletions: message.contractCompletions ?? [],
     };
-    if (!this.matchId || !member.persistenceEligible) return unchanged;
+    if (!matchId || !member.persistenceEligible) return unchanged;
     if (message.reason === "extracted") {
       const manifest: RunManifest = {
         reason: message.reason,
@@ -1733,7 +1770,7 @@ export class Room {
         contractCompletions: [],
       };
       const result = await this.persistence.recordExtraction({
-        matchId: this.matchId,
+        matchId,
         playerId: member.persistencePlayerId,
         manifest,
         blueprintLearningThreshold: this.config.blueprintLearningThreshold,
@@ -1741,7 +1778,7 @@ export class Room {
       member.persistedOutcome = message.reason;
       return result.manifest;
     }
-    await this.persistence.recordOutcome({ matchId: this.matchId, playerId: member.persistencePlayerId, outcome: message.reason });
+    await this.persistence.recordOutcome({ matchId, playerId: member.persistencePlayerId, outcome: message.reason });
     member.persistedOutcome = message.reason;
     return unchanged;
   }
@@ -1750,15 +1787,27 @@ export class Room {
     if (!this.matchId || !member.persistenceEligible || member.persistedOutcome || member.runOver) return;
     member.persistenceEligible = false;
     this.matchOutcomes.set(member.playerId, "disconnected");
-    const write = this.persistence.recordOutcome({
+    const input = {
       matchId: this.matchId,
       playerId: member.persistencePlayerId,
-      outcome: "disconnected",
-    }).then(() => {
+      outcome: "disconnected" as const,
+    };
+    const operationKey = `${input.matchId}:${input.playerId}`;
+    const settle = () => this.persistence.recordOutcome(input);
+    const write = settle().then(() => {
+      this.pendingPersistenceOperations.delete(operationKey);
       member.persistedOutcome = "disconnected";
     }).catch((error) => {
       this.runPersistenceFailed = true;
-      console.warn(`[persistence] failed to record disconnect for ${member.playerId}; run continued. ${errorMessage(error)}`);
+      this.pendingPersistenceOperations.set(operationKey, {
+        key: operationKey,
+        matchId: input.matchId,
+        settle: async () => {
+          await settle();
+          member.persistedOutcome = "disconnected";
+        },
+      });
+      console.warn(`[persistence] failed to record disconnect for ${member.playerId}; run continued. ${safeErrorName(error)}`);
     });
     this.trackPersistence(write);
   }
@@ -1769,6 +1818,59 @@ export class Room {
       this.pendingPersistence.delete(write);
       after?.();
     });
+  }
+
+  private aggregateMatchSummary(reason: string) {
+    return {
+      reason,
+      participantCount: this.matchOutcomes.size,
+      outcomes: [...this.matchOutcomes.values()].reduce<Record<string, number>>((counts, outcome) => {
+        counts[outcome] = (counts[outcome] ?? 0) + 1;
+        return counts;
+      }, {}),
+    };
+  }
+
+  private async settlePersistenceBoundary(settlement: PendingPersistenceSettlement): Promise<boolean> {
+    try {
+      await settlement.settle();
+      if (this.pendingPersistenceSettlement?.matchId === settlement.matchId) this.pendingPersistenceSettlement = null;
+      for (const [key, operation] of this.pendingPersistenceOperations) {
+        if (operation.matchId === settlement.matchId) this.pendingPersistenceOperations.delete(key);
+      }
+      this.persistenceSettlementRetryAt = Number.POSITIVE_INFINITY;
+      this.persistenceSettled = true;
+      return true;
+    } catch (error) {
+      this.runPersistenceFailed = true;
+      this.pendingPersistenceSettlement = settlement;
+      this.persistenceSettlementRetryAt = this.now() + persistenceSettlementRetryMs;
+      this.persistenceSettled = false;
+      console.warn(`${settlement.failureMessage} ${safeErrorName(error)}`);
+      return false;
+    }
+  }
+
+  private retryPersistenceSettlement(now: number): void {
+    if (!this.pendingPersistenceSettlement || this.persistenceSettlementRetryInFlight || now < this.persistenceSettlementRetryAt) return;
+    const settlement = this.pendingPersistenceSettlement;
+    this.persistenceSettlementRetryInFlight = true;
+    this.persistenceSettlementRetryAt = Number.POSITIVE_INFINITY;
+    this.endPromise = this.settlePersistenceBoundary(settlement)
+      .then(() => undefined)
+      .finally(() => {
+        this.persistenceSettlementRetryInFlight = false;
+      });
+  }
+
+  private async settlePendingPersistenceOperations(matchId: string): Promise<void> {
+    const operations = [...this.pendingPersistenceOperations.values()].filter((operation) => operation.matchId === matchId);
+    await Promise.all(operations.map(async (operation) => {
+      await operation.settle();
+      if (this.pendingPersistenceOperations.get(operation.key) === operation) {
+        this.pendingPersistenceOperations.delete(operation.key);
+      }
+    }));
   }
 }
 
@@ -1805,8 +1907,9 @@ function sanitizeName(name: string): string {
   return name.trim().replace(/\s+/g, " ").slice(0, 24) || "Player";
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function safeErrorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : "";
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name) ? name : "UnknownError";
 }
 
 function normalizeHotArenaOptions(options: HotArenaOptions): Required<HotArenaOptions> {

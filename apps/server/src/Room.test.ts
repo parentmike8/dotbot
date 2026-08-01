@@ -694,10 +694,13 @@ describe("Room contract manifest", () => {
   it("reports a failed extraction save and does not become terminable until persistence settles", async () => {
     let releaseFinish: (() => void) | undefined;
     let finishStarted = false;
+    let extractionAttempts = 0;
     class FailingPersistence extends NoopPersistence {
       override readonly live = true;
-      override async recordExtraction(): Promise<never> {
-        throw new Error("relay unavailable");
+      override async recordExtraction(input: Parameters<NoopPersistence["recordExtraction"]>[0]) {
+        extractionAttempts += 1;
+        if (extractionAttempts === 1) throw new Error("relay unavailable");
+        return super.recordExtraction(input);
       }
       override async finishMatch(): Promise<void> {
         finishStarted = true;
@@ -740,6 +743,7 @@ describe("Room contract manifest", () => {
     await room.waitForPersistence();
     expect(room.safeToTerminate).toBe(true);
     expect(room.readyForDisposal).toBe(true);
+    expect(extractionAttempts).toBe(2);
     room.dispose();
   });
 });

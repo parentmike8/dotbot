@@ -3,6 +3,8 @@ import type { BaseLayout, BaseObjectKind, BaseShellId, ContractDefinition, Item,
 import type { Recipe } from "@dotbot/game/content/recipes";
 import type { BaseTutorialAction, BaseTutorialState } from "@dotbot/game/baseTutorial";
 
+export class PersistenceConflictError extends Error {}
+
 export type PlayerIdentity = {
   /** Cloud SQL authority key. Never serialize this value to a public client. */
   playerId: string;

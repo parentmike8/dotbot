@@ -19,6 +19,7 @@ export type {
   VerifiedExternalIdentity,
 } from "./Persistence";
 export { NoopPersistence } from "./NoopPersistence";
+export { PersistenceConflictError } from "./Persistence";
 
 export async function createPersistence(databaseUrl: string | null | undefined = process.env.DATABASE_URL): Promise<Persistence> {
   if (!databaseUrl) {

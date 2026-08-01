@@ -80,6 +80,16 @@ describe("matchmaker endpoint helpers", () => {
     expect(JSON.parse(result.body ?? "{}")).toEqual({ error: "Route not found." });
   });
 
+  it("does not allocate legacy sessions while the public process mode is active", async () => {
+    process.env.DOTBOT_PUBLIC_QUICK_PLAY = "true";
+    process.env.QUICK_PLAY_BUILD_ID = "web-42";
+    for (const routeKey of ["POST /rooms", "POST /rooms/{roomCode}/join"] as const) {
+      const result = await handler({ routeKey } as APIGatewayProxyEventV2) as { statusCode: number; body?: string };
+      expect(result.statusCode).toBe(404);
+      expect(JSON.parse(result.body ?? "{}")).toEqual({ error: "Route not found." });
+    }
+  });
+
   it("accepts only bounded availability windows for the exact public arena metadata", () => {
     const now = 10_000;
     expect(parseArenaAdmissionUpdate({
