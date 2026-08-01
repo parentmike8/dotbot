@@ -42,9 +42,9 @@ Names should be short, obvious, and practical. Do not invent lore terms when the
 Use:
 
 - `Core`
-- `Core Armour`
-- `Plate Carrier`
+- `Rare Core`
 - `Plate`
+- `Plate Type`
 - `Power Dot`
 - `Armour Dot`
 - `Blueprint Dot`
@@ -89,61 +89,54 @@ The default setup must remain viable through skill and teamwork. Rare equipment 
 
 ## 4. Equipment
 
-### 4.1 Core Armour
+### 4.1 Cores
 
-**CURRENT TEST DIRECTION — REQUIRES ROOM APPROVAL**
+**DECIDED DIRECTION; DETAILS OPEN**
 
-`Core Armour` is the working name.
+The standard black Core is always available. Rare Cores are physical,
+lootable, and losable equipment rather than armour wrapped around another Core.
 
-- The standard black Core always remains underneath it.
-- Core Armour gives a strong, noticeable ability or behavior.
+- A rare Core can change movement, Plate count, and other strongly readable
+  game dynamics.
 - Every strong benefit needs a visible weakness or clear counter.
 - Do not use hidden percentage bonuses.
-- Core Armour is physical loot.
-- It can be found, carried, extracted, stored, equipped, looted, and lost.
-- A player can carry more than one because extra Core Armour is simply loot.
-- Individual pieces should keep their history, including where they were found and who previously owned them.
-- Losing Core Armour returns the player to the standard black Core.
+- Rare Cores can be found, carried, extracted, stored, equipped, looted, and
+  lost.
+- A player can carry more than one because extra Cores are ordinary physical
+  loot.
+- Individual rare Cores should keep their history, including where they were
+  found and who previously owned them.
+- Losing a rare Core returns the player to the standard black Core.
 
-Possible Core Armour behavior families remain ideas, not approved designs:
+The first content pass should remain small. Current tradeoff directions include
+a lighter/faster Core with fewer Plates and a heavier/slower Core with more
+Plates. Exact values and additional families wait for later design.
 
-- changed Dash behavior;
-- changed contact or force behavior;
-- conditional Plate behavior;
-- changed Dot capture or carrying behavior;
-- ambush or concealment behavior;
-- squad-support behavior;
-- high-risk, high-reward behavior.
+### 4.2 Plate types
 
-### 4.2 Plate Carrier
+**DECIDED DIRECTION; ITEM SEMANTICS OPEN**
 
-**DECIDED CATEGORY; DETAILS OPEN**
+There is no separate Plate Carrier equipment category. The equipped Core
+determines Plate count and any changed arrangement. A Plate type gives the
+active Plates a readable utility behavior without replacing relationship
+color.
 
-The equipment model should use `Plate Carrier` instead of Shield Frame.
+Initial directions:
 
-The Plate Carrier determines how Plates are arranged around the DotBot. Possible examples include:
+- `Stealth Plates` prevent radar detection and suppress noise markers.
+- `Tech Plates` shorten revive and body-loot interactions.
+- `Blast Plates` protect against mine damage.
 
-- the default three balanced Plates;
-- two larger Plates;
-- four smaller Plates;
-- stronger front coverage with an exposed rear;
-- narrow mobile coverage;
-- an asymmetrical arrangement.
-
-Rules:
-
-- the default three-Plate Carrier is always available;
-- other Plate Carriers should be physical equipment;
-- their shape and weakness must be readable during combat;
-- losing one returns the player to the default three-Plate Carrier;
-- level does not prevent a lower-level player from using a looted Plate Carrier.
+Their line, seam, or surface treatment may differ slightly so opponents can
+learn what they are, but team/rival color remains authoritative.
 
 Still to decide:
 
-- whether complete Plate Carriers can be found or must be built;
-- whether their Blueprints are learned permanently;
-- whether they change only Plate positions or also have simple bounded behavior;
-- their fabrication cost.
+- whether a Plate type is physical, lootable, and losable equipment or a
+  persistent fabricated selection;
+- whether one equipped type always applies to every active Plate;
+- exact counters, costs, and strength;
+- Blueprint and fabrication rules.
 
 ### 4.3 Plates
 
@@ -151,7 +144,9 @@ Still to decide:
 
 `Plates` are the visible defensive pieces around the DotBot. The existing three shields become the default three Plates.
 
-Plates are not separate contraband equipment. The Plate Carrier is the equipment; Plates are its active protection during a run.
+Plates are the active protection supplied by the equipped Core. The Core
+determines their count; the equipped Plate type determines any special utility
+behavior.
 
 **What puts a bot down: a hit on the Core.**
 
@@ -171,7 +166,7 @@ game has to a headshot.
 This is what makes position a defence rather than a decoration. Plates re-seat
 best-first after every hit, so the strongest always leads the direction of travel:
 face a threat and your good Plate eats the hit, run from one and you show it the
-side you cannot afford to show. Head-on, the default carrier takes four hits. From
+side you cannot afford to show. Head-on, the default Core takes four hits. From
 behind a broken arc, two.
 
 *Was:* losing your last Plate was itself the down, which made the third Plate a
@@ -209,12 +204,14 @@ No other downed-player actions are needed.
 
 Looting can take:
 
-- equipped Core Armour;
-- equipped Plate Carrier;
-- carried Core Armour or Plate Carriers;
+- an equipped rare Core;
+- carried rare Cores;
+- equipped or carried Plate gear if Plate types are ultimately physical items;
 - carried Dots and Blueprint Dots.
 
-Looted Core Armour and Plate Carriers are carried as loot. The downed player still has their standard black Core and default three-Plate Carrier available if revived.
+Looted equipment is carried rather than automatically equipped. The downed
+player still has the standard black Core and ordinary Plates available if
+revived.
 
 **Nothing can be eliminated.** There is no finishing move and no third verb. A downed
 bot stays down until somebody revives it, which is what makes the choices below
@@ -257,10 +254,11 @@ alive the camera returns to your own body, and you can plea from either view. Th
 is the DMZ shape and it is deliberate: going down must never be the end of a
 session, only the end of your agency in it until somebody acts.
 
-Squads load in with three and may reach four, by reviving a downed bot from another
-squad that has pleaded — that bot joins the reviver's squad. *Intended, not yet
-built:* `squadId` is fixed at spawn today, with no cap and no mid-run path to change
-it.
+Six squads load in with three members each; humans or player-role AI fill all 18
+places. A squad may reach four only by reviving a downed bot from another squad
+that has pleaded — that bot joins the reviver's squad for the run. The
+simulation path exists; public quick-play integration and live multiplayer proof
+remain required.
 
 ---
 
@@ -300,14 +298,19 @@ Level must not directly increase:
 - carrying capacity;
 - resistance;
 - extraction speed;
-- Core Armour strength;
-- Plate Carrier strength.
+- rare Core strength;
+- Plate-type strength.
 
-### 5.3 Locked doors
+### 5.3 Level-gated interactions and locked doors
 
 **DECIDED DIRECTION**
 
 Important locked doors have a grey Interaction Dot.
+
+Level requirements are a generic capability of grey Interaction Dots, not a
+door-only subsystem. Doors are the first obvious use; later authored objects and
+world functions may use the same visible requirement, channel, authority, and
+persistence rules.
 
 Indoor doors use a simple sliding-door format. Exterior entrances are open wall gaps. Public automatic doors can open on proximity. Secured doors still use the Interaction Dot flow below.
 
@@ -331,13 +334,16 @@ Do not use abstract "access bands." Give important doors direct Level requiremen
 
 ### 6.1 Run length
 
-**DECIDED DIRECTION**
+**WORKING LAUNCH TARGET; TUNABLE**
 
-A run lasts no more than 20 minutes.
+The content-neutral run scaffold uses an eight-minute run and a final 90-second
+extraction phase. Both values remain configuration, to be tuned against the
+flagship city's real travel distances.
 
-- The final three minutes are a clear extraction countdown.
+- The final 90 seconds are a clear extraction countdown.
 - The countdown should strongly encourage players to leave.
-- At 20:00 the run ends.
+- All but one ordinary extraction closes for the finale.
+- At the configured end time the run ends.
 - The exact world event or mechanical reason for the ending can be decided later.
 - The presentation should remain direct and understandable, not depend on lore.
 
@@ -420,35 +426,38 @@ Keep the first list small and name each place by what it is.
 
 The city should support:
 
-- rooms where rare Core Armour can be found;
+- rooms where rare Cores can be found;
 - strong AI guarding valuable areas;
-- places where Plate Carrier Blueprints can be found;
+- places where Plate-type Blueprints can be found, if Plate types use
+  Blueprints;
 - hidden rooms;
 - Level-locked rooms;
 - unlockable extraction points;
 - useful shortcuts;
 - Assembly Stations.
 
-Do not require two players to open a progression door or obtain strong Core Armour. Squadmates can help, but solo progression must remain possible.
+Do not require two players to open a progression door or obtain a rare Core.
+Squadmates can help, but solo progression must remain possible.
 
 Simple powered or unpowered versions of a room may be useful later, but a general environmental-state system is not required for the first room or proof district.
 
 ---
 
-## 9. Finding Core Armour
+## 9. Finding rare Cores
 
 ### 9.1 Hybrid model
 
 **DECIDED DIRECTION**
 
-Core Armour can enter the game in several simple ways:
+Rare Cores can enter the game in several simple ways:
 
 - found as a complete rare item in a specific room;
 - looted from another player;
 - looted from a strong AI wearing or guarding it;
 - built at an Assembly Station using specific Dots.
 
-The rarest Core Armour should usually be a complete physical item found in a memorable place or taken from a strong opponent.
+The rarest Cores should usually be complete physical items found in a memorable
+place or taken from a strong opponent.
 
 Assembly Stations provide another path without adding generic crafting materials. Their recipes should use specific Dots players already understand.
 
@@ -456,7 +465,7 @@ Assembly Stations provide another path without adding generic crafting materials
 
 **DIRECTIONAL; COLOR OPEN**
 
-The strongest Core Armour should use the rarest visual treatment.
+The strongest Cores should use the rarest visual treatment.
 
 A rare Core item could appear as a special colored Dot or Core-shaped item in the room. Gold is one possibility, but the final rare colors have not been chosen.
 
@@ -466,9 +475,10 @@ Do not call the location a Core chamber. Use the real room name or simply `Core 
 
 **DECIDED**
 
-A found Core Armour is carried as loot. It is not automatically equipped.
+A found rare Core is carried as loot. It is not automatically equipped.
 
-A player may carry more than one if they have space. Extracted Core Armour enters the persistent collection and keeps its history.
+A player may carry more than one if they have space. Extracted rare Cores enter
+the persistent collection and keep their history.
 
 ---
 
@@ -628,7 +638,14 @@ F1 through F4 must feel as authored and operational as Ground. Assembly, Storage
 
 Mercer Parts also serves as the first building-wide authoring gate. Every floor must pass the shared `auditBuildingFloorQuality` check: no overlapping solid fixtures, no open-looking fixture gaps narrower than the 64-unit comfortable aisle (unless joined within a 16-unit seam), no redundant long fixture banks compressed front-to-back, no meaningful disconnected walkable pockets, and at least one full-size side exit from every active stair half. The seam allowance only joins modules that visibly extend one bank; it cannot excuse a counter placed directly in front of another counter. Crates and other solid anchors use dark closed outlines; pale linework remains reserved for passable floor detail. This check is required for later flagship buildings so manual review can focus on feel and intentionality instead of rediscovering basic collision errors fixture by fixture.
 
-Two loot Dots per floor currently use existing power-up items as gameplay proxies. They test route choice and encounter placement; they do not claim that final Core Armour, Blueprint Dots, or fabrication are implemented. F1 teaches the alternating stair route without an authored ambush. One defender starts on F2, one on F3, and two guard the F4 Core Bay. They share one squad so they hold the authored encounter instead of fighting each other before the player arrives, and they may pursue stair noise between floors. No Level lock or squad-only requirement is part of this test.
+Two loot Dots per floor currently use existing power-up items as gameplay
+proxies. They test route choice and encounter placement; they do not claim that
+final rare Cores, Plate types, Blueprint Dots, or fabrication are implemented.
+F1 teaches the alternating stair route without an authored ambush. One defender
+starts on F2, one on F3, and two guard the F4 Core Bay. They share one squad so
+they hold the authored encounter instead of fighting each other before the
+player arrives, and they may pursue stair noise between floors. No Level lock
+or squad-only requirement is part of this test.
 
 The building passes only after a DotBot can traverse the full route in both directions at normal play speed, all stair entries, loot Dots, and AI spawns pass full-radius reachability checks, and every floor is reviewed in Map Studio. The reusable agent implementation standard is `docs/map-building-contract.md`.
 
@@ -642,14 +659,14 @@ Once the room standard is approved, the proof district should test:
 - several room and building types using the approved detail language;
 - one persistent Contract path;
 - one Level-locked valuable room;
-- one rare Core Armour location;
+- one rare Core location;
 - one strong AI encounter;
 - one hidden room;
 - one shortcut;
 - one Assembly Station location, even if assembly is not built yet;
 - minimal insertion and extraction points;
 - a meaningful trip back after finding rare equipment;
-- the 20-minute run and final three-minute countdown.
+- the configured run clock and final extraction-collapse phase.
 
 The current four-building Downtown remains a prototype and systems test map. The flagship city starts fresh.
 
@@ -675,25 +692,29 @@ The current four-building Downtown remains a prototype and systems test map. The
 | All intended room areas, including behind the counter, are accessible | Decided |
 | Enhanced plan view instead of full isometric or angled walls | Recommended direction |
 | Standard black Core with no ability | Decided |
-| Default three-Plate Carrier | Decided |
-| Core Armour as rare physical loot | Decided direction |
-| Plate Carrier as the shield-geometry equipment | Decided category |
+| Default black Core with three ordinary Plates | Decided |
+| Rare Cores as physical, lootable, losable equipment | Decided direction |
+| Rare Cores may change movement and Plate count | Decided direction |
+| Plate types add readable utility behavior without changing relationship color | Decided direction |
+| No separate Plate Carrier equipment category | Decided |
 | No generic Dots | Decided |
 | Free revives | Decided |
 | Downed choices are Loot or Revive | Decided direction |
-| Looted Core Armour and Plate Carriers are carried | Decided |
+| Six squads of three; humans or player-role AI fill all 18 places | Decided launch direction |
+| Squads may recruit a pleading fourth member for the run | Decided |
+| Looted rare Cores are carried rather than auto-equipped | Decided |
 | Extra equipment can be carried as normal loot | Decided |
 | Equipment keeps ownership and extraction history | Decided |
-| Core Armour acquisition uses a hybrid model | Decided direction |
+| Rare Core acquisition uses a hybrid model | Decided direction |
 | Contracts are persistent and authored | Decided |
 | No daily Contracts for now | Decided |
 | Contract progress raises Level | Decided direction |
 | Level unlocks places, never combat stats | Decided |
 | Mixed-Level squads progress together | Decided |
 | An opened Level door can be used by other players | Decided |
-| No two-player requirement for progression or strong Core Armour | Decided |
-| Maximum 20-minute runs | Decided direction |
-| Final three-minute extraction countdown | Decided direction |
+| No two-player requirement for progression or rare Cores | Decided |
+| Eight-minute run scaffold, tunable against the flagship city | Working launch target |
+| Final 90-second extraction phase with one surviving ordinary exit | Working launch target |
 | Few insertion and extraction points | Decided direction |
 
 ---
@@ -702,13 +723,13 @@ The current four-building Downtown remains a prototype and systems test map. The
 
 These do not block the single-room visual test:
 
-- the final rare Core Armour colors;
-- exact Core Armour abilities;
-- exact Plate Carrier set;
+- the final rare Core colors;
+- exact rare Core abilities and values;
+- exact Plate-type set and item semantics;
 - Armour Dot behavior;
-- Plate Carrier Blueprint and fabrication rules;
-- Core Armour Assembly Station recipes;
-- the exact end-of-run event at 20 minutes;
+- Plate-type Blueprint and fabrication rules;
+- rare Core Assembly Station recipes;
+- the exact end-of-run event at the configured deadline;
 - final insertion and extraction counts;
 - exact Level requirements for city doors;
 - the detailed loot interface;
