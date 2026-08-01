@@ -7,6 +7,7 @@ class RelayTestPersistence extends NoopPersistence {
   override readonly live = true;
   readonly claims = new Set<string>();
   readonly outcomes: unknown[] = [];
+  readonly starts: Array<Parameters<NoopPersistence["startMatch"]>[0]> = [];
 
   override async claimRelayRequest(requestId: string): Promise<boolean> {
     if (this.claims.has(requestId)) return false;
@@ -16,6 +17,11 @@ class RelayTestPersistence extends NoopPersistence {
 
   override async recordOutcome(input: Parameters<NoopPersistence["recordOutcome"]>[0]): Promise<void> {
     this.outcomes.push(input);
+  }
+
+  override async startMatch(input: Parameters<NoopPersistence["startMatch"]>[0]) {
+    this.starts.push(input);
+    return super.startMatch(input);
   }
 }
 
@@ -105,6 +111,44 @@ describe("authoritative persistence relay", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json<{ error: string }>().error).toBe("Invalid extraction payload.");
+    await app.close();
+  });
+
+  it("accepts the complete 18-human public roster and rejects a nineteenth participant", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.DOTBOT_RELAY_SECRET = relaySecret;
+    const persistence = new RelayTestPersistence();
+    const { app } = await createServer({ persistence });
+    const playerIds = Array.from({ length: 19 }, () => randomUUID());
+    const body = {
+      operation: "startMatch",
+      args: {
+        matchId: randomUUID(),
+        roomCode: "FULL",
+        mapId: "downtown",
+        startedAt: new Date().toISOString(),
+        playerIds: playerIds.slice(0, 18),
+      },
+    };
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/internal/game-persistence",
+      headers: signedHeaders(body),
+      payload: body,
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(persistence.starts[0].playerIds).toEqual(playerIds.slice(0, 18));
+
+    const oversized = { ...body, args: { ...body.args, matchId: randomUUID(), playerIds } };
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/internal/game-persistence",
+      headers: signedHeaders(oversized),
+      payload: oversized,
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(persistence.starts).toHaveLength(1);
     await app.close();
   });
 });

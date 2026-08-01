@@ -8,6 +8,19 @@ import { buildingContaining, buildingOfFloor } from "@dotbot/game/mapModel";
 import { downtownMap } from "@dotbot/game/content/downtown";
 
 describe("Room lobby squads", () => {
+  it("cancels a pending legacy countdown when the rollback room is disposed", async () => {
+    const room = new Room("STOP", { countdownMs: 20, persistence: new NoopPersistence(), aiWingmates: false });
+    room.join(collectingPeer("host").peer, "host-token", "Host", "host", "alpha");
+    room.receive("host", { type: "startMatch" });
+    expect(room.phase).toBe("countdown");
+
+    room.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(room.phase).toBe("countdown");
+    expect((room as unknown as { simulation: unknown }).simulation).toBeNull();
+  });
+
   it("joins and switches capped squads, defaults late joins to the emptiest squad, and locks at host start", async () => {
     const room = new Room("SQAD", { countdownMs: 0, persistence: new NoopPersistence(), aiWingmates: false });
     const peers = Array.from({ length: 4 }, (_, index) => collectingPeer(`squad-peer-${index}`));

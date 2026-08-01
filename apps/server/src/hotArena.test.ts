@@ -3,6 +3,12 @@ import { PUBLIC_EXTRACTION_SQUADS } from "@dotbot/protocol";
 import { assignPublicPlayerRoles } from "./hotArena";
 
 describe("public hot-arena role assignment", () => {
+  it("fills an empty human roster with all 18 explicitly labelled player-role AI", () => {
+    const roles = assignPublicPlayerRoles([], "00000000-0000-4000-8000-000000000000");
+    expect(roles).toHaveLength(18);
+    expect(roles.every((role) => role.controller === "ai" && role.roleId.startsWith("player-ai-"))).toBe(true);
+  });
+
   it("keeps parties together and fills all six squads of three with labelled roles", () => {
     const roles = assignPublicPlayerRoles([
       { playerId: "a", name: "A", partyId: "friends" },

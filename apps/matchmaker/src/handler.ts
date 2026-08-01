@@ -27,6 +27,7 @@ type PublicArenaRecord = RoomRecord & {
   buildId?: string;
   region?: string;
   admissionClosesAt?: number;
+  admissionRevision?: number;
   owner?: string;
 };
 export type QuickPlayTicket = {
@@ -56,7 +57,14 @@ export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Pr
     const route = event.routeKey;
     if (route === "GET /health") {
       const fleetId = process.env.FLEET_ID ?? "";
-      return response(200, { ok: true, fleetConfigured: fleetId.startsWith("fleet-") });
+      return response(200, {
+        ok: true,
+        fleetConfigured: fleetId.startsWith("fleet-"),
+        publicQuickPlayEnabled: isPublicQuickPlayEnabled(),
+      });
+    }
+    if (route === "POST /quick-play" && !isPublicQuickPlayEnabled()) {
+      return response(404, { error: "Route not found." });
     }
     const payload = parseBody(event.body);
     const identity = await authenticate(payload.token);
@@ -81,13 +89,13 @@ async function quickPlay(identity: Identity, payload: Record<string, unknown>): 
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
-  const ticket = normalizeQuickPlayTicket(payload, identity, allowedRegions);
+  const ticket = normalizeQuickPlayTicket(payload, identity, allowedRegions, requiredEnv("QUICK_PLAY_BUILD_ID"));
   const fleetId = requiredEnv("FLEET_ID");
   const tableName = requiredEnv("TABLE_NAME");
   const key = publicArenaKey(ticket);
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    const existing = (await database.send(new GetCommand({ TableName: tableName, Key: { pk: key } }))).Item as PublicArenaRecord | undefined;
+    const existing = (await database.send(new GetCommand({ TableName: tableName, Key: { pk: key }, ConsistentRead: true }))).Item as PublicArenaRecord | undefined;
     if (existing?.status === "active" && existing.gameSessionId && existing.arenaId
       && existing.buildId === ticket.buildId && existing.region === ticket.region
       && (existing.admissionClosesAt ?? 0) > Date.now()) {
@@ -100,12 +108,14 @@ async function quickPlay(identity: Identity, payload: Record<string, unknown>): 
           key,
           existing.gameSessionId,
           existing.arenaId,
+          existing.admissionClosesAt!,
+          existing.admissionRevision,
         ))).catch(() => undefined);
       }
     }
 
     const owner = randomUUID();
-    const expiresAt = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
+    const expiresAt = Math.floor(Date.now() / 1000) + 2 * 60;
     try {
       await database.send(new PutCommand({
         TableName: tableName,
@@ -136,22 +146,28 @@ async function quickPlay(identity: Identity, payload: Record<string, unknown>): 
       }));
       gameSessionId = created.GameSession?.GameSessionId;
       if (!gameSessionId) throw new Error("GameLift returned no game session id.");
+      // Reserve the creator before publishing the arena. Otherwise another
+      // request can successfully join the just-published session and then be
+      // stranded if the creator's own reservation fails and cleanup
+      // terminates what has already become shared capacity.
+      const creatorAllocation = await allocatePublicPlayer(gameSessionId, arenaId, identity, ticket);
       const admissionClosesAt = Date.now() + 6_000;
       await database.send(new UpdateCommand({
         TableName: tableName,
         Key: { pk: key },
-        UpdateExpression: "SET gameSessionId = :session, arenaId = :arena, admissionClosesAt = :closes, #status = :active",
+        UpdateExpression: "SET gameSessionId = :session, arenaId = :arena, admissionClosesAt = :closes, expiresAt = :expires, #status = :active REMOVE #owner",
         ConditionExpression: "owner = :owner",
-        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeNames: { "#status": "status", "#owner": "owner" },
         ExpressionAttributeValues: {
           ":session": gameSessionId,
           ":arena": arenaId,
           ":closes": admissionClosesAt,
+          ":expires": Math.floor(Date.now() / 1000) + 6 * 60 * 60,
           ":active": "active",
           ":owner": owner,
         },
       }));
-      return await allocatePublicPlayer(gameSessionId, arenaId, identity, ticket);
+      return creatorAllocation;
     } catch (error) {
       await database.send(new DeleteCommand({
         TableName: tableName,
@@ -197,10 +213,18 @@ async function allocatePublicPlayer(gameSessionId: string, arenaId: string, iden
   };
 }
 
-export function normalizeQuickPlayTicket(payload: Record<string, unknown>, identity: Identity, allowedRegions: readonly string[]): QuickPlayTicket {
+export function normalizeQuickPlayTicket(
+  payload: Record<string, unknown>,
+  identity: Identity,
+  allowedRegions: readonly string[],
+  expectedBuildId: string,
+): QuickPlayTicket {
   const buildId = typeof payload.buildId === "string" ? payload.buildId.trim() : "";
   const partyId = identity.partyId?.trim() || `solo-${identity.playerId}`;
-  if (!safeMetadata(buildId, 64) || !safeMetadata(partyId, 128)) throw new MatchmakerError(400, "Quick-play build or party metadata is invalid.");
+  if (expectedBuildId.toLowerCase() === "disabled" || !safeMetadata(expectedBuildId, 64)
+    || buildId !== expectedBuildId || !safeMetadata(partyId, 128)) {
+    throw new MatchmakerError(400, "Quick-play build or party metadata is invalid.");
+  }
   const latencies = payload.latencies;
   if (!latencies || typeof latencies !== "object" || Array.isArray(latencies)) throw new MatchmakerError(400, "Regional latency measurements are required.");
   const candidates = allowedRegions.map((candidate) => ({
@@ -221,6 +245,13 @@ export function normalizeQuickPlayTicket(payload: Record<string, unknown>, ident
   };
 }
 
+export function isPublicQuickPlayEnabled(): boolean {
+  const buildId = process.env.QUICK_PLAY_BUILD_ID?.trim() ?? "";
+  return process.env.DOTBOT_PUBLIC_QUICK_PLAY === "true"
+    && buildId.toLowerCase() !== "disabled"
+    && safeMetadata(buildId, 64);
+}
+
 export function publicArenaKey(ticket: Pick<QuickPlayTicket, "region" | "buildId">): string {
   return `PUBLIC#${ticket.region}#${ticket.buildId}`;
 }
@@ -230,12 +261,20 @@ export function stalePublicArenaDeleteRequest(
   key: string,
   gameSessionId: string,
   arenaId: string,
+  admissionClosesAt: number,
+  admissionRevision?: number,
 ): DeleteCommandInput {
+  const hasRevision = Number.isInteger(admissionRevision);
   return {
     TableName: tableName,
     Key: { pk: key },
-    ConditionExpression: "gameSessionId = :session AND arenaId = :arena",
-    ExpressionAttributeValues: { ":session": gameSessionId, ":arena": arenaId },
+    ConditionExpression: `gameSessionId = :session AND arenaId = :arena AND admissionClosesAt = :closes AND ${hasRevision ? "admissionRevision = :revision" : "attribute_not_exists(admissionRevision)"}`,
+    ExpressionAttributeValues: {
+      ":session": gameSessionId,
+      ":arena": arenaId,
+      ":closes": admissionClosesAt,
+      ...(hasRevision ? { ":revision": admissionRevision } : {}),
+    },
   };
 }
 
@@ -243,9 +282,17 @@ function isInternalEvent(event: APIGatewayProxyEventV2 | InternalEvent): event i
   return "source" in event && (event.source === "dotbot-game-server" || event.source === "dotbot-arena-server");
 }
 
-async function updateArenaAdmission(args: unknown): Promise<{ updated: true }> {
+async function updateArenaAdmission(args: unknown): Promise<{ updated: boolean }> {
   const parsed = parseArenaAdmissionUpdate(args, Date.now());
-  await database.send(new UpdateCommand(arenaAdmissionUpdateRequest(parsed, requiredEnv("TABLE_NAME"), Date.now())));
+  try {
+    await database.send(new UpdateCommand(arenaAdmissionUpdateRequest(parsed, requiredEnv("TABLE_NAME"), Date.now())));
+  } catch (error) {
+    // A condition miss means this session/revision no longer owns the pool
+    // pointer. It is a terminal stale update, not a transient error for the
+    // old arena to retry every 500 ms for the rest of its lifetime.
+    if (awsErrorName(error) === "ConditionalCheckFailedException") return { updated: false };
+    throw error;
+  }
   return { updated: true };
 }
 
@@ -264,9 +311,12 @@ export function arenaAdmissionUpdateRequest(
   if (open) {
     return {
       ...common,
-      UpdateExpression: "SET gameSessionId = :session, arenaId = :arena, buildId = :build, #region = :region, admissionClosesAt = :closes, admissionRevision = :revision, expiresAt = :expires, #status = :active REMOVE #owner",
-      ConditionExpression: "attribute_not_exists(pk) OR admissionClosesAt < :now OR (arenaId = :arena AND (attribute_not_exists(admissionRevision) OR admissionRevision < :revision))",
-      ExpressionAttributeNames: { ...common.ExpressionAttributeNames, "#owner": "owner" },
+      UpdateExpression: "SET admissionClosesAt = :closes, admissionRevision = :revision, expiresAt = :expires",
+      // The control plane publishes the GameSession/arena tuple before any
+      // arena callback may revise it. Requiring that exact tuple prevents a
+      // delayed callback from recreating a deleted pointer or reclaiming a
+      // closed replacement session, including a four-character arena-id ABA.
+      ConditionExpression: "#status = :active AND gameSessionId = :session AND arenaId = :arena AND buildId = :build AND #region = :region AND (attribute_not_exists(admissionRevision) OR admissionRevision < :revision)",
       ExpressionAttributeValues: {
         ":session": gameSessionId,
         ":closes": closesAt,
@@ -275,7 +325,6 @@ export function arenaAdmissionUpdateRequest(
         ":build": buildId,
         ":region": targetRegion,
         ":revision": revision,
-        ":now": now,
         ":expires": Math.floor(now / 1000) + 6 * 60 * 60,
       },
     };

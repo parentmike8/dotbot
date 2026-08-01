@@ -1,8 +1,8 @@
 import type { GameConfig } from "@dotbot/game/types";
 import { isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
-import { NoopPersistence, type Persistence } from "./db";
-import { Room, type RoomBandwidthHealth, type RoomPeer } from "./Room";
+import { NoopPersistence, type Persistence, type PlayerIdentity } from "./db";
+import { Room, type PublicMemberRelease, type RoomBandwidthHealth, type RoomPeer } from "./Room";
 
 const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -25,7 +25,7 @@ export type RoomManagerOptions = {
   onRoomExpired?: () => void | Promise<void>;
   hotArena?: import("./Room").HotArenaOptions;
   onPublicAdmissionChange?: (state: { arenaId: string; open: boolean; closesAt?: number }) => void | Promise<void>;
-  onPublicMemberReleased?: (peerId: string) => void | Promise<void>;
+  onPublicMemberReleased?: (release: PublicMemberRelease) => void | Promise<void>;
 };
 
 export type PublicPlayerAdmission = {
@@ -43,6 +43,10 @@ export class RoomManager {
   private readonly options: RoomManagerOptions;
   private readonly persistence: Persistence;
   private interval: ReturnType<typeof setInterval> | null = null;
+  private sessionRoomLookup: Promise<void> | null = null;
+  private lastSessionRoomLookupAt = Number.NEGATIVE_INFINITY;
+  private sessionEnding = false;
+  private stopped = false;
 
   constructor(options: RoomManagerOptions = {}) {
     this.options = options;
@@ -67,12 +71,18 @@ export class RoomManager {
     return [...this.roomMap.values()].every((room) => room.safeToTerminate);
   }
 
+  requestRetirement(): void {
+    for (const room of this.roomMap.values()) room.requestRetirement();
+  }
+
   start(): void {
     if (this.interval) return;
+    this.stopped = false;
     this.interval = setInterval(() => this.tick(), 4);
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     if (this.interval) clearInterval(this.interval);
     this.interval = null;
     await Promise.allSettled([...this.roomMap.values()].map((room) => room.waitForPersistence()));
@@ -99,7 +109,12 @@ export class RoomManager {
     return this.roomMap.get(code.trim().toUpperCase());
   }
 
-  async handleHello(peer: RoomPeer, message: Extract<ClientMessage, { type: "hello" }>, expectedPlayerId?: string): Promise<boolean> {
+  async handleHello(
+    peer: RoomPeer,
+    message: Extract<ClientMessage, { type: "hello" }>,
+    expectedPlayerId?: string,
+    isPeerActive: () => boolean = () => true,
+  ): Promise<boolean> {
     if (!this.persistence.live) {
       peer.send({
         type: "err",
@@ -116,7 +131,7 @@ export class RoomManager {
       peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
       return false;
     }
-    if (expectedPlayerId && identity.playerId !== expectedPlayerId) {
+    if (!matchesReservedPlayerIdentity(identity, expectedPlayerId)) {
       peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
       return false;
     }
@@ -136,7 +151,9 @@ export class RoomManager {
       });
       return false;
     }
+    if (!isPeerActive()) return false;
     const assignedCode = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : undefined;
+    if (!isPeerActive()) return false;
     if (assignedCode && message.roomCode && message.roomCode.trim().toUpperCase() !== assignedCode) {
       peer.send({ type: "err", code: "room_not_found", msg: "That room is hosted by a different game session." });
       return false;
@@ -161,6 +178,7 @@ export class RoomManager {
     peer: RoomPeer,
     message: Extract<ClientMessage, { type: "quickPlayHello" }>,
     admission?: PublicPlayerAdmission,
+    isPeerActive: () => boolean = () => true,
   ): Promise<boolean> {
     if (!this.options.hotArena) {
       peer.send({ type: "err", code: "quick_play_unavailable", msg: "Public quick play is not enabled on this server." });
@@ -178,7 +196,7 @@ export class RoomManager {
       peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
       return false;
     }
-    if (admission && identity.playerId !== admission.playerId) {
+    if (!matchesReservedPlayerIdentity(identity, admission?.playerId)) {
       peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
       return false;
     }
@@ -193,7 +211,9 @@ export class RoomManager {
       peer.send({ type: "err", code: "storage_unavailable", msg: "Base progress could not be verified. Try again." });
       return false;
     }
+    if (!isPeerActive()) return false;
     const assignedArenaId = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : undefined;
+    if (!isPeerActive()) return false;
     if (admission && assignedArenaId && admission.arenaId !== assignedArenaId) {
       peer.send({ type: "err", code: "arena_mismatch", msg: "This reservation belongs to a different arena." });
       return false;
@@ -209,6 +229,7 @@ export class RoomManager {
       undefined,
       admission?.partyId ?? identity.playerId,
       (value) => { rejection = value; },
+      admission?.playerId,
     );
     if (!member) {
       peer.send({
@@ -227,16 +248,21 @@ export class RoomManager {
     return true;
   }
 
-  async handleMessage(peer: RoomPeer, message: ClientMessage, expected?: string | PublicPlayerAdmission): Promise<boolean> {
+  async handleMessage(
+    peer: RoomPeer,
+    message: ClientMessage,
+    expected?: string | PublicPlayerAdmission,
+    isPeerActive?: () => boolean,
+  ): Promise<boolean> {
     if (message.type === "baseHello" || message.type === "baseInput") {
       peer.send({ type: "err", code: "bad_message", msg: "Base tutorial messages use the base session." });
       return false;
     }
     if (message.type === "hello") {
-      return this.handleHello(peer, message, typeof expected === "string" ? expected : expected?.playerId);
+      return this.handleHello(peer, message, typeof expected === "string" ? expected : expected?.playerId, isPeerActive);
     }
     if (message.type === "quickPlayHello") {
-      return this.handleQuickPlayHello(peer, message, typeof expected === "string" ? undefined : expected);
+      return this.handleQuickPlayHello(peer, message, typeof expected === "string" ? undefined : expected, isPeerActive);
     }
     const binding = this.peerRooms.get(peer.id);
     if (!binding) {
@@ -256,6 +282,7 @@ export class RoomManager {
 
   private tick(): void {
     const now = this.options.now?.() ?? Date.now();
+    this.ensureAssignedRoom(now);
     for (const [code, room] of this.roomMap) {
       this.tickSamples.push(...room.tick(now));
       if (this.tickSamples.length > 2000) this.tickSamples.splice(0, this.tickSamples.length - 2000);
@@ -266,6 +293,7 @@ export class RoomManager {
         room.dispose();
         this.roomMap.delete(code);
         if (this.options.sessionRoomCode) {
+          this.sessionEnding = true;
           Promise.resolve(this.options.onRoomExpired?.()).catch((error) => {
             console.error(`[gamelift] failed to end expired room process: ${errorMessage(error)}`);
           });
@@ -273,6 +301,33 @@ export class RoomManager {
       }
     }
   }
+
+  private ensureAssignedRoom(now: number): void {
+    if (!this.options.sessionRoomCode || this.roomMap.size > 0 || this.sessionRoomLookup
+      || this.sessionEnding || this.stopped || now - this.lastSessionRoomLookupAt < 500) return;
+    this.lastSessionRoomLookupAt = now;
+    this.sessionRoomLookup = this.options.sessionRoomCode()
+      .then((code) => {
+        if (!this.stopped && !this.sessionEnding && code) this.createRoom(code);
+      })
+      // Before OnStartGameSession the loopback adapter intentionally has no
+      // assigned metadata. Poll quietly; once assigned, creating the empty
+      // room starts the bounded idle-retirement clock even if the first player
+      // abandons their reservation before opening a WebSocket.
+      .catch(() => undefined)
+      .finally(() => {
+        this.sessionRoomLookup = null;
+      });
+  }
+}
+
+/** The GameLift reservation remains authoritative. A current canonical
+ * identity may satisfy it only when live persistence explicitly returned the
+ * reserved UUID as one of that account's retired internal aliases. */
+export function matchesReservedPlayerIdentity(identity: PlayerIdentity, expectedPlayerId: string | undefined): boolean {
+  return expectedPlayerId === undefined
+    || identity.playerId === expectedPlayerId
+    || identity.previousPlayerIds?.includes(expectedPlayerId) === true;
 }
 
 function errorMessage(error: unknown): string {

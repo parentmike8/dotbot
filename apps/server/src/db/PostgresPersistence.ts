@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
-import { itemToCode, type WireItemCode } from "@dotbot/protocol";
+import { itemToCode, PUBLIC_EXTRACTION_ROLE_COUNT, type WireItemCode } from "@dotbot/protocol";
 import { BASE_SLOT_DEFS, DEFAULT_BASE_SHELL, isObjectAllowedInSlot, starterBaseLayout, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById, SECOND_FLOOR_UPGRADE_ID } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
@@ -435,7 +435,9 @@ export class PostgresPersistence implements Persistence {
 
   async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date; playerIds: string[] }): Promise<MatchStartResult> {
     const playerIds = [...new Set(input.playerIds)];
-    if (playerIds.length === 0 || playerIds.length > 9) throw new Error("A match must register between one and nine players.");
+    if (playerIds.length === 0 || playerIds.length > PUBLIC_EXTRACTION_ROLE_COUNT) {
+      throw new Error(`A match must register between one and ${PUBLIC_EXTRACTION_ROLE_COUNT} players.`);
+    }
     return this.db.transaction(async (tx) => {
       const created = await tx.insert(matchResults).values({
         id: input.matchId,
@@ -585,9 +587,17 @@ export class PostgresPersistence implements Persistence {
   }
 
   async finishMatch(input: { matchId: string; endedAt: Date; summary: unknown }): Promise<void> {
-    const updated = await this.db.update(matchResults).set({ endedAt: input.endedAt, summary: input.summary })
-      .where(eq(matchResults.id, input.matchId)).returning({ id: matchResults.id });
-    if (updated.length !== 1) throw new Error("Match is not registered.");
+    await this.db.transaction(async (tx) => {
+      const active = await tx.select({ playerId: matchParticipants.playerId })
+        .from(matchParticipants)
+        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.outcome, "active")))
+        .limit(1)
+        .for("update");
+      if (active.length > 0) throw new Error("Match still has an unsettled participant outcome.");
+      const updated = await tx.update(matchResults).set({ endedAt: input.endedAt, summary: input.summary })
+        .where(eq(matchResults.id, input.matchId)).returning({ id: matchResults.id });
+      if (updated.length !== 1) throw new Error("Match is not registered.");
+    });
   }
 
   async claimRelayRequest(requestId: string, expiresAt: Date): Promise<boolean> {

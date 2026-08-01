@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Socket } from "node:net";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
-import { itemFromCode, type ClientMessage, type ServerMessage, type WireItemCode } from "@dotbot/protocol";
+import { itemFromCode, PUBLIC_EXTRACTION_ROLE_COUNT, type ClientMessage, type ServerMessage, type WireItemCode } from "@dotbot/protocol";
 import { isBaseObjectKind, isBaseShellId, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
@@ -14,7 +14,7 @@ import { isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
 import { createPersistence, type Persistence } from "./db";
 import { BaseTutorialAuthority } from "./BaseTutorialAuthority";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
-import { GameLiftSessionGate } from "./GameLiftSessionGate";
+import { GameLiftSessionGate, requiresPlayerSessionRemoval } from "./GameLiftSessionGate";
 import type { ArenaDirectory } from "./ArenaDirectory";
 
 export type CreateServerOptions = RoomManagerOptions & {
@@ -22,6 +22,9 @@ export type CreateServerOptions = RoomManagerOptions & {
   persistence?: Persistence;
   gameLift?: GameLiftSessionGate;
   playerSessionReconnectMs?: number;
+  /** Retry cadence after the immediate bounded GameLift removal attempts have
+   * all failed. Primarily configurable for deterministic lifecycle tests. */
+  playerSessionRemovalRecoveryMs?: number;
   /** Explicit additive launch-spine seam. False preserves emergency rollback. */
   publicQuickPlay?: boolean;
   arenaDirectory?: ArenaDirectory;
@@ -37,16 +40,19 @@ export async function createServer(options: CreateServerOptions = {}) {
   const baseTutorialAuthority = new BaseTutorialAuthority(persistence);
   const gameLift = options.gameLift;
   const playerSessionReconnectMs = options.playerSessionReconnectMs ?? 20_000;
+  const playerSessionRemovalRecoveryMs = options.playerSessionRemovalRecoveryMs ?? 5_000;
   const publicQuickPlay = options.publicQuickPlay ?? false;
   const activePlayerSessions = new Map<string, {
     playerId: string;
     publicAdmission?: import("./GameLiftSessionGate").PublicPlayerAdmission;
     peerId: string | null;
     removalTimer: ReturnType<typeof setTimeout> | null;
+    removing: boolean;
   }>();
   const pendingPlayerSessions = new Set<string>();
+  const failedPlayerSessionRemovals = new Set<string>();
   const publicPeerSockets = new Map<string, WebSocket>();
-  let releasePublicPeer = (_peerId: string): void => {};
+  let releasePublicMember = (_release: import("./Room").PublicMemberRelease): void => {};
   let draining = false;
   const rooms = new RoomManager({
     ...options,
@@ -55,14 +61,17 @@ export async function createServer(options: CreateServerOptions = {}) {
     ...(gameLift ? {
       sessionRoomCode: () => publicQuickPlay ? gameLift.arenaId() : gameLift.roomCode(),
       endedRoomTtlMs: 5_000,
-      onRoomExpired: () => gameLift.endProcess(),
+      onRoomExpired: () => {
+        draining = true;
+        return gameLift.endProcess();
+      },
     } : {}),
     ...(publicQuickPlay ? { hotArena: options.hotArena ?? {} } : {}),
     ...(publicQuickPlay && options.arenaDirectory ? { onPublicAdmissionChange: (state: { arenaId: string; open: boolean; closesAt?: number }) => options.arenaDirectory!.publish(state) } : {}),
     ...(publicQuickPlay ? {
-      onPublicMemberReleased: (peerId: string) => {
-        releasePublicPeer(peerId);
-        return options.onPublicMemberReleased?.(peerId);
+      onPublicMemberReleased: (release: import("./Room").PublicMemberRelease) => {
+        releasePublicMember(release);
+        return options.onPublicMemberReleased?.(release);
       },
     } : {}),
   });
@@ -90,7 +99,13 @@ export async function createServer(options: CreateServerOptions = {}) {
   };
 
   app.get("/api/health", async (_request, reply) => {
-    if (draining) return reply.code(503).send({ draining: true, rooms: rooms.rooms });
+    if (draining || failedPlayerSessionRemovals.size > 0) {
+      return reply.code(503).send({
+        draining,
+        reservationRemovalDegraded: failedPlayerSessionRemovals.size > 0,
+        rooms: rooms.rooms,
+      });
+    }
     return { draining: false, rooms: rooms.rooms, tickP99Ms: rooms.tickP99Ms, roomHealth: rooms.roomHealth };
   });
 
@@ -101,6 +116,7 @@ export async function createServer(options: CreateServerOptions = {}) {
   app.post("/api/gamelift/drain", async (request, reply) => {
     if (!isLoopback(request.ip)) return reply.code(404).send({ error: "Not found." });
     draining = true;
+    rooms.requestRetirement();
     return reply.code(204).send();
   });
 
@@ -142,7 +158,9 @@ export async function createServer(options: CreateServerOptions = {}) {
     if (!token) return reply.code(400).send({ error: "A device token is required." });
     const player = await persistence.helloPlayer(token);
     if (!player) return reply.code(404).send({ error: "Unknown device token." });
-    return player;
+    // Public identity surfaces intentionally project the canonical fields;
+    // retired UUID aliases exist only on the signed internal admission path.
+    return { playerId: player.playerId, name: player.name };
   });
 
   app.get<{ Headers: { "x-device-token"?: string; authorization?: string } }>("/api/profile", async (request, reply) => {
@@ -337,28 +355,62 @@ export async function createServer(options: CreateServerOptions = {}) {
     perMessageDeflate: { threshold: 512 },
   });
 
-  const removePlayerSession = async (playerSessionId: string, peerId: string, immediate: boolean): Promise<void> => {
+  const finishPlayerSessionRemoval = async (playerSessionId: string): Promise<void> => {
     if (!gameLift) return;
     const entry = activePlayerSessions.get(playerSessionId);
-    if (!entry || entry.peerId !== peerId) return;
+    if (!entry || entry.removing) return;
+    entry.removing = true;
+    if (entry.removalTimer) clearTimeout(entry.removalTimer);
+    entry.removalTimer = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await gameLift.removePlayerSession(playerSessionId);
+        if (activePlayerSessions.get(playerSessionId) === entry) activePlayerSessions.delete(playerSessionId);
+        failedPlayerSessionRemovals.delete(playerSessionId);
+        return;
+      } catch (error) {
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 150 * 2 ** attempt));
+          continue;
+        }
+        if (activePlayerSessions.get(playerSessionId) !== entry) return;
+        // Do not reopen this binding after an uncertain removal. A reconnect
+        // could otherwise race a successful SDK removal or silently rejoin a
+        // party that declined redeployment. Keep existing runs untouched,
+        // fail only new-admission/readiness gates, and retain the binding for
+        // automatic reconciliation when the loopback adapter recovers.
+        failedPlayerSessionRemovals.add(playerSessionId);
+        entry.removalTimer = setTimeout(() => {
+          if (activePlayerSessions.get(playerSessionId) !== entry) return;
+          entry.removalTimer = null;
+          entry.removing = false;
+          void finishPlayerSessionRemoval(playerSessionId);
+        }, playerSessionRemovalRecoveryMs);
+        app.log.error({ err: error }, "failed to remove GameLift player session after retries; admission paused pending reconciliation");
+      }
+    }
+  };
+  const removePlayerSession = async (playerSessionId: string, peerId: string, immediate: boolean): Promise<void> => {
+    const entry = activePlayerSessions.get(playerSessionId);
+    if (!entry || entry.peerId !== peerId || entry.removing) return;
     entry.peerId = null;
     if (entry.removalTimer) clearTimeout(entry.removalTimer);
-    const remove = async () => {
+    if (immediate) await finishPlayerSessionRemoval(playerSessionId);
+    else entry.removalTimer = setTimeout(() => {
       const current = activePlayerSessions.get(playerSessionId);
-      if (!current || current.peerId !== null) return;
-      activePlayerSessions.delete(playerSessionId);
-      await gameLift.removePlayerSession(playerSessionId).catch((error) => {
-        app.log.warn({ err: error }, "failed to remove GameLift player session");
-      });
-    };
-    if (immediate) await remove();
-    else entry.removalTimer = setTimeout(() => void remove(), playerSessionReconnectMs);
+      if (current === entry && current.peerId === null) void finishPlayerSessionRemoval(playerSessionId);
+    }, playerSessionReconnectMs);
   };
-  releasePublicPeer = (peerId: string) => {
+  releasePublicMember = ({ peerId, reservationPlayerId }: import("./Room").PublicMemberRelease) => {
     for (const [playerSessionId, entry] of activePlayerSessions) {
-      if (entry.peerId === peerId) void removePlayerSession(playerSessionId, peerId, true);
+      const exactReservation = reservationPlayerId !== null && entry.publicAdmission?.playerId === reservationPlayerId;
+      if (!exactReservation && (peerId === null || entry.peerId !== peerId)) continue;
+      const connectedPeerId = entry.peerId;
+      entry.peerId = null;
+      void finishPlayerSessionRemoval(playerSessionId);
+      if (connectedPeerId) publicPeerSockets.get(connectedPeerId)?.close(1000, "Re-enter quick play");
     }
-    publicPeerSockets.get(peerId)?.close(1000, "Re-enter quick play");
+    if (peerId) publicPeerSockets.get(peerId)?.close(1000, "Re-enter quick play");
   };
 
   app.server.on("upgrade", (request, socket, head) => {
@@ -376,6 +428,7 @@ export async function createServer(options: CreateServerOptions = {}) {
       ws.close(1013, "Server is draining");
       return;
     }
+    let socketClosed = false;
     let acceptedPlayerSessionId: string | null = null;
     let connectionMode: "base" | "game" | null = null;
     const peer = {
@@ -405,6 +458,10 @@ export async function createServer(options: CreateServerOptions = {}) {
           }
           try {
             const state = await baseTutorialAuthority.connect(peer.id, message.token);
+            if (socketClosed) {
+              baseTutorialAuthority.disconnect(peer.id);
+              return;
+            }
             connectionMode = "base";
             peer.send({
               type: "baseWelcome",
@@ -466,7 +523,6 @@ export async function createServer(options: CreateServerOptions = {}) {
             ws.close(1008, "Player session required");
             return;
           }
-          let attemptedAdapterAcceptance = false;
           try {
             const playerSessionId = message.playerSessionId.trim();
             if (publicQuickPlay !== (message.type === "quickPlayHello")) {
@@ -475,6 +531,16 @@ export async function createServer(options: CreateServerOptions = {}) {
               return;
             }
             let session = activePlayerSessions.get(playerSessionId);
+            if (session?.removing) {
+              peer.send({ type: "err", code: "player_session_expired", msg: "This player session is being released. Re-enter quick play." });
+              ws.close(1008, "Player session expired");
+              return;
+            }
+            if (!session && failedPlayerSessionRemovals.size > 0) {
+              peer.send({ type: "err", code: "server_unavailable", msg: "Server admission is recovering. Re-enter quick play." });
+              ws.close(1013, "Server admission is recovering");
+              return;
+            }
             if (session?.peerId) {
               peer.send({ type: "err", code: "player_session_in_use", msg: "This player session is already connected." });
               ws.close(1008, "Player session already connected");
@@ -491,7 +557,6 @@ export async function createServer(options: CreateServerOptions = {}) {
                 return;
               }
               pendingPlayerSessions.add(playerSessionId);
-              attemptedAdapterAcceptance = true;
               try {
                 const publicAdmission = publicQuickPlay
                   ? await gameLift.acceptPublicPlayerSession(playerSessionId)
@@ -501,15 +566,28 @@ export async function createServer(options: CreateServerOptions = {}) {
                   ...(publicAdmission ? { publicAdmission } : {}),
                   peerId: null,
                   removalTimer: null,
+                  removing: false,
                 };
                 activePlayerSessions.set(playerSessionId, session);
               } finally {
                 pendingPlayerSessions.delete(playerSessionId);
               }
             }
+            if (socketClosed) {
+              session.peerId = peer.id;
+              acceptedPlayerSessionId = playerSessionId;
+              await removePlayerSession(playerSessionId, peer.id, true);
+              acceptedPlayerSessionId = null;
+              return;
+            }
             session.peerId = peer.id;
             acceptedPlayerSessionId = playerSessionId;
-            const joined = await rooms.handleMessage(peer, message, session.publicAdmission ?? session.playerId);
+            const joined = await rooms.handleMessage(
+              peer,
+              message,
+              session.publicAdmission ?? session.playerId,
+              () => !socketClosed && ws.readyState === ws.OPEN,
+            );
             if (!joined) {
               await removePlayerSession(playerSessionId, peer.id, true);
               acceptedPlayerSessionId = null;
@@ -518,24 +596,32 @@ export async function createServer(options: CreateServerOptions = {}) {
               connectionMode = "game";
             }
             return;
-          } catch {
+          } catch (error) {
             if (acceptedPlayerSessionId) {
               await removePlayerSession(acceptedPlayerSessionId, peer.id, true);
               acceptedPlayerSessionId = null;
-            } else if (attemptedAdapterAcceptance && message.playerSessionId?.trim()) {
-              // The adapter accepts before returning trusted PlayerData. If
-              // metadata parsing or the following admission step fails, undo
-              // that possible acceptance even though no local binding exists.
-              await gameLift.removePlayerSession(message.playerSessionId.trim()).catch((error) => {
-                app.log.warn({ err: error }, "failed to remove rejected GameLift player session");
-              });
+            } else if (requiresPlayerSessionRemoval(error) && message.playerSessionId?.trim()) {
+              // A successful or response-lost adapter call may have committed
+              // acceptance before trusted metadata parsing failed. Preserve a
+              // terminal local binding so cleanup uses the same fail-closed,
+              // indefinitely retryable reconciliation path as ordinary exits.
+              const playerSessionId = message.playerSessionId.trim();
+              if (!activePlayerSessions.has(playerSessionId)) {
+                activePlayerSessions.set(playerSessionId, {
+                  playerId: "",
+                  peerId: null,
+                  removalTimer: null,
+                  removing: false,
+                });
+              }
+              await finishPlayerSessionRemoval(playerSessionId);
             }
             peer.send({ type: "err", code: "player_session_rejected", msg: "GameLift rejected this player session." });
             ws.close(1008, "Player session rejected");
             return;
           }
         }
-        const joined = await rooms.handleMessage(peer, message);
+        const joined = await rooms.handleMessage(peer, message, undefined, () => !socketClosed && ws.readyState === ws.OPEN);
         if ((message.type === "hello" || message.type === "quickPlayHello") && joined) connectionMode = "game";
       } catch {
         peer.send({ type: "err", code: "server_unavailable", msg: "The allocated game session is not ready." });
@@ -549,6 +635,7 @@ export async function createServer(options: CreateServerOptions = {}) {
       inbound = inbound.then(() => processMessage(data));
     });
     ws.on("close", () => {
+      socketClosed = true;
       publicPeerSockets.delete(peer.id);
       baseTutorialAuthority.disconnect(peer.id);
       rooms.disconnect(peer.id);
@@ -567,6 +654,7 @@ export async function createServer(options: CreateServerOptions = {}) {
       const sessions = [...activePlayerSessions.keys()];
       for (const entry of activePlayerSessions.values()) if (entry.removalTimer) clearTimeout(entry.removalTimer);
       activePlayerSessions.clear();
+      failedPlayerSessionRemovals.clear();
       pendingPlayerSessions.clear();
       await Promise.allSettled(sessions.map((playerSessionId) => gameLift.removePlayerSession(playerSessionId)));
     }
@@ -672,7 +760,7 @@ function isUuid(value: unknown): value is string {
 }
 
 function parsePlayerIds(value: unknown): string[] | null {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 9 || !value.every(isUuid)) return null;
+  if (!Array.isArray(value) || value.length < 1 || value.length > PUBLIC_EXTRACTION_ROLE_COUNT || !value.every(isUuid)) return null;
   const unique = [...new Set(value)];
   return unique.length === value.length ? unique : null;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { GameLiftSessionGate } from "./GameLiftSessionGate";
+import { GameLiftSessionGate, requiresPlayerSessionRemoval } from "./GameLiftSessionGate";
 
 describe("GameLiftSessionGate", () => {
   it("reads the assigned room and accepts/removes player sessions through loopback", async () => {
@@ -74,7 +74,20 @@ describe("GameLiftSessionGate", () => {
       }), { status: 200 }));
     const gate = new GameLiftSessionGate({ fetch: request });
 
-    await expect(gate.acceptPublicPlayerSession("psess-public")).rejects.toThrow(/does not match/i);
+    const error = await gate.acceptPublicPlayerSession("psess-public").catch((caught) => caught as unknown);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/does not match/i);
+    expect(requiresPlayerSessionRemoval(error)).toBe(true);
+  });
+
+  it("does not require cleanup for a definite adapter rejection", async () => {
+    const gate = new GameLiftSessionGate({
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 401 })),
+    });
+
+    const error = await gate.acceptPublicPlayerSession("psess-rejected").catch((caught) => caught as unknown);
+    expect(error).toBeInstanceOf(Error);
+    expect(requiresPlayerSessionRemoval(error)).toBe(false);
   });
 
   it("returns the trusted GameLift session id with public arena metadata", async () => {

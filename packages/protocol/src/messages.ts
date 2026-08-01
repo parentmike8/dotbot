@@ -19,6 +19,7 @@ export type LobbySquadId = (typeof LOBBY_SQUADS)[number];
  * three-squad legacy room protocol so emergency rollback stays additive. */
 export const PUBLIC_EXTRACTION_SQUADS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"] as const;
 export type PublicExtractionSquadId = (typeof PUBLIC_EXTRACTION_SQUADS)[number];
+export const PUBLIC_EXTRACTION_ROLE_COUNT = PUBLIC_EXTRACTION_SQUADS.length * 3;
 
 export type PlayerRole = {
   roleId: string;
@@ -460,7 +461,7 @@ export type ServerMessage =
     }
   | ({ type: "snap" } & WireSnapshot)
   | { type: "meta"; add: EntityMeta[]; remove: string[] }
-  | { type: "roleController"; matchId: string; roleId: string; controller: "ai"; reason: "disconnect_timeout" }
+  | { type: "roleController"; matchId: string; roleId: string; controller: "ai"; reason: "disconnect_timeout" | "player_left" }
   | { type: "ev"; events: WireSimEvent[] }
   /** Reliable and addressed only to the victim. Never broadcast. */
   | { type: "killCam"; clip: WireKillCamClip }

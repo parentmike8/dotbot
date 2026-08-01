@@ -1,4 +1,5 @@
 import {
+  PUBLIC_EXTRACTION_ROLE_COUNT,
   PUBLIC_EXTRACTION_SQUADS,
   type PlayerRole,
   type PublicExtractionSquadId,
@@ -16,7 +17,7 @@ export type PublicHuman = {
  * roles are explicit player-role AI, not ambient map AI.
  */
 export function assignPublicPlayerRoles(humans: readonly PublicHuman[], matchId: string): PlayerRole[] {
-  if (humans.length > PUBLIC_EXTRACTION_SQUADS.length * 3) throw new Error("A public arena supports at most 18 humans.");
+  if (humans.length > PUBLIC_EXTRACTION_ROLE_COUNT) throw new Error("A public arena supports at most 18 humans.");
   const parties = new Map<string, PublicHuman[]>();
   for (const human of humans) {
     const party = parties.get(human.partyId) ?? [];

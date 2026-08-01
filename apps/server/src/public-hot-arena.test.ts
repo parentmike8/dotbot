@@ -10,15 +10,21 @@ import { RoomManager } from "./RoomManager";
 class RunBoundaryPersistence extends NoopPersistence {
   override readonly live = true;
   readonly starts: string[] = [];
+  readonly rosters: string[][] = [];
+  readonly outcomes: Array<{ matchId: string; playerId: string; outcome: string }> = [];
   readonly finishes: string[] = [];
 
   override async getBaseTutorialForPlayer() { return completedBaseTutorialState; }
   override async startMatch(input: Parameters<NoopPersistence["startMatch"]>[0]) {
     this.starts.push(input.matchId);
+    this.rosters.push([...input.playerIds]);
     return super.startMatch(input);
   }
   override async finishMatch(input: Parameters<Persistence["finishMatch"]>[0]) {
     this.finishes.push(input.matchId);
+  }
+  override async recordOutcome(input: Parameters<Persistence["recordOutcome"]>[0]) {
+    this.outcomes.push(input);
   }
 }
 
@@ -37,6 +43,37 @@ class DeferredFinishPersistence extends RunBoundaryPersistence {
 class FailedFinishPersistence extends RunBoundaryPersistence {
   override async finishMatch(): Promise<void> {
     throw new Error("finish unavailable");
+  }
+}
+
+class DeferredStartPersistence extends RunBoundaryPersistence {
+  private releaseStart!: () => void;
+  private markEntered!: () => void;
+  readonly startEntered = new Promise<void>((resolve) => { this.markEntered = resolve; });
+  readonly startGate = new Promise<void>((resolve) => { this.releaseStart = resolve; });
+
+  override async startMatch(input: Parameters<NoopPersistence["startMatch"]>[0]) {
+    this.starts.push(input.matchId);
+    this.rosters.push([...input.playerIds]);
+    this.markEntered();
+    await this.startGate;
+    return NoopPersistence.prototype.startMatch.call(this, input);
+  }
+
+  release(): void { this.releaseStart(); }
+}
+
+class FailedStartPersistence extends RunBoundaryPersistence {
+  override async startMatch(input: Parameters<NoopPersistence["startMatch"]>[0]): Promise<never> {
+    this.starts.push(input.matchId);
+    this.rosters.push([...input.playerIds]);
+    throw new Error("start response lost");
+  }
+}
+
+class FailedOutcomePersistence extends RunBoundaryPersistence {
+  override async recordOutcome(): Promise<void> {
+    throw new Error("outcome unavailable");
   }
 }
 
@@ -77,14 +114,39 @@ describe("public quick-play Room mode", () => {
     expect(new Set(playerRoleBots.map((bot) => bot.id))).toEqual(new Set(roles.map((role) => role.roleId)));
   });
 
-  it("keeps a three-person party together, rejects a fourth member, and rejects live joins", async () => {
+  it("starts with all 18 humans and sends the complete roster to persistence", async () => {
+    let now = 0;
+    const persistence = new RunBoundaryPersistence();
+    const room = new Room("FULL", {
+      now: () => now,
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 6_000 },
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000018",
+    });
+    const peers = Array.from({ length: 18 }, (_, index) => collectingPeer(`peer-${index}`));
+    for (let index = 0; index < peers.length; index += 1) {
+      expect(room.join(peers[index].peer, `token-${index}`, `P${index}`, `player-${index}`, undefined, `party-${index}`)).not.toBeNull();
+    }
+
+    now = 999;
+    room.tick(now);
+    expect(room.phase).toBe("assembling");
+    now = 1_000;
+    room.tick(now);
+    await vi.waitFor(() => expect(room.phase).toBe("live"));
+
+    const roles = (peers[0].messages.find((message) => message.type === "matchStart") as Extract<ServerMessage, { type: "matchStart" }>).roles!;
+    expect(roles.filter((role) => role.controller === "human")).toHaveLength(18);
+    expect(persistence.rosters).toEqual([Array.from({ length: 18 }, (_, index) => `player-${index}`)]);
+  });
+
+  it("keeps a three-person party together and rejects live joins", async () => {
     let now = 0;
     const room = new Room("P4TY", { now: () => now, hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 } });
-    const peers = ["a", "b", "c", "d"].map(collectingPeer);
+    const peers = ["a", "b", "c"].map(collectingPeer);
     for (let index = 0; index < 3; index += 1) {
       expect(room.join(peers[index].peer, `token-${index}`, `P${index}`, `p${index}`, undefined, "friends")).not.toBeNull();
     }
-    expect(room.join(peers[3].peer, "token-3", "P3", "p3", undefined, "friends")).toBeNull();
     now = 1_000;
     room.tick(now);
     await vi.waitFor(() => expect(room.phase).toBe("live"));
@@ -93,6 +155,26 @@ describe("public quick-play Room mode", () => {
     const friends = roles.filter((role) => role.partyId === "friends");
     expect(friends).toHaveLength(3);
     expect(new Set(friends.map((role) => role.squadId)).size).toBe(1);
+  });
+
+  it("evicts every provisional member when a trusted party exceeds the three-player cap", () => {
+    const released: string[] = [];
+    const room = new Room("P4TY", {
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      onPublicMemberReleased: ({ peerId }) => { if (peerId) released.push(peerId); },
+    });
+    const peers = ["a", "b", "c", "d"].map(collectingPeer);
+    for (let index = 0; index < 3; index += 1) {
+      expect(room.join(peers[index].peer, `token-${index}`, `P${index}`, `p${index}`, undefined, "friends")).not.toBeNull();
+    }
+    let rejection: unknown;
+    expect(room.join(peers[3].peer, "token-3", "P3", "p3", undefined, "friends", (value) => { rejection = value; })).toBeNull();
+    expect(rejection).toEqual({ accepted: false, code: "party_invalid", retryable: false });
+    expect(room.publicArenaMembers).toEqual([]);
+    expect(released).toEqual(["a", "b", "c"]);
+    for (const peer of peers.slice(0, 3)) {
+      expect(peer.messages).toContainEqual(expect.objectContaining({ type: "err", code: "party_invalid" }));
+    }
   });
 
   it("does not let a duplicate authenticated identity overwrite an admitted member", () => {
@@ -183,7 +265,7 @@ describe("public quick-play Room mode", () => {
       now: () => now,
       persistence: new RunBoundaryPersistence(),
       hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
-      onPublicMemberReleased: (peerId) => { released.push(peerId); },
+      onPublicMemberReleased: ({ peerId }) => { if (peerId) released.push(peerId); },
     });
     const staying = collectingPeer("staying-peer");
     const leaving = collectingPeer("leaving-peer");
@@ -200,6 +282,37 @@ describe("public quick-play Room mode", () => {
     expect(room.publicArenaMembers.map((member) => member.playerId)).toEqual(["stay"]);
     expect(released).toEqual(["leaving-peer"]);
     expect(room.join(collectingPeer("replacement").peer, "new-token", "New", "new", undefined, "new-party")).not.toBeNull();
+  });
+
+  it("releases a disconnected non-opted reservation before reopening capacity", async () => {
+    let now = 0;
+    const releases: import("./Room").PublicMemberRelease[] = [];
+    const room = new Room("FREE", {
+      now: () => now,
+      persistence: new RunBoundaryPersistence(),
+      connectionHandoffMs: 60_000,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      onPublicMemberReleased: (release) => { releases.push(release); },
+    });
+    const staying = collectingPeer("staying-peer");
+    const leaving = collectingPeer("leaving-peer");
+    room.join(staying.peer, "stay-token", "Stay", "stay", undefined, "stay-party", undefined, "reserved-stay");
+    room.join(leaving.peer, "leave-token", "Leave", "leave", undefined, "leave-party", undefined, "reserved-leave");
+    now = 1_000;
+    room.tick(now);
+    await vi.waitFor(() => expect(room.phase).toBe("live"));
+
+    room.disconnect(leaving.peer.id);
+    (room as unknown as { end(reason: string): void }).end("complete");
+    await room.waitForPersistence();
+    room.receive("stay", { type: "deployAgain" });
+
+    expect(releases).toContainEqual({
+      peerId: null,
+      playerId: "leave",
+      reservationPlayerId: "reserved-leave",
+    });
+    expect(room.publicArenaMembers.map((member) => member.playerId)).toEqual(["stay"]);
   });
 
   it("requests bounded retirement only between runs after persistence settles", async () => {
@@ -219,6 +332,54 @@ describe("public quick-play Room mode", () => {
     expect(room.phase).toBe("results");
     expect(room.retirementRequested).toBe(true);
     expect(room.readyForDisposal).toBe(true);
+  });
+
+  it("retires cleanly when the age boundary lands during assembly countdown", () => {
+    let now = 0;
+    const room = new Room("AGED", {
+      now: () => now,
+      persistence: new RunBoundaryPersistence(),
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 6_000, maxAgeMs: 6_000 },
+    });
+    room.join(collectingPeer("pilot").peer, "token", "Pilot", "pilot", undefined, "party");
+    now = 1_000;
+    room.tick(now);
+    expect(room.phase).toBe("countdown");
+
+    now = 6_000;
+    room.tick(now);
+
+    expect(room.phase).toBe("assembling");
+    expect(room.retirementRequested).toBe(true);
+    expect(room.readyForDisposal).toBe(true);
+  });
+
+  it("turns an external drain into retirement and cannot start another ordinary run", async () => {
+    let now = 0;
+    const persistence = new RunBoundaryPersistence();
+    const pilot = collectingPeer("pilot");
+    const room = new Room("DRAN", {
+      now: () => now,
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+    });
+    room.join(pilot.peer, "token", "Pilot", "pilot", undefined, "party");
+    now = 1_000;
+    room.tick(now);
+    await vi.waitFor(() => expect(room.phase).toBe("live"));
+
+    room.requestRetirement();
+    expect(room.safeToTerminate).toBe(false);
+    (room as unknown as { end(reason: string): void }).end("complete");
+    await room.waitForPersistence();
+    room.receive("pilot", { type: "deployAgain" });
+    now = 10_000;
+    room.tick(now);
+
+    expect(room.phase).toBe("results");
+    expect(room.readyForDisposal).toBe(true);
+    expect(persistence.starts).toHaveLength(1);
+    expect(pilot.messages).toContainEqual(expect.objectContaining({ type: "err", code: "arena_retiring" }));
   });
 
   it("freezes for reconnect grace, then labels the same player role as AI for the rest of the run", async () => {
@@ -265,6 +426,88 @@ describe("public quick-play Room mode", () => {
     }
   });
 
+  it("locks admission during async start and converts a grace expiry without creating a ghost role", async () => {
+    let now = 0;
+    const persistence = new DeferredStartPersistence();
+    const room = new Room("RACE", {
+      now: () => now,
+      persistence,
+      connectionHandoffMs: 5,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000032",
+    });
+    const pilot = collectingPeer("pilot-peer");
+    const observer = collectingPeer("observer-peer");
+    room.join(pilot.peer, "pilot-token", "Pilot", "pilot", undefined, "pilot-party");
+    room.join(observer.peer, "observer-token", "Observer", "observer", undefined, "observer-party");
+    now = 1_000;
+    room.tick(now);
+    await persistence.startEntered;
+
+    expect(room.join(collectingPeer("late-peer").peer, "late-token", "Late", "late", undefined, "late-party")).toBeNull();
+    room.disconnect(pilot.peer.id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(room.publicArenaMembers.map((member) => member.playerId)).toContain("pilot");
+
+    persistence.release();
+    await vi.waitFor(() => expect(room.phase).toBe("live"));
+    const start = observer.messages.find((message) => message.type === "matchStart") as Extract<ServerMessage, { type: "matchStart" }>;
+    expect(start.roles?.find((role) => role.playerId === "pilot")?.controller).toBe("ai");
+    expect((room as unknown as { simulation: { controllers: Map<string, string> } }).simulation.controllers.get("human-pilot")).toBe("ai");
+    expect(persistence.rosters[0]).toEqual(["pilot", "observer"]);
+  });
+
+  it("does not let a completed async start resurrect a disposed arena", async () => {
+    let now = 0;
+    const persistence = new DeferredStartPersistence();
+    const room = new Room("STOP", {
+      now: () => now,
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+    });
+    room.join(collectingPeer("pilot-peer").peer, "pilot-token", "Pilot", "pilot", undefined, "pilot-party");
+    now = 1_000;
+    room.tick(now);
+    await persistence.startEntered;
+
+    room.dispose();
+    persistence.release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(room.phase).toBe("countdown");
+    expect((room as unknown as { simulation: unknown }).simulation).toBeNull();
+    expect(room.tick(now + 1_000)).toEqual([]);
+  });
+
+  it("settles the exact persistence boundary when drain interrupts an async start", async () => {
+    let now = 0;
+    const persistence = new DeferredStartPersistence();
+    const room = new Room("DRIP", {
+      now: () => now,
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000033",
+    });
+    room.join(collectingPeer("pilot-peer").peer, "pilot-token", "Pilot", "pilot", undefined, "pilot-party");
+    now = 1_000;
+    room.tick(now);
+    await persistence.startEntered;
+
+    room.requestRetirement();
+    persistence.release();
+    await vi.waitFor(() => expect(room.readyForDisposal).toBe(true));
+    await room.waitForPersistence();
+
+    expect(room.phase).toBe("assembling");
+    expect(persistence.starts).toEqual(["00000000-0000-4000-8000-000000000033"]);
+    expect(persistence.outcomes).toEqual([{
+      matchId: "00000000-0000-4000-8000-000000000033",
+      playerId: "pilot",
+      outcome: "disconnected",
+    }]);
+    expect(persistence.finishes).toEqual(["00000000-0000-4000-8000-000000000033"]);
+  });
+
   it("keeps the run live under AI control after the last human exhausts reconnect grace", async () => {
     let now = 0;
     const room = new Room("AION", {
@@ -288,6 +531,35 @@ describe("public quick-play Room mode", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps all 18 roles present by converting an explicit leaver to AI", async () => {
+    let now = 0;
+    const persistence = new RunBoundaryPersistence();
+    const observer = collectingPeer("observer-peer");
+    const room = new Room("QUIT", {
+      now: () => now,
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+    });
+    room.join(collectingPeer("leaver-peer").peer, "leaver-token", "Leaver", "leaver", undefined, "leaver-party");
+    room.join(observer.peer, "observer-token", "Observer", "observer", undefined, "observer-party");
+    now = 1_000;
+    room.tick(now);
+    await vi.waitFor(() => expect(room.phase).toBe("live"));
+
+    room.receive("leaver", { type: "leaveRun" });
+
+    const simulation = (room as unknown as { simulation: { controllers: Map<string, string>; getSnapshot(): { bots: Array<{ id: string; isAmbient?: boolean }> } } }).simulation;
+    expect(simulation.getSnapshot().bots.filter((bot) => !bot.isAmbient)).toHaveLength(18);
+    expect(simulation.controllers.get("human-leaver")).toBe("ai");
+    expect(room.phase).toBe("live");
+    expect(observer.messages).toContainEqual(expect.objectContaining({
+      type: "roleController",
+      roleId: "human-leaver",
+      controller: "ai",
+      reason: "player_left",
+    }));
   });
 
   it("rejects invalid assembly policies", () => {
@@ -379,6 +651,56 @@ describe("public quick-play Room mode", () => {
     expect(room.readyForDisposal).toBe(true);
   });
 
+  it("retires and closes the same match id when startMatch may have committed before its response failed", async () => {
+    let now = 0;
+    const persistence = new FailedStartPersistence();
+    const room = new Room("LOST", {
+      now: () => now,
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000041",
+    });
+    room.join(collectingPeer("pilot").peer, "token", "Pilot", "pilot", undefined, "party");
+    now = 1_000;
+    room.tick(now);
+    await vi.waitFor(() => expect(room.retirementRequested).toBe(true));
+    await room.waitForPersistence();
+
+    expect(persistence.starts).toEqual(["00000000-0000-4000-8000-000000000041"]);
+    expect(persistence.outcomes).toEqual([{
+      matchId: "00000000-0000-4000-8000-000000000041",
+      playerId: "pilot",
+      outcome: "disconnected",
+    }]);
+    expect(persistence.finishes).toEqual(["00000000-0000-4000-8000-000000000041"]);
+    expect(room.readyForDisposal).toBe(true);
+  });
+
+  it("retires after a participant outcome exhausts persistence retries", async () => {
+    let now = 0;
+    const persistence = new FailedOutcomePersistence();
+    const released: string[] = [];
+    const room = new Room("OUTC", {
+      now: () => now,
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      onPublicMemberReleased: ({ peerId }) => { if (peerId) released.push(peerId); },
+    });
+    const pilot = collectingPeer("pilot-peer");
+    room.join(pilot.peer, "token", "Pilot", "pilot", undefined, "party");
+    now = 1_000;
+    room.tick(now);
+    await vi.waitFor(() => expect(room.phase).toBe("live"));
+
+    room.receive("pilot", { type: "leaveRun" });
+    await room.waitForPersistence();
+
+    expect(room.phase).toBe("results");
+    expect(room.retirementRequested).toBe(true);
+    expect(room.readyForDisposal).toBe(true);
+    expect(released).toEqual(["pilot-peer"]);
+  });
+
   it("retries failed arena-directory opens and closes without reversing the desired state", async () => {
     let now = 0;
     const updates: boolean[] = [];
@@ -428,6 +750,11 @@ describe("public quick-play Room mode", () => {
     await room.waitForPersistence();
 
     expect(persistence.starts).toEqual(["00000000-0000-4000-8000-000000000099"]);
+    expect(persistence.outcomes).toEqual([{
+      matchId: "00000000-0000-4000-8000-000000000099",
+      playerId: "pilot",
+      outcome: "disconnected",
+    }]);
     expect(persistence.finishes).toEqual(["00000000-0000-4000-8000-000000000099"]);
     expect(room.readyForDisposal).toBe(true);
     expect(pilot.messages).toContainEqual(expect.objectContaining({ type: "err", code: "arena_configuration_invalid" }));

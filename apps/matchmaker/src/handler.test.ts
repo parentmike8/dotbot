@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { arenaAdmissionUpdateRequest, generateRoomCode, isClosedGameSessionError, isFleetWakingError, isFullGameSessionError, normalizeQuickPlayTicket, parseArenaAdmissionUpdate, publicArenaKey, secureWebSocketUrl, stalePublicArenaDeleteRequest } from "./handler";
+import { afterEach, describe, expect, it } from "vitest";
+import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import { arenaAdmissionUpdateRequest, generateRoomCode, handler, isClosedGameSessionError, isFleetWakingError, isFullGameSessionError, normalizeQuickPlayTicket, parseArenaAdmissionUpdate, publicArenaKey, secureWebSocketUrl, stalePublicArenaDeleteRequest } from "./handler";
+
+afterEach(() => {
+  delete process.env.DOTBOT_PUBLIC_QUICK_PLAY;
+  delete process.env.QUICK_PLAY_BUILD_ID;
+});
 
 describe("matchmaker endpoint helpers", () => {
   it("generates shareable room codes without ambiguous characters", () => {
@@ -33,7 +39,7 @@ describe("matchmaker endpoint helpers", () => {
       buildId: "web-42",
       partyId: "friends",
       latencies: { "ca-central-1": 47, "us-east-1": 92 },
-    }, { playerId: "player-1", name: "Pilot", partyId: "friends" }, ["ca-central-1", "us-east-1"]);
+    }, { playerId: "player-1", name: "Pilot", partyId: "friends" }, ["ca-central-1", "us-east-1"], "web-42");
     expect(ticket).toMatchObject({
       buildId: "web-42",
       partyId: "friends",
@@ -47,11 +53,29 @@ describe("matchmaker endpoint helpers", () => {
 
   it("rejects invalid build, party, and latency metadata", () => {
     const identity = { playerId: "player-1", name: "Pilot" };
-    expect(() => normalizeQuickPlayTicket({ buildId: "", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"])).toThrow();
-    expect(() => normalizeQuickPlayTicket({ buildId: "web-42", latencies: { "ca-central-1": 10 } }, { ...identity, partyId: "x".repeat(129) }, ["ca-central-1"])).toThrow();
-    expect(() => normalizeQuickPlayTicket({ buildId: "web-42", latencies: { "ca-central-1": -1 } }, identity, ["ca-central-1"])).toThrow();
-    expect(normalizeQuickPlayTicket({ buildId: "web-42", partyId: "spoofed", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"]).partyId)
+    expect(() => normalizeQuickPlayTicket({ buildId: "", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"], "web-42")).toThrow();
+    expect(() => normalizeQuickPlayTicket({ buildId: "disabled", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"], "disabled")).toThrow();
+    expect(() => normalizeQuickPlayTicket({ buildId: "Disabled", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"], "Disabled")).toThrow();
+    expect(() => normalizeQuickPlayTicket({ buildId: "web-old", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"], "web-42")).toThrow();
+    expect(() => normalizeQuickPlayTicket({ buildId: "web-42", latencies: { "ca-central-1": 10 } }, { ...identity, partyId: "x".repeat(129) }, ["ca-central-1"], "web-42")).toThrow();
+    expect(() => normalizeQuickPlayTicket({ buildId: "web-42", latencies: { "ca-central-1": -1 } }, identity, ["ca-central-1"], "web-42")).toThrow();
+    expect(normalizeQuickPlayTicket({ buildId: "web-42", partyId: "spoofed", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"], "web-42").partyId)
       .toBe("solo-player-1");
+  });
+
+  it("keeps the public allocator disabled until the explicit control-plane flag is set", async () => {
+    delete process.env.DOTBOT_PUBLIC_QUICK_PLAY;
+    const result = await handler({ routeKey: "POST /quick-play" } as APIGatewayProxyEventV2) as { statusCode: number; body?: string };
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body ?? "{}")).toEqual({ error: "Route not found." });
+  });
+
+  it("keeps the public allocator disabled when the boolean flag uses the sentinel build id", async () => {
+    process.env.DOTBOT_PUBLIC_QUICK_PLAY = "true";
+    process.env.QUICK_PLAY_BUILD_ID = "disabled";
+    const result = await handler({ routeKey: "POST /quick-play" } as APIGatewayProxyEventV2) as { statusCode: number; body?: string };
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body ?? "{}")).toEqual({ error: "Route not found." });
   });
 
   it("accepts only bounded availability windows for the exact public arena metadata", () => {
@@ -84,11 +108,12 @@ describe("matchmaker endpoint helpers", () => {
       revision: 7,
     }, 10_000);
     const openRequest = arenaAdmissionUpdateRequest(open, "sessions", 10_000);
-    expect(openRequest.ConditionExpression).toContain("admissionClosesAt < :now");
-    expect(openRequest.ConditionExpression).toContain("arenaId = :arena");
+    expect(openRequest.ConditionExpression).toContain("gameSessionId = :session AND arenaId = :arena");
+    expect(openRequest.ConditionExpression).toContain("#status = :active");
+    expect(openRequest.ConditionExpression).not.toContain("attribute_not_exists(pk)");
+    expect(openRequest.ConditionExpression).not.toContain("gameSessionId <> :session");
     expect(openRequest.ExpressionAttributeValues).toMatchObject({
       ":session": "game-session-old",
-      ":now": 10_000,
       ":revision": 7,
     });
 
@@ -98,11 +123,24 @@ describe("matchmaker endpoint helpers", () => {
   });
 
   it("cannot delete a replacement pool pointer after a stale session reports full", () => {
-    expect(stalePublicArenaDeleteRequest("sessions", "PUBLIC#ca-central-1#web-42", "session-old", "A2BC")).toEqual({
+    expect(stalePublicArenaDeleteRequest("sessions", "PUBLIC#ca-central-1#web-42", "session-old", "A2BC", 16_000, 7)).toEqual({
       TableName: "sessions",
       Key: { pk: "PUBLIC#ca-central-1#web-42" },
-      ConditionExpression: "gameSessionId = :session AND arenaId = :arena",
-      ExpressionAttributeValues: { ":session": "session-old", ":arena": "A2BC" },
+      ConditionExpression: "gameSessionId = :session AND arenaId = :arena AND admissionClosesAt = :closes AND admissionRevision = :revision",
+      ExpressionAttributeValues: {
+        ":session": "session-old",
+        ":arena": "A2BC",
+        ":closes": 16_000,
+        ":revision": 7,
+      },
     });
+  });
+
+  it("guards an initial pointer without a revision from a later reopen before stale deletion", () => {
+    expect(stalePublicArenaDeleteRequest("sessions", "PUBLIC#ca-central-1#web-42", "session-old", "A2BC", 16_000))
+      .toMatchObject({
+        ConditionExpression: expect.stringContaining("attribute_not_exists(admissionRevision)"),
+        ExpressionAttributeValues: expect.not.objectContaining({ ":revision": expect.anything() }),
+      });
   });
 });

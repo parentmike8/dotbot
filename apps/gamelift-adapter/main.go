@@ -86,7 +86,10 @@ func (s *sessionState) snapshot() any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.update != nil {
-		return *s.update
+		// Keep the loopback contract stable: Node consumes one GameSession
+		// shape whether the SDK supplied it at activation or inside a later
+		// UpdateGameSession callback.
+		return s.update.GameSession
 	}
 	return s.session
 }
@@ -325,7 +328,7 @@ func (l *lifecycle) handler() http.Handler {
 		})
 	})
 	mux.HandleFunc("POST /v1/player-sessions/accept", l.acceptPlayerSessionHandler)
-	mux.HandleFunc("POST /v1/player-sessions/remove", l.playerSessionHandler(l.api.RemovePlayerSession))
+	mux.HandleFunc("POST /v1/player-sessions/remove", l.removePlayerSessionHandler)
 	mux.HandleFunc("POST /v1/process/end", func(response http.ResponseWriter, _ *http.Request) {
 		if err := l.endProcess(); err != nil {
 			http.Error(response, "unable to end process", http.StatusServiceUnavailable)
@@ -372,17 +375,45 @@ func (l *lifecycle) acceptPlayerSessionHandler(response http.ResponseWriter, req
 	})
 }
 
-func (l *lifecycle) playerSessionHandler(action func(string) error) http.HandlerFunc {
-	return func(response http.ResponseWriter, requestValue *http.Request) {
-		playerSessionID, ok := decodePlayerSessionRequest(response, requestValue)
-		if !ok {
-			return
-		}
-		if err := action(playerSessionID); err != nil {
-			http.Error(response, "player session rejected", http.StatusUnauthorized)
-			return
-		}
+func (l *lifecycle) removePlayerSessionHandler(response http.ResponseWriter, requestValue *http.Request) {
+	playerSessionID, ok := decodePlayerSessionRequest(response, requestValue)
+	if !ok {
+		return
+	}
+	if err := l.api.RemovePlayerSession(playerSessionID); err == nil {
 		response.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Removal is an idempotent reconciliation boundary. The Node process may
+	// have lost the accept response after the SDK committed, or may retry after
+	// an earlier removal committed. Confirm the exact current-GameSession
+	// binding before treating a non-active state as already safe.
+	describeRequest := request.NewDescribePlayerSessions()
+	describeRequest.PlayerSessionID = playerSessionID
+	described, err := l.api.DescribePlayerSessions(describeRequest)
+	if err != nil {
+		http.Error(response, "player session rejected", http.StatusUnauthorized)
+		return
+	}
+	if len(described.PlayerSessions) == 0 {
+		response.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if len(described.PlayerSessions) != 1 {
+		http.Error(response, "player session rejected", http.StatusUnauthorized)
+		return
+	}
+	playerSession := described.PlayerSessions[0]
+	if playerSession.PlayerSessionID != playerSessionID || playerSession.GameSessionID != l.state.gameSessionID() || playerSession.Status == nil {
+		http.Error(response, "player session rejected", http.StatusUnauthorized)
+		return
+	}
+	switch playerSession.GetStatus() {
+	case model.PlayerReserved, model.PlayerCompleted, model.PlayerTimedout:
+		response.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(response, "player session rejected", http.StatusUnauthorized)
 	}
 }
 

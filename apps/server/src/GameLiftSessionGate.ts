@@ -19,6 +19,16 @@ export type GameLiftSessionGateOptions = {
   fetch?: typeof fetch;
 };
 
+/** The accept request may already have committed in the SDK. Callers must
+ * retain the player-session id and reconcile it through RemovePlayerSession. */
+export class GameLiftPlayerSessionRemovalRequiredError extends Error {
+  readonly removalRequired = true;
+}
+
+export function requiresPlayerSessionRemoval(error: unknown): error is GameLiftPlayerSessionRemovalRequiredError {
+  return error instanceof GameLiftPlayerSessionRemovalRequiredError;
+}
+
 /**
  * The GameLift SDK runs in a small local adapter. This gate is the only part
  * of the Node game server that can admit or remove a GameLift player session.
@@ -76,44 +86,52 @@ export class GameLiftSessionGate {
 
   async acceptPlayerSession(playerSessionId: string): Promise<string> {
     const response = await this.playerSessionAction("accept", playerSessionId);
-    const payload = await response.json().catch(() => null) as { playerId?: unknown } | null;
-    if (!payload || typeof payload.playerId !== "string" || !payload.playerId || payload.playerId.length > 1024) {
-      throw new Error("GameLift returned an invalid player identity.");
+    try {
+      const payload = await response.json().catch(() => null) as { playerId?: unknown } | null;
+      if (!payload || typeof payload.playerId !== "string" || !payload.playerId || payload.playerId.length > 1024) {
+        throw new Error("GameLift returned an invalid player identity.");
+      }
+      return payload.playerId;
+    } catch (error) {
+      throw removalRequiredError(error);
     }
-    return payload.playerId;
   }
 
   async acceptPublicPlayerSession(playerSessionId: string): Promise<PublicPlayerAdmission> {
     const response = await this.playerSessionAction("accept", playerSessionId);
-    const payload = await response.json().catch(() => null) as { playerId?: unknown; playerData?: unknown } | null;
-    if (!payload || typeof payload.playerId !== "string" || !payload.playerId || payload.playerId.length > 1024) {
-      throw new Error("GameLift returned an invalid player identity.");
-    }
-    let playerData: unknown = payload.playerData;
-    if (typeof playerData === "string") {
-      try {
-        playerData = JSON.parse(playerData);
-      } catch {
+    try {
+      const payload = await response.json().catch(() => null) as { playerId?: unknown; playerData?: unknown } | null;
+      if (!payload || typeof payload.playerId !== "string" || !payload.playerId || payload.playerId.length > 1024) {
+        throw new Error("GameLift returned an invalid player identity.");
+      }
+      let playerData: unknown = payload.playerData;
+      if (typeof playerData === "string") {
+        try {
+          playerData = JSON.parse(playerData);
+        } catch {
+          throw new Error("GameLift returned invalid public player metadata.");
+        }
+      }
+      if (!playerData || typeof playerData !== "object" || Array.isArray(playerData)) {
         throw new Error("GameLift returned invalid public player metadata.");
       }
+      const value = playerData as Record<string, unknown>;
+      const arenaId = typeof value.arenaId === "string" ? value.arenaId.trim().toUpperCase() : "";
+      const partyId = typeof value.partyId === "string" ? value.partyId.trim() : "";
+      const buildId = typeof value.buildId === "string" ? value.buildId.trim() : "";
+      const region = typeof value.region === "string" ? value.region.trim() : "";
+      if (value.mode !== "public-hot-arena" || !roomCodePattern.test(arenaId)
+        || !safeMetadata(partyId, 128) || !safeMetadata(buildId, 64) || !safeMetadata(region, 64)) {
+        throw new Error("GameLift returned invalid public player metadata.");
+      }
+      const session = await this.publicSession();
+      if (session.arenaId !== arenaId || session.buildId !== buildId || session.region !== region) {
+        throw new Error("GameLift public player metadata does not match the assigned game session.");
+      }
+      return { playerId: payload.playerId, arenaId, partyId, buildId, region };
+    } catch (error) {
+      throw removalRequiredError(error);
     }
-    if (!playerData || typeof playerData !== "object" || Array.isArray(playerData)) {
-      throw new Error("GameLift returned invalid public player metadata.");
-    }
-    const value = playerData as Record<string, unknown>;
-    const arenaId = typeof value.arenaId === "string" ? value.arenaId.trim().toUpperCase() : "";
-    const partyId = typeof value.partyId === "string" ? value.partyId.trim() : "";
-    const buildId = typeof value.buildId === "string" ? value.buildId.trim() : "";
-    const region = typeof value.region === "string" ? value.region.trim() : "";
-    if (value.mode !== "public-hot-arena" || !roomCodePattern.test(arenaId)
-      || !safeMetadata(partyId, 128) || !safeMetadata(buildId, 64) || !safeMetadata(region, 64)) {
-      throw new Error("GameLift returned invalid public player metadata.");
-    }
-    const session = await this.publicSession();
-    if (session.arenaId !== arenaId || session.buildId !== buildId || session.region !== region) {
-      throw new Error("GameLift public player metadata does not match the assigned game session.");
-    }
-    return { playerId: payload.playerId, arenaId, partyId, buildId, region };
   }
 
   async removePlayerSession(playerSessionId: string): Promise<void> {
@@ -138,15 +156,28 @@ export class GameLiftSessionGate {
   private async playerSessionAction(action: "accept" | "remove", playerSessionId: string): Promise<Response> {
     const value = playerSessionId.trim();
     if (!value || value.length > 2048) throw new Error("A valid GameLift player session is required.");
-    const response = await this.request(`${this.adapterUrl}/v1/player-sessions/${action}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ playerSessionId: value }),
-      signal: AbortSignal.timeout(1500),
-    });
+    let response: Response;
+    try {
+      response = await this.request(`${this.adapterUrl}/v1/player-sessions/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ playerSessionId: value }),
+        signal: AbortSignal.timeout(1500),
+      });
+    } catch {
+      if (action === "accept") {
+        throw new GameLiftPlayerSessionRemovalRequiredError("GameLift player-session acceptance is uncertain.");
+      }
+      throw new Error("GameLift player-session removal failed.");
+    }
     if (!response.ok) throw new Error("GameLift rejected the player session.");
     return response;
   }
+}
+
+function removalRequiredError(error: unknown): GameLiftPlayerSessionRemovalRequiredError {
+  if (requiresPlayerSessionRemoval(error)) return error;
+  return new GameLiftPlayerSessionRemovalRequiredError(error instanceof Error ? error.message : "GameLift returned an invalid player session response.");
 }
 
 function safeMetadata(value: string, maxLength: number): boolean {

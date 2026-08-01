@@ -670,6 +670,32 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(await persistence.claimRelayRequest(requestId, new Date(Date.now() + 60_000))).toBe(false);
     await app.close();
   });
+
+  it("registers all 18 human participants in one public match transaction", async () => {
+    await sql!`truncate table relay_requests, contracts, base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
+    process.env.NODE_ENV = "test";
+    const { app, persistence } = await createServer({ databaseUrl });
+    const roster = await Promise.all(Array.from({ length: 18 }, (_, index) => persistence.registerPlayer(`Public ${index + 1}`)));
+    const matchId = crypto.randomUUID();
+
+    const started = await persistence.startMatch({
+      matchId,
+      roomCode: "FULL",
+      mapId: "downtown",
+      startedAt: new Date(),
+      playerIds: roster.map((player) => player.playerId),
+    });
+
+    expect(Object.keys(started.loadouts)).toHaveLength(18);
+    expect((await sql!<Array<{ count: number }>>`
+      select count(*)::int as count from match_participants where match_id = ${matchId}
+    `)[0].count).toBe(18);
+    await expect(persistence.finishMatch({ matchId, endedAt: new Date(), summary: { reason: "premature" } }))
+      .rejects.toThrow(/unsettled participant/i);
+    await Promise.all(roster.map((player) => persistence.recordOutcome({ matchId, playerId: player.playerId, outcome: "timeout" })));
+    await expect(persistence.finishMatch({ matchId, endedAt: new Date(), summary: { reason: "timeout" } })).resolves.toBeUndefined();
+    await app.close();
+  });
 });
 
 function collectingPeer(id: string): { peer: RoomPeer; messages: ServerMessage[] } {

@@ -6,6 +6,10 @@ import type { BaseTutorialAction, BaseTutorialState } from "@dotbot/game/baseTut
 export type PlayerIdentity = {
   playerId: string;
   name: string;
+  /** Retired internal UUIDs that resolve to this canonical player. This field
+   * is for signed server-to-server admission only and must never be included
+   * in a public identity response. */
+  previousPlayerIds?: string[];
 };
 
 export type RegisteredPlayer = PlayerIdentity & {

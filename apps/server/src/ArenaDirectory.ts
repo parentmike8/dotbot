@@ -22,9 +22,14 @@ export class RemoteArenaDirectory implements ArenaDirectory {
   }
 
   async publish(state: { arenaId: string; open: boolean; closesAt?: number }): Promise<void> {
+    // Order revisions by the room's desired-state calls, not by completion of
+    // the asynchronous GameLift metadata lookup. Otherwise a slow old open
+    // can be assigned a newer revision than a later close and reopen a live
+    // arena after the close already reached DynamoDB.
+    const revision = ++this.revision;
     const session = await this.gameLift.publicSession();
     if (session.arenaId !== state.arenaId) throw new Error("Public arena reporter received a mismatched arena id.");
-    const revision = ++this.revision;
+    if (revision !== this.revision) return;
     const response = await this.lambda.send(new InvokeCommand({
       FunctionName: this.functionName,
       InvocationType: "RequestResponse",

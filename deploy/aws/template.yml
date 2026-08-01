@@ -12,6 +12,15 @@ Parameters:
   RelaySecretArn:
     Type: String
     Default: arn:aws:secretsmanager:us-east-1:380314682423:secret:dotbot/production/persistence-relay-V5v6wq
+  PublicQuickPlayEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+  QuickPlayBuildId:
+    Type: String
+    Default: disabled
 
 Resources:
   SessionsTable:
@@ -78,6 +87,8 @@ Resources:
           GAMELIFT_REGION: ca-central-1
           CONTROL_PLANE_URL: !Ref ControlPlaneUrl
           RELAY_SECRET_ARN: !Ref RelaySecretArn
+          DOTBOT_PUBLIC_QUICK_PLAY: !Ref PublicQuickPlayEnabled
+          QUICK_PLAY_BUILD_ID: !Ref QuickPlayBuildId
       Events:
         Health:
           Type: HttpApi

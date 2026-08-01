@@ -78,10 +78,69 @@ run count is reached. It finishes the current run, waits for all outcome and
 match-finish writes, then exposes a safe retirement signal. No per-run code
 calls `ProcessEnding`.
 
+GameLift's loopback termination drain requests that same retirement state
+before polling `safeToTerminate`. It prevents queued or already-connected
+players from starting another run, lets a live run finish, and, if the drain
+arrives during an asynchronous match start, settles that exact persistence
+boundary before reporting safe. This closes the race where a results or
+assembly state could report safe and then advance into a new run.
+
+GameLift player-session removal is also fail-closed without being a retirement
+signal. A removal gets three immediate bounded attempts. If all fail, the
+server retains the exact terminal reservation binding (including its player
+session id and trusted admission metadata), rejects fresh WebSocket admissions,
+and reports HTTP 503 readiness with `reservationRemovalDegraded: true`. It does
+not disconnect other sockets, stop an unrelated active run, or call
+`ProcessEnding`. A different already-bound reservation may still use its
+existing reconnect grace, but no fresh GameLift reservation is accepted. The
+rejected reservation cannot reconnect while its removal is uncertain. The
+server retries the same binding every five seconds; the
+first successful adapter response deletes it and restores readiness and
+admission automatically. A persistent adapter outage therefore remains
+visible to GameLift health handling, while an adapter recovery cannot leave a
+healthy non-retiring process permanently admission-bricked. Only the arena's
+explicit bounded retirement path may call `ProcessEnding`, after persistence
+is safe.
+
 Disabling the explicit public mode leaves the legacy room manager, room-code
 protocol, host start, and existing Cloud Run fallback behavior unchanged.
+The AWS allocator is also fail-closed: `DOTBOT_PUBLIC_QUICK_PLAY=true` and one
+configured `QUICK_PLAY_BUILD_ID` are required before `/quick-play` can create
+capacity. Client-supplied build metadata must match that configured compatibility
+id; it cannot create arbitrary pool keys. The dedicated server has a separate
+default-off `DOTBOT_PUBLIC_QUICK_PLAY` gate, so control-plane and immutable-build
+activation must be coordinated deliberately.
 
 ## Integration dependency
+
+The identity/GameLift handoff has four deliberately separate responsibilities:
+
+1. `GameLiftSessionGate.acceptPublicPlayerSession` validates and accepts the
+   exact reservation for the assigned GameSession and returns its trusted
+   player/arena/party/build metadata.
+2. `app.ts` keeps that accepted reservation bound to one socket or reconnect
+   grace entry. It passes the reservation identity onward unchanged and uses
+   it again when a disconnected member must release capacity.
+3. `RoomManager.matchesReservedPlayerIdentity` resolves the presented device
+   credential to the current canonical account and accepts the reservation id
+   only when it is either that canonical id or appears in the server-only
+   `PlayerIdentity.previousPlayerIds` alias list.
+4. The combined identity integration must preserve its `Room.join` split:
+   `resolvedPlayerId` is the formatted public runtime id,
+   `persistencePlayerId` is the canonical internal UUID, and that method's
+   `previousPlayerIds` argument contains retired formatted runtime ids only for
+   duplicate-room admission. The hot-arena merge adds the trusted GameLift
+   reservation id as separate private member metadata for exact reservation
+   removal. It must not pass `PlayerIdentity.previousPlayerIds` (internal UUID
+   aliases) into Room. Retired internal aliases are excluded from arena
+   messages, persistence rosters, public identity responses, and directory
+   updates.
+
+Arena-directory revisions remain strictly desired-state/session ordered; they
+do not depend on player identity or alias lookup completion. An arena may
+revise only the exact GameSession/arena tuple first published by the control
+plane. It cannot create a missing pointer or reclaim a closed replacement, so
+late callbacks cannot produce a directory ABA across concurrent arenas.
 
 The allocator accepts only party metadata returned by the authenticated
 control-plane identity response; WebSocket and quick-play request bodies cannot

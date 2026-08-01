@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "./app";
+import { NoopPersistence } from "./db";
 
 describe("persistence graceful degradation", () => {
   it("boots with one warning and functional auth when DATABASE_URL is absent", async () => {
@@ -56,5 +57,26 @@ describe("persistence graceful degradation", () => {
     expect(health.statusCode).toBe(200);
     await app.close();
     warning.mockRestore();
+  });
+
+  it("never exposes retired internal identity aliases from public hello", async () => {
+    class AliasPersistence extends NoopPersistence {
+      override readonly live = true;
+      override async helloPlayer() {
+        return { playerId: "canonical-player", name: "Pilot", previousPlayerIds: ["retired-internal-uuid"] };
+      }
+    }
+    process.env.NODE_ENV = "test";
+    const { app } = await createServer({ persistence: new AliasPersistence() });
+
+    const hello = await app.inject({
+      method: "POST",
+      url: "/api/auth/hello",
+      payload: { token: "linked-device-token" },
+    });
+
+    expect(hello.statusCode).toBe(200);
+    expect(hello.json()).toEqual({ playerId: "canonical-player", name: "Pilot" });
+    await app.close();
   });
 });

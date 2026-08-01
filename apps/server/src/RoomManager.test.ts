@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ServerMessage } from "@dotbot/protocol";
 import { completedBaseTutorialState, initialBaseTutorialState } from "@dotbot/game/baseTutorial";
 import { NoopPersistence } from "./db";
 import type { RoomPeer } from "./Room";
-import { RoomManager } from "./RoomManager";
+import { matchesReservedPlayerIdentity, RoomManager } from "./RoomManager";
 
 class TutorialPersistence extends NoopPersistence {
   override readonly live = true;
@@ -25,6 +25,31 @@ const peer = (messages: ServerMessage[]): RoomPeer => ({
 });
 
 describe("RoomManager tutorial admission", () => {
+  it("starts a bounded idle clock for an assigned GameLift arena even if no player opens a socket", async () => {
+    let now = 0;
+    const expired = vi.fn();
+    const manager = new RoomManager({
+      now: () => now,
+      persistence: new TutorialPersistence(true),
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      sessionRoomCode: async () => "IDLE",
+      onRoomExpired: expired,
+    });
+
+    (manager as unknown as { tick(): void }).tick();
+    await vi.waitFor(() => expect(manager.rooms).toBe(1));
+    now = 10 * 60_000;
+    (manager as unknown as { tick(): void }).tick();
+    await vi.waitFor(() => expect(expired).toHaveBeenCalledTimes(1));
+    expect(manager.rooms).toBe(0);
+
+    now += 1_000;
+    (manager as unknown as { tick(): void }).tick();
+    expect(manager.rooms).toBe(0);
+    expect(expired).toHaveBeenCalledTimes(1);
+    await manager.stop();
+  });
+
   it("fails closed instead of admitting a stateless Noop identity", async () => {
     const messages: ServerMessage[] = [];
     const manager = new RoomManager({ persistence: new NoopPersistence() });
@@ -71,5 +96,51 @@ describe("RoomManager tutorial admission", () => {
     })).toBe(true);
     expect(manager.rooms).toBe(1);
     await manager.stop();
+  });
+
+  it("accepts a GameLift reservation issued to a trusted retired identity alias", async () => {
+    class AliasPersistence extends TutorialPersistence {
+      override async resolveOrRegisterPlayer(_token: string, offeredName: string) {
+        return { playerId: "canonical-player", name: offeredName, previousPlayerIds: ["reserved-guest"] };
+      }
+    }
+    const messages: ServerMessage[] = [];
+    const manager = new RoomManager({
+      persistence: new AliasPersistence(true),
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+    });
+
+    expect(matchesReservedPlayerIdentity({
+      playerId: "canonical-player",
+      name: "Linked player",
+      previousPlayerIds: ["reserved-guest"],
+    }, "reserved-guest")).toBe(true);
+    expect(await manager.handleQuickPlayHello(peer(messages), {
+      type: "quickPlayHello",
+      token: "linked-device-token",
+      name: "Linked player",
+      playerSessionId: "psess-1",
+    }, {
+      playerId: "reserved-guest",
+      arenaId: "ALIA",
+      partyId: "solo-reserved-guest",
+      buildId: "web-42",
+      region: "ca-central-1",
+    })).toBe(true);
+    expect(manager.join("ALIA")?.publicArenaMembers).toEqual([{
+      playerId: "canonical-player",
+      name: "Linked player",
+      partyId: "solo-reserved-guest",
+      queued: true,
+    }]);
+    await manager.stop();
+  });
+
+  it("rejects a reservation id absent from the canonical identity and its trusted aliases", () => {
+    expect(matchesReservedPlayerIdentity({
+      playerId: "canonical-player",
+      name: "Linked player",
+      previousPlayerIds: ["retired-guest"],
+    }, "spoofed-player")).toBe(false);
   });
 });

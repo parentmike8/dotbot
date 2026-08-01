@@ -21,6 +21,7 @@ type fakeGameLift struct {
 	removed     []string
 	described   *model.PlayerSession
 	err         error
+	removeErr   error
 }
 
 func (f *fakeGameLift) ActivateGameSession() error {
@@ -36,6 +37,9 @@ func (f *fakeGameLift) AcceptPlayerSession(id string) error {
 }
 func (f *fakeGameLift) RemovePlayerSession(id string) error {
 	f.removed = append(f.removed, id)
+	if f.removeErr != nil {
+		return f.removeErr
+	}
 	return f.err
 }
 func (f *fakeGameLift) DescribePlayerSessions(value request.DescribePlayerSessionsRequest) (result.DescribePlayerSessionsResult, error) {
@@ -91,6 +95,25 @@ func TestAcceptedPlayerSessionReturnsTrustedPlayerData(t *testing.T) {
 	}
 }
 
+func TestSessionEndpointKeepsGameSessionShapeAfterUpdate(t *testing.T) {
+	process := newLifecycle(&fakeGameLift{}, "http://unused", "")
+	process.state.setSession(model.GameSession{GameSessionID: "session-old"})
+	process.onUpdateGameSession(model.UpdateGameSession{
+		GameSession: model.GameSession{GameSessionID: "session-updated"},
+	})
+	requestValue := httptest.NewRequest(http.MethodGet, "/v1/session", nil)
+	response := httptest.NewRecorder()
+
+	process.handler().ServeHTTP(response, requestValue)
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"GameSessionId":"session-updated"`) {
+		t.Fatalf("unexpected updated session response status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), `"GameSession":`) {
+		t.Fatalf("adapter leaked nested update envelope: %s", response.Body.String())
+	}
+}
+
 func (f *fakeGameLift) ProcessEnding() error { return f.err }
 func (f *fakeGameLift) GetComputeCertificate() (result.GetComputeCertificateResult, error) {
 	return result.GetComputeCertificateResult{CertificatePath: "/certs", ComputeName: "compute.example"}, f.err
@@ -139,6 +162,69 @@ func TestPlayerSessionEndpoints(t *testing.T) {
 	}
 	if len(fake.accepted) != 1 || fake.accepted[0] != "player-session-1" {
 		t.Fatalf("unexpected accepted sessions %#v", fake.accepted)
+	}
+}
+
+func TestRemovalReconcilesReservedOrAlreadyTerminalSession(t *testing.T) {
+	for name, described := range map[string]model.PlayerSession{
+		"reserved": (model.PlayerSession{
+			PlayerSessionID: "player-session-1",
+			PlayerID:        "player-1",
+			GameSessionID:   "session-1",
+		}).WithStatus(model.PlayerReserved),
+		"completed": (model.PlayerSession{
+			PlayerSessionID: "player-session-1",
+			PlayerID:        "player-1",
+			GameSessionID:   "session-1",
+		}).WithStatus(model.PlayerCompleted),
+		"timedout": (model.PlayerSession{
+			PlayerSessionID: "player-session-1",
+			PlayerID:        "player-1",
+			GameSessionID:   "session-1",
+		}).WithStatus(model.PlayerTimedout),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeGameLift{described: &described, removeErr: errors.New("already non-active")}
+			process := newLifecycle(fake, "http://unused", "")
+			process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+			requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/remove", strings.NewReader(`{"playerSessionId":"player-session-1"}`))
+			response := httptest.NewRecorder()
+
+			process.handler().ServeHTTP(response, requestValue)
+
+			if response.Code != http.StatusNoContent || len(fake.removed) != 1 {
+				t.Fatalf("unexpected reconciled removal status=%d removed=%#v", response.Code, fake.removed)
+			}
+		})
+	}
+}
+
+func TestRemovalDoesNotMaskAnActiveOrForeignSessionFailure(t *testing.T) {
+	for name, described := range map[string]model.PlayerSession{
+		"active": (model.PlayerSession{
+			PlayerSessionID: "player-session-1",
+			PlayerID:        "player-1",
+			GameSessionID:   "session-1",
+		}).WithStatus(model.PlayerActive),
+		"foreign": (model.PlayerSession{
+			PlayerSessionID: "player-session-1",
+			PlayerID:        "player-1",
+			GameSessionID:   "session-foreign",
+		}).WithStatus(model.PlayerCompleted),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeGameLift{described: &described, removeErr: errors.New("remove failed")}
+			process := newLifecycle(fake, "http://unused", "")
+			process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+			requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/remove", strings.NewReader(`{"playerSessionId":"player-session-1"}`))
+			response := httptest.NewRecorder()
+
+			process.handler().ServeHTTP(response, requestValue)
+
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("unexpected failed removal status=%d", response.Code)
+			}
+		})
 	}
 }
 
