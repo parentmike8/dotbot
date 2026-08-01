@@ -62,6 +62,10 @@ type Member = Omit<LobbyMember, "squadId"> & {
   disconnectedAt: number | null;
   inRun: boolean;
   streaming: boolean;
+  /** Last viewer-filtered start envelope for this run. Retained through the
+   * results phase so a refreshed NetSession can initialize map/config before
+   * consuming the cached authoritative outcome after simulation disposal. */
+  matchStart: Extract<ServerMessage, { type: "matchStart" }> | null;
   runOver: Extract<ServerMessage, { type: "runOver" }> | null;
   persistenceEligible: boolean;
   persistedOutcome: string | null;
@@ -366,13 +370,16 @@ export class Room {
       if (this.phase === "live") {
         this.sendMatchStart(existing);
       } else if (this.phase === "results") {
-        // While settlement still owns the simulation, replay the full run
-        // baseline before the cached outcome so a reused NetSession drops all
-        // prior snapshots, actions, events, and replay state. After settlement
-        // the outcome alone is sufficient for a fresh session and still keeps
-        // the authoritative result available until the next run begins.
+        // Replay the run baseline before the cached outcome so both a reused
+        // NetSession and a full-page refresh can initialize and scrub private
+        // transport state. While settlement still owns the simulation, refresh
+        // the envelope from current authority; afterward use the retained
+        // viewer-filtered start envelope from this exact run.
         if (this.simulation && existing.botId) this.sendMatchStart(existing);
-        else if (existing.runOver) existing.peer?.send(existing.runOver);
+        else {
+          if (existing.matchStart) existing.peer?.send(existing.matchStart);
+          if (existing.runOver) existing.peer?.send(existing.runOver);
+        }
       }
       return existing;
     }
@@ -415,6 +422,7 @@ export class Room {
       disconnectedAt: null,
       inRun: false,
       streaming: true,
+      matchStart: null,
       runOver: null,
       persistenceEligible: true,
       persistedOutcome: null,
@@ -1181,6 +1189,7 @@ export class Room {
       member.queueDepthEma = 0;
       member.inRun = true;
       member.streaming = true;
+      member.matchStart = null;
       member.runOver = null;
       member.persistenceEligible = true;
       member.persistedOutcome = null;
@@ -1317,7 +1326,7 @@ export class Room {
     const context = this.viewerContext(member, snapshot);
     const filtered = filterForViewer(wire, snapshot.bots.map(toEntityMeta), context);
     this.resetDotState(member, filtered.dots, visiblePhysicsFloors(wire, context));
-    member.peer?.send({
+    const message: Extract<ServerMessage, { type: "matchStart" }> = {
       type: "matchStart",
       map: downtownMap,
       config: this.simulation.config,
@@ -1329,7 +1338,9 @@ export class Room {
       dotBaseline: filtered.dots,
       intel: this.matchIntel.get(member.playerId),
       ...(this.hotArena && this.matchId ? { matchId: this.matchId, roles: this.currentRoles } : {}),
-    });
+    };
+    member.matchStart = message;
+    member.peer?.send(message);
     const own = snapshot.bots.find((bot) => bot.id === member.botId);
     if (own?.state === "downed" && member.lastKillCam && member.activeKillCamId === member.lastKillCam.id) {
       this.sendStream(member, { type: "killCam", clip: toWireKillCamClip(member.lastKillCam) });

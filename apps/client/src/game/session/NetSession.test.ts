@@ -663,6 +663,54 @@ describe("NetSession item edges", () => {
     expect(session.getRunState()).toMatchObject({ phase: "over", reason: "timeout" });
   });
 
+  it("starts a refreshed client from a retained result baseline before replaying the outcome", async () => {
+    const transport = new FakeTransport();
+    const session = new NetSession({
+      url: "/ws",
+      roomCode: "PUBLIC",
+      name: "Ada",
+      token: "token",
+      transportFactory: () => transport,
+    });
+    const started = session.start();
+    transport.handlers?.open();
+    transport.handlers?.message({
+      type: "arenaWelcome",
+      playerId: "PUBLIC-PLAYER",
+      arenaId: "PUBLIC",
+      phase: "results",
+      members: [],
+      retiring: false,
+    });
+    transport.handlers?.message({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "human-PUBLIC-PLAYER",
+      meta: [],
+      tickHz: 60,
+      endTick: 3_600,
+      insertionName: "WEST GATE",
+      dotBaseline: [],
+      matchId: "00000000-0000-4000-8000-000000000023",
+      roles: [],
+    });
+    transport.handlers?.message({
+      type: "runOver",
+      reason: "timeout",
+      keptItems: [],
+      lostItems: [],
+      learnedBlueprints: [],
+    });
+
+    await started;
+    expect(session.map).toBe(downtownMap);
+    expect(session.playerId).toBe("human-PUBLIC-PLAYER");
+    expect(session.getRunGeneration()).toBe(1);
+    expect(session.getRunState()).toMatchObject({ phase: "over", reason: "timeout" });
+    session.dispose();
+  });
+
   it("scrubs staged take and downed actions during a reconnect handoff", () => {
     const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
     session.sendInput({

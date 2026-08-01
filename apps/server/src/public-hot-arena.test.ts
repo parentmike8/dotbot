@@ -412,7 +412,15 @@ describe("public quick-play Room mode", () => {
       undefined,
       "party",
     )).not.toBeNull();
-    expect(settled.messages.map((message) => message.type)).toEqual(["arenaWelcome", "runOver"]);
+    expect(settled.messages.map((message) => message.type)).toEqual([
+      "arenaWelcome",
+      "matchStart",
+      "runOver",
+    ]);
+    expect(settled.messages.at(-2)).toMatchObject({
+      type: "matchStart",
+      matchId: "00000000-0000-4000-8000-000000000023",
+    });
     expect(settled.messages.at(-1)).toMatchObject({ type: "runOver", reason: "timeout" });
   });
 
