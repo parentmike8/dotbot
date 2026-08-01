@@ -310,6 +310,32 @@ describe("RoomManager atomic party admission", () => {
       name: "Duplicate device",
       partyId: "party-fedcba9876543210fedcba9876543210",
     }])).toEqual({ accepted: false, code: "party_invalid", retryable: false });
+
+    room.phase = "results";
+    for (const member of (room as unknown as { members: Map<string, { queuedForNextRun: boolean }> }).members.values()) {
+      member.queuedForNextRun = false;
+    }
+    expect(manager.preflightPublicParty("A2BC", prepared.map((member) => ({
+      playerId: member.identity.playerId,
+      name: member.identity.name,
+      partyId: baseAdmission.partyId,
+    })))).toEqual({ accepted: true });
+
+    const freshMessages: ServerMessage[][] = [[], []];
+    const freshClaimId = "00000000-0000-4000-8000-000000000011";
+    const fresh = prepared.map((member, index): PreparedPublicPartyMember => ({
+      ...member,
+      peer: peer(freshMessages[index], `fresh-party-peer-${index + 1}`),
+      admission: {
+        ...member.admission,
+        partyClaimId: freshClaimId,
+        partyVersion: 4,
+        partyReservationExpiresAt: Date.now() + 30_000,
+      },
+    }));
+    expect(await manager.commitPublicParty(fresh)).toBe(true);
+    expect(room.size).toBe(2);
+    expect(freshMessages.every((messages) => messages.some((message) => message.type === "arenaWelcome"))).toBe(true);
     await manager.stop();
   });
 });

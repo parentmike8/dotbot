@@ -248,7 +248,8 @@ export type WireKillCamFrame = [
   tick: number,
   victim: WireKillCamActor,
   source: WireKillCamActor | null,
-  blockingDoorIds?: string[],
+  /** Null is accepted for rolling compatibility with older sparse tuple encoders. */
+  blockingDoorIds?: string[] | null,
   visibleBots?: WireKillCamActor[],
 ];
 

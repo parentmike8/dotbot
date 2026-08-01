@@ -5,6 +5,7 @@ import { collectSolids } from "@dotbot/game/collision";
 import type { BaseLayout, GameSnapshot } from "@dotbot/game/types";
 import {
   BaseSessionLifecycle,
+  tutorialAuthorityToken,
   type BaseSessionWorld,
 } from "./baseSessionLifecycle";
 
@@ -17,6 +18,30 @@ const initial: BaseSessionWorld = {
 };
 
 describe("BaseSessionLifecycle", () => {
+  it("uses the device token issued while a local first-run base is being promoted", () => {
+    expect(tutorialAuthorityToken("", "fresh-device-token")).toBe("fresh-device-token");
+    expect(tutorialAuthorityToken("existing-device-token", null)).toBe("existing-device-token");
+  });
+
+  it("promotes a locally mounted first-run base when durable identity finishes linking", () => {
+    const lifecycle = new BaseSessionLifecycle(initial, false);
+    const linkedWorld: BaseSessionWorld = {
+      layout: { ...starterBaseLayout, "floor-south": "workbench" },
+      shell: "workshop",
+      expanded: false,
+      tutorial: { phase: "movement", revision: 0 },
+    };
+
+    expect(lifecycle.world(linkedWorld).authoritative).toBe(false);
+    expect(lifecycle.activateAuthoritative(linkedWorld)).toBe(true);
+    expect(lifecycle.world(linkedWorld)).toMatchObject({
+      authoritative: true,
+      layout: linkedWorld.layout,
+      tutorial: linkedWorld.tutorial,
+    });
+    expect(lifecycle.activateAuthoritative(linkedWorld)).toBe(false);
+  });
+
   it("keeps one frozen authoritative world through incomplete phase changes", () => {
     const lifecycle = new BaseSessionLifecycle(initial, true);
     const changed: BaseSessionWorld = {

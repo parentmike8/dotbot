@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { LobbyApp } from "./LobbyApp";
 import { PublicQuickPlayApp } from "./PublicQuickPlayApp";
-import { selectDeploymentMode, type PublicQuickPlayConfig } from "../publicQuickPlayMachine";
+import { fetchDeploymentConfig, selectDeploymentMode, type PublicQuickPlayConfig } from "../publicQuickPlayMachine";
 import "./lobby.css";
 
 type DeploymentAppProps = {
@@ -14,9 +14,7 @@ export function DeploymentApp({ embedded = false, onReturnToBase }: DeploymentAp
 
   useEffect(() => {
     let active = true;
-    void fetch("/api/game-config", { cache: "no-store" })
-      .then(async (response) => response.ok ? await response.json() as PublicQuickPlayConfig : {})
-      .catch(() => ({} as PublicQuickPlayConfig))
+    void fetchDeploymentConfig()
       .then((value) => { if (active) setConfig(value); });
     return () => { active = false; };
   }, []);

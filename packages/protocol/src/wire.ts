@@ -47,7 +47,13 @@ export function toWireKillCamClip(clip: KillCamClip): WireKillCamClip {
         frame.source ? toWireKillCamActor(frame.source) : null,
       ];
       if (frame.blockingDoorIds.length) wireFrame[3] = frame.blockingDoorIds;
-      if (frame.visibleBots.length) wireFrame[4] = frame.visibleBots.map(toWireKillCamActor);
+      if (frame.visibleBots.length) {
+        // JSON encodes a sparse tuple slot as null. Fill the optional doorway
+        // slot before appending visible actors so the serialized wire frame
+        // remains decodable by both current and rolling clients.
+        wireFrame[3] ??= [];
+        wireFrame[4] = frame.visibleBots.map(toWireKillCamActor);
+      }
       return wireFrame;
     }),
   };
@@ -77,12 +83,12 @@ export function fromWireKillCamClip(wire: WireKillCamClip): KillCamClip {
         ...(sourceId ? { sourceId } : {}),
       })),
     } : {}),
-    frames: wire.f.map(([frameTick, victim, source, blockingDoorIds = [], visibleBots = []]) => ({
+    frames: wire.f.map(([frameTick, victim, source, blockingDoorIds, visibleBots]) => ({
       tick: frameTick,
       victim: fromWireKillCamActor(victim),
       ...(source ? { source: fromWireKillCamActor(source) } : {}),
-      visibleBots: visibleBots.map(fromWireKillCamActor),
-      blockingDoorIds: [...blockingDoorIds],
+      visibleBots: (visibleBots ?? []).map(fromWireKillCamActor),
+      blockingDoorIds: [...(blockingDoorIds ?? [])],
     })),
   };
 }

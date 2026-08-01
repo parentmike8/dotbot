@@ -110,7 +110,12 @@ export function ManifestScreen({
             </div>
           ))}
         </dl>
-        <button type="button" className="manifest-new-run" onClick={onNewRun}>
+        <button
+          type="button"
+          className="manifest-new-run"
+          onClick={onNewRun}
+          disabled={result.persistenceStatus === "failed"}
+        >
           {actionLabel}
         </button>
         {secondaryActionLabel && onSecondaryAction ? (

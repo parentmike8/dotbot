@@ -21,6 +21,10 @@ export type ResolvedBaseSessionWorld = BaseSessionWorld & {
   spawn: { position: Vec2; floorId: string } | null;
 };
 
+export function tutorialAuthorityToken(currentToken: string, storedToken: string | null): string {
+  return storedToken || currentToken;
+}
+
 /**
  * Owns the single, explicit boundary between the server-run introduction and
  * the normal current-layout base.
@@ -31,7 +35,7 @@ export type ResolvedBaseSessionWorld = BaseSessionWorld & {
  * current layout/shell/expansion state.
  */
 export class BaseSessionLifecycle {
-  private readonly initial: BaseSessionWorld;
+  private initial: BaseSessionWorld;
   private authorityActive: boolean;
   private terminalTutorial: BaseTutorialState | null = null;
   private localSpawn: { position: Vec2; floorId: string } | null = null;
@@ -48,6 +52,22 @@ export class BaseSessionLifecycle {
 
   get authoritative(): boolean {
     return this.authorityActive;
+  }
+
+  /** A fresh account can render one local frame while its durable base fetch
+   * resolves. Promote that same mounted lifecycle when the storage link
+   * arrives instead of leaving the introduction permanently local. */
+  activateAuthoritative(initial: BaseSessionWorld): boolean {
+    if (this.authorityActive || this.terminalTutorial || isBaseTutorialComplete(initial.tutorial)) return false;
+    this.initial = {
+      layout: { ...initial.layout },
+      shell: initial.shell,
+      expanded: initial.expanded,
+      tutorial: { ...initial.tutorial },
+    };
+    this.localSpawn = null;
+    this.authorityActive = true;
+    return true;
   }
 
   acceptAuthoritative(state: BaseTutorialConnectionState): boolean {

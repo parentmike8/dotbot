@@ -7,6 +7,7 @@ import {
   getPublicPartyAllocationStatus,
   PublicPartyQueueError,
   requestPublicPartyAllocation,
+  shouldRetryPublicPartyClaim,
   type PublicPartyAllocation,
   type PublicPartyAllocationStatus,
 } from "../publicPartyQueue";
@@ -19,6 +20,8 @@ import {
   publicQuickPlayStateFromResume,
   publicPartyStatusLabel,
   publicQueueTimedOut,
+  shouldCancelBeforeBaseReturn,
+  startPublicQuickPlayOperations,
   type PublicQuickPlayConfig,
   type PublicQuickPlayEvent,
   type PublicQuickPlayState,
@@ -54,6 +57,8 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
   const partyLeaderRef = useRef<boolean | null>(null);
   const [clock, setClock] = useState(Date.now());
   const cancellationRequests = useRef(new Set<string>());
+  const playerSessionInUseElsewhere = useRef(new Set<string>());
+  const authoritativeConnectionFailures = useRef(new Map<string, string>());
   const disposed = useRef(false);
   const name = (localStorage.getItem(playerNameKey) ?? "Player").trim() || "Player";
   const matchmakerUrl = config.matchmakerUrl!;
@@ -62,6 +67,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
 
   const dispatch = (event: PublicQuickPlayEvent): void => {
     stateRef.current = publicQuickPlayReducer(stateRef.current, event);
+    writeResume(publicQuickPlayResume(stateRef.current));
     reactDispatch(event);
   };
 
@@ -76,35 +82,50 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
   }, []);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const [nextParty, account] = await Promise.all([fetchPartyState(), fetchAccountState()]);
-        if (disposed.current) return;
-        setParty(nextParty);
-        const ownId = account.publicPlayerId?.replace(/-/g, "");
-        const own = nextParty?.members.find((member) => member.publicPlayerId.replace(/-/g, "") === ownId);
-        const leader = own?.leader ?? (nextParty ? false : null);
-        partyLeaderRef.current = leader;
-        setIsPartyLeader(leader);
-      } catch {
-        // Party detail is presentation-only. The atomic claim remains the
-        // authority and still determines the whole roster.
-      }
-      const resumed = stateRef.current.allocation;
-      if (stateRef.current.phase === "cancelling") await cancel(stateRef.current.returnToBase === true);
-      else if (resumed && stateRef.current.operationId) await connect(stateRef.current.operationId, resumed);
-      else await claim("initial");
-    })();
+    void startPublicQuickPlayOperations(
+      async () => {
+        try {
+          const [nextParty, account] = await Promise.all([fetchPartyState(), fetchAccountState()]);
+          if (disposed.current) return;
+          setParty(nextParty);
+          const ownId = account.publicPlayerId?.replace(/-/g, "");
+          const own = nextParty?.members.find((member) => member.publicPlayerId.replace(/-/g, "") === ownId);
+          const leader = own?.leader ?? (nextParty ? false : null);
+          partyLeaderRef.current = leader;
+          setIsPartyLeader(leader);
+        } catch {
+          // Party detail is presentation-only. The atomic claim remains the
+          // authority and still determines the whole roster.
+        }
+      },
+      async () => {
+        const resumed = stateRef.current.allocation;
+        if (stateRef.current.phase === "cancelling") await cancel(stateRef.current.returnToBase === true);
+        else if (resumed && stateRef.current.operationId) await connect(stateRef.current.operationId, resumed);
+        else if (stateRef.current.phase === "claiming" && stateRef.current.operationId && stateRef.current.intent
+          && stateRef.current.startedAt !== undefined) {
+          await claim(stateRef.current.intent, {
+            operationId: stateRef.current.operationId,
+            startedAt: stateRef.current.startedAt,
+          });
+        } else await claim("initial");
+      },
+    );
     return () => {
       disposed.current = true;
       sessionRef.current?.dispose();
     };
   }, []);
 
-  async function claim(intent: "initial" | "redeploy"): Promise<void> {
-    if (stateRef.current.phase !== "idle" && stateRef.current.phase !== "results" && stateRef.current.phase !== "error") return;
-    const operationId = crypto.randomUUID();
-    dispatch({ type: "claim", operationId, intent, now: Date.now() });
+  async function claim(
+    intent: "initial" | "redeploy",
+    resumed?: { operationId: string; startedAt: number },
+  ): Promise<void> {
+    if (resumed) {
+      if (stateRef.current.phase !== "claiming" || stateRef.current.operationId !== resumed.operationId) return;
+    } else if (stateRef.current.phase !== "idle" && stateRef.current.phase !== "results" && stateRef.current.phase !== "error") return;
+    const operationId = resumed?.operationId ?? crypto.randomUUID();
+    if (!resumed) dispatch({ type: "claim", operationId, intent, now: Date.now() });
     setMessage(partyLeaderRef.current === false ? "WAITING FOR PARTY LEADER" : "LOCKING PARTY LOADOUT");
     let token: string;
     try {
@@ -113,7 +134,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
       dispatch({ type: "failed", operationId, message: queueErrorMessage(error), retryable: true, connection: true });
       return;
     }
-    const startedAt = Date.now();
+    const startedAt = resumed?.startedAt ?? Date.now();
     const latencies = Object.fromEntries(regions.map((region) => [region, 0]));
 
     while (!disposed.current && !publicQueueTimedOut(startedAt, Date.now(), queueTimeoutMs)) {
@@ -152,6 +173,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
           dispatch({ type: "failed", operationId, message: queueErrorMessage(statusError), retryable: false });
           return;
         }
+        if (stateRef.current.operationId !== operationId) return;
         if (recovered) {
           if (cancellationRequests.current.has(operationId)) {
             await finishCancellation(operationId, recovered.queueTicket, token);
@@ -166,7 +188,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
           finishLocalCancellation(operationId);
           return;
         }
-        const mayRetry = !(error instanceof PublicPartyQueueError) || error.retryable || partyLeaderRef.current === false;
+        const mayRetry = shouldRetryPublicPartyClaim(error);
         if (!mayRetry) {
           dispatch({ type: "failed", operationId, message: queueErrorMessage(error), retryable: false });
           return;
@@ -202,7 +224,14 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
     if (status.status === "active" || (status.status === "completed" && status.allocation)) {
       return status.allocation ?? null;
     }
-    if (status.status === "cancelled" || status.status === "expired" || status.status === "completed") {
+    if (status.status === "expired") {
+      cancellationRequests.current.add(operationId);
+      dispatch({ type: "cancel", operationId, returnToBase: true });
+      setMessage("PUBLIC ASSEMBLY EXPIRED · RELEASING PARTY CLAIM");
+      await finishCancellation(operationId, status.queueTicket, token);
+      return null;
+    }
+    if (status.status === "cancelled" || status.status === "completed") {
       throw new PublicPartyQueueError("That queue claim is no longer active.", 409, false);
     }
     if (stateRef.current.operationId === operationId) {
@@ -244,10 +273,27 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
       onRunOver: () => dispatch({ type: "results", operationId }),
       onConnectionChange: (connection) => {
         if (stateRef.current.operationId !== operationId) return;
+        if (connection === "connected") {
+          playerSessionInUseElsewhere.current.delete(operationId);
+          authoritativeConnectionFailures.current.delete(operationId);
+        }
         dispatch({ type: "connection", operationId, connection });
         if (connection === "reconnecting") setMessage("CONNECTION INTERRUPTED · RECONNECTING TO YOUR ROLE");
         if (connection === "connected") setMessage("");
         if (connection === "failed") setMessage("RECONNECT WINDOW CLOSED · YOUR ROLE IS NOW AI");
+      },
+      onServerError: ({ code, msg }) => {
+        if (stateRef.current.operationId !== operationId) return;
+        if (code === "player_session_in_use") {
+          playerSessionInUseElsewhere.current.add(operationId);
+          setMessage("THIS RESERVED ROLE IS ACTIVE IN ANOTHER TAB · WAITING FOR HANDOFF");
+          return;
+        }
+        // A signed reservation that reached an authoritative server rejection
+        // must not be retried as though the network merely dropped. In
+        // particular, party_invalid after the handoff grace means AI owns the
+        // role for the rest of this run.
+        authoritativeConnectionFailures.current.set(operationId, msg);
       },
       onError: (value) => {
         if (value && stateRef.current.operationId === operationId) setMessage(value.toUpperCase());
@@ -261,7 +307,17 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
       if (!disposed.current && stateRef.current.operationId === operationId) setPlaying(true);
     } catch (error) {
       if (stateRef.current.operationId === operationId && stateRef.current.phase !== "cancelling") {
-        dispatch({ type: "failed", operationId, message: queueErrorMessage(error), retryable: true, connection: true });
+        const inUseElsewhere = playerSessionInUseElsewhere.current.has(operationId);
+        const authoritativeFailure = authoritativeConnectionFailures.current.get(operationId);
+        dispatch({
+          type: "failed",
+          operationId,
+          message: authoritativeFailure ?? (inUseElsewhere
+            ? "This reserved role is active in another tab. Continue there or return to base here."
+            : queueErrorMessage(error)),
+          retryable: !inUseElsewhere && !authoritativeFailure,
+          connection: true,
+        });
       }
     }
   }
@@ -272,7 +328,12 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
       leaveBase();
       return;
     }
-    if (current.phase !== "claiming" && current.phase !== "connecting" && current.phase !== "assembling" && current.phase !== "cancelling") {
+    if (playerSessionInUseElsewhere.current.has(current.operationId)) {
+      leaveBaseLocally();
+      return;
+    }
+    if (current.phase !== "claiming" && current.phase !== "connecting" && current.phase !== "assembling"
+      && current.phase !== "cancelling" && !(current.phase === "error" && current.allocation && !current.matchId)) {
       leaveBase();
       return;
     }
@@ -314,6 +375,14 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
             return;
           }
           if (status.status === "completed") {
+            if (authoritativeConnectionFailures.current.has(operationId)) {
+              // The run won the cancel/start race, but this exact role has
+              // already been rejected (for example after run-long AI
+              // takeover). Reconnecting would loop forever; only this stale
+              // tab exits, while the authoritative run continues untouched.
+              leaveBaseLocally();
+              return;
+            }
             const reconnectAllocation = stateRef.current.allocation ?? status.allocation;
             if (reconnectAllocation) {
               dispatch({ type: "reconnect", operationId, allocation: reconnectAllocation });
@@ -344,7 +413,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
   function finishLocalCancellation(operationId: string): void {
     if (stateRef.current.operationId !== operationId) return;
     const returnToBase = stateRef.current.returnToBase === true;
-    cancellationRequests.current.delete(operationId);
+    clearOperationRefs(operationId);
     sessionRef.current?.dispose();
     sessionRef.current = null;
     setSession(null);
@@ -356,6 +425,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
   }
 
   function leaveBase(): void {
+    clearOperationRefs(stateRef.current.operationId);
     clearResume();
     sessionRef.current?.leaveRun();
     sessionRef.current?.dispose();
@@ -365,6 +435,36 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
     setMessage("");
     dispatch({ type: "base" });
     onReturnToBase?.();
+  }
+
+  function leaveBaseLocally(): void {
+    clearOperationRefs(stateRef.current.operationId);
+    clearResume();
+    sessionRef.current?.dispose();
+    sessionRef.current = null;
+    setSession(null);
+    setPlaying(false);
+    setMessage("");
+    dispatch({ type: "base" });
+    onReturnToBase?.();
+  }
+
+  function clearOperationRefs(operationId: string | undefined): void {
+    if (!operationId) return;
+    cancellationRequests.current.delete(operationId);
+    playerSessionInUseElsewhere.current.delete(operationId);
+    authoritativeConnectionFailures.current.delete(operationId);
+  }
+
+  function returnToBaseSafely(): void {
+    const current = stateRef.current;
+    const inUseElsewhere = Boolean(current.operationId && playerSessionInUseElsewhere.current.has(current.operationId));
+    if (shouldCancelBeforeBaseReturn(current, inUseElsewhere)) {
+      void cancel(true);
+      return;
+    }
+    if (inUseElsewhere) leaveBaseLocally();
+    else leaveBase();
   }
 
   function deployAgain(): void {
@@ -406,6 +506,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
         session={session}
         roomCode={state.allocation?.arenaId ?? session.playerId}
         roomLabel={`PUBLIC ARENA · AI ROLES ${aiRoleCount}`}
+        hideRoomCode
         connectionMessage={state.connection === "reconnecting" || state.connection === "failed" ? message : ""}
         connectionActionLabel="RETURN TO BASE"
         onConnectionAction={leaveBase}
@@ -452,7 +553,7 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
               {state.connection === "failed" && state.allocation ? "RECONNECT TO RUN" : "RETRY DEPLOYMENT"}
             </button>
           ) : null}
-          {state.phase === "error" ? <button type="button" onClick={leaveBase}>SET LOADOUT / RETURN TO BASE</button> : null}
+          {state.phase === "error" ? <button type="button" onClick={returnToBaseSafely}>SET LOADOUT / RETURN TO BASE</button> : null}
         </div>
       </section>
     </main>

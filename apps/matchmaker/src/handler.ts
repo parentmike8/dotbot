@@ -256,7 +256,10 @@ async function authenticatePartyRoster(tokenValue: unknown, request: AtomicQuick
   } catch {
     throw controlPlaneFailure(503, "Party authentication failed.");
   }
-  if (!responseValue.ok) throw controlPlaneFailure(responseValue.status, "Party authentication failed.");
+  if (!responseValue.ok) {
+    const failure = await responseValue.json().catch(() => null) as { code?: unknown } | null;
+    throw controlPlaneFailure(responseValue.status, "Party authentication failed.", failure?.code);
+  }
   const payload = await responseValue.json() as { partyRoster?: unknown; rosterSignature?: unknown };
   const roster = parseTrustedPartyRoster(payload.partyRoster);
   const signature = typeof payload.rosterSignature === "string" ? payload.rosterSignature : "";
@@ -271,7 +274,7 @@ async function authenticatePartyRoster(tokenValue: unknown, request: AtomicQuick
 }
 
 function quickPlayRegions(): string[] {
-  return (process.env.QUICK_PLAY_REGIONS ?? process.env.GAME_LOCATION ?? process.env.GAMELIFT_REGION ?? region)
+  return (process.env.QUICK_PLAY_REGIONS ?? "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
@@ -557,6 +560,9 @@ function allocationForRequester(record: AtomicAllocationRecord, roster: TrustedP
   }
   const allocation = complete.allocations.find((candidate) => candidate.playerId === roster.requestingPlayerId);
   if (!allocation) throw new MatchmakerError(409, "This account is not part of the allocated party.");
+  if (!unexpiredAllocation(allocation)) {
+    throw new MatchmakerError(409, "That party allocation expired. Cancel and retry quick play together.", true);
+  }
   return {
     mode: "public-hot-arena",
     arenaId: record.arenaId,
@@ -1276,7 +1282,7 @@ async function createPartyPlayerSessions(
   const memberLoadoutRevisions = roster.members
     .map((member) => ({ playerId: member.playerId, revision: member.loadoutRevision }))
     .sort((left, right) => left.playerId.localeCompare(right.playerId));
-  const reservationExpiresAt = Date.now() + 2 * 60_000;
+  const reservationExpiresAt = publicPlayerSessionAdmissionDeadline();
   const playerDataMap = Object.fromEntries(memberPlayerIds.map((playerId) => {
     const reservation: TrustedPartyReservation = {
       claimId: roster.claimId,
@@ -1325,6 +1331,13 @@ async function createPartyPlayerSessions(
     ...allocation,
     expiresAt: new Date(reservationExpiresAt).toISOString(),
   }));
+}
+
+/** GameLift changes an unaccepted player session from RESERVED to TIMEDOUT
+ * after 60 seconds. Expire our signed/public envelope earlier so it can never
+ * advertise a reservation that the service may already have reopened. */
+export function publicPlayerSessionAdmissionDeadline(now = Date.now()): number {
+  return now + 45_000;
 }
 
 export function validateWholePartyPlayerSessions(
@@ -1931,7 +1944,12 @@ async function atomicQuickPlayStatus(payload: Record<string, unknown>): Promise<
       return { status: "completed", queueTicket: claimId };
     }
     const allocation = allocationForQueueStatus(record, claimId, authorization.playerId);
-    if (!allocation) throw new MatchmakerError(503, "Party allocation status is reconciling.", true);
+    if (!allocation) {
+      if (memberAllocationExpired(record, authorization.playerId)) {
+        return { status: "completed", queueTicket: claimId };
+      }
+      throw new MatchmakerError(503, "Party allocation status is reconciling.", true);
+    }
     return { status: "completed", queueTicket: claimId, allocation };
   }
   if (record.expiresAt <= Math.floor(Date.now() / 1000)) return { status: "expired", queueTicket: claimId };
@@ -1939,7 +1957,10 @@ async function atomicQuickPlayStatus(payload: Record<string, unknown>): Promise<
   if (record.status === "cancelling") return { status: "cancelling", queueTicket: claimId };
   if (record.status === "cancelled") return { status: "cancelled", queueTicket: claimId };
   const allocation = allocationForQueueStatus(record, claimId, authorization.playerId);
-  if (!allocation) throw new MatchmakerError(503, "Party allocation status is reconciling.", true);
+  if (!allocation) {
+    if (memberAllocationExpired(record, authorization.playerId)) return { status: "expired", queueTicket: claimId };
+    throw new MatchmakerError(503, "Party allocation status is reconciling.", true);
+  }
   return { status: "active", queueTicket: claimId, allocation };
 }
 
@@ -1956,7 +1977,7 @@ export function allocationForQueueStatus(
     || !record.memberPlayerIds?.includes(playerId)) return null;
   const complete = allocationFromRecord(record);
   const member = complete?.allocations.find((entry) => entry.playerId === playerId);
-  if (!complete || !member) return null;
+  if (!complete || !member || !unexpiredAllocation(member, nowSeconds * 1_000)) return null;
   return {
     mode: "public-hot-arena",
     arenaId: complete.arenaId,
@@ -1966,6 +1987,21 @@ export function allocationForQueueStatus(
     queueTicket: claimId,
     partySize: complete.memberPlayerIds.length,
   };
+}
+
+function memberAllocationExpired(
+  record: AtomicAllocationRecord,
+  playerId: string,
+  now = Date.now(),
+): boolean {
+  const allocation = allocationFromRecord(record)?.allocations.find((entry) => entry.playerId === playerId);
+  return Boolean(allocation && !unexpiredAllocation(allocation, now));
+}
+
+function unexpiredAllocation(allocation: StoredPartyAllocation, now = Date.now()): boolean {
+  return typeof allocation.expiresAt === "string"
+    && Number.isFinite(Date.parse(allocation.expiresAt))
+    && Date.parse(allocation.expiresAt) > now;
 }
 
 async function authenticatePartyCancellation(token: string, claimId: string): Promise<AtomicCancellationAuthorization> {
@@ -2046,7 +2082,10 @@ async function completePartyCancellation(token: string, claimId: string): Promis
   if (!responseValue.ok) throw new MatchmakerError(503, "Party cancellation is saved in AWS but Cloud SQL reconciliation must be retried.", true);
 }
 
-export function controlPlaneFailure(status: number, message: string): MatchmakerError {
+export function controlPlaneFailure(status: number, message: string, code?: unknown): MatchmakerError {
+  if (status === 403 && code === "party_leader_required") {
+    return new MatchmakerError(409, "Waiting for the party leader to start quick play.", true);
+  }
   return new MatchmakerError(status >= 500 ? 503 : status === 409 ? 409 : 401, message, status >= 500);
 }
 

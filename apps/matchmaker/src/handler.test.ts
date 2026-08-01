@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { createHmac } from "node:crypto";
 import { canonicalTrustedPartyReservation, type TrustedPartyRoster } from "@dotbot/protocol";
@@ -20,6 +20,7 @@ import {
   normalizeQuickPlayTicket,
   packingReservation,
   parseArenaAdmissionUpdate,
+  publicPlayerSessionAdmissionDeadline,
   partyPackingUpdateRequest,
   partyRosterAllocationDigest,
   publicArenaKey,
@@ -41,9 +42,18 @@ afterEach(() => {
   delete process.env.DOTBOT_ATOMIC_PARTY_ALLOCATION;
   delete process.env.QUICK_PLAY_BUILD_ID;
   delete process.env.QUICK_PLAY_REGIONS;
+  vi.unstubAllEnvs();
 });
 
 describe("matchmaker endpoint helpers", () => {
+  it("expires client admission before GameLift's fixed 60-second RESERVED timeout", () => {
+    const now = 1_000_000;
+    const deadline = publicPlayerSessionAdmissionDeadline(now);
+    expect(deadline).toBeGreaterThan(now + 6_000);
+    expect(deadline).toBeLessThan(now + 60_000);
+    expect(deadline).toBe(now + 45_000);
+  });
+
   it("generates shareable room codes without ambiguous characters", () => {
     for (let index = 0; index < 100; index += 1) {
       expect(generateRoomCode()).toMatch(/^[A-HJ-NP-Z2-9]{4}$/);
@@ -154,6 +164,19 @@ describe("matchmaker endpoint helpers", () => {
     });
   });
 
+  it("does not infer atomic quick-play regions from ambient AWS placement", () => {
+    process.env.QUICK_PLAY_BUILD_ID = "web-42";
+    vi.stubEnv("GAME_LOCATION", "us-west-2");
+    vi.stubEnv("GAMELIFT_REGION", "us-west-2");
+    vi.stubEnv("AWS_REGION", "us-west-2");
+
+    expect(() => normalizeAtomicQuickPlayRequest({
+      queueRequestId: "00000000-0000-4000-8000-000000000902",
+      buildId: "web-42",
+      latencies: { "us-west-2": 1 },
+    })).toThrow("No compatible regional latency measurement was supplied.");
+  });
+
   it("packs complete parties idempotently and never over capacity or duplicate a canonical identity", () => {
     let reservations: ReturnType<typeof packingReservation>[] = [];
     for (let party = 1; party <= 6; party += 1) {
@@ -258,8 +281,8 @@ describe("matchmaker endpoint helpers", () => {
       endpointPort: 7001,
       partySecret: "a".repeat(64),
       allocations: [
-        { playerId: firstPlayerId, playerSessionId: "session-first", websocketUrl: "wss://compute.example:7001/ws" },
-        { playerId: secondPlayerId, playerSessionId: "session-second", websocketUrl: "wss://compute.example:7001/ws" },
+        { playerId: firstPlayerId, playerSessionId: "session-first", websocketUrl: "wss://compute.example:7001/ws", expiresAt: new Date(1_500_000).toISOString() },
+        { playerId: secondPlayerId, playerSessionId: "session-second", websocketUrl: "wss://compute.example:7001/ws", expiresAt: new Date(1_500_000).toISOString() },
       ],
       cleanupPlayerSessionIds: ["session-first", "session-second"],
       cleanupDiscoveryUntil: 0,
@@ -272,6 +295,14 @@ describe("matchmaker endpoint helpers", () => {
     });
     expect(allocationForQueueStatus(record, claimId, secondPlayerId, 2_000)).toBeNull();
     expect(allocationForQueueStatus(record, claimId, "00000000-0000-4000-8000-000000000003", 1_000)).toBeNull();
+    const expiredRecord = {
+      ...record,
+      allocations: record.allocations.map((allocation) => ({
+        ...allocation,
+        expiresAt: new Date(999_000).toISOString(),
+      })),
+    };
+    expect(allocationForQueueStatus(expiredRecord, claimId, secondPlayerId, 1_000)).toBeNull();
   });
 
   it("derives one bounded GameLift creation token from the canonical claim", () => {
@@ -618,6 +649,8 @@ describe("matchmaker endpoint helpers", () => {
     expect(controlPlaneFailure(503, "unavailable")).toMatchObject({ status: 503, retryable: true });
     expect(controlPlaneFailure(409, "conflict")).toMatchObject({ status: 409, retryable: false });
     expect(controlPlaneFailure(401, "unauthorized")).toMatchObject({ status: 401, retryable: false });
+    expect(controlPlaneFailure(403, "leader", "party_leader_required"))
+      .toMatchObject({ status: 409, retryable: true });
   });
 });
 

@@ -3,7 +3,7 @@ export type PublicPartyAllocation = {
   arenaId: string;
   playerSessionId: string;
   websocketUrl: string;
-  expiresAt?: string;
+  expiresAt: string;
   /** Opaque cancellation handle. It is not a party or player identifier. */
   queueTicket: string;
   partySize: number;
@@ -19,6 +19,10 @@ export class PublicPartyQueueError extends Error {
   constructor(message: string, readonly status: number, readonly retryable: boolean) {
     super(message);
   }
+}
+
+export function shouldRetryPublicPartyClaim(error: unknown): boolean {
+  return !(error instanceof PublicPartyQueueError) || error.retryable;
 }
 
 export async function requestPublicPartyAllocation(input: {
@@ -101,11 +105,13 @@ function isPublicPartyAllocation(value: Partial<PublicPartyAllocation>): value i
     || typeof value.playerSessionId !== "string" || value.playerSessionId.length < 1 || value.playerSessionId.length > 2048
     || typeof value.queueTicket !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.queueTicket)
     || !Number.isInteger(value.partySize) || value.partySize! < 1 || value.partySize! > 3
-    || (value.expiresAt !== undefined && (typeof value.expiresAt !== "string" || !Number.isFinite(Date.parse(value.expiresAt))))) return false;
+    || typeof value.expiresAt !== "string" || !Number.isFinite(Date.parse(value.expiresAt))
+    || Date.parse(value.expiresAt) <= Date.now()) return false;
   if (typeof value.websocketUrl !== "string") return false;
   try {
     const url = new URL(value.websocketUrl);
-    return url.protocol === "wss:" || (url.protocol === "ws:" && isLoopback(url.hostname));
+    return !url.username && !url.password && !url.search && !url.hash
+      && (url.protocol === "wss:" || (url.protocol === "ws:" && isLoopback(url.hostname)));
   } catch {
     return false;
   }

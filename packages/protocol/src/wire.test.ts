@@ -421,6 +421,39 @@ describe("event wire mapping", () => {
       }],
     });
   });
+
+  it("round-trips visible kill-cam actors when no doorway blocks the frame", () => {
+    const actor = {
+      id: "victim",
+      position: { x: 10, y: 20 },
+      facing: 0,
+      floorId: "outdoor",
+      shieldSegments: [0, 0, 0],
+      dashActiveMs: 0,
+      state: "downed" as const,
+    };
+    const clip: KillCamClip = {
+      id: "victim-60",
+      victimId: "victim",
+      cause: { kind: "environment", tick: 60, position: { x: 10, y: 20 }, direction: { x: 0, y: 0 } },
+      startTick: 0,
+      deathTick: 60,
+      tickHz: 60,
+      frames: [{
+        tick: 60,
+        victim: actor,
+        visibleBots: [{ ...actor, id: "bystander", state: "alive" }],
+        blockingDoorIds: [],
+      }],
+    };
+
+    const serialized = JSON.parse(JSON.stringify(toWireKillCamClip(clip)));
+    expect(() => fromWireKillCamClip(serialized)).not.toThrow();
+    expect(fromWireKillCamClip(serialized).frames[0]).toMatchObject({
+      blockingDoorIds: [],
+      visibleBots: [{ id: "bystander" }],
+    });
+  });
 });
 
 function exhaustClient(message: ClientMessage): string {

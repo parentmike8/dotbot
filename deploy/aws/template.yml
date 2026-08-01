@@ -27,6 +27,10 @@ Parameters:
   QuickPlayBuildId:
     Type: String
     Default: disabled
+  QuickPlayRegions:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9-]{3,64}(,[a-z0-9-]{3,64})*$"
 
 Resources:
   SessionsTable:
@@ -96,6 +100,7 @@ Resources:
           DOTBOT_PUBLIC_QUICK_PLAY: !Ref PublicQuickPlayEnabled
           DOTBOT_ATOMIC_PARTY_ALLOCATION: !Ref AtomicPartyAllocationEnabled
           QUICK_PLAY_BUILD_ID: !Ref QuickPlayBuildId
+          QUICK_PLAY_REGIONS: !Ref QuickPlayRegions
       Events:
         Health:
           Type: HttpApi

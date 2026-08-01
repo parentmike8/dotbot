@@ -13,11 +13,13 @@ import {
 import { hudSkinClass } from "../hud/overlaySkins";
 import { floorColumn, formatRunClock, rivalsAlive, squadDownCounts } from "../hud/hud";
 import { WorldMapOverlay } from "../WorldMapOverlay";
+import { roomCodeDataAttribute } from "./roomCodePrivacy";
 
 type NetGameViewProps = {
   session: NetSession;
   roomCode: string;
   roomLabel?: string;
+  hideRoomCode?: boolean;
   onReturnToLobby: () => void;
   returnLabel?: string;
   connectionMessage?: string;
@@ -43,6 +45,7 @@ export function NetGameView({
   session,
   roomCode,
   roomLabel,
+  hideRoomCode = false,
   onReturnToLobby,
   returnLabel = "Return to lobby",
   connectionMessage = "",
@@ -88,7 +91,7 @@ export function NetGameView({
   return (
     <main
       className={`app-shell net-game ${hudSkinClass()}`}
-      data-room-code={roomCode}
+      data-room-code={roomCodeDataAttribute(roomCode, hideRoomCode)}
       data-player-id={session.playerId}
       data-player-state={player?.state ?? "loading"}
       data-player-x={player ? Math.round(player.position.x) : undefined}

@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PlayerRole, PublicArenaMember } from "@dotbot/protocol";
 import {
   initialPublicQuickPlayState,
   assemblySecondsRemaining,
+  fetchDeploymentConfig,
   parsePublicQuickPlayResume,
   publicQuickPlayReducer,
   publicQuickPlayResume,
@@ -10,6 +11,8 @@ import {
   publicPartyStatusLabel,
   publicQueueTimedOut,
   selectDeploymentMode,
+  shouldCancelBeforeBaseReturn,
+  startPublicQuickPlayOperations,
 } from "./publicQuickPlayMachine";
 
 const allocation = {
@@ -17,6 +20,7 @@ const allocation = {
   arenaId: "A2BC",
   playerSessionId: "psess-self-only",
   websocketUrl: "wss://compute.example/ws",
+  expiresAt: "2099-01-01T00:00:00.000Z",
   queueTicket: "00000000-0000-4000-8000-000000000801",
   partySize: 2,
 };
@@ -32,10 +36,49 @@ const roles: PlayerRole[] = [
 ];
 
 describe("public quick-play client state machine", () => {
+  it("falls back to legacy deployment when the config read hangs or is malformed", async () => {
+    vi.useFakeTimers();
+    try {
+      const hangingFetch = vi.fn<typeof fetch>(async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("timed out", "AbortError")));
+      }));
+      const pending = fetchDeploymentConfig(hangingFetch, 100);
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(pending).resolves.toEqual({});
+      expect(hangingFetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+
+      const malformedFetch = vi.fn<typeof fetch>(async () => new Response("null", { status: 200 }));
+      await expect(fetchDeploymentConfig(malformedFetch, 100)).resolves.toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts the authoritative queue path without waiting for presentation reads", async () => {
+    let releasePresentation!: () => void;
+    const presentation = vi.fn(() => new Promise<void>((resolve) => { releasePresentation = resolve; }));
+    const queue = vi.fn(async () => undefined);
+
+    const started = startPublicQuickPlayOperations(presentation, queue);
+
+    expect(presentation).toHaveBeenCalledOnce();
+    expect(queue).toHaveBeenCalledOnce();
+    await started;
+    releasePresentation();
+  });
+
   it("selects public mode only from the complete explicit default-off gate set", () => {
     expect(selectDeploymentMode({ matchmakerUrl: "https://matchmaker.example" })).toBe("legacy");
     expect(selectDeploymentMode({
       matchmakerUrl: "javascript:alert(1)",
+      publicQuickPlayEnabled: true,
+      atomicPartyAllocationEnabled: true,
+      durablePartiesEnabled: true,
+      quickPlayBuildId: "web-42",
+      quickPlayRegions: ["ca-central-1"],
+    })).toBe("legacy");
+    expect(selectDeploymentMode({
+      matchmakerUrl: "https://operator:secret@matchmaker.example/public?token=secret#fragment",
       publicQuickPlayEnabled: true,
       atomicPartyAllocationEnabled: true,
       durablePartiesEnabled: true,
@@ -176,6 +219,108 @@ describe("public quick-play client state machine", () => {
       connection: "disconnected",
       returnToBase: true,
     });
+  });
+
+  it("rejects an expired allocation from refresh storage", () => {
+    const expiredResume = {
+      version: 1,
+      operationId: "00000000-0000-4000-8000-000000000905",
+      intent: "initial",
+      action: "connect",
+      returnToBase: false,
+      allocation: {
+        ...allocation,
+        expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      },
+    } as const;
+    expect(parsePublicQuickPlayResume(expiredResume)).toBeNull();
+    const admitted = parsePublicQuickPlayResume({ ...expiredResume, admitted: true });
+    expect(admitted).toMatchObject({ action: "connect", admitted: true });
+    expect(publicQuickPlayStateFromResume(admitted!)).toMatchObject({
+      phase: "connecting",
+      admitted: true,
+      allocation: expiredResume.allocation,
+    });
+
+    const staleCancellation = parsePublicQuickPlayResume({
+      ...expiredResume,
+      action: "cancel",
+      returnToBase: true,
+    });
+    expect(staleCancellation).toEqual({
+      version: 1,
+      operationId: expiredResume.operationId,
+      intent: "initial",
+      action: "cancel",
+      returnToBase: true,
+    });
+  });
+
+  it("retains the exact in-flight claim operation across refresh before allocation", () => {
+    const operationId = "00000000-0000-4000-8000-000000000903";
+    const claiming = publicQuickPlayReducer(initialPublicQuickPlayState, {
+      type: "claim",
+      operationId,
+      intent: "initial",
+      now: 12_345,
+    });
+
+    const resume = publicQuickPlayResume(claiming);
+    expect(resume).toEqual({
+      version: 1,
+      operationId,
+      intent: "initial",
+      action: "claim",
+      returnToBase: false,
+      startedAt: 12_345,
+    });
+    expect(parsePublicQuickPlayResume(JSON.parse(JSON.stringify(resume)))).toEqual(resume);
+    expect(publicQuickPlayStateFromResume(resume!)).toMatchObject({
+      phase: "claiming",
+      operationId,
+      intent: "initial",
+      startedAt: 12_345,
+      connection: "disconnected",
+    });
+  });
+
+  it("moves a failed pre-run reservation into fenced cancellation before base return", () => {
+    const operationId = "00000000-0000-4000-8000-000000000904";
+    let state = publicQuickPlayReducer(initialPublicQuickPlayState, {
+      type: "claim",
+      operationId,
+      intent: "initial",
+      now: 100,
+    });
+    state = publicQuickPlayReducer(state, { type: "allocated", operationId, allocation });
+    state = publicQuickPlayReducer(state, {
+      type: "failed",
+      operationId,
+      message: "Connection interrupted.",
+      retryable: true,
+      connection: true,
+    });
+    state = publicQuickPlayReducer(state, { type: "cancel", operationId, returnToBase: true });
+
+    expect(state).toMatchObject({
+      phase: "cancelling",
+      operationId,
+      allocation,
+      returnToBase: true,
+    });
+  });
+
+  it("does not cancel a shared claim when this tab lost the player-session race", () => {
+    const failed = {
+      phase: "error" as const,
+      operationId: "00000000-0000-4000-8000-000000000906",
+      intent: "redeploy" as const,
+      allocation,
+      connection: "failed" as const,
+      error: { message: "already connected", retryable: false },
+    };
+    expect(shouldCancelBeforeBaseReturn(failed, true)).toBe(false);
+    expect(shouldCancelBeforeBaseReturn(failed, false)).toBe(true);
   });
 
   it("keeps the visible assembly countdown inside the one-to-six second contract", () => {

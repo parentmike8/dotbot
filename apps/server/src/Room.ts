@@ -326,16 +326,19 @@ export class Room {
     const currentMembers = [...this.members.values()];
     if (party.length < 1 || party.length > 3 || new Set(party.map((member) => member.partyId)).size !== 1
       || new Set(party.map((member) => member.playerId)).size !== party.length
-      || new Set(party.map((member) => member.persistencePlayerId ?? member.playerId)).size !== party.length
-      || party.some((member) => currentMembers.some((existing) => member.persistencePlayerId
-        ? existing.playerId === member.playerId || existing.persistencePlayerId === member.persistencePlayerId
-        : existing.persistencePlayerId === member.playerId))) {
+      || new Set(party.map((member) => member.persistencePlayerId ?? member.playerId)).size !== party.length) {
       return { accepted: false, code: "party_invalid", retryable: false };
     }
-    if (this.members.size + party.length > PUBLIC_EXTRACTION_ROLE_COUNT) return { accepted: false, code: "party_composition_full", retryable: true };
+    const replaced = this.replaceableCompletedMembers(party);
+    if (replaced === null) return { accepted: false, code: "party_invalid", retryable: false };
+    const replacedSet = new Set(replaced);
+    const retainedMembers = currentMembers.filter((member) => !replacedSet.has(member));
+    if (retainedMembers.length + party.length > PUBLIC_EXTRACTION_ROLE_COUNT) {
+      return { accepted: false, code: "party_composition_full", retryable: true };
+    }
     try {
       assignPublicPlayerRoles([
-        ...[...this.members.values()].map((member) => ({ playerId: member.playerId, name: member.name, partyId: member.partyId })),
+        ...retainedMembers.map((member) => ({ playerId: member.playerId, name: member.name, partyId: member.partyId })),
         ...party,
       ], "admission");
       return { accepted: true };
@@ -361,8 +364,7 @@ export class Room {
     for (const entry of party) {
       if (!entry.playerId || !entry.persistencePlayerId || !entry.reservationPlayerId || !isUuidValue(entry.queueClaimId)
         || !Number.isSafeInteger(entry.queuePartyVersion) || entry.queuePartyVersion < 1
-        || !Number.isSafeInteger(entry.queueLoadoutRevision) || entry.queueLoadoutRevision < 1
-        || this.memberByToken.has(entry.token)) {
+        || !Number.isSafeInteger(entry.queueLoadoutRevision) || entry.queueLoadoutRevision < 1) {
         return { accepted: false, code: "party_invalid", retryable: false };
       }
       for (const playerId of [entry.playerId, ...entry.previousPlayerIds]) {
@@ -374,10 +376,6 @@ export class Room {
         persistenceIdentities.add(playerId);
       }
     }
-    if ([...this.members.values()].some((member) => publicIdentities.has(member.playerId)
-      || persistenceIdentities.has(member.persistencePlayerId))) {
-      return { accepted: false, code: "party_invalid", retryable: false };
-    }
     const partyId = sanitizePartyId(party[0].partyId, party[0].playerId);
     const decision = this.evaluatePublicPartyAdmission(party.map((entry) => ({
       playerId: entry.playerId,
@@ -386,6 +384,27 @@ export class Room {
       partyId,
     })));
     if (!decision.accepted) return decision;
+    const replaced = this.replaceableCompletedMembers(party.map((entry) => ({
+      playerId: entry.playerId,
+      persistencePlayerId: entry.persistencePlayerId,
+      name: entry.name,
+      partyId,
+      previousPlayerIds: entry.previousPlayerIds,
+      previousPersistencePlayerIds: entry.previousPersistencePlayerIds,
+    })));
+    if (replaced === null) return { accepted: false, code: "party_invalid", retryable: false };
+    const replacedSet = new Set(replaced);
+    if (party.some((entry) => {
+      const tokenOwner = this.memberByToken.get(entry.token);
+      return tokenOwner !== undefined && !replacedSet.has(tokenOwner);
+    })) return { accepted: false, code: "party_invalid", retryable: false };
+    for (const member of replaced) {
+      this.releasePublicMember(
+        member,
+        "fresh_claim_replaced",
+        "A fresh quick-play claim replaced this completed reservation.",
+      );
+    }
 
     const members = party.map((entry): Member => ({
       playerId: entry.playerId,
@@ -431,6 +450,25 @@ export class Room {
     this.broadcastLobby();
     this.activateFreshPublicClaim();
     return { accepted: true, bindings: members.map((member) => ({ peerId: member.peer!.id, playerId: member.playerId })) };
+  }
+
+  private replaceableCompletedMembers(party: ReadonlyArray<{
+    playerId: string;
+    persistencePlayerId?: string;
+    partyId: string;
+    previousPlayerIds?: readonly string[];
+    previousPersistencePlayerIds?: readonly string[];
+  }>): Member[] | null {
+    const publicPlayerIds = new Set(party.flatMap((entry) => [entry.playerId, ...(entry.previousPlayerIds ?? [])]));
+    const persistencePlayerIds = new Set(party.flatMap((entry) => [
+      entry.persistencePlayerId ?? entry.playerId,
+      ...(entry.previousPersistencePlayerIds ?? []),
+    ]));
+    const partyIds = new Set(party.map((entry) => entry.partyId));
+    const matched = [...this.members.values()].filter((member) => partyIds.has(member.partyId)
+      || publicPlayerIds.has(member.playerId) || persistencePlayerIds.has(member.persistencePlayerId));
+    if (matched.some((member) => this.phase !== "results" || member.queuedForNextRun)) return null;
+    return matched;
   }
 
   /** A signed control-plane cancellation may race clients that already opened

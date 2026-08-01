@@ -2018,6 +2018,13 @@ button {
   color: var(--paper);
 }
 
+.manifest-new-run:disabled,
+.manifest-new-run:disabled:hover {
+  background: var(--paper);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .manifest-secondary-action {
   width: 100%;
   margin-top: 8px;

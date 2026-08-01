@@ -46,6 +46,7 @@ export type NetSessionOptions = {
   onRoleController?: (state: Extract<ServerMessage, { type: "roleController" }>) => void;
   onRunOver?: () => void;
   onConnectionChange?: (state: "connecting" | "connected" | "reconnecting" | "failed" | "disconnected") => void;
+  onServerError?: (error: Pick<Extract<ServerMessage, { type: "err" }>, "code" | "msg" | "retryable">) => void;
   onError?: (message: string) => void;
 };
 
@@ -527,6 +528,19 @@ export class NetSession implements GameSession {
           // asynchronous identity lookup is still admitting a reconnect.
           // It is an internal protocol condition, not actionable player copy.
           this.options.onError?.("CONNECTION INTERRUPTED · RECONNECTING…");
+          return;
+        }
+        this.options.onServerError?.({
+          code: message.code,
+          msg: message.msg,
+          ...(message.retryable === undefined ? {} : { retryable: message.retryable }),
+        });
+        if (message.code === "player_session_in_use") {
+          // Another browser context can win the same idempotent reservation.
+          // Keep the initial start pending while the transport retries: a page
+          // refresh may only be waiting for its old socket to close. The owner
+          // can still distinguish this from a claim it is safe to cancel.
+          this.options.onError?.(message.msg);
           return;
         }
         this.failStart(message.msg);

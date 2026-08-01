@@ -172,14 +172,16 @@ export async function createServer(options: CreateServerOptions = {}) {
     return { draining: false, rooms: rooms.rooms, tickP99Ms: rooms.tickP99Ms, roomHealth: rooms.roomHealth };
   });
 
-  app.get("/api/game-config", async () => ({
-    matchmakerUrl,
-    publicQuickPlayEnabled: publicQuickPlay,
-    durablePartiesEnabled: durableParties,
-    atomicPartyAllocationEnabled: atomicPartyAllocation,
-    quickPlayBuildId,
-    quickPlayRegions,
-  }));
+  app.get("/api/game-config", async (_request, reply) => reply
+    .header("cache-control", "no-store")
+    .send({
+      matchmakerUrl,
+      publicQuickPlayEnabled: publicQuickPlay,
+      durablePartiesEnabled: durableParties,
+      atomicPartyAllocationEnabled: atomicPartyAllocation,
+      quickPlayBuildId,
+      quickPlayRegions,
+    }));
 
   app.post("/api/gamelift/drain", async (request, reply) => {
     if (!isLoopback(request.ip)) return reply.code(404).send({ error: "Not found." });
@@ -1825,7 +1827,8 @@ function cleanPublicUrl(value: string | null | undefined): string | null {
   try {
     const url = new URL(value.trim());
     const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]" || url.hostname === "::1";
-    return url.protocol === "https:" || (url.protocol === "http:" && loopback) ? url.toString() : null;
+    const credentialFree = !url.username && !url.password && !url.search && !url.hash;
+    return credentialFree && (url.protocol === "https:" || (url.protocol === "http:" && loopback)) ? url.toString() : null;
   } catch {
     return null;
   }
@@ -1837,11 +1840,7 @@ function cleanQuickPlayMetadata(value: string | null | undefined): string | null
 }
 
 function configuredQuickPlayRegions(): string[] {
-  return (process.env.QUICK_PLAY_REGIONS
-    ?? process.env.GAME_LOCATION
-    ?? process.env.GAMELIFT_REGION
-    ?? process.env.AWS_REGION
-    ?? "us-east-1").split(",");
+  return (process.env.QUICK_PLAY_REGIONS ?? "").split(",");
 }
 
 function cleanQuickPlayRegions(values: readonly string[]): string[] {

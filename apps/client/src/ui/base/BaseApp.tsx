@@ -36,6 +36,7 @@ import type {
 } from "./BaseTutorialConnection";
 import {
   BaseSessionLifecycle,
+  tutorialAuthorityToken,
   type BaseSessionWorld,
 } from "./baseSessionLifecycle";
 import { shouldPauseForBaseBootstrap } from "./baseBootstrap";
@@ -470,28 +471,36 @@ type BaseSessionProps = {
 function BaseSession(props: BaseSessionProps) {
   const tutorialComplete = isBaseTutorialComplete(props.base.tutorial);
   const initialTutorialRef = useRef(props.base.tutorial);
-  const lifecycleRef = useRef<BaseSessionLifecycle | null>(null);
-  if (!lifecycleRef.current) {
-    lifecycleRef.current = new BaseSessionLifecycle({
-      layout: props.base.layout,
-      shell: tutorialComplete ? props.base.shell : "workshop",
-      expanded: tutorialComplete && ownsSecondFloor(props.base),
-      tutorial: props.base.tutorial,
-    }, props.identityReady && props.base.storageLinked && !tutorialComplete);
-  }
-  const lifecycle = lifecycleRef.current;
-  const [, setLifecycleRevision] = useState(0);
-  const tutorialTokenRef = useRef(localStorage.getItem(deviceTokenKey) ?? "");
-  const tutorialInteractRef = useRef(false);
-  const [authorityStatus, setAuthorityStatus] = useState<BaseTutorialConnectionStatus>(
-    lifecycle.authoritative ? "connecting" : "connected",
-  );
   const currentWorld: BaseSessionWorld = {
     layout: props.base.layout,
     shell: props.base.shell,
     expanded: ownsSecondFloor(props.base),
     tutorial: props.base.tutorial,
   };
+  const authorityWorld: BaseSessionWorld = {
+    ...currentWorld,
+    shell: tutorialComplete ? currentWorld.shell : "workshop",
+    expanded: tutorialComplete && currentWorld.expanded,
+  };
+  const shouldUseTutorialAuthority = props.identityReady && props.base.storageLinked && !tutorialComplete;
+  const lifecycleRef = useRef<BaseSessionLifecycle | null>(null);
+  if (!lifecycleRef.current) {
+    lifecycleRef.current = new BaseSessionLifecycle(authorityWorld, shouldUseTutorialAuthority);
+  }
+  const lifecycle = lifecycleRef.current;
+  const tutorialTokenRef = useRef(localStorage.getItem(deviceTokenKey) ?? "");
+  if (shouldUseTutorialAuthority) {
+    tutorialTokenRef.current = tutorialAuthorityToken(
+      tutorialTokenRef.current,
+      localStorage.getItem(deviceTokenKey),
+    );
+    lifecycle.activateAuthoritative(authorityWorld);
+  }
+  const [, setLifecycleRevision] = useState(0);
+  const tutorialInteractRef = useRef(false);
+  const [authorityStatus, setAuthorityStatus] = useState<BaseTutorialConnectionStatus>(
+    lifecycle.authoritative ? "connecting" : "connected",
+  );
   const resolvedWorld = lifecycle.world(currentWorld);
   // The carried transform seeds a rebuild but must not cause one: local movement
   // updates it every HUD frame. Layout/shell/expansion/terminal authority are the

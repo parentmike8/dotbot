@@ -59,6 +59,7 @@ class DurableApiPersistence extends NoopPersistence {
 
 afterEach(() => {
   delete process.env.DOTBOT_RELAY_SECRET;
+  vi.unstubAllEnvs();
 });
 
 describe("durable party APIs", () => {
@@ -69,7 +70,9 @@ describe("durable party APIs", () => {
       quickPlayBuildId: null,
       quickPlayRegions: [],
     });
-    expect((await legacy.inject({ method: "GET", url: "/api/game-config" })).json()).toEqual({
+    const legacyConfig = await legacy.inject({ method: "GET", url: "/api/game-config" });
+    expect(legacyConfig.headers["cache-control"]).toBe("no-store");
+    expect(legacyConfig.json()).toEqual({
       matchmakerUrl: null,
       publicQuickPlayEnabled: false,
       durablePartiesEnabled: false,
@@ -78,6 +81,32 @@ describe("durable party APIs", () => {
       quickPlayRegions: [],
     });
     await legacy.close();
+
+    const { app: credentialed } = await createServer({
+      persistence: new DurableApiPersistence(),
+      publicQuickPlay: true,
+      durableParties: true,
+      atomicPartyAllocation: true,
+      matchmakerUrl: "https://operator:secret@match.example.test/public?token=also-secret#fragment",
+      quickPlayBuildId: "web-42",
+      quickPlayRegions: ["ca-central-1"],
+    });
+    expect((await credentialed.inject({ method: "GET", url: "/api/game-config" })).json().matchmakerUrl).toBeNull();
+    await credentialed.close();
+
+    vi.stubEnv("GAME_LOCATION", "us-west-2");
+    vi.stubEnv("GAMELIFT_REGION", "us-west-2");
+    vi.stubEnv("AWS_REGION", "us-west-2");
+    const { app: regionless } = await createServer({
+      persistence: new DurableApiPersistence(),
+      publicQuickPlay: true,
+      durableParties: true,
+      atomicPartyAllocation: true,
+      matchmakerUrl: "https://match.example.test/public",
+      quickPlayBuildId: "web-42",
+    });
+    expect((await regionless.inject({ method: "GET", url: "/api/game-config" })).json().quickPlayRegions).toEqual([]);
+    await regionless.close();
 
     const { app: publicApp } = await createServer({
       persistence: new DurableApiPersistence(),

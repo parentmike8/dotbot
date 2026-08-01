@@ -46,6 +46,18 @@ describe.skipIf(!databaseAvailable)("durable party authority", () => {
     await lockSql?.end({ timeout: 1 });
   });
 
+  it("advances loadout authority when a pre-0014 writer updates only the loadout column", async () => {
+    const persistence = new PostgresPersistence(sql!, () => "LDWR2345");
+    const player = await persistence.registerPlayer("Old writer");
+
+    await sql!`update players set loadout = ${JSON.stringify(["h"])}::jsonb where id = ${player.playerId}`;
+
+    const [row] = await sql!<Array<{ loadoutRevision: number }>>`
+      select loadout_revision as "loadoutRevision" from players where id = ${player.playerId}
+    `;
+    expect(row.loadoutRevision).toBe(2);
+  });
+
   it("keeps a guest invite replay device-durable, promotes it on link, and exposes only public roster state", async () => {
     const ids = ["PARTYAAA", "PARTYBBB"];
     const persistence = new PostgresPersistence(sql!, () => ids.shift() ?? "PARTYCCC");
@@ -315,6 +327,8 @@ describe.skipIf(!databaseAvailable)("durable party authority", () => {
     const queuedMergeIdentity = linkedIdentity("queue-merge-target");
     await persistence.linkAccount(joiner.token, queuedMergeIdentity);
     await expect(persistence.linkAccount(member.token, { ...queuedMergeIdentity, provider: "phone" }))
+      .rejects.toMatchObject({ code: "party_queued" });
+    await expect(persistence.deleteLinkedAccount(leader.token, linkedIdentity("queue-leader")))
       .rejects.toMatchObject({ code: "party_queued" });
     await expect(persistence.acceptDurablePartyInvite(joiner.token, invite!.code)).rejects.toMatchObject({ code: "party_queued" });
     await expect(persistence.leaveParty(member.token, 2)).rejects.toMatchObject({ code: "party_queued" });

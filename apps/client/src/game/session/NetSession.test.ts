@@ -783,6 +783,63 @@ describe("NetSession item edges", () => {
     session.dispose();
   });
 
+  it("surfaces a structured player-session conflict so another tab cannot cancel the shared claim", async () => {
+    const transport = new FakeTransport();
+    const serverErrors: Array<{ code: string; msg: string }> = [];
+    const session = new NetSession({
+      url: "wss://game.example/ws",
+      roomCode: "A2BC",
+      name: "Ada",
+      token: "token",
+      playerSessionId: "psess-shared",
+      mode: "public",
+      transportFactory: () => transport,
+      onServerError: (error) => serverErrors.push(error),
+    });
+    void session.start();
+    transport.handlers?.open();
+    transport.handlers?.message({
+      type: "err",
+      code: "player_session_in_use",
+      msg: "This player session is already connected.",
+    });
+
+    expect(serverErrors).toEqual([{
+      code: "player_session_in_use",
+      msg: "This player session is already connected.",
+    }]);
+    session.dispose();
+  });
+
+  it("surfaces an authoritative stale-role rejection before failing the connection", async () => {
+    const transport = new FakeTransport();
+    const serverErrors: Array<{ code: string; msg: string; retryable?: boolean }> = [];
+    const session = new NetSession({
+      url: "wss://game.example/ws",
+      roomCode: "A2BC",
+      name: "Ada",
+      token: "token",
+      playerSessionId: "psess-stale",
+      mode: "public",
+      transportFactory: () => transport,
+      onServerError: (error) => serverErrors.push(error),
+    });
+    const started = session.start();
+    transport.handlers?.open();
+    transport.handlers?.message({
+      type: "err",
+      code: "party_invalid",
+      msg: "AI owns this role after reconnect grace.",
+    });
+
+    await expect(started).rejects.toThrow("AI owns this role after reconnect grace.");
+    expect(serverErrors).toEqual([{
+      code: "party_invalid",
+      msg: "AI owns this role after reconnect grace.",
+    }]);
+    session.dispose();
+  });
+
   it("scrubs staged take and downed actions during a reconnect handoff", () => {
     const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
     session.sendInput({
