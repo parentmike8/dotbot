@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   CreateGameSessionCommand,
@@ -220,7 +220,11 @@ export function normalizeQuickPlayTicket(
   expectedBuildId: string,
 ): QuickPlayTicket {
   const buildId = typeof payload.buildId === "string" ? payload.buildId.trim() : "";
-  const partyId = identity.partyId?.trim() || `solo-${identity.playerId}`;
+  // The authenticated player id is a private Cloud SQL UUID. Public arena
+  // messages carry party ids, so the solo fallback must be stable and opaque
+  // rather than embedding that UUID in the WebSocket contract.
+  const partyId = identity.partyId?.trim()
+    || `solo-${createHash("sha256").update(identity.playerId).digest("hex").slice(0, 24)}`;
   if (expectedBuildId.toLowerCase() === "disabled" || !safeMetadata(expectedBuildId, 64)
     || buildId !== expectedBuildId || !safeMetadata(partyId, 128)) {
     throw new MatchmakerError(400, "Quick-play build or party metadata is invalid.");

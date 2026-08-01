@@ -63,7 +63,15 @@ describe("persistence graceful degradation", () => {
     class AliasPersistence extends NoopPersistence {
       override readonly live = true;
       override async helloPlayer() {
-        return { playerId: "canonical-player", name: "Pilot", previousPlayerIds: ["retired-internal-uuid"] };
+        return {
+          playerId: "canonical-player",
+          previousPlayerIds: ["retired-internal-uuid"],
+          publicPlayerId: "WXYZ2345",
+          name: "Pilot",
+        };
+      }
+      override async getAccount() {
+        return { publicPlayerId: "WXYZ2345", displayName: "Pilot", linked: true, providers: [] };
       }
     }
     process.env.NODE_ENV = "test";
@@ -76,7 +84,16 @@ describe("persistence graceful degradation", () => {
     });
 
     expect(hello.statusCode).toBe(200);
-    expect(hello.json()).toEqual({ playerId: "canonical-player", name: "Pilot" });
+    expect(hello.json()).toEqual({
+      playerId: "WXYZ-2345",
+      publicPlayerId: "WXYZ-2345",
+      name: "Pilot",
+      displayName: "Pilot",
+      linked: true,
+      providers: [],
+    });
+    expect(JSON.stringify(hello.json())).not.toContain("retired-internal-uuid");
+    expect(JSON.stringify(hello.json())).not.toContain("canonical-player");
     await app.close();
   });
 });

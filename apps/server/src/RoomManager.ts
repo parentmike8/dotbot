@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { GameConfig } from "@dotbot/game/types";
 import { isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
@@ -178,6 +179,7 @@ export class RoomManager {
       undefined,
       identity.playerId,
       identity.previousPublicPlayerIds?.map(formatPublicPlayerId),
+      identity.previousPlayerIds,
     );
     if (!member) {
       peer.send({ type: "err", code: "room_unavailable", msg: "That room cannot be joined." });
@@ -245,11 +247,12 @@ export class RoomManager {
       identity.name,
       formatPublicPlayerId(identity.publicPlayerId),
       undefined,
-      admission?.partyId ?? identity.playerId,
+      admission?.partyId ?? opaqueSoloPartyId(identity.playerId),
       (value) => { rejection = value; },
       admission?.playerId,
       identity.playerId,
       identity.previousPublicPlayerIds?.map(formatPublicPlayerId),
+      identity.previousPlayerIds,
     );
     if (!member) {
       peer.send({
@@ -345,6 +348,10 @@ export class RoomManager {
 
 function formatPublicPlayerId(value: string): string {
   return `${value.slice(0, 4)}-${value.slice(4)}`;
+}
+
+function opaqueSoloPartyId(playerId: string): string {
+  return `solo-${createHash("sha256").update(playerId).digest("hex").slice(0, 24)}`;
 }
 
 /** The GameLift reservation remains authoritative. Canonical and retired

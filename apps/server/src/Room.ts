@@ -304,11 +304,17 @@ export class Room {
     publicReservationPlayerId?: string,
     persistencePlayerId = resolvedPlayerId,
     previousPlayerIds: string[] = [],
+    previousPersistencePlayerIds: string[] = [],
   ): Member | null {
     if (this.disposed) return null;
     const existing = this.memberByToken.get(token);
     if (existing) {
       if (resolvedPlayerId && existing.playerId !== resolvedPlayerId && !previousPlayerIds.includes(existing.playerId)) {
+        onPublicRejected?.({ accepted: false, code: "party_invalid", retryable: false });
+        return null;
+      }
+      if (persistencePlayerId && existing.persistencePlayerId !== persistencePlayerId
+        && !previousPersistencePlayerIds.includes(existing.persistencePlayerId)) {
         onPublicRejected?.({ accepted: false, code: "party_invalid", retryable: false });
         return null;
       }
@@ -347,7 +353,11 @@ export class Room {
     }
 
     const admittedPlayerIds = new Set([resolvedPlayerId, ...previousPlayerIds].filter((value): value is string => Boolean(value)));
-    if ([...this.members.values()].some((member) => admittedPlayerIds.has(member.playerId))) {
+    const admittedPersistencePlayerIds = new Set(
+      [persistencePlayerId, ...previousPersistencePlayerIds].filter((value): value is string => Boolean(value)),
+    );
+    if ([...this.members.values()].some((member) => admittedPlayerIds.has(member.playerId)
+      || admittedPersistencePlayerIds.has(member.persistencePlayerId))) {
       onPublicRejected?.({ accepted: false, code: "party_invalid", retryable: false });
       return null;
     }

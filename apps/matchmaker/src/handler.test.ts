@@ -60,8 +60,9 @@ describe("matchmaker endpoint helpers", () => {
     expect(() => normalizeQuickPlayTicket({ buildId: "web-old", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"], "web-42")).toThrow();
     expect(() => normalizeQuickPlayTicket({ buildId: "web-42", latencies: { "ca-central-1": 10 } }, { ...identity, partyId: "x".repeat(129) }, ["ca-central-1"], "web-42")).toThrow();
     expect(() => normalizeQuickPlayTicket({ buildId: "web-42", latencies: { "ca-central-1": -1 } }, identity, ["ca-central-1"], "web-42")).toThrow();
-    expect(normalizeQuickPlayTicket({ buildId: "web-42", partyId: "spoofed", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"], "web-42").partyId)
-      .toBe("solo-player-1");
+    const soloPartyId = normalizeQuickPlayTicket({ buildId: "web-42", partyId: "spoofed", latencies: { "ca-central-1": 10 } }, identity, ["ca-central-1"], "web-42").partyId;
+    expect(soloPartyId).toMatch(/^solo-[a-f0-9]{24}$/);
+    expect(soloPartyId).not.toContain(identity.playerId);
   });
 
   it("keeps the public allocator disabled until the explicit control-plane flag is set", async () => {

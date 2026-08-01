@@ -106,7 +106,7 @@ export class GameLiftSessionGate {
       if (!playerId || playerId.length > 1024) {
         throw new Error("GameLift returned an invalid player identity.");
       }
-      let playerData: unknown = payload.playerData;
+      let playerData: unknown = payload?.playerData;
       if (typeof playerData === "string") {
         try {
           playerData = JSON.parse(playerData);

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import WebSocket from "ws";
 import type { ServerMessage } from "@dotbot/protocol";
 import { createServer } from "./app";
@@ -8,8 +9,8 @@ import { completedBaseTutorialState } from "@dotbot/game/baseTutorial";
 
 class CompletedTestPersistence extends NoopPersistence {
   override readonly live = true;
-  override async resolveOrRegisterPlayer(_token: string, offeredName: string) {
-    return { playerId: "internal-player-b", publicPlayerId: "ABCDEFGH", name: offeredName };
+  override async resolveOrRegisterPlayer(token: string, offeredName: string) {
+    return testIdentity(token, offeredName);
   }
   override async getBaseTutorialForPlayer() {
     return { ...completedBaseTutorialState };
@@ -17,6 +18,16 @@ class CompletedTestPersistence extends NoopPersistence {
 }
 
 const clients: WebSocket[] = [];
+const publicIdAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function testIdentity(token: string, name: string) {
+  const digest = createHash("sha256").update(token).digest();
+  return {
+    playerId: `internal-${digest.toString("hex").slice(0, 16)}`,
+    publicPlayerId: Array.from(digest.subarray(0, 8), (byte) => publicIdAlphabet[byte % publicIdAlphabet.length]).join(""),
+    name,
+  };
+}
 
 afterEach(() => {
   for (const client of clients.splice(0)) client.close();
@@ -34,7 +45,7 @@ describe("GameLift dedicated server mode", () => {
         }), { status: 200 });
       }
       if (url.endsWith("/v1/player-sessions/accept")) {
-        return new Response(JSON.stringify({ playerId: "ABCD-EFGH" }), { status: 200 });
+        return new Response(JSON.stringify({ playerId: testIdentity("token-b", "Bob").playerId }), { status: 200 });
       }
       return new Response(null, { status: 204 });
     });
@@ -55,6 +66,16 @@ describe("GameLift dedicated server mode", () => {
     rejected.send(JSON.stringify({ type: "hello", token: "token-a", name: "Alice", roomCode: "A2BC" }));
     expect(await waitForMessage(rejected, "err")).toMatchObject({ code: "player_session_required" });
 
+    const publicDisabled = await connect(url);
+    publicDisabled.send(JSON.stringify({
+      type: "quickPlayHello",
+      token: "token-public-disabled",
+      name: "Public disabled",
+      playerSessionId: "psess-public-disabled",
+    }));
+    expect(await waitForMessage(publicDisabled, "err")).toMatchObject({ code: "wrong_session_mode" });
+    expect(request.mock.calls.some(([input]) => String(input).endsWith("/v1/player-sessions/accept"))).toBe(false);
+
     const accepted = await connect(url);
     accepted.send(JSON.stringify({
       type: "hello",
@@ -63,7 +84,13 @@ describe("GameLift dedicated server mode", () => {
       roomCode: "A2BC",
       playerSessionId: "psess-1",
     }));
-    expect(await waitForMessage(accepted, "welcome")).toMatchObject({ roomCode: "A2BC" });
+    const acceptedWelcome = await waitForMessage(accepted, "welcome");
+    const publicId = testIdentity("token-b", "Bob").publicPlayerId;
+    expect(acceptedWelcome).toMatchObject({
+      roomCode: "A2BC",
+      playerId: `${publicId.slice(0, 4)}-${publicId.slice(4)}`,
+    });
+    expect(JSON.stringify(acceptedWelcome)).not.toContain(testIdentity("token-b", "Bob").playerId);
     expect(request.mock.calls.some(([input]) => String(input).endsWith("/v1/player-sessions/accept"))).toBe(true);
 
     accepted.close();
@@ -96,7 +123,7 @@ describe("GameLift dedicated server mode", () => {
       }
       if (url.endsWith("/v1/player-sessions/accept")) {
         return new Response(JSON.stringify({
-          playerId: "p-token-public",
+          playerId: testIdentity("token-public", "Pilot").playerId,
           playerData: JSON.stringify({
             mode: "public-hot-arena",
             arenaId: "A2BC",
@@ -150,6 +177,7 @@ describe("GameLift dedicated server mode", () => {
         const suffix = token.endsWith("stay") ? "stay" : "leave";
         return {
           playerId: `canonical-${suffix}`,
+          publicPlayerId: suffix === "stay" ? "STAY2345" : "LEAV2345",
           name: offeredName,
           previousPlayerIds: [`reserved-${suffix}`],
         };
@@ -206,7 +234,13 @@ describe("GameLift dedicated server mode", () => {
       name: "Leave",
       playerSessionId: "psess-leave",
     }));
-    await Promise.all([waitForMessage(staying, "arenaWelcome"), waitForMessage(leaving, "arenaWelcome")]);
+    const [stayingWelcome, leavingWelcome] = await Promise.all([
+      waitForMessage(staying, "arenaWelcome"),
+      waitForMessage(leaving, "arenaWelcome"),
+    ]);
+    expect(stayingWelcome).toMatchObject({ playerId: "STAY-2345" });
+    expect(leavingWelcome).toMatchObject({ playerId: "LEAV-2345" });
+    expect(JSON.stringify([stayingWelcome, leavingWelcome])).not.toMatch(/canonical-|reserved-/);
     const stayingStart = waitForMessage(staying, "matchStart");
     const leavingStart = waitForMessage(leaving, "matchStart");
     now = 1_000;
@@ -240,7 +274,7 @@ describe("GameLift dedicated server mode", () => {
       }
       if (url.endsWith("/v1/player-sessions/accept")) {
         return new Response(JSON.stringify({
-          playerId: "p-token-retry",
+          playerId: testIdentity("token-retry", "Retry").playerId,
           playerData: JSON.stringify({
             mode: "public-hot-arena",
             arenaId: "A2BC",
@@ -365,7 +399,7 @@ describe("GameLift dedicated server mode", () => {
         accepted.push(body.playerSessionId);
         const suffix = body.playerSessionId.replace("psess-", "");
         return new Response(JSON.stringify({
-          playerId: `p-token-${suffix}`,
+          playerId: testIdentity(`token-${suffix}`, suffix).playerId,
           playerData: JSON.stringify({
             mode: "public-hot-arena",
             arenaId: "A2BC",
@@ -447,7 +481,13 @@ describe("GameLift dedicated server mode", () => {
       name: "Stay",
       playerSessionId: "psess-stay",
     }));
-    expect(await waitForMessage(staying, "arenaWelcome")).toMatchObject({ phase: "live" });
+    const resumedWelcome = await waitForMessage(staying, "arenaWelcome");
+    const stayingPublicId = testIdentity("token-stay", "Stay").publicPlayerId;
+    expect(resumedWelcome).toMatchObject({
+      phase: "live",
+      playerId: `${stayingPublicId.slice(0, 4)}-${stayingPublicId.slice(4)}`,
+    });
+    expect(JSON.stringify(resumedWelcome)).not.toContain(testIdentity("token-stay", "Stay").playerId);
     expect([...accepted].sort()).toEqual(["psess-leave", "psess-stay"]);
 
     const blocked = await connect(url);
@@ -506,7 +546,7 @@ describe("GameLift dedicated server mode", () => {
       }
       if (url.endsWith("/v1/player-sessions/accept")) {
         await acceptGate;
-        return new Response(JSON.stringify({ playerId: "p-token-race" }), { status: 200 });
+        return new Response(JSON.stringify({ playerId: testIdentity("token-race", "Pilot").playerId }), { status: 200 });
       }
       return new Response(null, { status: 204 });
     });
@@ -565,7 +605,7 @@ describe("GameLift dedicated server mode", () => {
         markAcceptEntered();
         await acceptGate;
         return new Response(JSON.stringify({
-          playerId: "p-token-gone",
+          playerId: testIdentity("token-gone", "Gone").playerId,
           playerData: JSON.stringify({
             mode: "public-hot-arena",
             arenaId: "A2BC",
@@ -629,7 +669,7 @@ describe("GameLift dedicated server mode", () => {
       }
       if (url.endsWith("/v1/player-sessions/accept")) {
         return new Response(JSON.stringify({
-          playerId: "p-token-identity",
+          playerId: testIdentity("token-identity", "Identity").playerId,
           playerData: JSON.stringify({
             mode: "public-hot-arena",
             arenaId: "A2BC",
@@ -682,7 +722,7 @@ describe("GameLift dedicated server mode", () => {
         }), { status: 200 });
       }
       if (url.endsWith("/v1/player-sessions/accept")) {
-        return new Response(JSON.stringify({ playerId: "p-token-expire" }), { status: 200 });
+        return new Response(JSON.stringify({ playerId: testIdentity("token-expire", "Expire").playerId }), { status: 200 });
       }
       if (url.endsWith("/v1/player-sessions/remove")) await removalGate;
       return new Response(null, { status: 204 });
