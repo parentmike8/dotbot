@@ -142,6 +142,57 @@ func TestInspectPlayerSessionDoesNotAcceptIt(t *testing.T) {
 	}
 }
 
+func TestReleaseInspectionProvesCurrentSessionOwnershipWithoutMutation(t *testing.T) {
+	described := (model.PlayerSession{
+		PlayerSessionID: "player-session-1",
+		PlayerID:        "player-1",
+		PlayerData:      `{"mode":"public-hot-arena"}`,
+		GameSessionID:   "session-1",
+	}).WithStatus(model.PlayerActive)
+	fake := &fakeGameLift{described: &described}
+	process := newLifecycle(fake, "http://unused", "")
+	process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+	requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/inspect-release", strings.NewReader(`{"playerSessionId":"player-session-1"}`))
+	response := httptest.NewRecorder()
+
+	process.handler().ServeHTTP(response, requestValue)
+
+	if response.Code != http.StatusOK || len(fake.accepted) != 0 || len(fake.removed) != 0 ||
+		!strings.Contains(response.Body.String(), `"status":"ACTIVE"`) {
+		t.Fatalf("release inspect mutated or lost ownership status=%d accepted=%#v removed=%#v body=%s", response.Code, fake.accepted, fake.removed, response.Body.String())
+	}
+}
+
+func TestReleaseInspectionSeparatesOwnershipMismatchFromAdapterOutage(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		fake   *fakeGameLift
+		status int
+	}{
+		"foreign session": {
+			fake: &fakeGameLift{described: ptrPlayerSession((model.PlayerSession{
+				PlayerSessionID: "player-session-1", PlayerID: "player-1", GameSessionID: "session-foreign",
+			}).WithStatus(model.PlayerActive))},
+			status: http.StatusUnauthorized,
+		},
+		"sdk outage": {fake: &fakeGameLift{err: errors.New("sdk unavailable")}, status: http.StatusServiceUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			process := newLifecycle(testCase.fake, "http://unused", "")
+			process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+			requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/inspect-release", strings.NewReader(`{"playerSessionId":"player-session-1"}`))
+			response := httptest.NewRecorder()
+
+			process.handler().ServeHTTP(response, requestValue)
+
+			if response.Code != testCase.status || len(testCase.fake.accepted) != 0 || len(testCase.fake.removed) != 0 {
+				t.Fatalf("unexpected release inspection status=%d accepted=%#v removed=%#v", response.Code, testCase.fake.accepted, testCase.fake.removed)
+			}
+		})
+	}
+}
+
+func ptrPlayerSession(value model.PlayerSession) *model.PlayerSession { return &value }
+
 func TestPlayerSessionLocksAreReleasedAfterUse(t *testing.T) {
 	process := newLifecycle(&fakeGameLift{}, "http://unused", "")
 	unlock := process.lockPlayerSession("player-session-1")

@@ -18,7 +18,7 @@ import { formatPublicPlayerId, normalizePublicPlayerId } from "./identity/public
 import { MemoryIdentityRateLimiter, type IdentityRateLimitAction, type IdentityRateLimiter } from "./identity/IdentityRateLimiter";
 import { BaseTutorialAuthority } from "./BaseTutorialAuthority";
 import { RoomManager, type PreparedPublicPartyMember, type RoomManagerOptions } from "./RoomManager";
-import { GameLiftSessionGate, requiresPlayerSessionRemoval, type InspectedPublicPlayerSession } from "./GameLiftSessionGate";
+import { GameLiftSessionGate, isPlayerSessionClaimMismatch, requiresPlayerSessionRemoval, type InspectedPublicPlayerSession } from "./GameLiftSessionGate";
 import type { ArenaDirectory } from "./ArenaDirectory";
 import { isAggregateMatchSummary } from "./matchSummary";
 
@@ -1092,6 +1092,22 @@ export async function createServer(options: CreateServerOptions = {}) {
     );
   };
   reconcilePublicPartyRelease = async (claimId, playerSessionIds) => {
+    let ownedPlayerSessionIds: string[];
+    let absentPlayerSessionIds: string[];
+    try {
+      const ownership = await Promise.all(playerSessionIds.map(async (playerSessionId) => ({
+        playerSessionId,
+        owned: await gameLift!.verifyPublicPartySessionForRelease(playerSessionId, claimId),
+      })));
+      ownedPlayerSessionIds = ownership.filter((entry) => entry.owned).map((entry) => entry.playerSessionId);
+      absentPlayerSessionIds = ownership.filter((entry) => !entry.owned).map((entry) => entry.playerSessionId);
+    } catch (error) {
+      return {
+        releasedPlayerSessionIds: [] as string[],
+        failedPlayerSessionIds: [...playerSessionIds],
+        invalidClaim: isPlayerSessionClaimMismatch(error),
+      };
+    }
     const requested = new Set(playerSessionIds);
     const stagedBatches = new Set<PendingAtomicParty>();
     const activeReservationPlayerIds = new Set<string>();
@@ -1118,7 +1134,12 @@ export async function createServer(options: CreateServerOptions = {}) {
       "Quick play was cancelled. Re-enter together when ready.",
     )));
     rooms.releasePublicReservations(activeReservationPlayerIds);
-    return { ...await releasePartyReservations(gameLift!, playerSessionIds), invalidClaim: false };
+    const released = await releasePartyReservations(gameLift!, ownedPlayerSessionIds);
+    return {
+      releasedPlayerSessionIds: [...absentPlayerSessionIds, ...released.releasedPlayerSessionIds],
+      failedPlayerSessionIds: released.failedPlayerSessionIds,
+      invalidClaim: false,
+    };
   };
 
   app.server.on("upgrade", (request, socket, head) => {

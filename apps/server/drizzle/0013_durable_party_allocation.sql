@@ -46,7 +46,7 @@ ALTER TABLE "party_invite_acceptances" ADD CONSTRAINT "party_invite_acceptances_
 ALTER TABLE "party_invites" ADD CONSTRAINT "party_invites_party_id_parties_id_fk" FOREIGN KEY ("party_id") REFERENCES "public"."parties"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "parties" ADD CONSTRAINT "parties_version_check" CHECK ("version" >= 1);--> statement-breakpoint
 ALTER TABLE "parties" ADD CONSTRAINT "parties_matchmaking_key_check" CHECK ("matchmaking_key" ~ '^party-[a-f0-9]{32}$');--> statement-breakpoint
-ALTER TABLE "party_invites" ADD CONSTRAINT "party_invites_roster_binding_check" CHECK (("party_id" IS NULL AND "roster_version" IS NULL) OR ("party_id" IS NOT NULL AND "roster_version" >= 1));--> statement-breakpoint
+ALTER TABLE "party_invites" ADD CONSTRAINT "party_invites_roster_binding_check" CHECK (("party_id" IS NULL AND "roster_version" IS NULL) OR ("party_id" IS NOT NULL AND "roster_version" IS NOT NULL AND "roster_version" >= 1));--> statement-breakpoint
 ALTER TABLE "party_queue_claims" ADD CONSTRAINT "party_queue_claims_version_check" CHECK ("party_version" >= 1);--> statement-breakpoint
 ALTER TABLE "party_queue_claims" ADD CONSTRAINT "party_queue_claims_status_check" CHECK ("status" IN ('active', 'cancelled'));--> statement-breakpoint
 ALTER TABLE "party_queue_claims" ADD CONSTRAINT "party_queue_claims_metadata_check" CHECK (length("build_id") BETWEEN 1 AND 64 AND "build_id" ~ '^[a-zA-Z0-9._:-]+$' AND length("region") BETWEEN 1 AND 64 AND "region" ~ '^[a-zA-Z0-9._:-]+$');--> statement-breakpoint

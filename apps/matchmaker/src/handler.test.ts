@@ -4,8 +4,11 @@ import { createHmac } from "node:crypto";
 import { canonicalTrustedPartyReservation, type TrustedPartyRoster } from "@dotbot/protocol";
 import {
   addPartyPackingReservation,
+  assertAtomicGameSessionMetadata,
   atomicGameSessionIdempotencyToken,
   arenaAdmissionUpdateRequest,
+  claimStrandedAtomicArenaCreationRequest,
+  controlPlaneFailure,
   generateRoomCode,
   handler,
   isAtomicPartyAllocationEnabled,
@@ -19,12 +22,16 @@ import {
   partyPackingUpdateRequest,
   partyRosterAllocationDigest,
   publicArenaKey,
+  recoverableAtomicArenaCreation,
   retainAtomicAllocationCleanupRequest,
+  retainAtomicArenaCreationIntentRequest,
   selectPartyCleanupPlayerSessions,
+  selectAtomicArenaCreationIdentity,
   secureWebSocketUrl,
   signControlPlaneRequest,
   stalePublicArenaDeleteRequest,
   strandedAtomicAllocationDeleteRequest,
+  strandedAtomicArenaCreationDeleteRequest,
   validateWholePartyPlayerSessions,
 } from "./handler";
 
@@ -195,16 +202,29 @@ describe("matchmaker endpoint helpers", () => {
 
   it("accepts only an exact whole-party GameLift batch", () => {
     const ids = rosterFor(30, 3).members.map((member) => member.playerId);
+    const expected = {
+      gameSessionId: "game-session-1",
+      endpointHost: "compute.example",
+      endpointPort: 7001,
+      playerDataMap: Object.fromEntries(ids.map((playerId) => [playerId, `signed-${playerId}`])),
+    };
     const complete = ids.map((playerId, index) => ({
       PlayerId: playerId,
       PlayerSessionId: `player-session-${index}`,
+      GameSessionId: expected.gameSessionId,
+      PlayerData: expected.playerDataMap[playerId],
+      Status: "RESERVED",
       DnsName: "compute.example",
       Port: 7001,
     }));
-    expect(validateWholePartyPlayerSessions(ids, complete)).toHaveLength(3);
-    expect(validateWholePartyPlayerSessions(ids, complete.slice(0, 2))).toBeNull();
-    expect(validateWholePartyPlayerSessions(ids, complete.map((session) => ({ ...session, PlayerSessionId: "duplicate" })))).toBeNull();
-    expect(validateWholePartyPlayerSessions(ids, complete.map((session, index) => index === 1 ? { ...session, Port: undefined } : session))).toBeNull();
+    expect(validateWholePartyPlayerSessions(ids, complete, expected)).toHaveLength(3);
+    expect(validateWholePartyPlayerSessions(ids, complete.slice(0, 2), expected)).toBeNull();
+    expect(validateWholePartyPlayerSessions(ids, complete.map((session) => ({ ...session, PlayerSessionId: "duplicate" })), expected)).toBeNull();
+    expect(validateWholePartyPlayerSessions(ids, complete.map((session, index) => index === 1 ? { ...session, Port: undefined } : session), expected)).toBeNull();
+    expect(validateWholePartyPlayerSessions(ids, complete.map((session, index) => index === 1 ? { ...session, GameSessionId: "foreign-session" } : session), expected)).toBeNull();
+    expect(validateWholePartyPlayerSessions(ids, complete.map((session, index) => index === 1 ? { ...session, PlayerData: "foreign-claim" } : session), expected)).toBeNull();
+    expect(validateWholePartyPlayerSessions(ids, complete.map((session, index) => index === 1 ? { ...session, Status: "ACTIVE" } : session), expected)).toBeNull();
+    expect(validateWholePartyPlayerSessions(ids, complete.map((session, index) => index === 1 ? { ...session, DnsName: "foreign.example" } : session), expected)).toBeNull();
   });
 
   it("keeps allocation idempotency stable across member order and requesting device", () => {
@@ -214,16 +234,44 @@ describe("matchmaker endpoint helpers", () => {
       requestingPlayerId: first.members[2].playerId,
       issuedAt: first.issuedAt + 1,
       expiresAt: first.expiresAt + 1,
-      members: [...first.members].reverse(),
+      members: [...first.members].reverse().map((member) => ({ ...member, name: `${member.name} renamed` })),
     };
     expect(partyRosterAllocationDigest(second)).toBe(partyRosterAllocationDigest(first));
   });
 
   it("derives one bounded GameLift creation token from the canonical claim", () => {
     const claimId = "00000000-0000-4000-8000-000000000040";
+    const creationId = "00000000-0000-4000-8000-000000000041";
     expect(atomicGameSessionIdempotencyToken(claimId)).toBe(`party-${claimId}`);
     expect(atomicGameSessionIdempotencyToken(claimId)).toHaveLength(42);
+    expect(atomicGameSessionIdempotencyToken(claimId, creationId)).toBe("party-977b1aa612c1601028a16905ebf022dc72ff992aba");
+    expect(atomicGameSessionIdempotencyToken(claimId, creationId)).toHaveLength(48);
+    expect(atomicGameSessionIdempotencyToken(claimId, "00000000-0000-4000-8000-000000000042"))
+      .not.toBe(atomicGameSessionIdempotencyToken(claimId, creationId));
     expect(() => atomicGameSessionIdempotencyToken("client-controlled")).toThrow();
+    expect(() => atomicGameSessionIdempotencyToken(claimId, "client-controlled")).toThrow();
+  });
+
+  it("owns a created GameSession only when every atomic property is exact", () => {
+    const properties = [
+      { Key: "mode", Value: "public-hot-arena" },
+      { Key: "arenaId", Value: "A2BC" },
+      { Key: "buildId", Value: "web-42" },
+      { Key: "region", Value: "ca-central-1" },
+      { Key: "partyAllocation", Value: "v1" },
+      { Key: "partySecret", Value: "a".repeat(64) },
+    ];
+    expect(() => assertAtomicGameSessionMetadata(
+      { GameProperties: properties }, "A2BC", "a".repeat(64), "web-42", "ca-central-1",
+    )).not.toThrow();
+    expect(() => assertAtomicGameSessionMetadata(
+      { GameProperties: properties.map((entry) => entry.Key === "partySecret" ? { ...entry, Value: "b".repeat(64) } : entry) },
+      "A2BC", "a".repeat(64), "web-42", "ca-central-1",
+    )).toThrow("mismatched atomic arena metadata");
+    expect(() => assertAtomicGameSessionMetadata(
+      { GameProperties: [...properties, { Key: "foreign", Value: "value" }] },
+      "A2BC", "a".repeat(64), "web-42", "ca-central-1",
+    )).toThrow("mismatched atomic arena metadata");
   });
 
   it("discovers cleanup ids only from this GameSession's signed canonical claim", () => {
@@ -369,6 +417,86 @@ describe("matchmaker endpoint helpers", () => {
     });
   });
 
+  it("durably records uncertain arena creation before mutation and recovers without the public pointer", () => {
+    const claimId = "00000000-0000-4000-8000-000000000077";
+    const arenaKey = "PUBLIC#ca-central-1#web-42";
+    const intent = {
+      arenaKey,
+      arenaId: "A2BC",
+      partySecret: "d".repeat(64),
+      creationId: "00000000-0000-4000-8000-000000000079",
+    };
+    const retained = retainAtomicArenaCreationIntentRequest(
+      "sessions",
+      `ALLOCATION#${claimId}`,
+      "allocator-owner",
+      "roster-digest",
+      intent,
+    );
+    expect(retained.ConditionExpression).toContain("#status = :allocating AND #owner = :owner");
+    expect(retained.ConditionExpression).toContain("attribute_not_exists(cancelRequestedAt)");
+    expect(retained.UpdateExpression).toContain("arenaKey = :arenaKey");
+    expect(retained.ExpressionAttributeValues).toMatchObject({
+      ":arenaKey": arenaKey,
+      ":arena": "A2BC",
+      ":secret": "d".repeat(64),
+      ":creation": intent.creationId,
+    });
+
+    const allocationRecord = {
+      pk: `ALLOCATION#${claimId}`,
+      status: "cancelling" as const,
+      leaderPlayerId: "00000000-0000-4000-8000-000000000001",
+      buildId: "web-42",
+      region: "ca-central-1",
+      ...intent,
+      expiresAt: 9999,
+    };
+    expect(recoverableAtomicArenaCreation(allocationRecord, claimId)).toEqual({
+      ...intent,
+      leaderPlayerId: allocationRecord.leaderPlayerId,
+      buildId: allocationRecord.buildId,
+      region: allocationRecord.region,
+    });
+    expect(recoverableAtomicArenaCreation(allocationRecord, "00000000-0000-4000-8000-000000000078")).toBeNull();
+    expect(recoverableAtomicArenaCreation({ ...allocationRecord, arenaKey: "PUBLIC#us-east-1#web-42" }, claimId)).toBeNull();
+    expect(selectAtomicArenaCreationIdentity(arenaKey, claimId, {
+      status: "creating",
+      claimId,
+      creationId: intent.creationId,
+      arenaId: intent.arenaId,
+      partySecret: intent.partySecret,
+    })).toEqual(intent);
+    expect(selectAtomicArenaCreationIdentity(arenaKey, claimId, {
+      status: "creating",
+      claimId: "00000000-0000-4000-8000-000000000099",
+      creationId: intent.creationId,
+      arenaId: intent.arenaId,
+      partySecret: intent.partySecret,
+    })).toBeNull();
+
+    const strandedRecord = {
+      ...allocationRecord,
+      status: "allocating" as const,
+      owner: "expired-owner",
+      ownerLeaseExpiresAt: 1234,
+      rosterDigest: "roster-digest",
+    };
+    const claimed = claimStrandedAtomicArenaCreationRequest(
+      "sessions", strandedRecord.pk, strandedRecord, "roster-digest", "cleanup-owner", 5678,
+    );
+    expect(claimed.ConditionExpression).toContain("attribute_not_exists(gameSessionId)");
+    expect(claimed.ConditionExpression).toContain("creationId = :creation");
+    expect(claimed.ExpressionAttributeValues).toMatchObject({
+      ":owner": "expired-owner", ":lease": 1234, ":nextOwner": "cleanup-owner", ":nextLease": 5678,
+    });
+    const deleted = strandedAtomicArenaCreationDeleteRequest("sessions", strandedRecord.pk, {
+      ...strandedRecord, owner: "cleanup-owner", ownerLeaseExpiresAt: 5678,
+    }, "roster-digest");
+    expect(deleted.ConditionExpression).toContain("#owner = :owner AND ownerLeaseExpiresAt = :lease");
+    expect(deleted.ExpressionAttributeValues).toMatchObject({ ":owner": "cleanup-owner", ":lease": 5678 });
+  });
+
   it("accepts only bounded availability windows for the exact public arena metadata", () => {
     const now = 10_000;
     expect(parseArenaAdmissionUpdate({
@@ -445,6 +573,12 @@ describe("matchmaker endpoint helpers", () => {
       "x-dotbot-request-id": requestId,
       "x-dotbot-signature": createHmac("sha256", secret).update(`matchmaker-auth.${timestamp}.${requestId}.${body}`).digest("hex"),
     });
+  });
+
+  it("keeps control-plane outages retryable instead of misreporting authentication failure", () => {
+    expect(controlPlaneFailure(503, "unavailable")).toMatchObject({ status: 503, retryable: true });
+    expect(controlPlaneFailure(409, "conflict")).toMatchObject({ status: 409, retryable: false });
+    expect(controlPlaneFailure(401, "unauthorized")).toMatchObject({ status: 401, retryable: false });
   });
 });
 

@@ -127,7 +127,7 @@ export class PostgresPersistence implements Persistence {
 
   async linkAccount(token: string, identity: VerifiedExternalIdentity): Promise<LinkAccountResult> {
     const tokenHash = hashToken(token);
-    const result = await this.db.transaction(async (tx) => {
+    const result = await this.retryConcurrentPartyTransaction(() => this.db.transaction(async (tx) => {
       // Serialize every first-link and merge for one verified Firebase account
       // before locking either player. This closes the unique-insert race and
       // keeps opposite device replays from deadlocking on player rows.
@@ -214,7 +214,7 @@ export class PostgresPersistence implements Persistence {
           set: { lastVerifiedAt: new Date() },
         });
       return { targetPlayerId, merged, replayed };
-    });
+    }));
     const account = await this.accountSummary(result.targetPlayerId);
     if (!account) throw new PersistenceConflictError("Linked account is unavailable.");
     return { account, merged: result.merged, replayed: result.replayed };
@@ -258,7 +258,7 @@ export class PostgresPersistence implements Persistence {
 
   async deleteLinkedAccount(token: string, identity: VerifiedExternalIdentity): Promise<boolean> {
     const tokenHash = hashToken(token);
-    return this.db.transaction(async (tx) => {
+    return this.retryConcurrentPartyTransaction(() => this.db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${externalIdentityLockKey(identity)}, 0))`);
       let [device] = await tx.select({ playerId: playerDevices.playerId }).from(playerDevices)
         .where(eq(playerDevices.tokenHash, tokenHash)).limit(1);
@@ -301,7 +301,7 @@ export class PostgresPersistence implements Persistence {
       });
       const deleted = await tx.delete(players).where(eq(players.id, actor.id)).returning({ id: players.id });
       return deleted.length === 1;
-    });
+    }));
   }
 
   async findPublicPlayer(token: string, requestedId: string): Promise<PublicPlayer | null> {
@@ -434,8 +434,12 @@ export class PostgresPersistence implements Persistence {
   }
 
   async getParty(token: string): Promise<PartySummary | null> {
-    const actor = await this.helloPlayer(token);
-    return actor ? this.partySummaryForPlayer(actor.playerId) : null;
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return null;
+      const membership = await this.partyMembershipForActor(tx, actor, false);
+      return membership ? this.partySummaryById(tx, membership.partyId, actor.playerId) : null;
+    });
   }
 
   async createDurablePartyInvite(token: string): Promise<DurablePartyInvite | null> {
@@ -443,15 +447,14 @@ export class PostgresPersistence implements Persistence {
       const actor = await this.partyActor(tx, token);
       if (!actor) return null;
       if (!actor.linked) throw new PartyConflictError("party_link_required", "Link an account to create a durable party invitation.");
-      let [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
-        .where(eq(partyMembers.playerId, actor.playerId));
+      let membership = await this.partyMembershipForActor(tx, actor);
       if (!membership) {
         const [created] = await tx.insert(parties).values({
           matchmakingKey: `party-${randomBytes(16).toString("hex")}`,
           leaderPlayerId: actor.playerId,
         }).returning({ id: parties.id });
         await tx.insert(partyMembers).values({ partyId: created.id, playerId: actor.playerId });
-        membership = { partyId: created.id };
+        membership = { partyId: created.id, guestDeviceId: null };
       }
       const party = await this.lockParty(tx, membership.partyId);
       if (!party || party.leaderPlayerId !== actor.playerId) {
@@ -490,8 +493,7 @@ export class PostgresPersistence implements Persistence {
       const actor = await this.partyActor(tx, token);
       if (!actor) return null;
       if (!actor.linked) throw new PartyConflictError("party_link_required", "Link an account to revoke durable party invitations.");
-      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
-        .where(eq(partyMembers.playerId, actor.playerId));
+      const membership = await this.partyMembershipForActor(tx, actor);
       if (!membership) return null;
       const party = await this.lockParty(tx, membership.partyId);
       if (!party || party.leaderPlayerId !== actor.playerId) {
@@ -507,8 +509,7 @@ export class PostgresPersistence implements Persistence {
     return this.db.transaction(async (tx) => {
       const actor = await this.partyActor(tx, token);
       if (!actor) return null;
-      const [current] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
-        .where(eq(partyMembers.playerId, actor.playerId));
+      const current = await this.partyMembershipForActor(tx, actor);
       const tokenHash = hashToken(code);
       const [inviteHint] = await tx.select({ partyId: partyInvites.partyId })
         .from(partyInvites).where(eq(partyInvites.tokenHash, tokenHash)).limit(1);
@@ -518,7 +519,7 @@ export class PostgresPersistence implements Persistence {
       }
       const party = await this.lockParty(tx, inviteHint.partyId);
       if (!party) return null;
-      const currentPartyId = await this.partyIdForPlayer(tx, actor.playerId);
+      const currentPartyId = (await this.partyMembershipForActor(tx, actor))?.partyId ?? null;
       if (currentPartyId && currentPartyId !== party.id) {
         throw new PartyConflictError("party_membership_conflict", "Leave the current party before accepting another invitation.");
       }
@@ -591,11 +592,10 @@ export class PostgresPersistence implements Persistence {
   }
 
   async leaveParty(token: string, expectedVersion?: number): Promise<PartySummary | null> {
-    return this.db.transaction(async (tx) => {
+    return this.retryConcurrentPartyTransaction(() => this.db.transaction(async (tx) => {
       const actor = await this.partyActor(tx, token);
       if (!actor) return null;
-      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
-        .where(eq(partyMembers.playerId, actor.playerId));
+      const membership = await this.partyMembershipForActor(tx, actor);
       if (!membership) return null;
       const [authorityHint] = await tx.select({ leaderPlayerId: parties.leaderPlayerId }).from(parties)
         .where(eq(parties.id, membership.partyId)).limit(1);
@@ -607,24 +607,23 @@ export class PostgresPersistence implements Persistence {
       }
       const party = await this.lockParty(tx, membership.partyId);
       if (!party) return null;
-      if (!await this.isPartyMember(tx, party.id, actor.playerId)) return null;
+      if ((await this.partyMembershipForActor(tx, actor))?.partyId !== party.id) return null;
       assertPartyVersion(party.version, expectedVersion);
       await this.assertPartyNotQueued(tx, party.id);
       await this.removePartyMember(tx, party, actor.playerId);
       return null;
-    });
+    }));
   }
 
   async disbandParty(token: string, expectedVersion?: number): Promise<boolean> {
     return this.db.transaction(async (tx) => {
       const actor = await this.partyActor(tx, token);
       if (!actor) return false;
-      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
-        .where(eq(partyMembers.playerId, actor.playerId));
+      const membership = await this.partyMembershipForActor(tx, actor);
       if (!membership) return false;
       const party = await this.lockParty(tx, membership.partyId);
       if (!party) return false;
-      if (!await this.isPartyMember(tx, party.id, actor.playerId)) return false;
+      if ((await this.partyMembershipForActor(tx, actor))?.partyId !== party.id) return false;
       assertPartyVersion(party.version, expectedVersion);
       if (party.leaderPlayerId !== actor.playerId) throw new PartyConflictError("party_leader_required", "Only the party leader can disband the party.");
       await this.assertPartyNotQueued(tx, party.id);
@@ -636,11 +635,10 @@ export class PostgresPersistence implements Persistence {
   async transferPartyLeader(token: string, requestedId: string, expectedVersion?: number): Promise<PartySummary | null> {
     const normalized = normalizePublicPlayerId(requestedId);
     if (!normalized) return null;
-    return this.db.transaction(async (tx) => {
+    return this.retryConcurrentPartyTransaction(() => this.db.transaction(async (tx) => {
       const actor = await this.partyActor(tx, token);
       if (!actor) return null;
-      const [membershipHint] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
-        .where(eq(partyMembers.playerId, actor.playerId)).limit(1);
+      const membershipHint = await this.partyMembershipForActor(tx, actor);
       if (!membershipHint) return null;
       const [authorityHint] = await tx.select({ leaderPlayerId: parties.leaderPlayerId }).from(parties)
         .where(eq(parties.id, membershipHint.partyId)).limit(1);
@@ -658,7 +656,7 @@ export class PostgresPersistence implements Persistence {
       if (!target) return null;
       const party = await this.lockParty(tx, membershipHint.partyId);
       if (!party) return null;
-      if (!await this.isPartyMember(tx, party.id, actor.playerId)) return null;
+      if ((await this.partyMembershipForActor(tx, actor))?.partyId !== party.id) return null;
       assertPartyVersion(party.version, expectedVersion);
       if (party.leaderPlayerId !== actor.playerId) throw new PartyConflictError("party_leader_required", "Only the party leader can transfer leadership.");
       await this.assertPartyNotQueued(tx, party.id);
@@ -668,7 +666,7 @@ export class PostgresPersistence implements Persistence {
           .where(eq(parties.id, party.id));
       }
       return this.partySummaryById(tx, party.id, actor.playerId);
-    });
+    }));
   }
 
   async claimPartyQueue(token: string, input: { requestId: string; buildId: string; region: string }): Promise<PartyQueueClaim> {
@@ -678,8 +676,7 @@ export class PostgresPersistence implements Persistence {
     return this.db.transaction(async (tx) => {
       const actor = await this.partyActor(tx, token);
       if (!actor) throw new PartyConflictError("party_membership_conflict", "Unknown device token.");
-      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
-        .where(eq(partyMembers.playerId, actor.playerId));
+      const membership = await this.partyMembershipForActor(tx, actor);
       if (!membership) {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`dotbot-solo-party:${actor.playerId}`}, 0))`);
         const [existing] = await tx.select().from(partyQueueClaims).where(and(
@@ -704,7 +701,7 @@ export class PostgresPersistence implements Persistence {
       }
       const party = await this.lockParty(tx, membership.partyId);
       if (!party) throw new PartyConflictError("party_membership_conflict", "Party no longer exists.");
-      if (!await this.isPartyMember(tx, party.id, actor.playerId)) {
+      if ((await this.partyMembershipForActor(tx, actor))?.partyId !== party.id) {
         throw new PartyConflictError("party_membership_conflict", "Party membership changed before queue entry.");
       }
       const [existing] = await tx.select().from(partyQueueClaims).where(and(
@@ -738,12 +735,11 @@ export class PostgresPersistence implements Persistence {
     return this.db.transaction(async (tx) => {
       const actor = await this.partyActor(tx, token);
       if (!actor) return null;
-      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
-        .where(eq(partyMembers.playerId, actor.playerId));
+      const membership = await this.partyMembershipForActor(tx, actor);
       if (membership) {
         const party = await this.lockParty(tx, membership.partyId);
         if (!party) return null;
-        if (!await this.isPartyMember(tx, party.id, actor.playerId)) return null;
+        if ((await this.partyMembershipForActor(tx, actor))?.partyId !== party.id) return null;
         const [claim] = await tx.select().from(partyQueueClaims).where(eq(partyQueueClaims.id, claimId)).for("update");
         if (!claim || claim.partyId !== party.id || (claim.status !== "active" && claim.status !== "cancelled")
           || (claim.status === "active" && claim.expiresAt <= new Date())) return null;
@@ -763,12 +759,11 @@ export class PostgresPersistence implements Persistence {
     return this.db.transaction(async (tx) => {
       const actor = await this.partyActor(tx, token);
       if (!actor) return false;
-      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
-        .where(eq(partyMembers.playerId, actor.playerId));
+      const membership = await this.partyMembershipForActor(tx, actor);
       if (membership) {
         const party = await this.lockParty(tx, membership.partyId);
         if (!party) return false;
-        if (!await this.isPartyMember(tx, party.id, actor.playerId)) return false;
+        if ((await this.partyMembershipForActor(tx, actor))?.partyId !== party.id) return false;
       } else {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`dotbot-solo-party:${actor.playerId}`}, 0))`);
       }
@@ -1357,6 +1352,17 @@ export class PostgresPersistence implements Persistence {
     await this.client.end({ timeout: 2 });
   }
 
+  private async retryConcurrentPartyTransaction<T>(operation: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (attempt >= 2 || !isRetryableTransactionConflict(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 5 * (attempt + 1)));
+      }
+    }
+  }
+
   private async partyActor(
     tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
     token: string,
@@ -1398,6 +1404,26 @@ export class PostgresPersistence implements Persistence {
     const [linked] = await tx.select({ id: externalIdentities.id }).from(externalIdentities)
       .where(eq(externalIdentities.playerId, device.playerId)).limit(1);
     return { ...device, linked: Boolean(linked) };
+  }
+
+  private async partyMembershipForActor(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    actor: { playerId: string; deviceId: string; linked: boolean },
+    rejectMismatch = true,
+  ): Promise<{ partyId: string; guestDeviceId: string | null } | null> {
+    const [membership] = await tx.select({
+      partyId: partyMembers.partyId,
+      guestDeviceId: partyMembers.guestDeviceId,
+    }).from(partyMembers).where(eq(partyMembers.playerId, actor.playerId)).limit(1);
+    if (!membership) return null;
+    const ownsMembership = actor.linked
+      ? membership.guestDeviceId === null
+      : membership.guestDeviceId === actor.deviceId;
+    if (!ownsMembership) {
+      if (!rejectMismatch) return null;
+      throw new PartyConflictError("party_membership_conflict", "This guest party membership belongs to another device.");
+    }
+    return membership;
   }
 
   private async lockParty(
@@ -1989,6 +2015,16 @@ export async function connectPostgres(databaseUrl: string): Promise<PostgresPers
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function isRetryableTransactionConflict(error: unknown): boolean {
+  let candidate: unknown = error;
+  for (let depth = 0; depth < 4 && candidate && typeof candidate === "object"; depth += 1) {
+    const value = candidate as { code?: unknown; cause?: unknown };
+    if (value.code === "40P01" || value.code === "40001") return true;
+    candidate = value.cause;
+  }
+  return false;
 }
 
 function assertPartyVersion(actual: number, expected: number | undefined): void {

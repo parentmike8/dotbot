@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import WebSocket from "ws";
 import type { ServerMessage } from "@dotbot/protocol";
 import { createServer } from "./app";
-import { GameLiftSessionGate } from "./GameLiftSessionGate";
+import { GameLiftPlayerSessionClaimMismatchError, GameLiftSessionGate } from "./GameLiftSessionGate";
 import { NoopPersistence } from "./db";
 import { completedBaseTutorialState } from "@dotbot/game/baseTutorial";
 
@@ -225,10 +225,17 @@ describe("GameLift dedicated server mode", () => {
     });
     const acceptPublicPartySessions = vi.fn(async () => undefined);
     const removePlayerSession = vi.fn(async (_playerSessionId: string) => undefined);
+    const verifyPublicPartySessionForRelease = vi.fn(async (playerSessionId: string, claimId: string) => {
+      if (!playerSessionId.startsWith("psess-") || claimId !== "00000000-0000-4000-8000-000000000010") {
+        throw new GameLiftPlayerSessionClaimMismatchError("reservation is owned by another claim");
+      }
+      return true;
+    });
     const gameLift = {
       inspectPublicPlayerSession,
       acceptPublicPartySessions,
       removePlayerSession,
+      verifyPublicPartySessionForRelease,
       verifyPartyOperation: vi.fn(async () => ({
         gameSessionId: "game-session-1", arenaId: "A2BC", buildId: "web-42", region: "ca-central-1",
       })),
@@ -264,6 +271,36 @@ describe("GameLift dedicated server mode", () => {
     }));
     await expect(Promise.all([firstWelcome, secondWelcome])).resolves.toHaveLength(2);
     expect(acceptPublicPartySessions).toHaveBeenCalledOnce();
+    expect(rooms.join("A2BC")?.size).toBe(2);
+    expect(removePlayerSession).not.toHaveBeenCalled();
+
+    const foreignRelease = await app.inject({
+      method: "POST",
+      url: "/api/internal/public-party-release",
+      headers: { "x-dotbot-request-id": "00000000-0000-4000-8000-000000000097" },
+      payload: {
+        arenaId: "A2BC",
+        claimId: "00000000-0000-4000-8000-000000000010",
+        playerSessionIds: ["foreign-player-session"],
+      },
+    });
+    expect(foreignRelease.statusCode).toBe(400);
+    expect(rooms.join("A2BC")?.size).toBe(2);
+    expect(removePlayerSession).not.toHaveBeenCalled();
+
+    verifyPublicPartySessionForRelease.mockRejectedValueOnce(new Error("adapter unavailable"));
+    const outageRelease = await app.inject({
+      method: "POST",
+      url: "/api/internal/public-party-release",
+      headers: { "x-dotbot-request-id": "00000000-0000-4000-8000-000000000096" },
+      payload: {
+        arenaId: "A2BC",
+        claimId: "00000000-0000-4000-8000-000000000010",
+        playerSessionIds: ["psess-one"],
+      },
+    });
+    expect(outageRelease.statusCode).toBe(503);
+    expect(outageRelease.json()).toMatchObject({ failedPlayerSessionIds: ["psess-one"], retryable: true });
     expect(rooms.join("A2BC")?.size).toBe(2);
     expect(removePlayerSession).not.toHaveBeenCalled();
 

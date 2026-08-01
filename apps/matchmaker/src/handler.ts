@@ -48,6 +48,7 @@ type PublicArenaRecord = RoomRecord & {
   endpointPort?: number;
   partySecret?: string;
   claimId?: string;
+  creationId?: string;
   leaderPlayerId?: string;
   packingRevision?: number;
   partyReservations?: PartyPackingReservation[];
@@ -71,6 +72,7 @@ type AtomicAllocationRecord = {
   buildId?: string;
   region?: string;
   arenaKey?: string;
+  creationId?: string;
   gameSessionId?: string;
   arenaId?: string;
   endpointHost?: string;
@@ -236,13 +238,18 @@ async function authenticatePartyRoster(tokenValue: unknown, request: AtomicQuick
   const requestId = randomUUID();
   const timestamp = Date.now().toString();
   const secret = await relaySecret();
-  const responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/matchmaker-auth`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...signControlPlaneRequest(secret, body, timestamp, requestId, "matchmaker-auth") },
-    body,
-    signal: AbortSignal.timeout(3_000),
-  });
-  if (!responseValue.ok) throw new MatchmakerError(responseValue.status === 409 ? 409 : 401, "Party authentication failed.", responseValue.status >= 500);
+  let responseValue: Response;
+  try {
+    responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/matchmaker-auth`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...signControlPlaneRequest(secret, body, timestamp, requestId, "matchmaker-auth") },
+      body,
+      signal: AbortSignal.timeout(3_000),
+    });
+  } catch {
+    throw controlPlaneFailure(503, "Party authentication failed.");
+  }
+  if (!responseValue.ok) throw controlPlaneFailure(responseValue.status, "Party authentication failed.");
   const payload = await responseValue.json() as { partyRoster?: unknown; rosterSignature?: unknown };
   const roster = parseTrustedPartyRoster(payload.partyRoster);
   const signature = typeof payload.rosterSignature === "string" ? payload.rosterSignature : "";
@@ -306,6 +313,39 @@ async function allocateAtomicParty(roster: TrustedPartyRoster): Promise<Connecti
       }
       continue;
     }
+    const strandedCreation = existing?.status === "allocating" && (existing.ownerLeaseExpiresAt ?? Number.MAX_SAFE_INTEGER) <= Date.now()
+      ? recoverableAtomicArenaCreation(existing, roster.claimId)
+      : null;
+    if (existing?.status === "allocating" && strandedCreation) {
+      const cleanupOwner = randomUUID();
+      const cleanupLease = Date.now() + atomicOwnerLeaseMs;
+      try {
+        await database.send(new UpdateCommand(claimStrandedAtomicArenaCreationRequest(
+          tableName,
+          key,
+          existing,
+          digest,
+          cleanupOwner,
+          cleanupLease,
+        )));
+      } catch (error) {
+        if (awsErrorName(error) === "ConditionalCheckFailedException") continue;
+        throw error;
+      }
+      const fenced = { ...existing, owner: cleanupOwner, ownerLeaseExpiresAt: cleanupLease };
+      try {
+        await releaseExpiredAllocationDirectoryClaim(fenced, roster.claimId);
+      } catch {
+        throw new MatchmakerError(503, "A previous arena creation is still reconciling. Retry together.", true);
+      }
+      try {
+        await database.send(new DeleteCommand(strandedAtomicArenaCreationDeleteRequest(tableName, key, fenced, digest)));
+      } catch (error) {
+        if (awsErrorName(error) === "ConditionalCheckFailedException") continue;
+        throw error;
+      }
+      continue;
+    }
     if (existing?.status === "allocating" && (existing.ownerLeaseExpiresAt ?? Number.MAX_SAFE_INTEGER) > Date.now()) {
       await new Promise((resolve) => setTimeout(resolve, 40 * Math.min(4, attempt + 1)));
       continue;
@@ -355,15 +395,27 @@ async function allocateAtomicParty(roster: TrustedPartyRoster): Promise<Connecti
 
     let arenaAllocation: Awaited<ReturnType<typeof allocatePartyIntoArena>> | undefined;
     try {
-      arenaAllocation = await allocatePartyIntoArena(roster, async (allocation) => {
-        await database.send(new UpdateCommand(retainAtomicAllocationCleanupRequest(
-          tableName,
-          key,
-          owner,
-          digest,
-          allocation,
-        )));
-      });
+      arenaAllocation = await allocatePartyIntoArena(
+        roster,
+        async (allocation) => {
+          await database.send(new UpdateCommand(retainAtomicAllocationCleanupRequest(
+            tableName,
+            key,
+            owner,
+            digest,
+            allocation,
+          )));
+        },
+        async (intent) => {
+          await database.send(new UpdateCommand(retainAtomicArenaCreationIntentRequest(
+            tableName,
+            key,
+            owner,
+            digest,
+            intent,
+          )));
+        },
+      );
       await database.send(new UpdateCommand({
         TableName: tableName,
         Key: { pk: key },
@@ -521,7 +573,7 @@ export function partyRosterAllocationDigest(roster: TrustedPartyRoster): string 
     leaderPlayerId: roster.leaderPlayerId,
     buildId: roster.buildId,
     region: roster.region,
-    members: [...roster.members].sort((left, right) => left.playerId.localeCompare(right.playerId)),
+    memberPlayerIds: roster.members.map((member) => member.playerId).sort(),
   })).digest("hex");
 }
 
@@ -539,6 +591,57 @@ type AtomicArenaAllocation = {
   cleanupDiscoveryUntil: number;
   terminateGameSession: boolean;
 };
+
+type AtomicArenaCreationIntent = {
+  arenaKey: string;
+  arenaId: string;
+  partySecret: string;
+  creationId: string;
+};
+
+export function selectAtomicArenaCreationIdentity(
+  key: string,
+  claimId: string,
+  previous: Pick<PublicArenaRecord, "status" | "claimId" | "creationId" | "arenaId" | "partySecret"> | undefined,
+): AtomicArenaCreationIntent | null {
+  if (previous?.status === "creating" && previous.claimId === claimId
+    && isUuid(previous.creationId ?? "") && roomCodePattern.test(previous.arenaId ?? "")
+    && /^[a-f0-9]{64}$/.test(previous.partySecret ?? "")) {
+    return {
+      arenaKey: key,
+      arenaId: previous.arenaId!,
+      partySecret: previous.partySecret!,
+      creationId: previous.creationId!,
+    };
+  }
+  return null;
+}
+
+export function retainAtomicArenaCreationIntentRequest(
+  tableName: string,
+  key: string,
+  owner: string,
+  digest: string,
+  intent: AtomicArenaCreationIntent,
+): UpdateCommandInput {
+  return {
+    TableName: tableName,
+    Key: { pk: key },
+    UpdateExpression: "SET arenaKey = :arenaKey, arenaId = :arena, partySecret = :secret, creationId = :creation, expiresAt = :expires",
+    ConditionExpression: "#status = :allocating AND #owner = :owner AND rosterDigest = :digest AND attribute_not_exists(cancelRequestedAt)",
+    ExpressionAttributeNames: { "#status": "status", "#owner": "owner" },
+    ExpressionAttributeValues: {
+      ":allocating": "allocating",
+      ":owner": owner,
+      ":digest": digest,
+      ":arenaKey": intent.arenaKey,
+      ":arena": intent.arenaId,
+      ":secret": intent.partySecret,
+      ":creation": intent.creationId,
+      ":expires": Math.floor(Date.now() / 1000) + 6 * 60 * 60,
+    },
+  };
+}
 
 export function retainAtomicAllocationCleanupRequest(
   tableName: string,
@@ -598,12 +701,67 @@ export function strandedAtomicAllocationDeleteRequest(
   };
 }
 
+export function claimStrandedAtomicArenaCreationRequest(
+  tableName: string,
+  key: string,
+  record: AtomicAllocationRecord,
+  digest: string,
+  owner: string,
+  leaseExpiresAt: number,
+): UpdateCommandInput {
+  const hasCreationId = typeof record.creationId === "string";
+  return {
+    TableName: tableName,
+    Key: { pk: key },
+    UpdateExpression: "SET #owner = :nextOwner, ownerLeaseExpiresAt = :nextLease, expiresAt = :expires",
+    ConditionExpression: `#status = :allocating AND #owner = :owner AND ownerLeaseExpiresAt = :lease AND rosterDigest = :digest AND ${hasCreationId ? "creationId = :creation" : "attribute_not_exists(creationId)"} AND arenaId = :arena AND partySecret = :secret AND attribute_not_exists(gameSessionId) AND attribute_not_exists(cancelRequestedAt)`,
+    ExpressionAttributeNames: { "#status": "status", "#owner": "owner" },
+    ExpressionAttributeValues: {
+      ":allocating": "allocating",
+      ":owner": record.owner,
+      ":lease": record.ownerLeaseExpiresAt,
+      ":digest": digest,
+      ...(hasCreationId ? { ":creation": record.creationId } : {}),
+      ":arena": record.arenaId,
+      ":secret": record.partySecret,
+      ":nextOwner": owner,
+      ":nextLease": leaseExpiresAt,
+      ":expires": Math.floor(Date.now() / 1000) + 6 * 60 * 60,
+    },
+  };
+}
+
+export function strandedAtomicArenaCreationDeleteRequest(
+  tableName: string,
+  key: string,
+  record: AtomicAllocationRecord,
+  digest: string,
+): DeleteCommandInput {
+  const hasCreationId = typeof record.creationId === "string";
+  return {
+    TableName: tableName,
+    Key: { pk: key },
+    ConditionExpression: `#status = :allocating AND #owner = :owner AND ownerLeaseExpiresAt = :lease AND rosterDigest = :digest AND ${hasCreationId ? "creationId = :creation" : "attribute_not_exists(creationId)"} AND arenaId = :arena AND partySecret = :secret AND attribute_not_exists(gameSessionId) AND attribute_not_exists(cancelRequestedAt)`,
+    ExpressionAttributeNames: { "#status": "status", "#owner": "owner" },
+    ExpressionAttributeValues: {
+      ":allocating": "allocating",
+      ":owner": record.owner,
+      ":lease": record.ownerLeaseExpiresAt,
+      ":digest": digest,
+      ...(hasCreationId ? { ":creation": record.creationId } : {}),
+      ":arena": record.arenaId,
+      ":secret": record.partySecret,
+    },
+  };
+}
+
 type ActiveAtomicArena = PublicArenaRecord & Required<Pick<PublicArenaRecord,
   "gameSessionId" | "arenaId" | "buildId" | "region" | "admissionClosesAt" | "endpointHost" | "endpointPort" | "partySecret">>;
 
 async function allocatePartyIntoArena(
   roster: TrustedPartyRoster,
   retainCleanup: (allocation: AtomicArenaAllocation) => Promise<void>,
+  retainCreationIntent: (intent: AtomicArenaCreationIntent) => Promise<void>,
 ): Promise<AtomicArenaAllocation> {
   const tableName = requiredEnv("TABLE_NAME");
   const key = publicArenaKey(roster);
@@ -730,7 +888,7 @@ async function allocatePartyIntoArena(
         throw error;
       }
     }
-    const created = await createAtomicArena(roster, key, retainCleanup, existing);
+    const created = await createAtomicArena(roster, key, retainCleanup, retainCreationIntent, existing);
     if (created) return created;
   }
   throw new MatchmakerError(503, "No arena can fit the intact party. Retry together.", true);
@@ -744,9 +902,17 @@ function isAtomicArenaAvailable(existing: PublicArenaRecord | undefined, roster:
     && (existing.admissionClosesAt ?? 0) > Date.now();
 }
 
-export function atomicGameSessionIdempotencyToken(claimId: string): string {
+export function atomicGameSessionIdempotencyToken(claimId: string, creationId?: string): string {
   if (!isUuid(claimId)) throw new Error("Invalid atomic allocation claim id.");
-  return `party-${claimId.toLowerCase()}`;
+  if (!creationId) return `party-${claimId.toLowerCase()}`;
+  if (!isUuid(creationId)) throw new Error("Invalid atomic arena creation id.");
+  // GameLift caps this token at 48 characters. Hashing both canonical UUIDs
+  // preserves a wide generation fence without leaking either identifier into
+  // the GameSession ARN.
+  return `party-${createHash("sha256")
+    .update(`${claimId.toLowerCase()}.${creationId.toLowerCase()}`)
+    .digest("hex")
+    .slice(0, 42)}`;
 }
 
 function atomicGameSessionRequest(
@@ -756,6 +922,7 @@ function atomicGameSessionRequest(
   selectedRegion: string,
   arenaId: string,
   partySecret: string,
+  creationId?: string,
 ): CreateGameSessionCommandInput {
   return {
     FleetId: requiredEnv("FLEET_ID"),
@@ -763,7 +930,7 @@ function atomicGameSessionRequest(
     MaximumPlayerSessionCount: 18,
     Name: `DotBot public ${arenaId}`,
     CreatorId: leaderPlayerId,
-    IdempotencyToken: atomicGameSessionIdempotencyToken(claimId),
+    IdempotencyToken: atomicGameSessionIdempotencyToken(claimId, creationId),
     GameProperties: [
       { Key: "mode", Value: "public-hot-arena" },
       { Key: "arenaId", Value: arenaId },
@@ -775,7 +942,7 @@ function atomicGameSessionRequest(
   };
 }
 
-function assertAtomicGameSessionMetadata(
+export function assertAtomicGameSessionMetadata(
   session: { GameProperties?: readonly { Key?: string; Value?: string }[] } | undefined,
   arenaId: string,
   partySecret: string,
@@ -825,14 +992,16 @@ async function createAtomicArena(
   roster: TrustedPartyRoster,
   key: string,
   retainCleanup: (allocation: AtomicArenaAllocation) => Promise<void>,
+  retainCreationIntent: (intent: AtomicArenaCreationIntent) => Promise<void>,
   previous: PublicArenaRecord | undefined,
 ): Promise<AtomicArenaAllocation | null> {
   const tableName = requiredEnv("TABLE_NAME");
   const owner = randomUUID();
-  const reusableCreation = previous?.status === "creating" && previous.claimId === roster.claimId
-    && roomCodePattern.test(previous.arenaId ?? "") && /^[a-f0-9]{64}$/.test(previous.partySecret ?? "");
-  const arenaId = reusableCreation ? previous.arenaId! : generateRoomCode();
-  const partySecret = reusableCreation ? previous.partySecret! : randomBytes(32).toString("hex");
+  const creationIdentity = selectAtomicArenaCreationIdentity(key, roster.claimId, previous);
+  const reusableCreation = creationIdentity !== null;
+  const arenaId = creationIdentity?.arenaId ?? generateRoomCode();
+  const partySecret = creationIdentity?.partySecret ?? randomBytes(32).toString("hex");
+  const creationId = creationIdentity?.creationId ?? randomUUID();
   try {
     await database.send(new PutCommand({
       TableName: tableName,
@@ -843,12 +1012,13 @@ async function createAtomicArena(
         buildId: roster.buildId,
         region: roster.region,
         claimId: roster.claimId,
+        creationId,
         leaderPlayerId: roster.leaderPlayerId,
         arenaId,
         partySecret,
         expiresAt: Math.floor(Date.now() / 1000) + 2 * 60,
       },
-      ConditionExpression: `attribute_not_exists(pk) OR expiresAt < :nowSeconds OR admissionClosesAt < :nowMillis${reusableCreation ? " OR (#status = :creating AND claimId = :claim AND arenaId = :arena AND partySecret = :secret)" : ""}`,
+      ConditionExpression: `attribute_not_exists(pk) OR expiresAt < :nowSeconds OR admissionClosesAt < :nowMillis${reusableCreation ? " OR (#status = :creating AND claimId = :claim AND creationId = :creation AND arenaId = :arena AND partySecret = :secret)" : ""}`,
       ...(reusableCreation ? { ExpressionAttributeNames: { "#status": "status" } } : {}),
       ExpressionAttributeValues: {
         ":nowSeconds": Math.floor(Date.now() / 1000),
@@ -856,6 +1026,7 @@ async function createAtomicArena(
         ...(reusableCreation ? {
           ":creating": "creating",
           ":claim": roster.claimId,
+          ":creation": creationId,
           ":arena": arenaId,
           ":secret": partySecret,
         } : {}),
@@ -867,10 +1038,15 @@ async function createAtomicArena(
   }
 
   let gameSessionId: string | undefined;
+  let gameSessionOwnershipVerified = false;
   let endpointHost: string | undefined;
   let endpointPort: number | undefined;
   let cleanupIntent: AtomicArenaAllocation | undefined;
   try {
+    // The long-lived allocation record must own the idempotency metadata
+    // before GameLift can mutate. The short public pointer may expire or be
+    // replaced while an uncertain CreateGameSession response is reconciled.
+    await retainCreationIntent({ arenaKey: key, arenaId, partySecret, creationId });
     let created;
     try {
       created = await gameLift.send(new CreateGameSessionCommand(atomicGameSessionRequest(
@@ -880,14 +1056,18 @@ async function createAtomicArena(
         roster.region,
         arenaId,
         partySecret,
+        creationId,
       )));
     } catch (error) {
       if (isFleetWakingError(error) || !isUncertainAwsMutationError(error)) throw error;
       throw new AtomicArenaCreationUncertainError(error);
     }
     gameSessionId = created.GameSession?.GameSessionId;
-    if (!gameSessionId) throw new Error("GameLift returned no game session id.");
+    if (!gameSessionId) {
+      throw new AtomicArenaCreationUncertainError(new Error("GameLift returned no game session id."));
+    }
     assertAtomicGameSessionMetadata(created.GameSession, arenaId, partySecret, roster.buildId, roster.region);
+    gameSessionOwnershipVerified = true;
     ({ host: endpointHost, port: endpointPort } = await resolveGameSessionEndpoint(gameSessionId, created.GameSession));
     cleanupIntent = {
       arenaKey: key,
@@ -955,6 +1135,12 @@ async function createAtomicArena(
     };
   } catch (error) {
     if (error instanceof AtomicArenaCreationUncertainError) throw error;
+    if (gameSessionId && !gameSessionOwnershipVerified) {
+      // A malformed success response is not authority to terminate the ID it
+      // carried. Preserve the durable generation for exact replay/manual
+      // reconciliation instead of risking another party's GameSession.
+      throw new AtomicArenaCreationUncertainError(error);
+    }
     if (cleanupIntent && gameSessionId && endpointHost && endpointPort) {
       let published = false;
       let pointerError: unknown;
@@ -989,19 +1175,31 @@ async function createAtomicArena(
       }
       throw new AtomicArenaAllocationError(partial, original);
     }
+    if (gameSessionId) {
+      try {
+        await gameLift.send(new TerminateGameSessionCommand({
+          GameSessionId: gameSessionId,
+          TerminationMode: "TRIGGER_ON_PROCESS_TERMINATE",
+        }));
+      } catch (cleanupError) {
+        // Keep both durable ownership records so cancellation or an expired
+        // allocator can replay this exact generation and finish termination.
+        throw new AtomicArenaCreationUncertainError(cleanupError);
+      }
+    }
     await database.send(new DeleteCommand({
       TableName: tableName,
       Key: { pk: key },
-      ConditionExpression: "#owner = :owner",
-      ExpressionAttributeNames: { "#owner": "owner" },
-      ExpressionAttributeValues: { ":owner": owner },
+      ConditionExpression: "#owner = :owner AND #status = :creating AND creationId = :creation AND arenaId = :arena AND partySecret = :secret",
+      ExpressionAttributeNames: { "#owner": "owner", "#status": "status" },
+      ExpressionAttributeValues: {
+        ":owner": owner,
+        ":creating": "creating",
+        ":creation": creationId,
+        ":arena": arenaId,
+        ":secret": partySecret,
+      },
     })).catch(() => undefined);
-    if (gameSessionId) {
-      await gameLift.send(new TerminateGameSessionCommand({
-        GameSessionId: gameSessionId,
-        TerminationMode: "TRIGGER_ON_PROCESS_TERMINATE",
-      })).catch((cleanupError) => console.error("failed to terminate orphaned atomic public arena", { errorName: safeErrorName(cleanupError) }));
-    }
     if (isFleetWakingError(error)) throw new MatchmakerError(503, "Dedicated game server is waking up. This can take about a minute.", true);
     throw error;
   }
@@ -1098,10 +1296,16 @@ async function createPartyPlayerSessions(
     throw new IncompletePartyPlayerSessionsError([], true);
   }
   const sessions = created.PlayerSessions ?? [];
-  const allocations = validateWholePartyPlayerSessions(memberPlayerIds, sessions);
+  const expected = { gameSessionId, endpointHost, endpointPort, playerDataMap };
+  const allocations = validateWholePartyPlayerSessions(memberPlayerIds, sessions, expected);
   if (!allocations) {
-    const knownIds = [...new Set(sessions.flatMap((session) => typeof session.PlayerSessionId === "string"
-      && session.PlayerSessionId.length >= 1 && session.PlayerSessionId.length <= 2048 ? [session.PlayerSessionId] : []))].slice(0, 3);
+    const knownIds = [...new Set(sessions.flatMap((session) => {
+      const playerId = session.PlayerId;
+      return typeof playerId === "string" && memberPlayerIds.includes(playerId)
+        && session.GameSessionId === gameSessionId && session.PlayerData === playerDataMap[playerId]
+        && typeof session.PlayerSessionId === "string" && session.PlayerSessionId.length >= 1 && session.PlayerSessionId.length <= 2048
+        ? [session.PlayerSessionId] : [];
+    }))].slice(0, 3);
     throw new IncompletePartyPlayerSessionsError(knownIds);
   }
   return allocations.map((allocation) => ({
@@ -1113,9 +1317,19 @@ async function createPartyPlayerSessions(
 export function validateWholePartyPlayerSessions(
   memberPlayerIds: readonly string[],
   sessions: readonly CreatedPartyPlayerSession[],
+  expected: {
+    gameSessionId: string;
+    endpointHost: string;
+    endpointPort: number;
+    playerDataMap: Readonly<Record<string, string>>;
+  },
 ): StoredPartyAllocation[] | null {
   if (memberPlayerIds.length < 1 || memberPlayerIds.length > 3 || new Set(memberPlayerIds).size !== memberPlayerIds.length
-    || !memberPlayerIds.every(isUuid) || sessions.length !== memberPlayerIds.length) return null;
+    || !memberPlayerIds.every(isUuid) || sessions.length !== memberPlayerIds.length
+    || !expected.gameSessionId || !/^[a-zA-Z0-9.-]+$/.test(expected.endpointHost)
+    || !Number.isInteger(expected.endpointPort) || expected.endpointPort < 1 || expected.endpointPort > 65_535
+    || !memberPlayerIds.every((playerId) => typeof expected.playerDataMap[playerId] === "string"
+      && expected.playerDataMap[playerId].length > 0)) return null;
   const byPlayer = new Map(sessions.flatMap((session) => typeof session.PlayerId === "string" ? [[session.PlayerId, session] as const] : []));
   const sessionIds = sessions.flatMap((session) => session.PlayerSessionId ? [session.PlayerSessionId] : []);
   if (byPlayer.size !== memberPlayerIds.length || new Set(sessionIds).size !== sessions.length) return null;
@@ -1123,11 +1337,13 @@ export function validateWholePartyPlayerSessions(
     return [...memberPlayerIds].sort().map((playerId) => {
       const session = byPlayer.get(playerId);
       const host = session?.DnsName || session?.IpAddress;
-      if (!session?.PlayerSessionId || !host || !session.Port) throw new Error("incomplete");
+      if (!session?.PlayerSessionId || session.GameSessionId !== expected.gameSessionId
+        || session.PlayerData !== expected.playerDataMap[playerId] || session.Status !== "RESERVED"
+        || host !== expected.endpointHost || session.Port !== expected.endpointPort) throw new Error("incomplete");
       return {
         playerId,
         playerSessionId: session.PlayerSessionId,
-        websocketUrl: secureWebSocketUrl(host, session.Port),
+        websocketUrl: secureWebSocketUrl(expected.endpointHost, expected.endpointPort),
         ...(session.CreationTime ? { expiresAt: session.CreationTime.toISOString() } : {}),
       };
     });
@@ -1243,6 +1459,28 @@ async function releaseDirectoryReservation(key: string, gameSessionId: string, a
   throw new MatchmakerError(503, "Party packing cleanup is busy. Retry together.", true);
 }
 
+export function recoverableAtomicArenaCreation(
+  record: AtomicAllocationRecord,
+  claimId: string,
+): (Omit<AtomicArenaCreationIntent, "creationId"> & { creationId?: string; leaderPlayerId: string; buildId: string; region: string }) | null {
+  if (!isUuid(claimId) || record.pk !== allocationKey(claimId)
+    || (record.status !== "allocating" && record.status !== "cancelling")
+    || !record.buildId || !record.region || !safeMetadata(record.buildId, 64) || !safeMetadata(record.region, 64)
+    || record.arenaKey !== publicArenaKey({ buildId: record.buildId, region: record.region })
+    || !isUuid(record.leaderPlayerId ?? "") || (record.creationId !== undefined && !isUuid(record.creationId))
+    || !roomCodePattern.test(record.arenaId ?? "")
+    || !/^[a-f0-9]{64}$/.test(record.partySecret ?? "")) return null;
+  return {
+    arenaKey: record.arenaKey,
+    arenaId: record.arenaId!,
+    partySecret: record.partySecret!,
+    ...(record.creationId ? { creationId: record.creationId } : {}),
+    leaderPlayerId: record.leaderPlayerId!,
+    buildId: record.buildId,
+    region: record.region,
+  };
+}
+
 async function releaseExpiredAllocationDirectoryClaim(record: AtomicAllocationRecord, claimId: string): Promise<void> {
   if (!record.buildId || !record.region || !safeMetadata(record.buildId, 64) || !safeMetadata(record.region, 64)) {
     throw new MatchmakerError(503, "Expired party allocation metadata is incomplete. Retry cancellation.", true);
@@ -1253,41 +1491,59 @@ async function releaseExpiredAllocationDirectoryClaim(record: AtomicAllocationRe
     Key: { pk: key },
     ConsistentRead: true,
   }))).Item as PublicArenaRecord | undefined;
-  if (pointer?.status === "creating" && pointer.claimId === claimId
+  const durableCreation = recoverableAtomicArenaCreation(record, claimId);
+  const legacyCreation = pointer?.status === "creating" && pointer.claimId === claimId
     && pointer.buildId === record.buildId && pointer.region === record.region
     && isUuid(record.leaderPlayerId ?? "") && roomCodePattern.test(pointer.arenaId ?? "")
-    && /^[a-f0-9]{64}$/.test(pointer.partySecret ?? "")) {
+    && /^[a-f0-9]{64}$/.test(pointer.partySecret ?? "")
+    ? {
+      arenaKey: key,
+      arenaId: pointer.arenaId!,
+      partySecret: pointer.partySecret!,
+      ...(pointer.creationId && isUuid(pointer.creationId) ? { creationId: pointer.creationId } : {}),
+      leaderPlayerId: record.leaderPlayerId!,
+      buildId: record.buildId,
+      region: record.region,
+    } : null;
+  const creation = durableCreation ?? legacyCreation;
+  if (creation) {
     // A CreateGameSession response can be lost before its ARN reaches the
-    // allocation record. Replaying the exact idempotency token and stored
-    // metadata returns that original GameSession (or creates it once), which
-    // gives cancellation an exact resource to terminate.
+    // allocation record. Replaying the exact idempotency token and durable
+    // metadata returns that original GameSession (or creates it once), even
+    // after the public pointer expired or another claim replaced it.
     const created = await gameLift.send(new CreateGameSessionCommand(atomicGameSessionRequest(
       claimId,
-      record.leaderPlayerId!,
-      record.buildId,
-      record.region,
-      pointer.arenaId!,
-      pointer.partySecret!,
+      creation.leaderPlayerId,
+      creation.buildId,
+      creation.region,
+      creation.arenaId,
+      creation.partySecret,
+      creation.creationId,
     )));
     const gameSessionId = created.GameSession?.GameSessionId;
     if (!gameSessionId) throw new MatchmakerError(503, "Expired arena creation is still reconciling. Retry cancellation.", true);
-    assertAtomicGameSessionMetadata(created.GameSession, pointer.arenaId!, pointer.partySecret!, record.buildId, record.region);
+    assertAtomicGameSessionMetadata(created.GameSession, creation.arenaId, creation.partySecret, creation.buildId, creation.region);
     await gameLift.send(new TerminateGameSessionCommand({
       GameSessionId: gameSessionId,
       TerminationMode: "TRIGGER_ON_PROCESS_TERMINATE",
     }));
     await database.send(new DeleteCommand({
       TableName: requiredEnv("TABLE_NAME"),
-      Key: { pk: key },
-      ConditionExpression: "#status = :creating AND claimId = :claim AND arenaId = :arena AND partySecret = :secret",
+      Key: { pk: creation.arenaKey },
+      ConditionExpression: `#status = :creating AND claimId = :claim AND arenaId = :arena AND partySecret = :secret${creation.creationId ? " AND creationId = :creation" : ""}`,
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: {
         ":creating": "creating",
         ":claim": claimId,
-        ":arena": pointer.arenaId,
-        ":secret": pointer.partySecret,
+        ":arena": creation.arenaId,
+        ":secret": creation.partySecret,
+        ...(creation.creationId ? { ":creation": creation.creationId } : {}),
       },
-    }));
+    })).catch((error) => {
+      // The pointer is only a publication slot. Its absence or replacement
+      // must not turn a confirmed exact GameSession termination into failure.
+      if (awsErrorName(error) !== "ConditionalCheckFailedException") throw error;
+    });
     return;
   }
   if (!pointer?.gameSessionId || !pointer.arenaId
@@ -1639,13 +1895,18 @@ async function authenticatePartyCancellation(token: string, claimId: string): Pr
   const timestamp = Date.now().toString();
   const requestId = randomUUID();
   const secret = await relaySecret();
-  const responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/matchmaker-auth`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...signControlPlaneRequest(secret, body, timestamp, requestId, "matchmaker-auth") },
-    body,
-    signal: AbortSignal.timeout(3_000),
-  });
-  if (!responseValue.ok) throw new MatchmakerError(responseValue.status === 409 ? 409 : 401, "Party cancellation was not authorized.", responseValue.status >= 500);
+  let responseValue: Response;
+  try {
+    responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/matchmaker-auth`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...signControlPlaneRequest(secret, body, timestamp, requestId, "matchmaker-auth") },
+      body,
+      signal: AbortSignal.timeout(3_000),
+    });
+  } catch {
+    throw controlPlaneFailure(503, "Party cancellation was not authorized.");
+  }
+  if (!responseValue.ok) throw controlPlaneFailure(responseValue.status, "Party cancellation was not authorized.");
   const result = await responseValue.json() as { cancelledClaimId?: unknown; playerId?: unknown; cancelSignature?: unknown };
   const playerId = typeof result.playerId === "string" ? result.playerId : "";
   const signature = typeof result.cancelSignature === "string" ? result.cancelSignature : "";
@@ -1661,13 +1922,22 @@ async function completePartyCancellation(token: string, claimId: string): Promis
   const timestamp = Date.now().toString();
   const requestId = randomUUID();
   const secret = await relaySecret();
-  const responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/matchmaker-auth`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...signControlPlaneRequest(secret, body, timestamp, requestId, "matchmaker-auth") },
-    body,
-    signal: AbortSignal.timeout(3_000),
-  });
+  let responseValue: Response;
+  try {
+    responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/matchmaker-auth`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...signControlPlaneRequest(secret, body, timestamp, requestId, "matchmaker-auth") },
+      body,
+      signal: AbortSignal.timeout(3_000),
+    });
+  } catch {
+    throw new MatchmakerError(503, "Party cancellation is saved in AWS but Cloud SQL reconciliation must be retried.", true);
+  }
   if (!responseValue.ok) throw new MatchmakerError(503, "Party cancellation is saved in AWS but Cloud SQL reconciliation must be retried.", true);
+}
+
+export function controlPlaneFailure(status: number, message: string): MatchmakerError {
+  return new MatchmakerError(status >= 500 ? 503 : status === 409 ? 409 : 401, message, status >= 500);
 }
 
 async function quickPlay(identity: Identity, payload: Record<string, unknown>): Promise<ConnectionAllocation> {

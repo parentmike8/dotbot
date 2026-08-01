@@ -42,8 +42,16 @@ export class GameLiftPlayerSessionRemovalRequiredError extends Error {
   readonly removalRequired = true;
 }
 
+export class GameLiftPlayerSessionClaimMismatchError extends Error {
+  readonly definiteClaimMismatch = true;
+}
+
 export function requiresPlayerSessionRemoval(error: unknown): error is GameLiftPlayerSessionRemovalRequiredError {
   return error instanceof GameLiftPlayerSessionRemovalRequiredError;
+}
+
+export function isPlayerSessionClaimMismatch(error: unknown): error is GameLiftPlayerSessionClaimMismatchError {
+  return error instanceof GameLiftPlayerSessionClaimMismatchError;
 }
 
 /**
@@ -238,6 +246,55 @@ export class GameLiftSessionGate {
     }
   }
 
+  /** Proves that a caller-supplied release id is absent or carries this exact
+   * arena's signed claim before any destructive SDK call is allowed. Expired
+   * reservations remain verifiable because cleanup must outlive admission. */
+  async verifyPublicPartySessionForRelease(playerSessionId: string, claimId: string): Promise<boolean> {
+    if (!this.atomicPartyAllocation || !uuidPattern.test(claimId)) {
+      throw new GameLiftPlayerSessionClaimMismatchError("The player session does not belong to the signed claim.");
+    }
+    const value = playerSessionId.trim();
+    if (!value || value.length > 2048) {
+      throw new GameLiftPlayerSessionClaimMismatchError("The player session does not belong to the signed claim.");
+    }
+    let response: Response;
+    try {
+      response = await this.request(`${this.adapterUrl}/v1/player-sessions/inspect-release`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ playerSessionId: value }),
+        signal: AbortSignal.timeout(1500),
+      });
+    } catch {
+      throw new Error("GameLift player-session ownership verification failed.");
+    }
+    if (response.status === 204) return false;
+    if (response.status === 401) {
+      throw new GameLiftPlayerSessionClaimMismatchError("The player session does not belong to this GameSession.");
+    }
+    if (!response.ok) throw new Error("GameLift player-session ownership verification failed.");
+    const payload = await response.json().catch(() => null);
+    if (playerSessionIdFromPayload(payload) !== value || !releaseStatusFromPayload(payload)) {
+      throw new GameLiftPlayerSessionClaimMismatchError("The player session does not carry trusted release metadata.");
+    }
+    let session: PublicGameSession & { partySecret?: string };
+    try {
+      session = await this.publicSessionMetadata();
+    } catch {
+      throw new Error("GameLift session ownership verification failed.");
+    }
+    try {
+      const admission = parseAtomicAdmission(payload, session, false);
+      if (admission.partyClaimId !== claimId.toLowerCase()) {
+        throw new GameLiftPlayerSessionClaimMismatchError("The player session does not belong to the signed claim.");
+      }
+      return true;
+    } catch (error) {
+      if (isPlayerSessionClaimMismatch(error)) throw error;
+      throw new GameLiftPlayerSessionClaimMismatchError("The player session does not belong to the signed claim.");
+    }
+  }
+
   async removePlayerSession(playerSessionId: string): Promise<void> {
     await this.playerSessionAction("remove", playerSessionId);
   }
@@ -304,6 +361,7 @@ export class GameLiftSessionGate {
 function parseAtomicAdmission(
   payload: unknown,
   session: PublicGameSession & { partySecret?: string },
+  requireFresh = true,
 ): AtomicPublicPlayerAdmission {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("GameLift returned invalid atomic party metadata.");
@@ -328,7 +386,7 @@ function parseAtomicAdmission(
   if (value.mode !== "public-hot-arena" || !reservation || !session.partySecret
     || reservation.playerId !== playerId
     || reservation.arenaId !== session.arenaId || reservation.buildId !== session.buildId || reservation.region !== session.region
-    || reservation.expiresAt <= now || reservation.expiresAt > now + 5 * 60_000
+    || (requireFresh && (reservation.expiresAt <= now || reservation.expiresAt > now + 5 * 60_000))
     || !validHmac(
       createHmac("sha256", session.partySecret)
         .update(`party-reservation.${canonicalTrustedPartyReservation(reservation)}`)
@@ -348,6 +406,14 @@ function parseAtomicAdmission(
     partyMemberPlayerIds: reservation.memberPlayerIds,
     partyReservationExpiresAt: reservation.expiresAt,
   };
+}
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function releaseStatusFromPayload(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const status = (value as Record<string, unknown>).status;
+  return status === "RESERVED" || status === "ACTIVE" || status === "COMPLETED" || status === "TIMEDOUT";
 }
 
 function playerSessionIdFromPayload(value: unknown): string {

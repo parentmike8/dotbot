@@ -59,6 +59,13 @@ describe.skipIf(!databaseAvailable)("durable party authority", () => {
     expect(accepted).toMatchObject({ durable: false, replayed: false, party: { version: 2 } });
     expect(await persistence.acceptDurablePartyInvite(guest.token, invite!.code)).toMatchObject({ replayed: true });
 
+    const duplicateGuestToken = "duplicate-guest-device-token";
+    await sql!`insert into player_devices (player_id, token_hash) values
+      (${guest.playerId}, ${createHash("sha256").update(duplicateGuestToken).digest("hex")})`;
+    expect(await persistence.getParty(duplicateGuestToken)).toBeNull();
+    await expect(persistence.acceptDurablePartyInvite(duplicateGuestToken, invite!.code))
+      .rejects.toMatchObject({ code: "party_membership_conflict" });
+
     const publicState = await persistence.getParty(guest.token);
     expect(publicState).toEqual({
       version: 2,
@@ -115,6 +122,20 @@ describe.skipIf(!databaseAvailable)("durable party authority", () => {
     `;
     await expect(sql!`insert into party_members (party_id, player_id) values (${party.partyId}, ${rawFourth.playerId})`)
       .rejects.toThrow("party membership cap exceeded");
+  });
+
+  it("rejects a partially bound durable invite below application code", async () => {
+    const persistence = new PostgresPersistence(sql!, () => "BNDABCDE");
+    const leader = await persistence.registerPlayer("Binding leader");
+    await persistence.linkAccount(leader.token, linkedIdentity("binding-leader"));
+    await persistence.createDurablePartyInvite(leader.token);
+    const [membership] = await sql!<Array<{ partyId: string }>>`
+      select party_id as "partyId" from party_members where player_id = ${leader.playerId}
+    `;
+    await expect(sql!`insert into party_invites
+      (token_hash, owner_player_id, party_id, roster_version, expires_at)
+      values ('partially-bound-invite', ${leader.playerId}, ${membership.partyId}, null, now() + interval '1 day')`)
+      .rejects.toThrow(/roster_binding|check constraint/i);
   });
 
   it("handles revocation, expiry, stale versions, deterministic leader transfer, and disband", async () => {
@@ -177,6 +198,29 @@ describe.skipIf(!databaseAvailable)("durable party authority", () => {
     expect(finalParty?.members).toEqual([
       { publicPlayerId: leader.publicPlayerId, displayName: "Concurrent leader", leader: true },
     ]);
+  });
+
+  it("serializes leader transfer against a guest-to-leader identity merge", async () => {
+    const ids = ["TMAABCDE", "TMABCDEF"];
+    const persistence = new PostgresPersistence(sql!, () => ids.shift() ?? "TMACDEFG");
+    const leader = await persistence.registerPlayer("Transfer merge leader");
+    const guest = await persistence.registerPlayer("Transfer merge guest");
+    const leaderIdentity = linkedIdentity("transfer-merge-leader");
+    await persistence.linkAccount(leader.token, leaderIdentity);
+    const invite = await persistence.createDurablePartyInvite(leader.token);
+    await persistence.acceptDurablePartyInvite(guest.token, invite!.code);
+
+    const outcomes = await Promise.allSettled([
+      persistence.transferPartyLeader(leader.token, guest.publicPlayerId, 2),
+      persistence.linkAccount(guest.token, { ...leaderIdentity, provider: "phone" }),
+    ]);
+    expect(outcomes[1].status).toBe("fulfilled");
+    if (outcomes[0].status === "rejected") {
+      expect(conflictCode(outcomes[0].reason)).toBe("party_version_stale");
+    }
+    expect(await persistence.getParty(leader.token)).toMatchObject({
+      members: [{ publicPlayerId: leader.publicPlayerId, displayName: "Transfer merge leader", leader: true }],
+    });
   });
 
   it("serializes invite creation with another member leaving", async () => {
