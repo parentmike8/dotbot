@@ -8,6 +8,9 @@ import { completedBaseTutorialState } from "@dotbot/game/baseTutorial";
 
 class CompletedTestPersistence extends NoopPersistence {
   override readonly live = true;
+  override async resolveOrRegisterPlayer(_token: string, offeredName: string) {
+    return { playerId: "internal-player-b", publicPlayerId: "ABCDEFGH", name: offeredName };
+  }
   override async getBaseTutorialForPlayer() {
     return { ...completedBaseTutorialState };
   }
@@ -31,7 +34,7 @@ describe("GameLift dedicated server mode", () => {
         }), { status: 200 });
       }
       if (url.endsWith("/v1/player-sessions/accept")) {
-        return new Response(JSON.stringify({ playerId: "p-token-b" }), { status: 200 });
+        return new Response(JSON.stringify({ playerId: "ABCD-EFGH" }), { status: 200 });
       }
       return new Response(null, { status: 204 });
     });

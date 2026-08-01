@@ -64,6 +64,27 @@
       "when": 1785440066658,
       "tag": "0008_clean_blade",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785558154880,
+      "tag": "0009_identity_social_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785559226780,
+      "tag": "0010_merged_player_aliases",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785559780122,
+      "tag": "0011_retired_public_id_tombstones",
+      "breakpoints": true
     }
   ]
 }

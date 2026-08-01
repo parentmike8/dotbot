@@ -457,12 +457,29 @@ async function allocatePlayer(gameSessionId: string, roomCode: string, identity:
 
 async function authenticate(token: unknown): Promise<Identity> {
   if (typeof token !== "string" || token.length < 16 || token.length > 512) throw new MatchmakerError(401, "A valid player token is required.");
-  const responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/auth/hello`, {
+  const body = JSON.stringify({ token });
+  const timestamp = Date.now().toString();
+  const requestId = randomUUID();
+  const signedHeaders = signControlPlaneRequest(await relaySecret(), body, timestamp, requestId);
+  let responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/matchmaker-auth`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token }),
+    headers: {
+      "content-type": "application/json",
+      ...signedHeaders,
+    },
+    body,
     signal: AbortSignal.timeout(3000),
   });
+  // Deploy this matchmaker first: it remains compatible with the prior control
+  // plane, then switches to the signed internal UUID contract once available.
+  if (responseValue.status === 404) {
+    responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/auth/hello`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(3000),
+    });
+  }
   if (!responseValue.ok) throw new MatchmakerError(401, "Player authentication failed.");
   const identity = await responseValue.json() as Partial<Identity>;
   if (!identity.playerId || !identity.name) throw new MatchmakerError(401, "Player authentication failed.");
@@ -506,6 +523,14 @@ export function secureWebSocketUrl(host: string, port: number): string {
     throw new Error("Invalid GameLift endpoint.");
   }
   return `wss://${host}:${port}/ws`;
+}
+
+export function signControlPlaneRequest(secret: string, body: string, timestamp: string, requestId: string) {
+  return {
+    "x-dotbot-timestamp": timestamp,
+    "x-dotbot-request-id": requestId,
+    "x-dotbot-signature": createHmac("sha256", secret).update(`${timestamp}.${requestId}.${body}`).digest("hex"),
+  };
 }
 
 export function generateRoomCode(): string {

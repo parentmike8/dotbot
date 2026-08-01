@@ -126,8 +126,8 @@ export class RoomManager {
     let identity;
     try {
       identity = await this.persistence.resolveOrRegisterPlayer(message.token, message.name);
-    } catch (error) {
-      console.warn(`[persistence] identity lookup failed; rejecting admission. ${errorMessage(error)}`);
+    } catch {
+      console.warn("[persistence] identity lookup failed; rejecting admission.");
       peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
       return false;
     }
@@ -138,8 +138,8 @@ export class RoomManager {
     let tutorial;
     try {
       tutorial = await this.persistence.getBaseTutorialForPlayer(identity.playerId);
-    } catch (error) {
-      console.warn(`[persistence] tutorial lookup failed; rejecting admission. ${errorMessage(error)}`);
+    } catch {
+      console.warn("[persistence] tutorial lookup failed; rejecting admission.");
       peer.send({ type: "err", code: "storage_unavailable", msg: "Base progress could not be verified. Try again." });
       return false;
     }
@@ -165,7 +165,18 @@ export class RoomManager {
       peer.send({ type: "err", code: "room_not_found", msg: "That room does not exist." });
       return false;
     }
-    const member = room.join(peer, message.token, identity.name, identity.playerId, message.preferredSquad);
+    const member = room.join(
+      peer,
+      message.token,
+      identity.name,
+      formatPublicPlayerId(identity.publicPlayerId),
+      message.preferredSquad,
+      undefined,
+      undefined,
+      undefined,
+      identity.playerId,
+      identity.previousPublicPlayerIds?.map(formatPublicPlayerId),
+    );
     if (!member) {
       peer.send({ type: "err", code: "room_unavailable", msg: "That room cannot be joined." });
       return false;
@@ -225,11 +236,13 @@ export class RoomManager {
       peer,
       message.token,
       identity.name,
-      identity.playerId,
+      formatPublicPlayerId(identity.publicPlayerId),
       undefined,
       admission?.partyId ?? identity.playerId,
       (value) => { rejection = value; },
       admission?.playerId,
+      identity.playerId,
+      identity.previousPublicPlayerIds?.map(formatPublicPlayerId),
     );
     if (!member) {
       peer.send({
@@ -325,9 +338,17 @@ export class RoomManager {
  * identity may satisfy it only when live persistence explicitly returned the
  * reserved UUID as one of that account's retired internal aliases. */
 export function matchesReservedPlayerIdentity(identity: PlayerIdentity, expectedPlayerId: string | undefined): boolean {
-  return expectedPlayerId === undefined
-    || identity.playerId === expectedPlayerId
-    || identity.previousPlayerIds?.includes(expectedPlayerId) === true;
+  if (expectedPlayerId === undefined) return true;
+  const expectedRaw = expectedPlayerId.toUpperCase();
+  const expectedPublic = expectedRaw.replace(/-/g, "");
+  return identity.playerId.toUpperCase() === expectedRaw
+    || identity.previousPlayerIds?.some((playerId) => playerId.toUpperCase() === expectedRaw) === true
+    || identity.publicPlayerId.toUpperCase() === expectedPublic
+    || identity.previousPublicPlayerIds?.some((playerId) => playerId.toUpperCase() === expectedPublic) === true;
+}
+
+function formatPublicPlayerId(value: string): string {
+  return `${value.slice(0, 4)}-${value.slice(4)}`;
 }
 
 function errorMessage(error: unknown): string {

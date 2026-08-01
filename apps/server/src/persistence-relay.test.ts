@@ -151,6 +151,40 @@ describe("authoritative persistence relay", () => {
     expect(persistence.starts).toHaveLength(1);
     await app.close();
   });
+
+  it("keeps identity, friendship, invite, and deletion operations off the dedicated-server allow-list", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.DOTBOT_RELAY_SECRET = relaySecret;
+    const persistence = new RelayTestPersistence();
+    const { app } = await createServer({ persistence });
+    for (const operation of ["linkAccount", "requestFriend", "createPartyInvite", "deleteLinkedAccount"]) {
+      const body = { operation, args: {} };
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/internal/game-persistence",
+        headers: signedHeaders(body),
+        payload: body,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json<{ error: string }>().error).toBe("Persistence relay operation is not allowed.");
+    }
+    await app.close();
+  });
+
+  it("confines matchmaker UUID authentication to a signed replay-protected endpoint", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.DOTBOT_RELAY_SECRET = relaySecret;
+    const persistence = new RelayTestPersistence();
+    const { app } = await createServer({ persistence });
+    const body = { token: "matchmaker-device-token" };
+    const headers = signedHeaders(body);
+    const accepted = await app.inject({ method: "POST", url: "/api/internal/matchmaker-auth", headers, payload: body });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json<{ playerId: string }>().playerId).toBeTruthy();
+    expect((await app.inject({ method: "POST", url: "/api/internal/matchmaker-auth", headers, payload: body })).statusCode).toBe(409);
+    expect((await app.inject({ method: "POST", url: "/api/internal/matchmaker-auth", payload: body })).statusCode).toBe(401);
+    await app.close();
+  });
 });
 
 function signedHeaders(body: unknown) {

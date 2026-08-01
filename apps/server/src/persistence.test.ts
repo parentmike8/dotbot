@@ -11,15 +11,22 @@ import type { BaseLayout, ContractDefinition, SimEvent } from "@dotbot/game/type
 const databaseUrl = process.env.DATABASE_URL;
 let databaseAvailable = false;
 let sql: Sql | null = null;
+let lockSql: Sql | null = null;
 
 if (databaseUrl) {
-  sql = postgres(databaseUrl, { connect_timeout: 2, max: 2 });
+  // The Postgres integration files share DATABASE_URL and truncate fixtures.
+  // Hold the cross-file fixture lock on its own connection so in-test
+  // transaction races still use a real pool.
+  sql = postgres(databaseUrl, { connect_timeout: 2, max: 4 });
+  lockSql = postgres(databaseUrl, { connect_timeout: 2, max: 1 });
   try {
-    await sql`select 1`;
+    await Promise.all([sql`select 1`, lockSql`select 1`]);
     databaseAvailable = true;
   } catch {
     await sql.end({ timeout: 1 }).catch(() => undefined);
+    await lockSql.end({ timeout: 1 }).catch(() => undefined);
     sql = null;
+    lockSql = null;
   }
 }
 
@@ -34,12 +41,15 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
   const clients: WebSocket[] = [];
 
   beforeAll(async () => {
+    await lockSql!`select pg_advisory_lock(4815162342)`;
     await sql!`truncate table hold_items, match_participants, match_results, learned_blueprints, players cascade`;
   });
 
   afterAll(async () => {
     for (const client of clients) client.close();
     await sql?.end({ timeout: 1 });
+    await lockSql!`select pg_advisory_unlock(4815162342)`;
+    await lockSql?.end({ timeout: 1 });
   });
 
   it("banks itemized extractions atomically and learns a blueprint on the third fragment", async () => {
@@ -77,7 +87,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
 
     const registration = await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Persist Alice" } });
     expect(registration.statusCode).toBe(200);
-    const account = registration.json<{ playerId: string; token: string }>();
+    const account = await internalAccount(registration, persistence);
     expect(account.token).toMatch(/^[a-f0-9]{32}$/);
     await completeIntroduction(persistence, account.token);
     // One prior shelf fragment makes the two live extractions below fragments
@@ -88,7 +98,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
       const alice = await connect(wsUrl, clients);
       alice.send({ type: "hello", token: account.token, name: "Ignored rename", roomCode: "" });
       const welcome = await alice.waitFor("welcome");
-      expect(welcome.playerId).toBe(account.playerId);
+      expect(welcome.playerId).toBe(account.publicPlayerId);
 
       const partner = (await app.inject({
         method: "POST",
@@ -190,7 +200,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
       config: { runDurationMs: 30_000 },
     });
     const registration = await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Base Pilot" } });
-    const account = registration.json<{ playerId: string; token: string }>();
+    const account = await internalAccount(registration, persistence);
     const headers = { "x-device-token": account.token };
     await completeIntroduction(persistence, account.token);
 
@@ -302,10 +312,14 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
     process.env.NODE_ENV = "test";
     const { app, persistence } = await createServer({ databaseUrl });
-    const owner = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "New Pilot" } }))
-      .json<{ playerId: string; token: string }>();
-    const other = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Other Pilot" } }))
-      .json<{ playerId: string; token: string }>();
+    const owner = await internalAccount(
+      await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "New Pilot" } }),
+      persistence,
+    );
+    const other = await internalAccount(
+      await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Other Pilot" } }),
+      persistence,
+    );
     const ownerHeaders = { "x-device-token": owner.token };
     const otherHeaders = { "x-device-token": other.token };
 
@@ -376,7 +390,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
     process.env.NODE_ENV = "test";
     const { app, persistence } = await createServer({ databaseUrl });
-    const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Fabricator Pilot" } })).json<{ playerId: string; token: string }>();
+    const account = await internalAccount(await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Fabricator Pilot" } }), persistence);
     const headers = { "x-device-token": account.token };
     await completeIntroduction(persistence, account.token);
 
@@ -441,7 +455,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     await sql!`truncate table base_upgrades, base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
     process.env.NODE_ENV = "test";
     const { app, persistence } = await createServer({ databaseUrl });
-    const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Expansion Pilot" } })).json<{ playerId: string; token: string }>();
+    const account = await internalAccount(await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Expansion Pilot" } }), persistence);
     const headers = { "x-device-token": account.token };
     await completeIntroduction(persistence, account.token);
     const f1Layout = { ...starterBaseLayout, "up-wall-a": "locker" } satisfies BaseLayout;
@@ -471,7 +485,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect(locker.json<{ layout: BaseLayout; stashCapacity: number }>().layout["up-wall-a"]).toBe("locker");
     expect(locker.json<{ stashCapacity: number }>().stashCapacity).toBe(60);
 
-    const short = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Short Pilot" } })).json<{ playerId: string; token: string }>();
+    const short = await internalAccount(await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Short Pilot" } }), persistence);
     await completeIntroduction(persistence, short.token);
     await sql!`insert into hold_items(player_id, item_type, qty) values
       (${short.playerId}, 'h', 5), (${short.playerId}, 'r', 6), (${short.playerId}, 'd', 6), (${short.playerId}, 'i', 6)`;
@@ -487,7 +501,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     await sql!`truncate table contracts, base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
     process.env.NODE_ENV = "test";
     const { app, persistence } = await createServer({ databaseUrl });
-    const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Contract Pilot" } })).json<{ playerId: string; token: string }>();
+    const account = await internalAccount(await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Contract Pilot" } }), persistence);
     const headers = { "x-device-token": account.token };
     await completeIntroduction(persistence, account.token);
     const initial = (await app.inject({ method: "GET", url: "/api/base", headers })).json<{ contractOffers: ContractDefinition[]; activeContracts: ContractDefinition[] }>();
@@ -606,7 +620,7 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     await sql!`truncate table base_layouts, hold_items, match_participants, match_results, learned_blueprints, players cascade`;
     process.env.NODE_ENV = "test";
     const { app, persistence } = await createServer({ databaseUrl });
-    const account = (await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Preset Pilot" } })).json<{ playerId: string; token: string }>();
+    const account = await internalAccount(await app.inject({ method: "POST", url: "/api/auth/register", payload: { name: "Preset Pilot" } }), persistence);
     const headers = { "x-device-token": account.token };
     await completeIntroduction(persistence, account.token);
     await sql!`insert into hold_items(player_id, item_type, qty) values (${account.playerId}, 'h', 1), (${account.playerId}, 'r', 1)`;
@@ -701,6 +715,16 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
 function collectingPeer(id: string): { peer: RoomPeer; messages: ServerMessage[] } {
   const messages: ServerMessage[] = [];
   return { peer: { id, send: (message) => messages.push(message) }, messages };
+}
+
+async function internalAccount(
+  response: { json<T>(): T },
+  persistence: Persistence,
+): Promise<{ playerId: string; publicPlayerId: string; token: string }> {
+  const account = response.json<{ playerId: string; publicPlayerId: string; token: string }>();
+  const identity = await persistence.helloPlayer(account.token);
+  if (!identity) throw new Error("Registered account did not resolve through persistence.");
+  return { playerId: identity.playerId, publicPlayerId: account.publicPlayerId, token: account.token };
 }
 
 async function completeIntroduction(persistence: Persistence, token: string): Promise<void> {

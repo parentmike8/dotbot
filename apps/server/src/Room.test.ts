@@ -21,6 +21,17 @@ describe("Room lobby squads", () => {
     expect((room as unknown as { simulation: unknown }).simulation).toBeNull();
   });
 
+  it("rejects a second device token for the same canonical or retired public identity", () => {
+    const room = new Room("DUPE", { persistence: new NoopPersistence(), aiWingmates: false });
+    const first = collectingPeer("same-account-first");
+    const second = collectingPeer("same-account-second");
+    expect(room.join(first.peer, "first-device-token", "Pilot", "ABCD-EFGH", "alpha", undefined, undefined, undefined, "00000000-0000-4000-8000-000000000001")).not.toBeNull();
+    expect(room.join(second.peer, "second-device-token", "Pilot", "WXYZ-2345", "alpha", undefined, undefined, undefined, "00000000-0000-4000-8000-000000000002", ["ABCD-EFGH"]))
+      .toBeNull();
+    expect(room.size).toBe(1);
+    room.dispose();
+  });
+
   it("joins and switches capped squads, defaults late joins to the emptiest squad, and locks at host start", async () => {
     const room = new Room("SQAD", { countdownMs: 0, persistence: new NoopPersistence(), aiWingmates: false });
     const peers = Array.from({ length: 4 }, (_, index) => collectingPeer(`squad-peer-${index}`));

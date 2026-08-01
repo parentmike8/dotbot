@@ -28,6 +28,8 @@ export interface RoomPeer {
 
 type Member = Omit<LobbyMember, "squadId"> & {
   squadId: LobbySquadId | PublicExtractionSquadId;
+  /** Cloud SQL UUID. Never included in a client message or runtime entity id. */
+  persistencePlayerId: string;
   token: string;
   peer: RoomPeer | null;
   botId: string | null;
@@ -298,11 +300,13 @@ export class Room {
     partyId?: string,
     onPublicRejected?: (rejection: PublicJoinRejection) => void,
     publicReservationPlayerId?: string,
+    persistencePlayerId = resolvedPlayerId,
+    previousPlayerIds: string[] = [],
   ): Member | null {
     if (this.disposed) return null;
     const existing = this.memberByToken.get(token);
     if (existing) {
-      if (resolvedPlayerId && existing.playerId !== resolvedPlayerId) {
+      if (resolvedPlayerId && existing.playerId !== resolvedPlayerId && !previousPlayerIds.includes(existing.playerId)) {
         onPublicRejected?.({ accepted: false, code: "party_invalid", retryable: false });
         return null;
       }
@@ -310,6 +314,7 @@ export class Room {
         && existing.publicReservationPlayerId !== publicReservationPlayerId) return null;
       if (existing.peer && existing.peer.id !== peer.id) return null;
       existing.peer = peer;
+      if (persistencePlayerId) existing.persistencePlayerId = persistencePlayerId;
       existing.name = sanitizeName(requestedName);
       existing.streaming = true;
       existing.disconnectedAt = null;
@@ -339,7 +344,8 @@ export class Room {
       return existing;
     }
 
-    if (resolvedPlayerId && this.members.has(resolvedPlayerId)) {
+    const admittedPlayerIds = new Set([resolvedPlayerId, ...previousPlayerIds].filter((value): value is string => Boolean(value)));
+    if ([...this.members.values()].some((member) => admittedPlayerIds.has(member.playerId))) {
       onPublicRejected?.({ accepted: false, code: "party_invalid", retryable: false });
       return null;
     }
@@ -354,6 +360,7 @@ export class Room {
     const index = this.members.size;
     const member: Member = {
       playerId: resolvedPlayerId ?? `p-${token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || index}`,
+      persistencePlayerId: persistencePlayerId ?? resolvedPlayerId ?? `p-${token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || index}`,
       token,
       name: sanitizeName(requestedName),
       squadId: this.hotArena ? "alpha" : this.availableSquad(preferredSquad),
@@ -1030,7 +1037,7 @@ export class Room {
         roomCode: this.code,
         mapId: downtownMap.id,
         startedAt: new Date(this.now()),
-        playerIds: runMembers.filter((member) => member.persistenceEligible).map((member) => member.playerId),
+        playerIds: runMembers.filter((member) => member.persistenceEligible).map((member) => member.persistencePlayerId),
       });
       loadouts = new Map(Object.entries(started.loadouts));
     } catch (error) {
@@ -1070,16 +1077,16 @@ export class Room {
     const intelObjects = new Map<string, import("@dotbot/game/types").BaseObjectKind[]>();
     for (const member of runMembers) {
       try {
-        insertionPreferences.set(member.playerId, await this.persistence.getInsertionPreference(member.playerId));
-      } catch (error) {
+        insertionPreferences.set(member.playerId, await this.persistence.getInsertionPreference(member.persistencePlayerId));
+      } catch {
         insertionPreferences.set(member.playerId, null);
-        console.warn(`[persistence] failed to read insertion preference for ${member.playerId}; assigning without it. ${errorMessage(error)}`);
+        console.warn(`[persistence] failed to read insertion preference for ${member.playerId}; assigning without it.`);
       }
       try {
-        intelObjects.set(member.playerId, await this.persistence.getMatchIntelObjects(member.playerId));
-      } catch (error) {
+        intelObjects.set(member.playerId, await this.persistence.getMatchIntelObjects(member.persistencePlayerId));
+      } catch {
         intelObjects.set(member.playerId, []);
-        console.warn(`[persistence] failed to read match intel furniture for ${member.playerId}; omitting intel. ${errorMessage(error)}`);
+        console.warn(`[persistence] failed to read match intel furniture for ${member.playerId}; omitting intel.`);
       }
       if (this.disposed) {
         simulation.dispose();
@@ -1120,7 +1127,7 @@ export class Room {
         if (role) role.controller = "ai";
       }
       simulation.spawnBot(
-        makeSpawn(botId, member.name, member.squadId, this.hotArena ? publicSquadColors[member.squadId as PublicExtractionSquadId] : squadColors[squadIndex], insertion, slot, loadouts.get(member.playerId) ?? [], this.config.botRadius),
+        makeSpawn(botId, member.name, member.squadId, this.hotArena ? publicSquadColors[member.squadId as PublicExtractionSquadId] : squadColors[squadIndex], insertion, slot, loadouts.get(member.persistencePlayerId) ?? [], this.config.botRadius),
         controller,
       );
       member.botId = botId;
@@ -1396,11 +1403,15 @@ export class Room {
           endedAt: new Date(this.endedAt ?? this.now()),
           summary: {
             reason,
-            participants: [...this.matchOutcomes].map(([playerId, outcome]) => ({ playerId, outcome })),
+            participantCount: this.matchOutcomes.size,
+            outcomes: [...this.matchOutcomes.values()].reduce<Record<string, number>>((counts, outcome) => {
+              counts[outcome] = (counts[outcome] ?? 0) + 1;
+              return counts;
+            }, {}),
           },
         });
-      } catch (error) {
-        console.warn(`[persistence] failed to finish match ${this.matchId}; teardown continued. ${errorMessage(error)}`);
+      } catch {
+        console.warn(`[persistence] failed to finish match ${this.matchId}; teardown continued.`);
       }
     }).finally(() => {
       this.persistenceSettled = true;
@@ -1702,14 +1713,14 @@ export class Room {
       };
       const result = await this.persistence.recordExtraction({
         matchId: this.matchId,
-        playerId: member.playerId,
+        playerId: member.persistencePlayerId,
         manifest,
         blueprintLearningThreshold: this.config.blueprintLearningThreshold,
       });
       member.persistedOutcome = message.reason;
       return result.manifest;
     }
-    await this.persistence.recordOutcome({ matchId: this.matchId, playerId: member.playerId, outcome: message.reason });
+    await this.persistence.recordOutcome({ matchId: this.matchId, playerId: member.persistencePlayerId, outcome: message.reason });
     member.persistedOutcome = message.reason;
     return unchanged;
   }
@@ -1720,7 +1731,7 @@ export class Room {
     this.matchOutcomes.set(member.playerId, "disconnected");
     const write = this.persistence.recordOutcome({
       matchId: this.matchId,
-      playerId: member.playerId,
+      playerId: member.persistencePlayerId,
       outcome: "disconnected",
     }).then(() => {
       member.persistedOutcome = "disconnected";

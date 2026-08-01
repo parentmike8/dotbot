@@ -4,7 +4,8 @@ import type { LobbyMember, LobbySquadId, WireItemCode } from "@dotbot/protocol";
 import { NetSession } from "../../game/session/NetSession";
 import { NetGameView } from "./NetGameView";
 import "./lobby.css";
-import { deviceTokenKey as tokenKey, ensureAccountToken, playerNameKey as nameKey } from "../identity";
+import { deviceTokenKey as tokenKey, ensureAccountToken, fetchAccountState, playerNameKey as nameKey, updateDisplayName, type AccountState } from "../identity";
+import { shouldOfferSaveProgress } from "../saveProgress";
 import { inviteUrl, lobbyRouteFromHash } from "./lobbyRoute";
 
 type LobbyState = {
@@ -52,6 +53,7 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState("");
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [account, setAccount] = useState<AccountState | null>(null);
   const autoJoined = useRef(false);
   const returnToBase = () => {
     session?.dispose();
@@ -68,6 +70,8 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
     }
   };
 
+  const refreshAccount = async () => setAccount(await fetchAccountState());
+
   const connect = async (code: string, preferredSquad?: LobbySquadId) => {
     const cleanName = name.trim();
     if (!cleanName) {
@@ -76,7 +80,8 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
     }
     localStorage.setItem(nameKey, cleanName);
     const token = await ensureAccountToken(cleanName);
-    await refreshProfile(token);
+    await updateDisplayName(cleanName).catch(() => undefined);
+    await Promise.all([refreshProfile(token), refreshAccount()]);
     session?.dispose();
     setError("");
     let allocation: MatchAllocation | null;
@@ -106,7 +111,7 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
   };
 
   useEffect(() => {
-    void refreshProfile();
+    void Promise.all([refreshProfile(), refreshAccount()]);
     if (routeCode && name && !autoJoined.current) {
       autoJoined.current = true;
       void connect(routeCode, route.preferredSquad);
@@ -119,6 +124,8 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
         session={session}
         roomCode={lobby.roomCode}
         connectionMessage={error}
+        offerSaveProgress={shouldOfferSaveProgress(true, account)}
+        onSaveProgress={() => window.dispatchEvent(new CustomEvent("dotbot:save-progress"))}
         returnLabel={onReturnToBase ? "LEAVE TO BASE" : "RETURN TO LOBBY"}
         onReturnToLobby={() => {
           if (onReturnToBase) {

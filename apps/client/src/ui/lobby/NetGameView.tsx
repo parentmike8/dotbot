@@ -20,6 +20,8 @@ type NetGameViewProps = {
   onReturnToLobby: () => void;
   returnLabel?: string;
   connectionMessage?: string;
+  offerSaveProgress?: boolean;
+  onSaveProgress?: () => void;
 };
 
 /**
@@ -32,7 +34,7 @@ type NetGameViewProps = {
  * What is left here is only what a networked match has and a sandbox does not: a room
  * to be in, other people's cameras to borrow, and a lobby to go back to.
  */
-export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "Return to lobby", connectionMessage = "" }: NetGameViewProps) {
+export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "Return to lobby", connectionMessage = "", offerSaveProgress = false, onSaveProgress }: NetGameViewProps) {
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
@@ -247,6 +249,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
             onReturnToLobby();
           }}
           actionLabel={returnLabel}
+          onSaveProgress={offerSaveProgress ? onSaveProgress : undefined}
         />
       ) : null}
     </main>

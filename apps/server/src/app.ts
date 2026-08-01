@@ -11,7 +11,10 @@ import { recipeById } from "@dotbot/game/content/recipes";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import type { BaseLayout, Item, LoadoutPreset, WireLoadoutCode } from "@dotbot/game/types";
 import { isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
-import { createPersistence, type Persistence } from "./db";
+import { createPersistence, type AccountSummary, type Persistence, type PublicPlayer, type VerifiedExternalIdentity } from "./db";
+import { createFirebaseIdentityVerifier, type FirebaseIdentityVerifier } from "./identity/FirebaseIdentityVerifier";
+import { formatPublicPlayerId, normalizePublicPlayerId } from "./identity/publicPlayerId";
+import { MemoryIdentityRateLimiter, type IdentityRateLimitAction, type IdentityRateLimiter } from "./identity/IdentityRateLimiter";
 import { BaseTutorialAuthority } from "./BaseTutorialAuthority";
 import { RoomManager, type RoomManagerOptions } from "./RoomManager";
 import { GameLiftSessionGate, requiresPlayerSessionRemoval } from "./GameLiftSessionGate";
@@ -28,6 +31,8 @@ export type CreateServerOptions = RoomManagerOptions & {
   /** Explicit additive launch-spine seam. False preserves emergency rollback. */
   publicQuickPlay?: boolean;
   arenaDirectory?: ArenaDirectory;
+  firebaseIdentityVerifier?: FirebaseIdentityVerifier | null;
+  identityRateLimiter?: IdentityRateLimiter;
 };
 
 export async function createServer(options: CreateServerOptions = {}) {
@@ -36,7 +41,22 @@ export async function createServer(options: CreateServerOptions = {}) {
     logger: process.env.NODE_ENV !== "test",
     ...(tls ? { https: tls } : {}),
   });
+  app.setErrorHandler((error, request, reply) => {
+    const candidateStatus = error && typeof error === "object" && "statusCode" in error ? Number(error.statusCode) : 500;
+    const statusCode = Number.isInteger(candidateStatus) && candidateStatus >= 400 && candidateStatus < 500
+      ? candidateStatus
+      : 500;
+    if (statusCode === 500) {
+      request.log.error({ errorName: error instanceof Error ? error.name : "UnknownError" }, "unhandled request failure");
+      return reply.code(500).send({ error: "The request could not be completed safely." });
+    }
+    return reply.code(statusCode).send({ error: error instanceof Error ? error.message : "Invalid request." });
+  });
   const persistence = options.persistence ?? await createPersistence(options.databaseUrl);
+  const firebaseIdentityVerifier = options.firebaseIdentityVerifier === undefined
+    ? createFirebaseIdentityVerifier()
+    : options.firebaseIdentityVerifier;
+  const identityRateLimiter = options.identityRateLimiter ?? new MemoryIdentityRateLimiter();
   const baseTutorialAuthority = new BaseTutorialAuthority(persistence);
   const gameLift = options.gameLift;
   const playerSessionReconnectMs = options.playerSessionReconnectMs ?? 20_000;
@@ -127,6 +147,28 @@ export async function createServer(options: CreateServerOptions = {}) {
 
   const relaySecret = process.env.DOTBOT_RELAY_SECRET;
   if (relaySecret) {
+    app.post<{ Headers: { "x-dotbot-timestamp"?: string; "x-dotbot-request-id"?: string; "x-dotbot-signature"?: string }; Body: { token?: unknown } }>("/api/internal/matchmaker-auth", async (request, reply) => {
+      const body = JSON.stringify(request.body);
+      const requestId = request.headers["x-dotbot-request-id"];
+      if (!validRelaySignature(relaySecret, request.headers["x-dotbot-timestamp"], requestId, request.headers["x-dotbot-signature"], body)) {
+        return reply.code(401).send({ error: "Invalid matchmaker signature." });
+      }
+      const token = typeof request.body?.token === "string" ? request.body.token : "";
+      if (token.length < 16 || token.length > 512) return reply.code(400).send({ error: "Invalid player token." });
+      try {
+        const claimed = await persistence.claimRelayRequest(requestId!, new Date(Date.now() + 5 * 60_000));
+        if (!claimed) return reply.code(409).send({ error: "Matchmaker authentication request was already processed." });
+        const identity = await persistence.helloPlayer(token);
+        if (!identity) return reply.code(401).send({ error: "Player authentication failed." });
+        // This UUID is confined to the signed control-plane/AWS reservation
+        // boundary so mixed GameLift revisions retain their established key.
+        return { playerId: identity.playerId, name: identity.name };
+      } catch (error) {
+        request.log.warn({ err: error }, "matchmaker authentication failed");
+        return reply.code(503).send({ error: "Authoritative persistence is temporarily unavailable." });
+      }
+    });
+
     app.post<{ Headers: { "x-dotbot-timestamp"?: string; "x-dotbot-request-id"?: string; "x-dotbot-signature"?: string }; Body: unknown }>("/api/internal/game-persistence", async (request, reply) => {
       const body = JSON.stringify(request.body);
       const requestId = request.headers["x-dotbot-request-id"];
@@ -147,20 +189,174 @@ export async function createServer(options: CreateServerOptions = {}) {
   }
 
   app.post<{ Body: { name?: unknown } }>("/api/auth/register", async (request, reply) => {
+    if (!allowIdentityRequest(identityRateLimiter, "register", request.ip, reply)) return;
     const name = sanitizeName(request.body?.name);
     if (!name) return reply.code(400).send({ error: "A display name is required." });
     const account = await persistence.registerPlayer(name);
-    return { playerId: account.playerId, token: account.token };
+    const publicPlayerId = formatPublicPlayerId(account.publicPlayerId);
+    return { playerId: publicPlayerId, publicPlayerId, displayName: account.name, linked: false, token: account.token };
   });
 
   app.post<{ Body: { token?: unknown } }>("/api/auth/hello", async (request, reply) => {
     const token = typeof request.body?.token === "string" ? request.body.token : "";
     if (!token) return reply.code(400).send({ error: "A device token is required." });
-    const player = await persistence.helloPlayer(token);
-    if (!player) return reply.code(404).send({ error: "Unknown device token." });
-    // Public identity surfaces intentionally project the canonical fields;
-    // retired UUID aliases exist only on the signed internal admission path.
-    return { playerId: player.playerId, name: player.name };
+    const account = await persistence.getAccount(token);
+    if (!account) return reply.code(404).send({ error: "Unknown device token." });
+    const publicPlayerId = formatPublicPlayerId(account.publicPlayerId);
+    return {
+      playerId: publicPlayerId,
+      publicPlayerId,
+      name: account.displayName,
+      displayName: account.displayName,
+      linked: account.linked,
+      providers: account.providers,
+    };
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string } }>("/api/auth/link", async (request, reply) => {
+    if (!allowIdentityRequest(identityRateLimiter, "verify", request.ip, reply)) return;
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const token = request.headers["x-device-token"];
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const verified = await verifyFirebaseBearer(firebaseIdentityVerifier, request.headers.authorization, reply);
+    if (!verified) return;
+    try {
+      const result = await persistence.linkAccount(token, verified);
+      return {
+        account: publicAccount(result.account),
+        merged: result.merged,
+        replayed: result.replayed,
+      };
+    } catch {
+      return reply.code(409).send({ error: "Account linking could not be completed safely." });
+    }
+  });
+
+  app.post<{ Headers: { authorization?: string } }>("/api/auth/session", async (request, reply) => {
+    if (!allowIdentityRequest(identityRateLimiter, "verify", request.ip, reply)) return;
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const verified = await verifyFirebaseBearer(firebaseIdentityVerifier, request.headers.authorization, reply);
+    if (!verified) return;
+    const session = await persistence.createLinkedSession(verified);
+    if (!session) return reply.code(404).send({ error: "No linked DotBot account exists for this identity." });
+    const publicPlayerId = formatPublicPlayerId(session.publicPlayerId);
+    return { token: session.token, playerId: publicPlayerId, publicPlayerId, displayName: session.name, linked: true };
+  });
+
+  app.get<{ Headers: { "x-device-token"?: string } }>("/api/account", async (request, reply) => {
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const token = request.headers["x-device-token"];
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const account = await persistence.getAccount(token);
+    if (!account) return reply.code(404).send({ error: "Unknown device token." });
+    return publicAccount(account);
+  });
+
+  app.patch<{ Headers: { "x-device-token"?: string }; Body: { displayName?: unknown } }>("/api/account/profile", async (request, reply) => {
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const token = request.headers["x-device-token"];
+    const displayName = sanitizeName(request.body?.displayName);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!displayName) return reply.code(400).send({ error: "A display name is required." });
+    const account = await persistence.updateDisplayName(token, displayName);
+    if (!account) return reply.code(404).send({ error: "Unknown device token." });
+    return publicAccount(account);
+  });
+
+  app.patch<{ Headers: { "x-device-token"?: string }; Body: { discoverableByPublicId?: unknown } }>("/api/account/privacy", async (request, reply) => {
+    const token = request.headers["x-device-token"];
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (typeof request.body?.discoverableByPublicId !== "boolean") {
+      return reply.code(400).send({ error: "discoverableByPublicId must be boolean." });
+    }
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const account = await persistence.updatePrivacy(token, request.body.discoverableByPublicId);
+    if (!account) return reply.code(403).send({ error: "Link an account to manage social privacy." });
+    return publicAccount(account);
+  });
+
+  app.delete<{ Headers: { "x-device-token"?: string; authorization?: string } }>("/api/account", async (request, reply) => {
+    if (!allowIdentityRequest(identityRateLimiter, "verify", request.ip, reply)) return;
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const token = request.headers["x-device-token"];
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    const verified = await verifyFirebaseBearer(firebaseIdentityVerifier, request.headers.authorization, reply);
+    if (!verified) return;
+    if (!Number.isFinite(verified.authenticatedAt) || Date.now() - verified.authenticatedAt > 5 * 60_000 || verified.authenticatedAt > Date.now() + 60_000) {
+      return reply.code(401).send({ error: "Reauthenticate with Firebase before deleting this account." });
+    }
+    try {
+      const deleted = await persistence.deleteLinkedAccount(token, verified);
+      if (!deleted) return reply.code(404).send({ error: "Unknown device token." });
+      return reply.code(204).send();
+    } catch {
+      return reply.code(409).send({ error: "Verified account deletion could not be completed safely." });
+    }
+  });
+
+  app.get<{ Headers: { "x-device-token"?: string }; Params: { publicPlayerId: string } }>("/api/social/players/:publicPlayerId", async (request, reply) => {
+    if (!allowIdentityRequest(identityRateLimiter, "social_lookup", request.ip, reply)) return;
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const token = request.headers["x-device-token"];
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!normalizePublicPlayerId(request.params.publicPlayerId)) return reply.code(400).send({ error: "Invalid public player ID." });
+    const player = await persistence.findPublicPlayer(token, request.params.publicPlayerId);
+    if (!player) return reply.code(404).send({ error: "Player not found." });
+    return publicPlayer(player);
+  });
+
+  app.get<{ Headers: { "x-device-token"?: string } }>("/api/social/friends", async (request, reply) => {
+    const token = request.headers["x-device-token"];
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const friends = await persistence.listFriends(token);
+    if (!friends) return reply.code(403).send({ error: "Link an account to use durable friends." });
+    return { friends: friends.map((friend) => ({ ...publicPlayer(friend), status: friend.status })) };
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string }; Body: { publicPlayerId?: unknown } }>("/api/social/friend-requests", async (request, reply) => {
+    if (!allowIdentityRequest(identityRateLimiter, "social_write", request.ip, reply)) return;
+    const token = request.headers["x-device-token"];
+    const publicPlayerId = typeof request.body?.publicPlayerId === "string" ? request.body.publicPlayerId : "";
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!normalizePublicPlayerId(publicPlayerId)) return reply.code(400).send({ error: "Invalid public player ID." });
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const friend = await persistence.requestFriend(token, publicPlayerId);
+    if (!friend) return reply.code(404).send({ error: "Player not found or account linking is required." });
+    return { ...publicPlayer(friend), status: friend.status };
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string }; Body: { publicPlayerId?: unknown } }>("/api/social/friend-requests/accept", async (request, reply) => {
+    if (!allowIdentityRequest(identityRateLimiter, "social_write", request.ip, reply)) return;
+    const token = request.headers["x-device-token"];
+    const publicPlayerId = typeof request.body?.publicPlayerId === "string" ? request.body.publicPlayerId : "";
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!normalizePublicPlayerId(publicPlayerId)) return reply.code(400).send({ error: "Invalid public player ID." });
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const friend = await persistence.acceptFriend(token, publicPlayerId);
+    if (!friend) return reply.code(404).send({ error: "Pending request not found." });
+    return { ...publicPlayer(friend), status: friend.status };
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string } }>("/api/social/party-invites", async (request, reply) => {
+    if (!allowIdentityRequest(identityRateLimiter, "social_write", request.ip, reply)) return;
+    const token = request.headers["x-device-token"];
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const invite = await persistence.createPartyInvite(token);
+    if (!invite) return reply.code(403).send({ error: "Link an account to create durable party invitations." });
+    return reply.code(201).send(invite);
+  });
+
+  app.post<{ Headers: { "x-device-token"?: string }; Params: { code: string } }>("/api/social/party-invites/:code/accept", async (request, reply) => {
+    if (!allowIdentityRequest(identityRateLimiter, "social_write", request.ip, reply)) return;
+    const token = request.headers["x-device-token"];
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(request.params.code)) return reply.code(400).send({ error: "Invalid party invitation code." });
+    const accepted = await persistence.acceptPartyInvite(token, request.params.code);
+    if (!accepted) return reply.code(404).send({ error: "Party invitation is invalid or expired." });
+    return { inviter: publicPlayer(accepted.inviter), durable: accepted.durable, expiresAt: accepted.expiresAt };
   });
 
   app.get<{ Headers: { "x-device-token"?: string; authorization?: string } }>("/api/profile", async (request, reply) => {
@@ -851,6 +1047,48 @@ function authToken(headers: { "x-device-token"?: string; authorization?: string 
   return headers["x-device-token"] ?? bearerToken(headers.authorization);
 }
 
+async function verifyFirebaseBearer(
+  verifier: FirebaseIdentityVerifier | null,
+  authorization: string | undefined,
+  reply: FastifyReply,
+): Promise<VerifiedExternalIdentity | null> {
+  if (!verifier) {
+    reply.code(503).send({ error: "Firebase identity verification is not configured." });
+    return null;
+  }
+  const token = bearerToken(authorization);
+  if (!token) {
+    reply.code(401).send({ error: "A Firebase identity bearer token is required." });
+    return null;
+  }
+  try {
+    return await verifier.verifyIdToken(token);
+  } catch {
+    reply.code(401).send({ error: "Firebase identity token is invalid or expired." });
+    return null;
+  }
+}
+
+function publicPlayer(player: PublicPlayer) {
+  return { publicPlayerId: formatPublicPlayerId(player.publicPlayerId), displayName: player.displayName };
+}
+
+function publicAccount(account: AccountSummary) {
+  return { ...publicPlayer(account), linked: account.linked, providers: account.providers };
+}
+
+function allowIdentityRequest(
+  limiter: IdentityRateLimiter,
+  action: IdentityRateLimitAction,
+  key: string,
+  reply: FastifyReply,
+): boolean {
+  const decision = limiter.consume(action, key);
+  if (decision.allowed) return true;
+  reply.header("retry-after", decision.retryAfterSeconds).code(429).send({ error: "Too many identity requests. Try again later." });
+  return false;
+}
+
 function parseBaseLayout(value: unknown): BaseLayout | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const layout: BaseLayout = {};
@@ -893,5 +1131,11 @@ function isWireLoadoutCode(value: unknown): value is WireLoadoutCode {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.length > 200
+    || /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i.test(message)
+    || /(constraint|sqlstate|player_id|device_token|external_identit|firebase-user|issuer|subject)/i.test(message)) {
+    return "The request could not be completed safely.";
+  }
+  return message;
 }

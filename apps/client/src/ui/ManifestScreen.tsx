@@ -8,6 +8,7 @@ type ManifestScreenProps = {
   runTime: string;
   onNewRun: () => void;
   actionLabel?: string;
+  onSaveProgress?: () => void;
 };
 
 const outcomeLabels: Record<RunResult["outcome"], string> = {
@@ -35,7 +36,7 @@ function ItemList({ items }: { items: Item[] }) {
   ))}</ul>;
 }
 
-export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun, actionLabel = "↻ NEW RUN" }: ManifestScreenProps) {
+export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun, actionLabel = "↻ NEW RUN", onSaveProgress }: ManifestScreenProps) {
   return (
     <section className="manifest-overlay" aria-label="Run manifest">
       <div className="manifest-panel">
@@ -47,6 +48,12 @@ export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun
           <p className="manifest-save-failed" role="alert">
             SAVE FAILED — NO EXTRACTED ITEMS WERE CREDITED. RETURN TO BASE BEFORE STARTING ANOTHER RUN.
           </p>
+        ) : null}
+        {onSaveProgress ? (
+          <aside aria-label="Save guest progress">
+            <button type="button" onClick={onSaveProgress}>SAVE YOUR PROGRESS</button>
+            <small>Optional. You can keep playing on this device.</small>
+          </aside>
         ) : null}
         <dl className="manifest-grid">
           <div>

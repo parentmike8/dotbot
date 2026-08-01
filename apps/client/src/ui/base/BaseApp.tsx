@@ -27,7 +27,7 @@ import { useDotBotGame } from "../../game/useDotBotGame";
 import { LocalSession } from "../../game/session/LocalSession";
 import { BaseTutorialSession } from "../../game/session/BaseTutorialSession";
 import { LobbyApp } from "../lobby/LobbyApp";
-import { deviceTokenKey, ensureAccountToken, playerNameKey } from "../identity";
+import { acceptPartyInvite, deviceTokenKey, ensureAccountToken, partyInviteCodeFromHash, playerNameKey } from "../identity";
 import "./base.css";
 import { advanceBaseChannel, findBaseTarget, type BaseChannelState, type BaseTarget } from "./baseFlow";
 import type {
@@ -38,6 +38,7 @@ import {
   BaseSessionLifecycle,
   type BaseSessionWorld,
 } from "./baseSessionLifecycle";
+import { shouldPauseForBaseBootstrap } from "./baseBootstrap";
 
 const localLayoutKey = "dotbot.baseLayout";
 const localShellKey = "dotbot.baseShell";
@@ -96,6 +97,7 @@ export function BaseApp() {
   const [panel, setPanel] = useState<Panel>(null);
   const [deployment, setDeployment] = useState(() => /^#\/r\/[A-Z2-9]{4}(?:\?squad=[a-z0-9-]+)?$/i.test(window.location.hash) || window.location.hash === "#/lobby");
   const [notice, setNotice] = useState("");
+  const pendingPartyInvite = useRef(partyInviteCodeFromHash(window.location.hash));
   const [draftObjectIds, setDraftObjectIds] = useState<string[]>(() => localStorage.getItem(seedDraftedKey)
     ? []
     : Object.keys(readLocalLayout()).map((slotId) => `base-object-${slotId}`));
@@ -145,20 +147,34 @@ export function BaseApp() {
   useEffect(() => {
     if (!identityReady) return;
     const storedName = localStorage.getItem(playerNameKey) ?? name;
-    void ensureAccountToken(storedName).then(refreshBase).catch(() => {
+    void ensureAccountToken(storedName).then(async () => {
+      await refreshBase();
+      const code = pendingPartyInvite.current;
+      if (!code) return;
+      pendingPartyInvite.current = null;
+      try {
+        const accepted = await acceptPartyInvite(code);
+        setNotice(accepted.durable
+          ? `PARTY INVITE ACCEPTED FROM ${accepted.inviter.displayName}`
+          : `PARTY INVITE ACCEPTED FROM ${accepted.inviter.displayName} · LINK AN ACCOUNT TO KEEP IT`);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message.toUpperCase() : "PARTY INVITE COULD NOT BE ACCEPTED");
+      }
+    }).catch(() => {
       setBaseReady(true);
       setBase((current) => ({ ...current, storageLinked: false }));
     });
   }, [identityReady, name, refreshBase]);
 
-  const finishIdentity = async (event: FormEvent) => {
+  const finishIdentity = (event: FormEvent) => {
     event.preventDefault();
     const clean = name.trim().replace(/\s+/g, " ").slice(0, 24);
     if (!clean) return;
     localStorage.setItem(playerNameKey, clean);
     setName(clean);
-    await ensureAccountToken(clean);
-    setBaseReady(false);
+    // A callsign is enough to enter the local base. Authoritative guest
+    // registration happens in the existing bootstrap effect and never gates
+    // movement on a network round trip.
     setIdentityReady(true);
   };
 
@@ -354,12 +370,8 @@ export function BaseApp() {
     }
   }, [base.storageLinked]);
 
-  if (identityReady && !baseReady) {
+  if (shouldPauseForBaseBootstrap(identityReady, baseReady)) {
     return <BaseLinkState message="LINKING AUTHORITATIVE BASE · MOVEMENT PAUSED" />;
-  }
-
-  if (identityReady && !base.storageLinked) {
-    return <BaseLinkState message="AUTHORITATIVE STORAGE UNAVAILABLE · MOVEMENT PAUSED" />;
   }
 
   if (deployment && isBaseTutorialComplete(base.tutorial)) {

@@ -4,7 +4,12 @@ import type { Recipe } from "@dotbot/game/content/recipes";
 import type { BaseTutorialAction, BaseTutorialState } from "@dotbot/game/baseTutorial";
 
 export type PlayerIdentity = {
+  /** Cloud SQL authority key. Never serialize this value to a public client. */
   playerId: string;
+  /** Immutable eight-character lookup id, stored without its display hyphen. */
+  publicPlayerId: string;
+  /** Retired public IDs accepted only for in-flight reservation reconciliation. */
+  previousPublicPlayerIds?: string[];
   name: string;
   /** Retired internal UUIDs that resolve to this canonical player. This field
    * is for signed server-to-server admission only and must never be included
@@ -14,6 +19,42 @@ export type PlayerIdentity = {
 
 export type RegisteredPlayer = PlayerIdentity & {
   token: string;
+};
+
+export type IdentityProviderKind = "email_link" | "phone";
+
+export type VerifiedExternalIdentity = {
+  issuer: string;
+  subject: string;
+  provider: IdentityProviderKind;
+  /** Firebase auth_time in epoch milliseconds; used for destructive reauthentication. */
+  authenticatedAt: number;
+};
+
+export type PublicPlayer = {
+  publicPlayerId: string;
+  displayName: string;
+};
+
+export type AccountSummary = PublicPlayer & {
+  linked: boolean;
+  providers: IdentityProviderKind[];
+};
+
+export type LinkAccountResult = {
+  account: AccountSummary;
+  merged: boolean;
+  replayed: boolean;
+};
+
+export type FriendEntry = PublicPlayer & {
+  status: "incoming" | "outgoing" | "friends";
+};
+
+export type PartyInviteAcceptance = {
+  inviter: PublicPlayer;
+  durable: boolean;
+  expiresAt: string;
 };
 
 export type RunManifest = {
@@ -79,6 +120,18 @@ export interface Persistence {
   registerPlayer(name: string): Promise<RegisteredPlayer>;
   helloPlayer(token: string): Promise<PlayerIdentity | null>;
   resolveOrRegisterPlayer(token: string, offeredName: string): Promise<PlayerIdentity>;
+  getAccount(token: string): Promise<AccountSummary | null>;
+  linkAccount(token: string, identity: VerifiedExternalIdentity): Promise<LinkAccountResult>;
+  createLinkedSession(identity: VerifiedExternalIdentity): Promise<RegisteredPlayer | null>;
+  updateDisplayName(token: string, displayName: string): Promise<AccountSummary | null>;
+  updatePrivacy(token: string, discoverableByPublicId: boolean): Promise<AccountSummary | null>;
+  deleteLinkedAccount(token: string, identity: VerifiedExternalIdentity): Promise<boolean>;
+  findPublicPlayer(token: string, publicPlayerId: string): Promise<PublicPlayer | null>;
+  listFriends(token: string): Promise<FriendEntry[] | null>;
+  requestFriend(token: string, publicPlayerId: string): Promise<FriendEntry | null>;
+  acceptFriend(token: string, publicPlayerId: string): Promise<FriendEntry | null>;
+  createPartyInvite(token: string): Promise<{ code: string; expiresAt: string } | null>;
+  acceptPartyInvite(token: string, code: string): Promise<PartyInviteAcceptance | null>;
   getProfile(token: string): Promise<PlayerProfile | null>;
   getBase(token: string): Promise<PlayerBase | null>;
   getBaseTutorialForPlayer(playerId: string): Promise<BaseTutorialState | null>;

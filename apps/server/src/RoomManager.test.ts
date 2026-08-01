@@ -17,8 +17,8 @@ class TutorialPersistence extends NoopPersistence {
   }
 }
 
-const peer = (messages: ServerMessage[]): RoomPeer => ({
-  id: "peer-1",
+const peer = (messages: ServerMessage[], id = "peer-1"): RoomPeer => ({
+  id,
   send(message) {
     messages.push(message);
   },
@@ -101,7 +101,12 @@ describe("RoomManager tutorial admission", () => {
   it("accepts a GameLift reservation issued to a trusted retired identity alias", async () => {
     class AliasPersistence extends TutorialPersistence {
       override async resolveOrRegisterPlayer(_token: string, offeredName: string) {
-        return { playerId: "canonical-player", name: offeredName, previousPlayerIds: ["reserved-guest"] };
+        return {
+          playerId: "00000000-0000-4000-8000-000000000001",
+          publicPlayerId: "WXYZ2345",
+          name: offeredName,
+          previousPlayerIds: ["reserved-guest"],
+        };
       }
     }
     const messages: ServerMessage[] = [];
@@ -111,7 +116,8 @@ describe("RoomManager tutorial admission", () => {
     });
 
     expect(matchesReservedPlayerIdentity({
-      playerId: "canonical-player",
+      playerId: "00000000-0000-4000-8000-000000000001",
+      publicPlayerId: "WXYZ2345",
       name: "Linked player",
       previousPlayerIds: ["reserved-guest"],
     }, "reserved-guest")).toBe(true);
@@ -128,7 +134,7 @@ describe("RoomManager tutorial admission", () => {
       region: "ca-central-1",
     })).toBe(true);
     expect(manager.join("ALIA")?.publicArenaMembers).toEqual([{
-      playerId: "canonical-player",
+      playerId: "WXYZ-2345",
       name: "Linked player",
       partyId: "solo-reserved-guest",
       queued: true,
@@ -138,9 +144,43 @@ describe("RoomManager tutorial admission", () => {
 
   it("rejects a reservation id absent from the canonical identity and its trusted aliases", () => {
     expect(matchesReservedPlayerIdentity({
-      playerId: "canonical-player",
+      playerId: "00000000-0000-4000-8000-000000000001",
+      publicPlayerId: "WXYZ2345",
       name: "Linked player",
       previousPlayerIds: ["retired-guest"],
     }, "spoofed-player")).toBe(false);
+  });
+
+  it("accepts a retired public reservation after merge and rejects a second device for that account", async () => {
+    class MergedPersistence extends TutorialPersistence {
+      override async resolveOrRegisterPlayer() {
+        return {
+          playerId: "00000000-0000-4000-8000-000000000001",
+          publicPlayerId: "WXYZ2345",
+          previousPublicPlayerIds: ["ABCDEFGH"],
+          name: "Merged player",
+        };
+      }
+    }
+    const manager = new RoomManager({ persistence: new MergedPersistence(true) });
+    const firstMessages: ServerMessage[] = [];
+    expect(await manager.handleHello(peer(firstMessages, "merged-peer-1"), {
+      type: "hello",
+      token: "merged-device-token-1",
+      name: "Merged player",
+      roomCode: "",
+    }, "ABCD-EFGH")).toBe(true);
+    const roomCode = firstMessages.find((message) => message.type === "welcome")?.roomCode;
+    expect(roomCode).toBeTruthy();
+
+    const secondMessages: ServerMessage[] = [];
+    expect(await manager.handleHello(peer(secondMessages, "merged-peer-2"), {
+      type: "hello",
+      token: "merged-device-token-2",
+      name: "Merged player",
+      roomCode: roomCode!,
+    }, "00000000-0000-4000-8000-000000000001")).toBe(false);
+    expect(secondMessages).toContainEqual(expect.objectContaining({ type: "err", code: "room_unavailable" }));
+    await manager.stop();
   });
 });

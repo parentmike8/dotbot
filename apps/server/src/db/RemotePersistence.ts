@@ -3,13 +3,18 @@ import type { BaseLayout, BaseShellId, LoadoutPreset } from "@dotbot/game/types"
 import type { WireItemCode } from "@dotbot/protocol";
 import type { BaseTutorialAction, BaseTutorialState } from "@dotbot/game/baseTutorial";
 import type {
+  AccountSummary,
   FabricationResult,
+  FriendEntry,
+  PartyInviteAcceptance,
   Persistence,
   PlayerBase,
   PlayerIdentity,
   PlayerProfile,
   PresetApplyResult,
+  PublicPlayer,
   RegisteredPlayer,
+  VerifiedExternalIdentity,
 } from "./Persistence";
 
 type RelayResponse<T> = { result: T } | { error: string };
@@ -30,6 +35,18 @@ export class RemotePersistence implements Persistence {
 
   registerPlayer(_name: string): Promise<RegisteredPlayer> { return this.unsupported("registerPlayer"); }
   helloPlayer(_token: string): Promise<PlayerIdentity | null> { return this.unsupported("helloPlayer"); }
+  getAccount(_token: string): Promise<AccountSummary | null> { return this.unsupported("getAccount"); }
+  linkAccount(_token: string, _identity: VerifiedExternalIdentity): ReturnType<Persistence["linkAccount"]> { return this.unsupported("linkAccount"); }
+  createLinkedSession(_identity: VerifiedExternalIdentity): Promise<RegisteredPlayer | null> { return this.unsupported("createLinkedSession"); }
+  updateDisplayName(_token: string, _displayName: string): Promise<AccountSummary | null> { return this.unsupported("updateDisplayName"); }
+  updatePrivacy(_token: string, _discoverableByPublicId: boolean): Promise<AccountSummary | null> { return this.unsupported("updatePrivacy"); }
+  deleteLinkedAccount(_token: string, _identity: VerifiedExternalIdentity): Promise<boolean> { return this.unsupported("deleteLinkedAccount"); }
+  findPublicPlayer(_token: string, _publicPlayerId: string): Promise<PublicPlayer | null> { return this.unsupported("findPublicPlayer"); }
+  listFriends(_token: string): Promise<FriendEntry[] | null> { return this.unsupported("listFriends"); }
+  requestFriend(_token: string, _publicPlayerId: string): Promise<FriendEntry | null> { return this.unsupported("requestFriend"); }
+  acceptFriend(_token: string, _publicPlayerId: string): Promise<FriendEntry | null> { return this.unsupported("acceptFriend"); }
+  createPartyInvite(_token: string): ReturnType<Persistence["createPartyInvite"]> { return this.unsupported("createPartyInvite"); }
+  acceptPartyInvite(_token: string, _code: string): Promise<PartyInviteAcceptance | null> { return this.unsupported("acceptPartyInvite"); }
   getProfile(_token: string): Promise<PlayerProfile | null> { return this.unsupported("getProfile"); }
   getBase(_token: string): Promise<PlayerBase | null> { return this.unsupported("getBase"); }
   advanceBaseTutorial(_token: string, _action: BaseTutorialAction, _revision: number): Promise<PlayerBase | null> { return this.unsupported("advanceBaseTutorial"); }

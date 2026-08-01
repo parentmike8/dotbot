@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { Persistence, PlayerIdentity, PlayerProfile, RegisteredPlayer } from "./Persistence";
+import type { AccountSummary, FriendEntry, LinkAccountResult, PartyInviteAcceptance, Persistence, PlayerIdentity, PlayerProfile, PublicPlayer, RegisteredPlayer, VerifiedExternalIdentity } from "./Persistence";
 import { DEFAULT_BASE_SHELL, starterBaseLayout } from "@dotbot/game/content/base";
 import type { BaseLayout, BaseObjectKind } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
@@ -11,6 +11,7 @@ import {
   type BaseTutorialAction,
   type BaseTutorialState,
 } from "@dotbot/game/baseTutorial";
+import { PUBLIC_PLAYER_ID_ALPHABET } from "../identity/publicPlayerId";
 
 export class NoopPersistence implements Persistence {
   readonly live: boolean = false;
@@ -22,13 +23,33 @@ export class NoopPersistence implements Persistence {
     return { ...fallbackIdentity(token, name), token };
   }
 
-  async helloPlayer(token: string): Promise<PlayerIdentity> {
+  async helloPlayer(token: string): Promise<PlayerIdentity | null> {
     return fallbackIdentity(token, "Player");
   }
 
   async resolveOrRegisterPlayer(token: string, offeredName: string): Promise<PlayerIdentity> {
     return fallbackIdentity(token, offeredName);
   }
+
+  async getAccount(token: string): Promise<AccountSummary | null> {
+    const identity = fallbackIdentity(token, "Player");
+    return { publicPlayerId: identity.publicPlayerId, displayName: identity.name, linked: false, providers: [] };
+  }
+
+  async linkAccount(_token: string, _identity: VerifiedExternalIdentity): Promise<LinkAccountResult> {
+    throw new Error("Account linking requires live persistence.");
+  }
+
+  async createLinkedSession(_identity: VerifiedExternalIdentity): Promise<RegisteredPlayer | null> { return null; }
+  async updateDisplayName(_token: string, _displayName: string): Promise<AccountSummary | null> { return null; }
+  async updatePrivacy(_token: string, _discoverableByPublicId: boolean): Promise<AccountSummary | null> { return null; }
+  async deleteLinkedAccount(_token: string, _identity: VerifiedExternalIdentity): Promise<boolean> { return false; }
+  async findPublicPlayer(_token: string, _publicPlayerId: string): Promise<PublicPlayer | null> { return null; }
+  async listFriends(_token: string): Promise<FriendEntry[] | null> { return null; }
+  async requestFriend(_token: string, _publicPlayerId: string): Promise<FriendEntry | null> { return null; }
+  async acceptFriend(_token: string, _publicPlayerId: string): Promise<FriendEntry | null> { return null; }
+  async createPartyInvite(_token: string): Promise<{ code: string; expiresAt: string } | null> { return null; }
+  async acceptPartyInvite(_token: string, _code: string): Promise<PartyInviteAcceptance | null> { return null; }
 
   async getProfile(_token: string): Promise<PlayerProfile> {
     return { name: "Player", stash: [], learnedBlueprints: [], recentManifests: [] };
@@ -83,5 +104,9 @@ export class NoopPersistence implements Persistence {
 
 function fallbackIdentity(token: string, name: string): PlayerIdentity {
   const safeToken = token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || "anonymous";
-  return { playerId: `p-${safeToken}`, name };
+  let publicPlayerId = "";
+  for (let index = 0; index < 8; index += 1) {
+    publicPlayerId += PUBLIC_PLAYER_ID_ALPHABET[(token.charCodeAt(index % token.length) || index) % PUBLIC_PLAYER_ID_ALPHABET.length];
+  }
+  return { playerId: `p-${safeToken}`, publicPlayerId, name };
 }

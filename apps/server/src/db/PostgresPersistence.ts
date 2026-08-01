@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { itemToCode, PUBLIC_EXTRACTION_ROLE_COUNT, type WireItemCode } from "@dotbot/protocol";
 import { BASE_SLOT_DEFS, DEFAULT_BASE_SHELL, isObjectAllowedInSlot, starterBaseLayout, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById, SECOND_FLOOR_UPGRADE_ID } from "@dotbot/game/content/recipes";
@@ -16,60 +16,377 @@ import {
 } from "@dotbot/game/baseTutorial";
 import type {
   Persistence,
+  AccountSummary,
+  FriendEntry,
+  IdentityProviderKind,
+  LinkAccountResult,
+  PartyInviteAcceptance,
   PlayerIdentity,
   PlayerProfile,
+  PublicPlayer,
   RegisteredPlayer,
   RunManifest,
   MatchStartResult,
+  VerifiedExternalIdentity,
 } from "./Persistence";
-import { baseLayouts, baseUpgrades, contracts as contractRows, learnedBlueprints, matchParticipants, matchResults, players, relayRequests, stashItems } from "./schema";
+import {
+  baseLayouts,
+  baseUpgrades,
+  contracts as contractRows,
+  externalIdentities,
+  friendships,
+  identityMergeReceipts,
+  identityProviders,
+  learnedBlueprints,
+  matchParticipants,
+  matchResults,
+  partyInviteAcceptances,
+  partyInvites,
+  playerAliases,
+  playerBlocks,
+  playerDevices,
+  players,
+  relayRequests,
+  stashItems,
+} from "./schema";
+import { allocateUniquePublicPlayerId, generatePublicPlayerId, normalizePublicPlayerId, type PublicPlayerIdFactory } from "../identity/publicPlayerId";
 
 export class PostgresPersistence implements Persistence {
   readonly live = true;
   private readonly db: PostgresJsDatabase;
 
-  constructor(private readonly client: Sql) {
+  constructor(private readonly client: Sql, private readonly publicIdFactory: PublicPlayerIdFactory = generatePublicPlayerId) {
     this.db = drizzle(client);
   }
 
   async registerPlayer(name: string): Promise<RegisteredPlayer> {
     const token = randomBytes(16).toString("hex");
-    const player = await this.db.transaction(async (tx) => {
-      const [created] = await tx.insert(players).values({
-        displayName: name,
-        deviceTokenHash: hashToken(token),
-        baseTutorialPhase: initialBaseTutorialState.phase,
-        baseTutorialRevision: initialBaseTutorialState.revision,
-      }).returning({ id: players.id, name: players.displayName });
-      await tx.insert(baseLayouts).values(layoutRows(created.id, starterBaseLayout));
-      return created;
-    });
-    return { playerId: player.id, name: player.name, token };
+    const player = await this.createGuest(name, token);
+    return { ...player, token };
   }
 
   async helloPlayer(token: string): Promise<PlayerIdentity | null> {
-    const [player] = await this.db.update(players)
+    const tokenHash = hashToken(token);
+    let [device] = await this.db.update(playerDevices)
       .set({ lastSeenAt: new Date() })
-      .where(eq(players.deviceTokenHash, hashToken(token)))
-      .returning({ id: players.id, name: players.displayName });
-    return player ? { playerId: player.id, name: player.name } : null;
+      .where(eq(playerDevices.tokenHash, tokenHash))
+      .returning({ playerId: playerDevices.playerId });
+    if (!device) {
+      const [legacy] = await this.db.select({ playerId: players.id }).from(players)
+        .where(eq(players.deviceTokenHash, tokenHash)).limit(1);
+      if (!legacy) return null;
+      await this.db.insert(playerDevices).values({ playerId: legacy.playerId, tokenHash }).onConflictDoNothing();
+      device = legacy;
+    }
+    await this.db.update(players).set({ lastSeenAt: new Date() }).where(eq(players.id, device.playerId));
+    const [player] = await this.db.select({
+      id: players.id,
+      publicPlayerId: players.publicPlayerId,
+      name: players.displayName,
+    }).from(players).where(eq(players.id, device.playerId)).limit(1);
+    if (!player) return null;
+    const aliases = await this.db.select({ sourcePublicPlayerId: playerAliases.sourcePublicPlayerId }).from(playerAliases)
+      .where(eq(playerAliases.targetPlayerId, player.id));
+    const previousPublicPlayerIds = aliases.map((alias) => alias.sourcePublicPlayerId);
+    return {
+      playerId: player.id,
+      publicPlayerId: player.publicPlayerId,
+      ...(previousPublicPlayerIds.length > 0 ? { previousPublicPlayerIds } : {}),
+      name: player.name,
+    };
   }
 
   async resolveOrRegisterPlayer(token: string, offeredName: string): Promise<PlayerIdentity> {
     const existing = await this.helloPlayer(token);
     if (existing) return existing;
+    try {
+      return await this.createGuest(offeredName, token);
+    } catch (error) {
+      const raced = await this.helloPlayer(token);
+      if (raced) return raced;
+      throw error;
+    }
+  }
+
+  async getAccount(token: string): Promise<AccountSummary | null> {
+    const identity = await this.helloPlayer(token);
+    return identity ? this.accountSummary(identity.playerId) : null;
+  }
+
+  async linkAccount(token: string, identity: VerifiedExternalIdentity): Promise<LinkAccountResult> {
     const tokenHash = hashToken(token);
-    const [player] = await this.db.insert(players).values({
-      displayName: offeredName,
-      deviceTokenHash: tokenHash,
-      baseTutorialPhase: initialBaseTutorialState.phase,
-      baseTutorialRevision: initialBaseTutorialState.revision,
-    }).onConflictDoUpdate({
-      target: players.deviceTokenHash,
-      set: { displayName: offeredName, lastSeenAt: new Date() },
-    }).returning({ id: players.id, name: players.displayName });
-    await this.ensureBaseLayout(player.id);
-    return { playerId: player.id, name: player.name };
+    const result = await this.db.transaction(async (tx) => {
+      // Serialize every first-link and merge for one verified Firebase account
+      // before locking either player. This closes the unique-insert race and
+      // keeps opposite device replays from deadlocking on player rows.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${identity.issuer.length}:${identity.issuer}${identity.subject}`}, 0))`);
+      // Resolve the device only after the Firebase-account lock. A winning
+      // concurrent merge may have moved this token while a replay was waiting.
+      let [currentDevice] = await tx.select({ playerId: playerDevices.playerId }).from(playerDevices)
+        .where(eq(playerDevices.tokenHash, tokenHash)).limit(1);
+      if (!currentDevice) {
+        const [legacy] = await tx.select({ playerId: players.id }).from(players)
+          .where(eq(players.deviceTokenHash, tokenHash)).limit(1).for("update");
+        if (legacy) {
+          await tx.insert(playerDevices).values({ playerId: legacy.playerId, tokenHash }).onConflictDoNothing();
+          currentDevice = legacy;
+        }
+      }
+      if (!currentDevice) throw new Error("Unknown device token.");
+      const lockedPlayers = await tx.select({
+        id: players.id,
+        name: players.displayName,
+        publicPlayerId: players.publicPlayerId,
+        loadout: players.loadout,
+        shell: players.baseShell,
+        presets: players.presets,
+        insertionPreference: players.insertionPreference,
+        tutorialPhase: players.baseTutorialPhase,
+        tutorialRevision: players.baseTutorialRevision,
+      }).from(players).where(eq(players.id, currentDevice.playerId)).for("update");
+      const sourcePlayer = lockedPlayers[0];
+      if (!sourcePlayer) {
+        // A replay after a merge resolves the moved device to the canonical
+        // player before entering this transaction.
+        throw new Error("Unknown device token.");
+      }
+      const [sourceExternal] = await tx.select({ id: externalIdentities.id, issuer: externalIdentities.issuer, subject: externalIdentities.subject })
+        .from(externalIdentities).where(eq(externalIdentities.playerId, sourcePlayer.id)).for("update");
+      if (sourceExternal && (sourceExternal.issuer !== identity.issuer || sourceExternal.subject !== identity.subject)) {
+        throw new Error("This device is already linked to a different account.");
+      }
+      let [external] = await tx.select({ id: externalIdentities.id, playerId: externalIdentities.playerId })
+        .from(externalIdentities)
+        .where(and(eq(externalIdentities.issuer, identity.issuer), eq(externalIdentities.subject, identity.subject)))
+        .for("update");
+      let merged = false;
+      let replayed = false;
+      let targetPlayerId = sourcePlayer.id;
+      if (!external) {
+        [external] = await tx.insert(externalIdentities).values({
+          playerId: sourcePlayer.id,
+          issuer: identity.issuer,
+          subject: identity.subject,
+        }).returning({ id: externalIdentities.id, playerId: externalIdentities.playerId });
+      } else if (external.playerId === sourcePlayer.id) {
+        replayed = true;
+        await tx.update(externalIdentities).set({ lastVerifiedAt: new Date() }).where(eq(externalIdentities.id, external.id));
+      } else {
+        targetPlayerId = external.playerId;
+        const [targetPlayer] = await tx.select({
+          id: players.id,
+          name: players.displayName,
+          publicPlayerId: players.publicPlayerId,
+          loadout: players.loadout,
+          shell: players.baseShell,
+          presets: players.presets,
+          insertionPreference: players.insertionPreference,
+          tutorialPhase: players.baseTutorialPhase,
+          tutorialRevision: players.baseTutorialRevision,
+        }).from(players).where(eq(players.id, targetPlayerId)).for("update");
+        if (!targetPlayer) throw new Error("Linked account is unavailable.");
+        await this.mergeGuestTransaction(tx, sourcePlayer, targetPlayer, identity);
+        merged = true;
+      }
+      await tx.insert(identityProviders).values({ externalIdentityId: external.id, provider: identity.provider })
+        .onConflictDoUpdate({
+          target: [identityProviders.externalIdentityId, identityProviders.provider],
+          set: { lastVerifiedAt: new Date() },
+        });
+      return { targetPlayerId, merged, replayed };
+    });
+    const account = await this.accountSummary(result.targetPlayerId);
+    if (!account) throw new Error("Linked account is unavailable.");
+    return { account, merged: result.merged, replayed: result.replayed };
+  }
+
+  async createLinkedSession(identity: VerifiedExternalIdentity): Promise<RegisteredPlayer | null> {
+    const [external] = await this.db.select({ playerId: externalIdentities.playerId })
+      .from(externalIdentities)
+      .where(and(eq(externalIdentities.issuer, identity.issuer), eq(externalIdentities.subject, identity.subject)))
+      .limit(1);
+    if (!external) return null;
+    const token = randomBytes(16).toString("hex");
+    await this.db.transaction(async (tx) => {
+      await tx.insert(playerDevices).values({ playerId: external.playerId, tokenHash: hashToken(token) });
+      const [identityRow] = await tx.select({ id: externalIdentities.id }).from(externalIdentities)
+        .where(and(eq(externalIdentities.playerId, external.playerId), eq(externalIdentities.issuer, identity.issuer), eq(externalIdentities.subject, identity.subject)))
+        .for("update");
+      if (!identityRow) throw new Error("Linked account is unavailable.");
+      await tx.insert(identityProviders).values({ externalIdentityId: identityRow.id, provider: identity.provider })
+        .onConflictDoUpdate({ target: [identityProviders.externalIdentityId, identityProviders.provider], set: { lastVerifiedAt: new Date() } });
+    });
+    const [player] = await this.db.select({ id: players.id, publicPlayerId: players.publicPlayerId, name: players.displayName })
+      .from(players).where(eq(players.id, external.playerId)).limit(1);
+    return player ? { playerId: player.id, publicPlayerId: player.publicPlayerId, name: player.name, token } : null;
+  }
+
+  async updateDisplayName(token: string, displayName: string): Promise<AccountSummary | null> {
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
+    await this.db.update(players).set({ displayName }).where(eq(players.id, identity.playerId));
+    return this.accountSummary(identity.playerId);
+  }
+
+  async updatePrivacy(token: string, discoverableByPublicId: boolean): Promise<AccountSummary | null> {
+    const identity = await this.linkedIdentityForToken(token);
+    if (!identity) return null;
+    await this.db.update(players).set({ discoverableByPublicId }).where(eq(players.id, identity.playerId));
+    return this.accountSummary(identity.playerId);
+  }
+
+  async deleteLinkedAccount(token: string, identity: VerifiedExternalIdentity): Promise<boolean> {
+    const actor = await this.helloPlayer(token);
+    if (!actor) return false;
+    return this.db.transaction(async (tx) => {
+      const [external] = await tx.select({ id: externalIdentities.id }).from(externalIdentities)
+        .where(and(
+          eq(externalIdentities.playerId, actor.playerId),
+          eq(externalIdentities.issuer, identity.issuer),
+          eq(externalIdentities.subject, identity.subject),
+      )).for("update");
+      if (!external) throw new Error("Verified identity does not own this DotBot account.");
+      const participantMatches = await tx.select({ matchId: matchParticipants.matchId }).from(matchParticipants)
+        .where(eq(matchParticipants.playerId, actor.playerId));
+      if (participantMatches.length > 0) {
+        await tx.update(matchResults).set({
+          // Historical summaries used public IDs. Once any participant invokes
+          // deletion, retain only the non-identifying end reason.
+          summary: sql`jsonb_build_object('reason', coalesce(${matchResults.summary}->>'reason', 'redacted'), 'redacted', true)`,
+        }).where(inArray(matchResults.id, participantMatches.map((row) => row.matchId)));
+      }
+      const deleted = await tx.delete(players).where(eq(players.id, actor.playerId)).returning({ id: players.id });
+      return deleted.length === 1;
+    });
+  }
+
+  async findPublicPlayer(token: string, requestedId: string): Promise<PublicPlayer | null> {
+    const actor = await this.linkedIdentityForToken(token);
+    const publicPlayerId = normalizePublicPlayerId(requestedId);
+    if (!actor || !publicPlayerId) return null;
+    const [target] = await this.db.select({
+      playerId: players.id,
+      publicPlayerId: players.publicPlayerId,
+      displayName: players.displayName,
+    }).from(players)
+      .innerJoin(externalIdentities, eq(externalIdentities.playerId, players.id))
+      .where(and(eq(players.publicPlayerId, publicPlayerId), eq(players.discoverableByPublicId, true)))
+      .limit(1);
+    if (!target || target.playerId === actor.playerId) return null;
+    const [blocked] = await this.db.select({ blocker: playerBlocks.blockerPlayerId }).from(playerBlocks)
+      .where(or(
+        and(eq(playerBlocks.blockerPlayerId, actor.playerId), eq(playerBlocks.blockedPlayerId, target.playerId)),
+        and(eq(playerBlocks.blockerPlayerId, target.playerId), eq(playerBlocks.blockedPlayerId, actor.playerId)),
+      )).limit(1);
+    return blocked ? null : { publicPlayerId: target.publicPlayerId, displayName: target.displayName };
+  }
+
+  async listFriends(token: string): Promise<FriendEntry[] | null> {
+    const actor = await this.linkedIdentityForToken(token);
+    if (!actor) return null;
+    const rows = await this.db.select({
+      low: friendships.playerLowId,
+      high: friendships.playerHighId,
+      requestedBy: friendships.requestedById,
+      status: friendships.status,
+    }).from(friendships).where(or(eq(friendships.playerLowId, actor.playerId), eq(friendships.playerHighId, actor.playerId)));
+    const blocks = await this.db.select({ blocker: playerBlocks.blockerPlayerId, blocked: playerBlocks.blockedPlayerId })
+      .from(playerBlocks).where(or(eq(playerBlocks.blockerPlayerId, actor.playerId), eq(playerBlocks.blockedPlayerId, actor.playerId)));
+    const blockedIds = new Set(blocks.map((block) => block.blocker === actor.playerId ? block.blocked : block.blocker));
+    const visibleRows = rows.filter((row) => !blockedIds.has(row.low === actor.playerId ? row.high : row.low));
+    const otherIds = visibleRows.map((row) => row.low === actor.playerId ? row.high : row.low);
+    if (otherIds.length === 0) return [];
+    const people = await this.db.select({ id: players.id, publicPlayerId: players.publicPlayerId, displayName: players.displayName })
+      .from(players).where(inArray(players.id, otherIds));
+    const personById = new Map(people.map((person) => [person.id, person]));
+    return visibleRows.flatMap((row) => {
+      const other = personById.get(row.low === actor.playerId ? row.high : row.low);
+      if (!other) return [];
+      const status: FriendEntry["status"] = row.status === "accepted"
+        ? "friends"
+        : row.requestedBy === actor.playerId ? "outgoing" : "incoming";
+      return [{ publicPlayerId: other.publicPlayerId, displayName: other.displayName, status }];
+    });
+  }
+
+  async requestFriend(token: string, requestedId: string): Promise<FriendEntry | null> {
+    const actor = await this.linkedIdentityForToken(token);
+    const target = await this.findPublicPlayer(token, requestedId);
+    if (!actor || !target) return null;
+    const [targetRow] = await this.db.select({ id: players.id }).from(players)
+      .where(eq(players.publicPlayerId, target.publicPlayerId)).limit(1);
+    if (!targetRow) return null;
+    const [low, high] = canonicalPair(actor.playerId, targetRow.id);
+    const [friendship] = await this.db.insert(friendships)
+      .values({ playerLowId: low, playerHighId: high, requestedById: actor.playerId, status: "pending" })
+      .onConflictDoUpdate({
+        target: [friendships.playerLowId, friendships.playerHighId],
+        set: {
+          status: sql`case when ${friendships.status} = 'accepted' or ${friendships.requestedById} <> ${actor.playerId}::uuid then 'accepted' else 'pending' end`,
+          acceptedAt: sql`case when ${friendships.status} = 'accepted' then ${friendships.acceptedAt} when ${friendships.requestedById} <> ${actor.playerId}::uuid then now() else null end`,
+        },
+      })
+      .returning({ status: friendships.status, requestedBy: friendships.requestedById });
+    return { ...target, status: friendship.status === "accepted" ? "friends" : friendship.requestedBy === actor.playerId ? "outgoing" : "incoming" };
+  }
+
+  async acceptFriend(token: string, requestedId: string): Promise<FriendEntry | null> {
+    const actor = await this.linkedIdentityForToken(token);
+    const publicPlayerId = normalizePublicPlayerId(requestedId);
+    if (!actor || !publicPlayerId) return null;
+    const [target] = await this.db.select({ id: players.id, publicPlayerId: players.publicPlayerId, displayName: players.displayName })
+      .from(players).where(eq(players.publicPlayerId, publicPlayerId)).limit(1);
+    if (!target) return null;
+    const [low, high] = canonicalPair(actor.playerId, target.id);
+    const updated = await this.db.update(friendships).set({ status: "accepted", acceptedAt: new Date() })
+      .where(and(
+        eq(friendships.playerLowId, low),
+        eq(friendships.playerHighId, high),
+        eq(friendships.status, "pending"),
+        eq(friendships.requestedById, target.id),
+      )).returning({ low: friendships.playerLowId });
+    if (updated.length === 1) return { publicPlayerId: target.publicPlayerId, displayName: target.displayName, status: "friends" };
+    const [accepted] = await this.db.select({ status: friendships.status }).from(friendships)
+      .where(and(eq(friendships.playerLowId, low), eq(friendships.playerHighId, high), eq(friendships.status, "accepted")))
+      .limit(1);
+    return accepted ? { publicPlayerId: target.publicPlayerId, displayName: target.displayName, status: "friends" } : null;
+  }
+
+  async createPartyInvite(token: string): Promise<{ code: string; expiresAt: string } | null> {
+    const actor = await this.linkedIdentityForToken(token);
+    if (!actor) return null;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const code = randomBytes(24).toString("base64url");
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60_000);
+      const inserted = await this.db.insert(partyInvites).values({ ownerPlayerId: actor.playerId, tokenHash: hashToken(code), expiresAt })
+        .onConflictDoNothing().returning({ id: partyInvites.id });
+      if (inserted.length === 1) return { code, expiresAt: expiresAt.toISOString() };
+    }
+    throw new Error("Could not allocate a party invite.");
+  }
+
+  async acceptPartyInvite(token: string, code: string): Promise<PartyInviteAcceptance | null> {
+    const actor = await this.helloPlayer(token);
+    if (!actor) return null;
+    return this.db.transaction(async (tx) => {
+      const [invite] = await tx.select({
+        id: partyInvites.id,
+        ownerPlayerId: partyInvites.ownerPlayerId,
+        expiresAt: partyInvites.expiresAt,
+        revoked: partyInvites.revoked,
+      }).from(partyInvites).where(eq(partyInvites.tokenHash, hashToken(code))).for("update");
+      if (!invite || invite.revoked || invite.expiresAt <= new Date()) return null;
+      if (invite.ownerPlayerId === actor.playerId) return null;
+      const [inviter] = await tx.select({ publicPlayerId: players.publicPlayerId, displayName: players.displayName })
+        .from(players).where(eq(players.id, invite.ownerPlayerId)).limit(1);
+      if (!inviter) return null;
+      const [linked] = await tx.select({ id: externalIdentities.id }).from(externalIdentities)
+        .where(eq(externalIdentities.playerId, actor.playerId)).limit(1);
+      if (linked) {
+        await tx.insert(partyInviteAcceptances).values({ inviteId: invite.id, playerId: actor.playerId }).onConflictDoNothing();
+      }
+      return { inviter, durable: Boolean(linked), expiresAt: invite.expiresAt.toISOString() };
+    });
   }
 
   async getProfile(token: string): Promise<PlayerProfile | null> {
@@ -161,6 +478,7 @@ export class PostgresPersistence implements Persistence {
   }
 
   async getBaseTutorialForPlayer(playerId: string): Promise<BaseTutorialState | null> {
+    playerId = await this.canonicalPlayerId(playerId);
     const [player] = await this.db.select({
       phase: players.baseTutorialPhase,
       revision: players.baseTutorialRevision,
@@ -169,13 +487,14 @@ export class PostgresPersistence implements Persistence {
   }
 
   async advanceBaseTutorial(token: string, action: BaseTutorialAction, revision: number) {
-    const tokenHash = hashToken(token);
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
     const result = await this.db.transaction(async (tx) => {
       const [player] = await tx.select({
         id: players.id,
         phase: players.baseTutorialPhase,
         revision: players.baseTutorialRevision,
-      }).from(players).where(eq(players.deviceTokenHash, tokenHash)).for("update");
+      }).from(players).where(eq(players.id, identity.playerId)).for("update");
       if (!player) return null;
       const current: BaseTutorialState = { phase: player.phase, revision: player.revision };
       const advanced = advanceTutorialState(current, action);
@@ -193,10 +512,11 @@ export class PostgresPersistence implements Persistence {
   }
 
   async setBaseShell(token: string, shell: BaseShellId) {
-    const tokenHash = hashToken(token);
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
     const playerId = await this.db.transaction(async (tx) => {
       const [player] = await tx.select({ id: players.id }).from(players)
-        .where(eq(players.deviceTokenHash, tokenHash)).for("update");
+        .where(eq(players.id, identity.playerId)).for("update");
       if (!player) return null;
       const [draftingTable] = await tx.select({ slotId: baseLayouts.slotId }).from(baseLayouts)
         .where(and(eq(baseLayouts.playerId, player.id), eq(baseLayouts.objectKind, "draftingTable")));
@@ -223,10 +543,11 @@ export class PostgresPersistence implements Persistence {
   }
 
   async setLoadout(token: string, loadout: WireItemCode[]) {
-    const tokenHash = hashToken(token);
+    const identity = await this.helloPlayer(token);
+    if (!identity) throw new Error("Unknown device token.");
     await this.db.transaction(async (tx) => {
       const [player] = await tx.select({ id: players.id, loadout: players.loadout })
-        .from(players).where(eq(players.deviceTokenHash, tokenHash)).limit(1).for("update");
+        .from(players).where(eq(players.id, identity.playerId)).limit(1).for("update");
       if (!player) throw new Error("Unknown device token.");
 
       if (player.loadout.length > 0) {
@@ -250,6 +571,9 @@ export class PostgresPersistence implements Persistence {
 
   async consumeLoadout(playerId: string): Promise<WireItemCode[]> {
     return this.db.transaction(async (tx) => {
+      const [alias] = await tx.select({ targetPlayerId: playerAliases.targetPlayerId }).from(playerAliases)
+        .where(eq(playerAliases.sourcePlayerId, playerId)).limit(1);
+      playerId = alias?.targetPlayerId ?? playerId;
       const [player] = await tx.select({ loadout: players.loadout })
         .from(players).where(eq(players.id, playerId)).limit(1).for("update");
       const loadout = player?.loadout ?? [];
@@ -259,6 +583,7 @@ export class PostgresPersistence implements Persistence {
   }
 
   async getMatchIntelObjects(playerId: string) {
+    playerId = await this.canonicalPlayerId(playerId);
     const rows = await this.db.select({ objectKind: baseLayouts.objectKind })
       .from(baseLayouts)
       .where(eq(baseLayouts.playerId, playerId));
@@ -270,10 +595,11 @@ export class PostgresPersistence implements Persistence {
   async fabricate(token: string, recipeId: string, slotId?: string) {
     const recipe = recipeById(recipeId);
     if (!recipe) throw new Error("Unknown fabrication recipe.");
-    const tokenHash = hashToken(token);
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
     const fabrication = await this.db.transaction(async (tx) => {
       const [player] = await tx.select({ id: players.id })
-        .from(players).where(eq(players.deviceTokenHash, tokenHash)).limit(1).for("update");
+        .from(players).where(eq(players.id, identity.playerId)).limit(1).for("update");
       if (!player) return null;
 
       const layoutRowsLocked = await tx.select({ slotId: baseLayouts.slotId, objectKind: baseLayouts.objectKind })
@@ -349,17 +675,20 @@ export class PostgresPersistence implements Persistence {
   }
 
   async savePresets(token: string, presets: LoadoutPreset[]) {
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
     const updated = await this.db.update(players).set({ presets })
-      .where(eq(players.deviceTokenHash, hashToken(token))).returning({ id: players.id });
+      .where(eq(players.id, identity.playerId)).returning({ id: players.id });
     if (updated.length === 0) return null;
     return this.getBase(token);
   }
 
   async applyPreset(token: string, presetIndex: number) {
-    const tokenHash = hashToken(token);
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
     const missing = await this.db.transaction(async (tx) => {
       const [player] = await tx.select({ id: players.id, loadout: players.loadout, presets: players.presets })
-        .from(players).where(eq(players.deviceTokenHash, tokenHash)).limit(1).for("update");
+        .from(players).where(eq(players.id, identity.playerId)).limit(1).for("update");
       if (!player) return null;
       const preset = player.presets[presetIndex];
       if (!preset) throw new Error("Unknown loadout preset.");
@@ -390,22 +719,27 @@ export class PostgresPersistence implements Persistence {
   }
 
   async setInsertionPreference(token: string, insertionPointId: string | null): Promise<string | null> {
+    const identity = await this.helloPlayer(token);
+    if (!identity) throw new Error("Unknown device token.");
     const updated = await this.db.update(players).set({ insertionPreference: insertionPointId })
-      .where(eq(players.deviceTokenHash, hashToken(token))).returning({ insertionPreference: players.insertionPreference });
+      .where(eq(players.id, identity.playerId)).returning({ insertionPreference: players.insertionPreference });
     if (updated.length === 0) throw new Error("Unknown device token.");
     return updated[0].insertionPreference;
   }
 
   async getInsertionPreference(playerId: string): Promise<string | null> {
+    playerId = await this.canonicalPlayerId(playerId);
     const [player] = await this.db.select({ insertionPreference: players.insertionPreference })
       .from(players).where(eq(players.id, playerId)).limit(1);
     return player?.insertionPreference ?? null;
   }
 
   async acceptContract(token: string, contractId: string): Promise<void> {
+    const identity = await this.helloPlayer(token);
+    if (!identity) throw new Error("Unknown device token.");
     await this.db.transaction(async (tx) => {
       const [player] = await tx.select({ id: players.id, contractReroll: players.contractReroll })
-        .from(players).where(eq(players.deviceTokenHash, hashToken(token))).limit(1).for("update");
+        .from(players).where(eq(players.id, identity.playerId)).limit(1).for("update");
       if (!player) throw new Error("Unknown device token.");
       const active = await tx.select({ id: contractRows.id }).from(contractRows)
         .where(and(eq(contractRows.playerId, player.id), eq(contractRows.status, "active"))).for("update");
@@ -418,27 +752,34 @@ export class PostgresPersistence implements Persistence {
   }
 
   async rerollContracts(token: string): Promise<void> {
+    const identity = await this.helloPlayer(token);
+    if (!identity) throw new Error("Unknown device token.");
     const updated = await this.db.update(players).set({ contractReroll: sql`${players.contractReroll} + 1` })
-      .where(eq(players.deviceTokenHash, hashToken(token))).returning({ id: players.id });
+      .where(eq(players.id, identity.playerId)).returning({ id: players.id });
     if (updated.length === 0) throw new Error("Unknown device token.");
   }
 
   async abandonContract(token: string, contractId: string): Promise<void> {
-    const [player] = await this.db.select({ id: players.id }).from(players)
-      .where(eq(players.deviceTokenHash, hashToken(token))).limit(1);
-    if (!player) throw new Error("Unknown device token.");
+    const identity = await this.helloPlayer(token);
+    if (!identity) throw new Error("Unknown device token.");
     const updated = await this.db.update(contractRows).set({ status: "abandoned" })
-      .where(and(eq(contractRows.id, contractId), eq(contractRows.playerId, player.id), eq(contractRows.status, "active")))
+      .where(and(eq(contractRows.id, contractId), eq(contractRows.playerId, identity.playerId), eq(contractRows.status, "active")))
       .returning({ id: contractRows.id });
     if (updated.length === 0) throw new Error("ACTIVE CONTRACT NOT FOUND.");
   }
 
   async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date; playerIds: string[] }): Promise<MatchStartResult> {
-    const playerIds = [...new Set(input.playerIds)];
-    if (playerIds.length === 0 || playerIds.length > PUBLIC_EXTRACTION_ROLE_COUNT) {
+    const requestedPlayerIds = [...new Set(input.playerIds)];
+    if (requestedPlayerIds.length === 0 || requestedPlayerIds.length > PUBLIC_EXTRACTION_ROLE_COUNT) {
       throw new Error(`A match must register between one and ${PUBLIC_EXTRACTION_ROLE_COUNT} players.`);
     }
     return this.db.transaction(async (tx) => {
+      const aliases = await tx.select({ sourcePlayerId: playerAliases.sourcePlayerId, targetPlayerId: playerAliases.targetPlayerId })
+        .from(playerAliases).where(inArray(playerAliases.sourcePlayerId, requestedPlayerIds));
+      const aliasBySource = new Map(aliases.map((alias) => [alias.sourcePlayerId, alias.targetPlayerId]));
+      const canonicalByRequested = new Map(requestedPlayerIds.map((playerId) => [playerId, aliasBySource.get(playerId) ?? playerId]));
+      const playerIds = [...new Set(canonicalByRequested.values())];
+      if (playerIds.length !== requestedPlayerIds.length) throw new Error("Match roster resolves multiple sessions to the same player.");
       const created = await tx.insert(matchResults).values({
         id: input.matchId,
         roomCode: input.roomCode,
@@ -454,15 +795,15 @@ export class PostgresPersistence implements Persistence {
         const lockedPlayers = await tx.select({ id: players.id, loadout: players.loadout }).from(players)
           .where(inArray(players.id, playerIds)).for("update");
         if (lockedPlayers.length !== playerIds.length) throw new Error("Match roster contains an unknown player.");
-        const loadouts = Object.fromEntries(lockedPlayers.map((player) => [player.id, player.loadout]));
+        const canonicalLoadouts = Object.fromEntries(lockedPlayers.map((player) => [player.id, player.loadout]));
         await tx.insert(matchParticipants).values(playerIds.map((playerId) => ({
           matchId: input.matchId,
           playerId,
           outcome: "active",
-          startingLoadout: loadouts[playerId] ?? [],
+          startingLoadout: canonicalLoadouts[playerId] ?? [],
         })));
         await tx.update(players).set({ loadout: [] }).where(inArray(players.id, playerIds));
-        return { loadouts };
+        return { loadouts: Object.fromEntries(requestedPlayerIds.map((requested) => [requested, canonicalLoadouts[canonicalByRequested.get(requested)!] ?? []])) };
       }
 
       const participants = await tx.select({ playerId: matchParticipants.playerId, loadout: matchParticipants.startingLoadout })
@@ -471,7 +812,8 @@ export class PostgresPersistence implements Persistence {
       if (registeredIds.size !== playerIds.length || playerIds.some((playerId) => !registeredIds.has(playerId))) {
         throw new Error("Match id is already registered with a different player roster.");
       }
-      return { loadouts: Object.fromEntries(participants.map((participant) => [participant.playerId, participant.loadout])) };
+      const canonicalLoadouts = Object.fromEntries(participants.map((participant) => [participant.playerId, participant.loadout]));
+      return { loadouts: Object.fromEntries(requestedPlayerIds.map((requested) => [requested, canonicalLoadouts[canonicalByRequested.get(requested)!] ?? []])) };
     });
   }
 
@@ -482,11 +824,14 @@ export class PostgresPersistence implements Persistence {
     blueprintLearningThreshold: number;
   }): Promise<{ manifest: RunManifest }> {
     return this.db.transaction(async (tx) => {
+      const [alias] = await tx.select({ targetPlayerId: playerAliases.targetPlayerId }).from(playerAliases)
+        .where(eq(playerAliases.sourcePlayerId, input.playerId)).limit(1);
+      const playerId = alias?.targetPlayerId ?? input.playerId;
       const [participant] = await tx.select({
         outcome: matchParticipants.outcome,
         manifest: matchParticipants.extractedManifest,
       }).from(matchParticipants)
-        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, input.playerId)))
+        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, playerId)))
         .limit(1)
         .for("update");
       if (!participant) throw new Error("Player is not registered for this match.");
@@ -498,10 +843,10 @@ export class PostgresPersistence implements Persistence {
       const newlyLearned: string[] = [];
       const completedContracts: Array<{ contractId: string; title: string; payout: WireItemCode[] }> = [];
       const layout = await tx.select({ objectKind: baseLayouts.objectKind })
-        .from(baseLayouts).where(eq(baseLayouts.playerId, input.playerId)).for("update");
+        .from(baseLayouts).where(eq(baseLayouts.playerId, playerId)).for("update");
       const capacity = layout.filter((row) => row.objectKind === "locker").length * 20;
       const lockedStash = await tx.select({ qty: stashItems.qty })
-        .from(stashItems).where(eq(stashItems.playerId, input.playerId)).for("update");
+        .from(stashItems).where(eq(stashItems.playerId, playerId)).for("update");
       let stashCount = lockedStash.reduce((total, row) => total + row.qty, 0);
       const bankOrder = [...input.manifest.keptItems].sort((left, right) => Number(right.startsWith("b:")) - Number(left.startsWith("b:")));
       const keptItems: WireItemCode[] = [];
@@ -512,7 +857,7 @@ export class PostgresPersistence implements Persistence {
           overflow.push(itemType);
           continue;
         }
-        await tx.insert(stashItems).values({ playerId: input.playerId, itemType, qty: 1, acquiredMatchId: input.matchId });
+        await tx.insert(stashItems).values({ playerId, itemType, qty: 1, acquiredMatchId: input.matchId });
         stashCount += 1;
         keptItems.push(itemType);
 
@@ -520,26 +865,26 @@ export class PostgresPersistence implements Persistence {
         const blueprintId = itemType.slice(2);
         const [existing] = await tx.select({ blueprintId: learnedBlueprints.blueprintId })
           .from(learnedBlueprints)
-          .where(and(eq(learnedBlueprints.playerId, input.playerId), eq(learnedBlueprints.blueprintId, blueprintId)))
+          .where(and(eq(learnedBlueprints.playerId, playerId), eq(learnedBlueprints.blueprintId, blueprintId)))
           .limit(1);
         const [count] = await tx.select({ total: sql<number>`coalesce(sum(${stashItems.qty}), 0)::int` })
           .from(stashItems)
-          .where(and(eq(stashItems.playerId, input.playerId), eq(stashItems.itemType, itemType)));
+          .where(and(eq(stashItems.playerId, playerId), eq(stashItems.itemType, itemType)));
         const fragmentCount = Number(count?.total ?? 0);
         if (existing || fragmentCount >= input.blueprintLearningThreshold) {
           if (!existing) {
-            await tx.insert(learnedBlueprints).values({ playerId: input.playerId, blueprintId });
+            await tx.insert(learnedBlueprints).values({ playerId, blueprintId });
             newlyLearned.push(blueprintId);
           }
           await tx.delete(stashItems)
-            .where(and(eq(stashItems.playerId, input.playerId), eq(stashItems.itemType, itemType)));
+            .where(and(eq(stashItems.playerId, playerId), eq(stashItems.itemType, itemType)));
           stashCount -= fragmentCount;
         }
       }
 
       const active = await tx.select({ id: contractRows.id, contract: contractRows.contract })
         .from(contractRows)
-        .where(and(eq(contractRows.playerId, input.playerId), eq(contractRows.status, "active")))
+        .where(and(eq(contractRows.playerId, playerId), eq(contractRows.status, "active")))
         .for("update");
       for (const row of active) {
         if (!contractSatisfied(row.contract, input.manifest.cargo ?? [])) continue;
@@ -547,12 +892,12 @@ export class PostgresPersistence implements Persistence {
         for (const item of row.contract.payout.items) {
           if (stashCount >= capacity) break;
           const itemType = itemToCode(item);
-          await tx.insert(stashItems).values({ playerId: input.playerId, itemType, qty: 1, acquiredMatchId: input.matchId });
+          await tx.insert(stashItems).values({ playerId, itemType, qty: 1, acquiredMatchId: input.matchId });
           stashCount += 1;
           payout.push(itemType);
         }
         await tx.update(contractRows).set({ status: "completed" })
-          .where(and(eq(contractRows.id, row.id), eq(contractRows.playerId, input.playerId)));
+          .where(and(eq(contractRows.id, row.id), eq(contractRows.playerId, playerId)));
         completedContracts.push({ contractId: row.id, title: row.contract.title, payout });
       }
 
@@ -565,7 +910,7 @@ export class PostgresPersistence implements Persistence {
       };
       const updated = await tx.update(matchParticipants)
         .set({ outcome: "extracted", extractedManifest: manifest })
-        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, input.playerId)))
+        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, playerId)))
         .returning({ playerId: matchParticipants.playerId });
       if (updated.length !== 1) throw new Error("Player match outcome could not be saved.");
       return { manifest };
@@ -574,15 +919,18 @@ export class PostgresPersistence implements Persistence {
 
   async recordOutcome(input: { matchId: string; playerId: string; outcome: "died" | "timeout" | "disconnected" }): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const [alias] = await tx.select({ targetPlayerId: playerAliases.targetPlayerId }).from(playerAliases)
+        .where(eq(playerAliases.sourcePlayerId, input.playerId)).limit(1);
+      const playerId = alias?.targetPlayerId ?? input.playerId;
       const [participant] = await tx.select({ outcome: matchParticipants.outcome }).from(matchParticipants)
-        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, input.playerId)))
+        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, playerId)))
         .limit(1)
         .for("update");
       if (!participant) throw new Error("Player is not registered for this match.");
       if (participant.outcome === input.outcome) return;
       if (participant.outcome !== "active") throw new Error(`Player match outcome is already ${participant.outcome}.`);
       await tx.update(matchParticipants).set({ outcome: input.outcome })
-        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, input.playerId)));
+        .where(and(eq(matchParticipants.matchId, input.matchId), eq(matchParticipants.playerId, playerId)));
     });
   }
 
@@ -612,6 +960,251 @@ export class PostgresPersistence implements Persistence {
 
   async close(): Promise<void> {
     await this.client.end({ timeout: 2 });
+  }
+
+  private async createGuest(name: string, token: string): Promise<PlayerIdentity> {
+    const tokenHash = hashToken(token);
+    return allocateUniquePublicPlayerId(async (candidate) => {
+      return this.db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`dotbot-public-player-id:${candidate}`}, 0))`);
+        const [retired] = await tx.select({ sourcePlayerId: playerAliases.sourcePlayerId }).from(playerAliases)
+          .where(eq(playerAliases.sourcePublicPlayerId, candidate)).limit(1);
+        if (retired) return null;
+        const [player] = await tx.insert(players).values({
+          publicPlayerId: candidate,
+          displayName: name,
+          deviceTokenHash: tokenHash,
+          baseTutorialPhase: initialBaseTutorialState.phase,
+          baseTutorialRevision: initialBaseTutorialState.revision,
+        }).onConflictDoNothing({ target: players.publicPlayerId })
+          .returning({ id: players.id, publicPlayerId: players.publicPlayerId, name: players.displayName });
+        if (!player) return null;
+        await tx.insert(playerDevices).values({ playerId: player.id, tokenHash });
+        await tx.insert(baseLayouts).values(layoutRows(player.id, starterBaseLayout));
+        return { playerId: player.id, publicPlayerId: player.publicPlayerId, name: player.name };
+      });
+    }, this.publicIdFactory);
+  }
+
+  private async accountSummary(playerId: string): Promise<AccountSummary | null> {
+    const [player] = await this.db.select({ publicPlayerId: players.publicPlayerId, displayName: players.displayName })
+      .from(players).where(eq(players.id, playerId)).limit(1);
+    if (!player) return null;
+    const [external] = await this.db.select({ id: externalIdentities.id }).from(externalIdentities)
+      .where(eq(externalIdentities.playerId, playerId)).limit(1);
+    const providerRows = external
+      ? await this.db.select({ provider: identityProviders.provider }).from(identityProviders)
+        .where(eq(identityProviders.externalIdentityId, external.id))
+      : [];
+    return {
+      publicPlayerId: player.publicPlayerId,
+      displayName: player.displayName,
+      linked: Boolean(external),
+      providers: providerRows.map((row) => row.provider).filter(isIdentityProviderKind),
+    };
+  }
+
+  private async linkedIdentityForToken(token: string): Promise<PlayerIdentity | null> {
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
+    const [external] = await this.db.select({ id: externalIdentities.id }).from(externalIdentities)
+      .where(eq(externalIdentities.playerId, identity.playerId)).limit(1);
+    return external ? identity : null;
+  }
+
+  private async mergeGuestTransaction(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    source: {
+      id: string;
+      name: string;
+      publicPlayerId: string;
+      loadout: WireItemCode[];
+      shell: BaseShellId;
+      presets: LoadoutPreset[];
+      insertionPreference: string | null;
+      tutorialPhase: BaseTutorialState["phase"];
+      tutorialRevision: number;
+    },
+    target: {
+      id: string;
+      name: string;
+      publicPlayerId: string;
+      loadout: WireItemCode[];
+      shell: BaseShellId;
+      presets: LoadoutPreset[];
+      insertionPreference: string | null;
+      tutorialPhase: BaseTutorialState["phase"];
+      tutorialRevision: number;
+    },
+    identity: VerifiedExternalIdentity,
+  ): Promise<void> {
+    if (source.id === target.id) return;
+    const sourceLayout = await tx.select({ slotId: baseLayouts.slotId, objectKind: baseLayouts.objectKind })
+      .from(baseLayouts).where(eq(baseLayouts.playerId, source.id)).for("update");
+    const sourceContracts = await tx.select({ id: contractRows.id, contract: contractRows.contract, status: contractRows.status })
+      .from(contractRows).where(eq(contractRows.playerId, source.id)).for("update");
+    const sourceMatches = await tx.select({
+      matchId: matchParticipants.matchId,
+      outcome: matchParticipants.outcome,
+      extractedManifest: matchParticipants.extractedManifest,
+      startingLoadout: matchParticipants.startingLoadout,
+    }).from(matchParticipants).where(eq(matchParticipants.playerId, source.id)).for("update");
+    const targetOverlaps = sourceMatches.length > 0
+      ? await tx.select({ matchId: matchParticipants.matchId, outcome: matchParticipants.outcome })
+        .from(matchParticipants)
+        .where(and(
+          eq(matchParticipants.playerId, target.id),
+          inArray(matchParticipants.matchId, sourceMatches.map((match) => match.matchId)),
+        ))
+        .for("update")
+      : [];
+    const sourceOutcomeByMatch = new Map(sourceMatches.map((match) => [match.matchId, match.outcome]));
+    if (targetOverlaps.some((match) => match.outcome === "active" || sourceOutcomeByMatch.get(match.matchId) === "active")) {
+      throw new Error("Account linking must wait until the overlapping active match ends.");
+    }
+    const conflicts = {
+      source: {
+        displayName: source.name,
+        publicPlayerId: source.publicPlayerId,
+        loadout: source.loadout,
+        shell: source.shell,
+        presets: source.presets,
+        insertionPreference: source.insertionPreference,
+        layout: Object.fromEntries(sourceLayout.map((row) => [row.slotId, row.objectKind])),
+        contracts: sourceContracts,
+        matches: sourceMatches,
+      },
+      policy: "linked-target-wins",
+    };
+
+    // A source loadout has already been withdrawn from its STASH. Returning
+    // both active loadouts before clearing them preserves every item without
+    // deciding which device should risk it in the next run.
+    const returnedLoadout = [...source.loadout, ...target.loadout];
+    if (returnedLoadout.length > 0) {
+      await tx.insert(stashItems).values(returnedLoadout.map((itemType) => ({ playerId: target.id, itemType, qty: 1 })));
+    }
+    await tx.update(stashItems).set({ playerId: target.id }).where(eq(stashItems.playerId, source.id));
+
+    await tx.insert(learnedBlueprints)
+      .select(tx.select({
+        playerId: sql<string>`${target.id}::uuid`.as("player_id"),
+        blueprintId: learnedBlueprints.blueprintId,
+        learnedAt: learnedBlueprints.learnedAt,
+      }).from(learnedBlueprints).where(eq(learnedBlueprints.playerId, source.id)))
+      .onConflictDoNothing();
+    await tx.delete(learnedBlueprints).where(eq(learnedBlueprints.playerId, source.id));
+
+    await tx.insert(baseUpgrades)
+      .select(tx.select({
+        playerId: sql<string>`${target.id}::uuid`.as("player_id"),
+        upgradeId: baseUpgrades.upgradeId,
+        acquiredAt: baseUpgrades.acquiredAt,
+      }).from(baseUpgrades).where(eq(baseUpgrades.playerId, source.id)))
+      .onConflictDoNothing();
+    await tx.delete(baseUpgrades).where(eq(baseUpgrades.playerId, source.id));
+
+    await tx.insert(baseLayouts)
+      .select(tx.select({
+        playerId: sql<string>`${target.id}::uuid`.as("player_id"),
+        slotId: baseLayouts.slotId,
+        objectKind: baseLayouts.objectKind,
+      }).from(baseLayouts).where(eq(baseLayouts.playerId, source.id)))
+      .onConflictDoNothing();
+    await tx.delete(baseLayouts).where(eq(baseLayouts.playerId, source.id));
+
+    // Contract ids are globally unique today. Preserve the source definitions,
+    // but an established linked account's active set wins the merge.
+    await tx.update(contractRows).set({ status: "abandoned" })
+      .where(and(eq(contractRows.playerId, source.id), eq(contractRows.status, "active")));
+    await tx.update(contractRows).set({ playerId: target.id }).where(eq(contractRows.playerId, source.id));
+
+    const duplicateMatches = targetOverlaps;
+    if (duplicateMatches.length > 0) {
+      await tx.delete(matchParticipants).where(and(
+        eq(matchParticipants.playerId, source.id),
+        inArray(matchParticipants.matchId, duplicateMatches.map((row) => row.matchId)),
+      ));
+    }
+    await tx.update(matchParticipants).set({ playerId: target.id }).where(eq(matchParticipants.playerId, source.id));
+
+    const sourceFriendships = await tx.select({
+      low: friendships.playerLowId,
+      high: friendships.playerHighId,
+      requestedBy: friendships.requestedById,
+      status: friendships.status,
+      createdAt: friendships.createdAt,
+      acceptedAt: friendships.acceptedAt,
+    }).from(friendships).where(or(eq(friendships.playerLowId, source.id), eq(friendships.playerHighId, source.id))).for("update");
+    await tx.delete(friendships).where(or(eq(friendships.playerLowId, source.id), eq(friendships.playerHighId, source.id)));
+    for (const friendship of sourceFriendships) {
+      const otherId = friendship.low === source.id ? friendship.high : friendship.low;
+      if (otherId === target.id) continue;
+      const [low, high] = canonicalPair(target.id, otherId);
+      await tx.insert(friendships).values({
+        playerLowId: low,
+        playerHighId: high,
+        requestedById: friendship.requestedBy === source.id ? target.id : friendship.requestedBy,
+        status: friendship.status,
+        createdAt: friendship.createdAt,
+        acceptedAt: friendship.acceptedAt,
+      }).onConflictDoUpdate({
+        target: [friendships.playerLowId, friendships.playerHighId],
+        set: {
+          status: sql`case when ${friendships.status} = 'accepted' or excluded.status = 'accepted' then 'accepted' else 'pending' end`,
+          acceptedAt: sql`coalesce(${friendships.acceptedAt}, excluded.accepted_at)`,
+          createdAt: sql`least(${friendships.createdAt}, excluded.created_at)`,
+        },
+      });
+    }
+
+    const sourceBlocks = await tx.select({ blocker: playerBlocks.blockerPlayerId, blocked: playerBlocks.blockedPlayerId, createdAt: playerBlocks.createdAt })
+      .from(playerBlocks).where(or(eq(playerBlocks.blockerPlayerId, source.id), eq(playerBlocks.blockedPlayerId, source.id))).for("update");
+    await tx.delete(playerBlocks).where(or(eq(playerBlocks.blockerPlayerId, source.id), eq(playerBlocks.blockedPlayerId, source.id)));
+    for (const block of sourceBlocks) {
+      const blocker = block.blocker === source.id ? target.id : block.blocker;
+      const blocked = block.blocked === source.id ? target.id : block.blocked;
+      if (blocker === blocked) continue;
+      await tx.insert(playerBlocks).values({ blockerPlayerId: blocker, blockedPlayerId: blocked, createdAt: block.createdAt }).onConflictDoNothing();
+    }
+
+    await tx.update(partyInvites).set({ ownerPlayerId: target.id }).where(eq(partyInvites.ownerPlayerId, source.id));
+    const sourceAcceptances = await tx.select({ inviteId: partyInviteAcceptances.inviteId, acceptedAt: partyInviteAcceptances.acceptedAt })
+      .from(partyInviteAcceptances).where(eq(partyInviteAcceptances.playerId, source.id));
+    for (const acceptance of sourceAcceptances) {
+      await tx.insert(partyInviteAcceptances).values({ inviteId: acceptance.inviteId, playerId: target.id, acceptedAt: acceptance.acceptedAt }).onConflictDoNothing();
+    }
+    await tx.delete(partyInviteAcceptances).where(eq(partyInviteAcceptances.playerId, source.id));
+
+    await tx.update(playerDevices).set({ playerId: target.id }).where(eq(playerDevices.playerId, source.id));
+    await tx.update(players).set({
+      loadout: [],
+      baseTutorialPhase: source.tutorialRevision > target.tutorialRevision ? source.tutorialPhase : target.tutorialPhase,
+      baseTutorialRevision: Math.max(source.tutorialRevision, target.tutorialRevision),
+      lastSeenAt: new Date(),
+    }).where(eq(players.id, target.id));
+    await tx.insert(identityMergeReceipts).values({
+      targetPlayerId: target.id,
+      sourcePlayerId: source.id,
+      issuer: identity.issuer,
+      subject: identity.subject,
+      conflicts,
+    }).onConflictDoNothing();
+    // Live rooms can retain the guest UUID across a link. Keep an internal
+    // redirect after the source row is removed so later run writes remain
+    // authoritative without exposing either UUID to clients.
+    await tx.insert(playerAliases).values({ sourcePlayerId: source.id, sourcePublicPlayerId: source.publicPlayerId, targetPlayerId: target.id })
+      .onConflictDoUpdate({
+        target: playerAliases.sourcePlayerId,
+        set: { sourcePublicPlayerId: source.publicPlayerId, targetPlayerId: target.id },
+      });
+    await tx.delete(players).where(eq(players.id, source.id));
+  }
+
+  private async canonicalPlayerId(playerId: string): Promise<string> {
+    const [alias] = await this.db.select({ targetPlayerId: playerAliases.targetPlayerId }).from(playerAliases)
+      .where(eq(playerAliases.sourcePlayerId, playerId)).limit(1);
+    return alias?.targetPlayerId ?? playerId;
   }
 
   private async ensureBaseLayout(playerId: string): Promise<void> {
@@ -656,4 +1249,13 @@ function isRunManifest(value: unknown): value is RunManifest {
 
 function layoutRows(playerId: string, layout: BaseLayout) {
   return Object.entries(layout).map(([slotId, objectKind]) => ({ playerId, slotId, objectKind }));
+}
+
+function canonicalPair(left: string, right: string): [string, string] {
+  if (left === right) throw new Error("A player cannot target their own social identity.");
+  return left.localeCompare(right) < 0 ? [left, right] : [right, left];
+}
+
+function isIdentityProviderKind(value: string): value is IdentityProviderKind {
+  return value === "email_link" || value === "phone";
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import { arenaAdmissionUpdateRequest, generateRoomCode, handler, isClosedGameSessionError, isFleetWakingError, isFullGameSessionError, normalizeQuickPlayTicket, parseArenaAdmissionUpdate, publicArenaKey, secureWebSocketUrl, stalePublicArenaDeleteRequest } from "./handler";
+import { createHmac } from "node:crypto";
+import { arenaAdmissionUpdateRequest, generateRoomCode, handler, isClosedGameSessionError, isFleetWakingError, isFullGameSessionError, normalizeQuickPlayTicket, parseArenaAdmissionUpdate, publicArenaKey, secureWebSocketUrl, signControlPlaneRequest, stalePublicArenaDeleteRequest } from "./handler";
 
 afterEach(() => {
   delete process.env.DOTBOT_PUBLIC_QUICK_PLAY;
@@ -142,5 +143,17 @@ describe("matchmaker endpoint helpers", () => {
         ConditionExpression: expect.stringContaining("attribute_not_exists(admissionRevision)"),
         ExpressionAttributeValues: expect.not.objectContaining({ ":revision": expect.anything() }),
       });
+  });
+
+  it("signs matchmaker authentication with the replay-protected control-plane contract", () => {
+    const secret = "test-secret";
+    const body = JSON.stringify({ token: "device-token" });
+    const timestamp = "1785552000000";
+    const requestId = "00000000-0000-4000-8000-000000000001";
+    expect(signControlPlaneRequest(secret, body, timestamp, requestId)).toEqual({
+      "x-dotbot-timestamp": timestamp,
+      "x-dotbot-request-id": requestId,
+      "x-dotbot-signature": createHmac("sha256", secret).update(`${timestamp}.${requestId}.${body}`).digest("hex"),
+    });
   });
 });
