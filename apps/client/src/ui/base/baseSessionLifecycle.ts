@@ -83,6 +83,16 @@ export class BaseSessionLifecycle {
     return true;
   }
 
+  /** Retires the introduction after the control plane confirms an explicit
+   * skip. There is no terminal transform to preserve, so use the base spawn. */
+  acceptSkipped(tutorial: BaseTutorialState): boolean {
+    if (!this.authorityActive || !isBaseTutorialComplete(tutorial)) return false;
+    this.terminalTutorial = { ...tutorial };
+    this.localSpawn = null;
+    this.authorityActive = false;
+    return true;
+  }
+
   rememberLocalSnapshot(snapshot: GameSnapshot | null): void {
     if (this.authorityActive || !snapshot) return;
     const player = snapshot.bots.find((bot) => bot.id === "player");

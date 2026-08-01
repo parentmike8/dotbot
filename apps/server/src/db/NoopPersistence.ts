@@ -7,6 +7,7 @@ import { contractDayStamp, generateContractOffers } from "@dotbot/game/contracts
 import { downtownMap } from "@dotbot/game/content/downtown";
 import {
   advanceBaseTutorial as advanceTutorialState,
+  completedBaseTutorialState,
   initialBaseTutorialState,
   type BaseTutorialAction,
   type BaseTutorialState,
@@ -84,6 +85,11 @@ export class NoopPersistence implements Persistence {
     const advanced = advanceTutorialState(current, action);
     if (advanced.changed && revision !== current.revision) throw new Error("Tutorial revision is stale.");
     this.tutorials.set(token, advanced.state);
+    return this.getBase(token);
+  }
+
+  async skipBaseTutorial(token: string) {
+    this.tutorials.set(token, { ...completedBaseTutorialState });
     return this.getBase(token);
   }
 

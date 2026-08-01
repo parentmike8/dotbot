@@ -370,6 +370,28 @@ describe.skipIf(!databaseAvailable)("Postgres persistence", () => {
     expect((await app.inject({ method: "GET", url: "/api/base", headers: otherHeaders }))
       .json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "movement", revision: 0 });
 
+    expect((await app.inject({ method: "POST", url: "/api/base/tutorial/skip" })).statusCode).toBe(400);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/base/tutorial/skip",
+      headers: { "x-device-token": "unknown-device-token" },
+    })).statusCode).toBe(404);
+
+    // The authenticated token is the only player selector. A body-supplied ID
+    // cannot skip another player's introduction, and replay is idempotent.
+    const skipped = await app.inject({
+      method: "POST",
+      url: "/api/base/tutorial/skip",
+      headers: otherHeaders,
+      payload: { playerId: owner.playerId },
+    });
+    expect(skipped.statusCode).toBe(200);
+    expect(skipped.json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "complete", revision: 4 });
+    expect((await app.inject({ method: "GET", url: "/api/base", headers: ownerHeaders }))
+      .json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "practice", revision: 1 });
+    expect((await app.inject({ method: "POST", url: "/api/base/tutorial/skip", headers: otherHeaders }))
+      .json<{ tutorial: unknown }>().tutorial).toEqual({ phase: "complete", revision: 4 });
+
     for (const [action, revision, phase] of [
       ["practiceHit", 1, "fabricator"],
       ["usedFabricator", 2, "doorOpen"],

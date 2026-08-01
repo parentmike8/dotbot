@@ -9,6 +9,9 @@
 .base-onboarding > strong { font-size: 15px; letter-spacing: .09em; }
 .base-onboarding p { margin: 0; color: var(--muted); font: 850 8px/1.4 ui-monospace, monospace; letter-spacing: .09em; }
 .base-onboarding kbd { display: inline-grid; min-width: 18px; height: 18px; margin: 0 2px; place-items: center; border: 1px solid var(--ink); border-bottom-width: 2px; background: var(--paper); color: var(--ink); font: 900 9px/1 ui-monospace, monospace; }
+.base-onboarding-skip { margin-top: 3px; padding: 5px 8px; border: 1px solid var(--ink); background: transparent; color: var(--muted); font: 850 8px/1 ui-monospace, monospace; letter-spacing: .1em; text-transform: uppercase; pointer-events: auto; cursor: pointer; }
+.base-onboarding-skip:hover:not(:disabled), .base-onboarding-skip:focus-visible { background: var(--ink); color: var(--paper); }
+.base-onboarding-skip:disabled { cursor: wait; opacity: .55; }
 .base-onboarding-touch { display: none; }
 @keyframes base-control-pulse { 0%, 100% { filter: drop-shadow(0 0 0 rgba(17,17,17,0)); } 50% { filter: drop-shadow(0 0 7px rgba(17,17,17,.35)); } }
 .base-shell[data-tutorial="movement"] .base-touch-controls .joystick,

@@ -63,6 +63,7 @@ export class RemotePersistence implements Persistence {
   getProfile(_token: string): Promise<PlayerProfile | null> { return this.unsupported("getProfile"); }
   getBase(_token: string): Promise<PlayerBase | null> { return this.unsupported("getBase"); }
   advanceBaseTutorial(_token: string, _action: BaseTutorialAction, _revision: number): Promise<PlayerBase | null> { return this.unsupported("advanceBaseTutorial"); }
+  skipBaseTutorial(_token: string): Promise<PlayerBase | null> { return this.unsupported("skipBaseTutorial"); }
   saveBaseLayout(_token: string, _layout: BaseLayout): Promise<BaseLayout | null> { return this.unsupported("saveBaseLayout"); }
   setBaseShell(_token: string, _shell: BaseShellId): Promise<PlayerBase | null> { return this.unsupported("setBaseShell"); }
   setLoadout(_token: string, _loadout: WireItemCode[]): Promise<PlayerBase | null> { return this.unsupported("setLoadout"); }

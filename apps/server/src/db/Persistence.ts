@@ -201,6 +201,7 @@ export interface Persistence {
   getBase(token: string): Promise<PlayerBase | null>;
   getBaseTutorialForPlayer(playerId: string): Promise<BaseTutorialState | null>;
   advanceBaseTutorial(token: string, action: BaseTutorialAction, revision: number): Promise<PlayerBase | null>;
+  skipBaseTutorial(token: string): Promise<PlayerBase | null>;
   saveBaseLayout(token: string, layout: BaseLayout): Promise<BaseLayout | null>;
   setBaseShell(token: string, shell: BaseShellId): Promise<PlayerBase | null>;
   setLoadout(token: string, loadout: WireItemCode[]): Promise<PlayerBase | null>;

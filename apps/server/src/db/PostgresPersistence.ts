@@ -10,6 +10,7 @@ import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import {
   advanceBaseTutorial as advanceTutorialState,
+  completedBaseTutorialState,
   initialBaseTutorialState,
   type BaseTutorialAction,
   type BaseTutorialState,
@@ -944,6 +945,27 @@ export class PostgresPersistence implements Persistence {
       return player.id;
     });
     if (!result) return null;
+    return this.getBase(token);
+  }
+
+  async skipBaseTutorial(token: string) {
+    const identity = await this.helloPlayer(token);
+    if (!identity) return null;
+    const playerId = await this.db.transaction(async (tx) => {
+      const [player] = await tx.select({
+        id: players.id,
+        phase: players.baseTutorialPhase,
+      }).from(players).where(eq(players.id, identity.playerId)).for("update");
+      if (!player) return null;
+      if (player.phase !== completedBaseTutorialState.phase) {
+        await tx.update(players).set({
+          baseTutorialPhase: completedBaseTutorialState.phase,
+          baseTutorialRevision: completedBaseTutorialState.revision,
+        }).where(eq(players.id, player.id));
+      }
+      return player.id;
+    });
+    if (!playerId) return null;
     return this.getBase(token);
   }
 

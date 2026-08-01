@@ -98,6 +98,7 @@ export function BaseApp() {
   const [panel, setPanel] = useState<Panel>(null);
   const [deployment, setDeployment] = useState(() => /^#\/r\/[A-Z2-9]{4}(?:\?squad=[a-z0-9-]+)?$/i.test(window.location.hash) || window.location.hash === "#/lobby");
   const [notice, setNotice] = useState("");
+  const [skippingTutorial, setSkippingTutorial] = useState(false);
   const pendingPartyInvite = useRef(partyInviteCodeFromHash(window.location.hash));
   const [draftObjectIds, setDraftObjectIds] = useState<string[]>(() => localStorage.getItem(seedDraftedKey)
     ? []
@@ -210,6 +211,26 @@ export function BaseApp() {
       setNotice("LAYOUT SAVED TO THIS DEVICE");
     }
   }, []);
+
+  const skipTutorial = useCallback(async () => {
+    const token = localStorage.getItem(deviceTokenKey);
+    if (!token || skippingTutorial) return;
+    setSkippingTutorial(true);
+    try {
+      const response = await fetch("/api/base/tutorial/skip", {
+        method: "POST",
+        headers: { "x-device-token": token },
+      });
+      const body = await response.json() as BasePayload & { error?: string };
+      if (!response.ok) throw new Error(body.error ?? `Tutorial skip failed (${response.status})`);
+      setBase(body);
+      setNotice("INTRO SKIPPED");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message.toUpperCase() : "INTRO COULD NOT BE SKIPPED");
+    } finally {
+      setSkippingTutorial(false);
+    }
+  }, [skippingTutorial]);
 
   const updateShell = useCallback(async (shell: BaseShellId) => {
     if (!Object.values(base.layout).includes("draftingTable")) {
@@ -422,6 +443,8 @@ export function BaseApp() {
       applyPreset={applyPreset}
       updateInsertionPreference={updateInsertionPreference}
       updateContracts={updateContracts}
+      skipTutorial={skipTutorial}
+      skippingTutorial={skippingTutorial}
       acceptTutorialState={acceptTutorialState}
       reportTutorialError={setNotice}
     />
@@ -464,6 +487,8 @@ type BaseSessionProps = {
   applyPreset: (presetIndex: number) => Promise<void>;
   updateInsertionPreference: (insertionPointId: string | null) => Promise<void>;
   updateContracts: (action: "accept" | "reroll" | "abandon", contractId?: string) => Promise<void>;
+  skipTutorial: () => Promise<void>;
+  skippingTutorial: boolean;
   acceptTutorialState: (state: BaseTutorialConnectionState) => void;
   reportTutorialError: (message: string) => void;
 };
@@ -488,6 +513,7 @@ function BaseSession(props: BaseSessionProps) {
     lifecycleRef.current = new BaseSessionLifecycle(authorityWorld, shouldUseTutorialAuthority);
   }
   const lifecycle = lifecycleRef.current;
+  if (tutorialComplete && lifecycle.authoritative) lifecycle.acceptSkipped(props.base.tutorial);
   const tutorialTokenRef = useRef(localStorage.getItem(deviceTokenKey) ?? "");
   if (shouldUseTutorialAuthority) {
     tutorialTokenRef.current = tutorialAuthorityToken(
@@ -688,6 +714,14 @@ function BaseSession(props: BaseSessionProps) {
             : props.base.tutorial.phase === "fabricator"
               ? <p>STAND STILL ON THE MARK · THE FABRICATOR BUILDS WHAT YOU EARN</p>
               : <p>REPAIR DOTS RESTORE A BROKEN PLATE · CARRY THEM IN A BAY</p>}
+          <button
+            className="base-onboarding-skip"
+            type="button"
+            disabled={props.skippingTutorial}
+            onClick={() => void props.skipTutorial()}
+          >
+            {props.skippingTutorial ? "SKIPPING…" : "SKIP INTRO"}
+          </button>
         </aside>
       ) : null}
       {tutorialComplete ? <div className="base-instruction">STASH STORES · BAYS CARRY · BUILD AT FABRICATOR · DEPLOY AT DOOR</div> : null}

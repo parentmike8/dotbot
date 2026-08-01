@@ -88,6 +88,19 @@ describe("BaseSessionLifecycle", () => {
     expect(map.buildings[0].floors).toHaveLength(2);
   });
 
+  it("retires authority after an authenticated skip and uses the regular base spawn", () => {
+    const lifecycle = new BaseSessionLifecycle(initial, true);
+
+    expect(lifecycle.acceptSkipped(complete)).toBe(true);
+    expect(lifecycle.authoritative).toBe(false);
+    expect(lifecycle.world({ ...initial, tutorial: complete })).toMatchObject({
+      authoritative: false,
+      tutorial: complete,
+      spawn: null,
+    });
+    expect(lifecycle.acceptSkipped(complete)).toBe(false);
+  });
+
   it("rebuilds post-completion art and collision from the same current layout", () => {
     const lifecycle = new BaseSessionLifecycle({ ...initial, tutorial: complete }, false);
     lifecycle.rememberLocalSnapshot(localSnapshot({ x: 512, y: 344 }));

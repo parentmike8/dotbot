@@ -668,6 +668,15 @@ export async function createServer(options: CreateServerOptions = {}) {
     return { storageLinked: persistence.live, ...base };
   });
 
+  app.post<{ Headers: { "x-device-token"?: string; authorization?: string } }>("/api/base/tutorial/skip", async (request, reply) => {
+    const token = authToken(request.headers);
+    if (!token) return reply.code(400).send({ error: "A device token header is required." });
+    if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
+    const base = await persistence.skipBaseTutorial(token);
+    if (!base) return reply.code(404).send({ error: "Unknown device token." });
+    return { storageLinked: true, ...base };
+  });
+
   app.post<{ Headers: { "x-device-token"?: string; authorization?: string }; Body: { layout?: unknown } }>("/api/base/layout", async (request, reply) => {
     const token = authToken(request.headers);
     if (!token) return reply.code(400).send({ error: "A device token header is required." });
