@@ -18,8 +18,8 @@ const roster = (overrides: Partial<TrustedPartyRoster> = {}): TrustedPartyRoster
   issuedAt: 1_785_552_000_000,
   expiresAt: 1_785_552_030_000,
   members: [
-    { playerId: "00000000-0000-4000-8000-000000000002", name: "Second" },
-    { playerId: "00000000-0000-4000-8000-000000000001", name: "Leader" },
+    { playerId: "00000000-0000-4000-8000-000000000002", name: "Second", loadoutRevision: 9 },
+    { playerId: "00000000-0000-4000-8000-000000000001", name: "Leader", loadoutRevision: 4 },
   ],
   ...overrides,
 });
@@ -37,8 +37,8 @@ describe("trusted internal party roster", () => {
   });
 
   it("rejects over-cap, duplicate, non-member leader/requester, and unsafe metadata", () => {
-    const fourth = { playerId: "00000000-0000-4000-8000-000000000004", name: "Fourth" };
-    const third = { playerId: "00000000-0000-4000-8000-000000000003", name: "Third" };
+    const fourth = { playerId: "00000000-0000-4000-8000-000000000004", name: "Fourth", loadoutRevision: 1 };
+    const third = { playerId: "00000000-0000-4000-8000-000000000003", name: "Third", loadoutRevision: 1 };
     expect(parseTrustedPartyRoster(roster({ members: [...roster().members, third, fourth] }))).toBeNull();
     expect(parseTrustedPartyRoster(roster({ members: [roster().members[0], roster().members[0]] }))).toBeNull();
     expect(parseTrustedPartyRoster(roster({ leaderPlayerId: fourth.playerId }))).toBeNull();
@@ -61,6 +61,7 @@ describe("trusted internal party roster", () => {
       version: roster().version,
       playerId: roster().members[0].playerId,
       memberPlayerIds: roster().members.map((member) => member.playerId).reverse(),
+      memberLoadoutRevisions: roster().members.map(({ playerId, loadoutRevision }) => ({ playerId, revision: loadoutRevision })).reverse(),
       arenaId: "A2BC",
       buildId: roster().buildId,
       region: roster().region,
@@ -68,8 +69,13 @@ describe("trusted internal party roster", () => {
     };
     const parsed = parseTrustedPartyReservation(reservation);
     expect(parsed?.memberPlayerIds).toEqual([...reservation.memberPlayerIds].sort());
+    expect(parsed?.memberLoadoutRevisions).toEqual([...reservation.memberLoadoutRevisions].sort((left, right) => left.playerId.localeCompare(right.playerId)));
     expect(canonicalTrustedPartyReservation(reservation)).toBe(JSON.stringify(parsed));
     expect(parseTrustedPartyReservation({ ...reservation, playerId: "00000000-0000-4000-8000-000000000099" })).toBeNull();
     expect(parseTrustedPartyReservation({ ...reservation, memberPlayerIds: [...reservation.memberPlayerIds, reservation.memberPlayerIds[0]] })).toBeNull();
+    expect(parseTrustedPartyReservation({
+      ...reservation,
+      memberLoadoutRevisions: reservation.memberLoadoutRevisions.map((entry, index) => index === 0 ? { ...entry, revision: 0 } : entry),
+    })).toBeNull();
   });
 });

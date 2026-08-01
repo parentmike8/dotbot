@@ -1,0 +1,294 @@
+import type { PlayerRole, PublicArenaMember, RoomPhase } from "@dotbot/protocol";
+import type { PublicPartyAllocation } from "./publicPartyQueue";
+
+export type PublicQuickPlayConfig = {
+  matchmakerUrl?: string | null;
+  publicQuickPlayEnabled?: boolean;
+  atomicPartyAllocationEnabled?: boolean;
+  durablePartiesEnabled?: boolean;
+  quickPlayBuildId?: string | null;
+  quickPlayRegions?: string[];
+};
+
+export type PublicArenaState = {
+  phase: Extract<RoomPhase, "assembling" | "countdown" | "live" | "results">;
+  members: PublicArenaMember[];
+  retiring: boolean;
+  assemblyStartedAt?: number;
+  assemblyDeadlineAt?: number;
+};
+
+export type PublicQuickPlayPhase =
+  | "idle"
+  | "claiming"
+  | "connecting"
+  | "assembling"
+  | "live"
+  | "results"
+  | "cancelling"
+  | "error";
+
+export type PublicQuickPlayState = {
+  phase: PublicQuickPlayPhase;
+  operationId?: string;
+  intent?: "initial" | "redeploy";
+  startedAt?: number;
+  allocation?: PublicPartyAllocation;
+  arena?: PublicArenaState;
+  matchId?: string;
+  roles?: PlayerRole[];
+  connection: "disconnected" | "connecting" | "connected" | "reconnecting" | "failed";
+  error?: { message: string; retryable: boolean };
+  returnToBase?: boolean;
+};
+
+export type PublicQuickPlayEvent =
+  | { type: "claim"; operationId: string; intent: "initial" | "redeploy"; now: number }
+  | { type: "allocated"; operationId: string; allocation: PublicPartyAllocation }
+  | { type: "arenaState"; operationId: string; arena: PublicArenaState }
+  | { type: "matchStart"; operationId: string; matchId?: string; roles?: PlayerRole[] }
+  | { type: "roleController"; operationId: string; matchId: string; roleId: string; controller: "ai" }
+  | { type: "results"; operationId: string }
+  | { type: "connection"; operationId: string; connection: PublicQuickPlayState["connection"] }
+  | { type: "cancel"; operationId: string; returnToBase: boolean }
+  | { type: "cancelled"; operationId: string }
+  | { type: "reconnect"; operationId: string; allocation?: PublicPartyAllocation }
+  | { type: "failed"; operationId: string; message: string; retryable: boolean; connection?: boolean }
+  | { type: "base" };
+
+export const initialPublicQuickPlayState: PublicQuickPlayState = {
+  phase: "idle",
+  connection: "disconnected",
+};
+
+export function selectDeploymentMode(config: PublicQuickPlayConfig): "public" | "legacy" {
+  return config.publicQuickPlayEnabled === true
+    && config.atomicPartyAllocationEnabled === true
+    && config.durablePartiesEnabled === true
+    && isPublicMatchmakerUrl(config.matchmakerUrl)
+    && typeof config.quickPlayBuildId === "string"
+    && /^[A-Za-z0-9._-]{1,64}$/.test(config.quickPlayBuildId)
+    && Array.isArray(config.quickPlayRegions)
+    && config.quickPlayRegions.length > 0
+    && config.quickPlayRegions.every((region) => typeof region === "string" && /^[a-z0-9-]{3,64}$/.test(region))
+    ? "public"
+    : "legacy";
+}
+
+export function publicQueueTimedOut(startedAt: number, now = Date.now(), timeoutMs = 120_000): boolean {
+  return now - startedAt >= timeoutMs;
+}
+
+export function publicPartyStatusLabel(size: number, isLeader: boolean | null): string {
+  const bounded = Math.max(1, Math.min(3, Math.floor(size)));
+  return bounded === 1 ? "SOLO PARTY" : `PARTY ${bounded}/3 · ${isLeader ? "LEADER" : "MEMBER"}`;
+}
+
+export function publicQuickPlayReducer(
+  state: PublicQuickPlayState,
+  event: PublicQuickPlayEvent,
+): PublicQuickPlayState {
+  if (event.type === "base") return initialPublicQuickPlayState;
+  if (event.type === "claim") {
+    if (state.phase !== "idle" && state.phase !== "results" && state.phase !== "error") return state;
+    return {
+      phase: "claiming",
+      operationId: event.operationId,
+      intent: event.intent,
+      startedAt: event.now,
+      connection: "disconnected",
+    };
+  }
+  if (!state.operationId || event.operationId !== state.operationId) return state;
+  switch (event.type) {
+    case "allocated":
+      if (state.phase !== "claiming") return state;
+      return { ...state, phase: "connecting", allocation: event.allocation, connection: "connecting", error: undefined };
+    case "arenaState": {
+      if (state.phase === "cancelling" || state.phase === "error" || state.phase === "idle") return state;
+      const phase = event.arena.phase === "results"
+        ? "results"
+        : event.arena.phase === "live"
+          ? state.matchId ? "live" : "connecting"
+          : "assembling";
+      return { ...state, phase, arena: event.arena, connection: "connected", error: undefined };
+    }
+    case "matchStart":
+      if (state.phase === "cancelling" || state.phase === "idle" || state.phase === "error") return state;
+      return {
+        ...state,
+        phase: "live",
+        connection: "connected",
+        ...(event.matchId ? { matchId: event.matchId } : {}),
+        roles: event.roles ? event.roles.map((role) => ({ ...role })) : state.roles,
+        error: undefined,
+      };
+    case "roleController":
+      if (state.matchId !== event.matchId || !state.roles) return state;
+      return {
+        ...state,
+        roles: state.roles.map((role) => role.roleId === event.roleId ? { ...role, controller: event.controller } : role),
+      };
+    case "results":
+      if (state.phase !== "live" && state.phase !== "connecting") return state;
+      return { ...state, phase: "results", connection: "connected" };
+    case "connection":
+      if (state.phase === "idle") return state;
+      return { ...state, connection: event.connection };
+    case "cancel":
+      if (state.phase !== "claiming" && state.phase !== "connecting" && state.phase !== "assembling") return state;
+      return { ...state, phase: "cancelling", connection: "disconnected", returnToBase: event.returnToBase, error: undefined };
+    case "cancelled":
+      return state.phase === "cancelling" ? initialPublicQuickPlayState : state;
+    case "reconnect":
+      if (state.phase !== "error" && state.phase !== "cancelling") return state;
+      if (!state.allocation && !event.allocation) return state;
+      return {
+        ...state,
+        phase: "connecting",
+        allocation: event.allocation ? { ...event.allocation } : state.allocation,
+        connection: "connecting",
+        error: undefined,
+        returnToBase: undefined,
+      };
+    case "failed":
+      if (state.phase === "cancelling" && event.retryable && !event.connection) {
+        return { ...state, error: { message: event.message, retryable: true } };
+      }
+      return {
+        ...state,
+        phase: "error",
+        connection: event.connection ? "failed" : state.connection,
+        error: { message: event.message, retryable: event.retryable },
+      };
+    default:
+      return state;
+  }
+}
+
+type PublicQuickPlayResumeBase = {
+  version: 1;
+  operationId: string;
+  intent: "initial" | "redeploy";
+};
+
+export type PublicQuickPlayResume = PublicQuickPlayResumeBase & (
+  | { action: "connect"; returnToBase: false; allocation: PublicPartyAllocation }
+  | { action: "cancel"; returnToBase: boolean; allocation?: PublicPartyAllocation }
+);
+
+export function publicQuickPlayStateFromResume(resume: PublicQuickPlayResume): PublicQuickPlayState {
+  if (resume.action === "cancel") {
+    return {
+      phase: "cancelling",
+      operationId: resume.operationId,
+      intent: resume.intent,
+      ...(resume.allocation ? { allocation: { ...resume.allocation } } : {}),
+      connection: "disconnected",
+      returnToBase: resume.returnToBase,
+    };
+  }
+  return {
+    phase: "connecting",
+    operationId: resume.operationId,
+    intent: resume.intent,
+    allocation: { ...resume.allocation },
+    connection: "connecting",
+  };
+}
+
+export function assemblySecondsRemaining(deadlineAt: number | undefined, now = Date.now()): number {
+  if (deadlineAt === undefined) return 1;
+  return Math.max(1, Math.min(6, Math.ceil((deadlineAt - now) / 1_000)));
+}
+
+export function publicQuickPlayResume(state: PublicQuickPlayState): PublicQuickPlayResume | null {
+  if (!state.operationId || !state.intent) return null;
+  if (state.phase === "cancelling") {
+    return {
+      version: 1,
+      operationId: state.operationId,
+      intent: state.intent,
+      action: "cancel",
+      returnToBase: state.returnToBase === true,
+      ...(state.allocation ? { allocation: { ...state.allocation } } : {}),
+    };
+  }
+  if (!state.allocation) return null;
+  return {
+    version: 1,
+    operationId: state.operationId,
+    intent: state.intent,
+    action: "connect",
+    returnToBase: false,
+    allocation: { ...state.allocation },
+  };
+}
+
+export function parsePublicQuickPlayResume(value: unknown): PublicQuickPlayResume | null {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, ["version", "operationId", "intent", "action", "returnToBase", "allocation"])
+    || Object.keys(value).length < 5) return null;
+  if (value.version !== 1 || typeof value.operationId !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.operationId)
+    || (value.intent !== "initial" && value.intent !== "redeploy") || (value.action !== "connect" && value.action !== "cancel")
+    || typeof value.returnToBase !== "boolean"
+    || (value.action === "connect" && value.returnToBase !== false)
+    || (value.action === "connect" && !isResumeAllocation(value.allocation))
+    || (value.action === "cancel" && value.allocation !== undefined && !isResumeAllocation(value.allocation))) return null;
+  if (value.action === "connect") {
+    return {
+      version: 1,
+      operationId: value.operationId,
+      intent: value.intent,
+      action: "connect",
+      returnToBase: false,
+      allocation: { ...value.allocation as PublicPartyAllocation },
+    };
+  }
+  return {
+    version: 1,
+    operationId: value.operationId,
+    intent: value.intent,
+    action: "cancel",
+    returnToBase: value.returnToBase,
+    ...(value.allocation ? { allocation: { ...value.allocation as PublicPartyAllocation } } : {}),
+  };
+}
+
+function isResumeAllocation(value: unknown): value is PublicPartyAllocation {
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, ["mode", "arenaId", "playerSessionId", "websocketUrl", "expiresAt", "queueTicket", "partySize"])) return false;
+  if (value.mode !== "public-hot-arena" || typeof value.arenaId !== "string" || !/^[A-HJ-NP-Z2-9]{4}$/.test(value.arenaId)
+    || typeof value.playerSessionId !== "string" || value.playerSessionId.length < 1 || value.playerSessionId.length > 2048
+    || typeof value.websocketUrl !== "string" || typeof value.queueTicket !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.queueTicket)
+    || !Number.isInteger(value.partySize) || (value.partySize as number) < 1 || (value.partySize as number) > 3
+    || (value.expiresAt !== undefined && (typeof value.expiresAt !== "string" || !Number.isFinite(Date.parse(value.expiresAt))))) return false;
+  try {
+    const url = new URL(value.websocketUrl);
+    return url.protocol === "wss:" || (url.protocol === "ws:" && isLoopback(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+function isLoopback(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+}
+
+function isPublicMatchmakerUrl(value: unknown): value is string {
+  if (typeof value !== "string" || !value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || (url.protocol === "http:" && isLoopback(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOnlyAllowedKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}

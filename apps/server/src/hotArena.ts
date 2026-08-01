@@ -62,7 +62,7 @@ export function assignPublicPlayerRoles(humans: readonly PublicHuman[], matchId:
         squadId,
         slot: slot as 0 | 1 | 2,
         controller: "ai",
-        name: `Rival ${PUBLIC_EXTRACTION_SQUADS.indexOf(squadId) * 3 + slot + 1}`,
+        name: `AI Rival ${PUBLIC_EXTRACTION_SQUADS.indexOf(squadId) * 3 + slot + 1}`,
       };
     });
   });

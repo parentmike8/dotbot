@@ -121,6 +121,12 @@ Resources:
             ApiId: !Ref MatchmakerApi
             Path: /quick-play/cancel
             Method: POST
+        QuickPlayStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref MatchmakerApi
+            Path: /quick-play/status
+            Method: POST
         JoinRoom:
           Type: HttpApi
           Properties:

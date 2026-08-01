@@ -205,6 +205,7 @@ describe("GameLift dedicated server mode", () => {
       }
     }
     const memberPlayerIds = [...identities.values()].map((identity) => identity.playerId);
+    const memberLoadoutRevisions = memberPlayerIds.map((playerId, index) => ({ playerId, revision: index + 1 }));
     const partyReservationExpiresAt = Date.now() + 30_000;
     const inspectPublicPlayerSession = vi.fn(async (playerSessionId: string) => {
       const index = playerSessionId.endsWith("one") ? 0 : 1;
@@ -219,6 +220,8 @@ describe("GameLift dedicated server mode", () => {
           partyVersion: 4,
           partyClaimId: "00000000-0000-4000-8000-000000000010",
           partyMemberPlayerIds: memberPlayerIds,
+          partyMemberLoadoutRevisions: memberLoadoutRevisions,
+          loadoutRevision: memberLoadoutRevisions[index].revision,
           partyReservationExpiresAt,
         },
       };
@@ -430,7 +433,7 @@ describe("GameLift dedicated server mode", () => {
     await app.close();
   });
 
-  it("removes a disconnected non-redeploying reservation as soon as the arena reopens", async () => {
+  it("releases completed and disconnected reservations before a fresh deploy-again claim", async () => {
     process.env.NODE_ENV = "test";
     let now = 0;
     const removed: string[] = [];
@@ -476,7 +479,7 @@ describe("GameLift dedicated server mode", () => {
       publicQuickPlay: true,
       now: () => now,
       hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
-      playerSessionReconnectMs: 60_000,
+      playerSessionReconnectMs: 20,
     });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const address = app.server.address();
@@ -514,12 +517,14 @@ describe("GameLift dedicated server mode", () => {
     if (!room) throw new Error("Expected assigned public arena");
     (room as unknown as { end(reason: string): void }).end("complete");
     await room.waitForPersistence();
-    staying.send(JSON.stringify({ type: "deployAgain" }));
+    staying.send(JSON.stringify({ type: "leaveRun" }));
 
+    await vi.waitFor(() => expect(removed).toContain("psess-stay"));
     await vi.waitFor(() => expect(removed).toContain("psess-leave"));
-    expect(removed).not.toContain("psess-stay");
-    staying.close();
-    await new Promise<void>((resolve) => staying.once("close", () => resolve()));
+    if (staying.readyState !== staying.CLOSED) {
+      staying.close();
+      await new Promise<void>((resolve) => staying.once("close", () => resolve()));
+    }
     await app.close();
   });
 

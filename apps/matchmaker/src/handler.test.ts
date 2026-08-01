@@ -4,6 +4,7 @@ import { createHmac } from "node:crypto";
 import { canonicalTrustedPartyReservation, type TrustedPartyRoster } from "@dotbot/protocol";
 import {
   addPartyPackingReservation,
+  allocationForQueueStatus,
   assertAtomicGameSessionMetadata,
   atomicGameSessionIdempotencyToken,
   arenaAdmissionUpdateRequest,
@@ -128,8 +129,10 @@ describe("matchmaker endpoint helpers", () => {
     process.env.DOTBOT_PUBLIC_QUICK_PLAY = "true";
     process.env.QUICK_PLAY_BUILD_ID = "web-42";
     expect(isAtomicPartyAllocationEnabled()).toBe(false);
-    const disabled = await handler({ routeKey: "POST /quick-play/cancel" } as APIGatewayProxyEventV2) as { statusCode: number };
-    expect(disabled.statusCode).toBe(404);
+    for (const routeKey of ["POST /quick-play/cancel", "POST /quick-play/status"] as const) {
+      const disabled = await handler({ routeKey } as APIGatewayProxyEventV2) as { statusCode: number };
+      expect(disabled.statusCode).toBe(404);
+    }
     process.env.DOTBOT_ATOMIC_PARTY_ALLOCATION = "true";
     expect(isAtomicPartyAllocationEnabled()).toBe(true);
   });
@@ -239,6 +242,38 @@ describe("matchmaker endpoint helpers", () => {
     expect(partyRosterAllocationDigest(second)).toBe(partyRosterAllocationDigest(first));
   });
 
+  it("projects only the authorized member reservation for completed-claim reconnect", () => {
+    const claimId = "00000000-0000-4000-8000-000000000039";
+    const firstPlayerId = "00000000-0000-4000-8000-000000000001";
+    const secondPlayerId = "00000000-0000-4000-8000-000000000002";
+    const record = {
+      pk: `ALLOCATION#${claimId}`,
+      status: "active" as const,
+      expiresAt: 2_000,
+      memberPlayerIds: [firstPlayerId, secondPlayerId],
+      arenaKey: "PUBLIC#ca-central-1#web-42",
+      gameSessionId: "game-session-1",
+      arenaId: "A2BC",
+      endpointHost: "compute.example",
+      endpointPort: 7001,
+      partySecret: "a".repeat(64),
+      allocations: [
+        { playerId: firstPlayerId, playerSessionId: "session-first", websocketUrl: "wss://compute.example:7001/ws" },
+        { playerId: secondPlayerId, playerSessionId: "session-second", websocketUrl: "wss://compute.example:7001/ws" },
+      ],
+      cleanupPlayerSessionIds: ["session-first", "session-second"],
+      cleanupDiscoveryUntil: 0,
+      terminateGameSession: false,
+    };
+    expect(allocationForQueueStatus(record, claimId, secondPlayerId, 1_000)).toMatchObject({
+      playerSessionId: "session-second",
+      queueTicket: claimId,
+      partySize: 2,
+    });
+    expect(allocationForQueueStatus(record, claimId, secondPlayerId, 2_000)).toBeNull();
+    expect(allocationForQueueStatus(record, claimId, "00000000-0000-4000-8000-000000000003", 1_000)).toBeNull();
+  });
+
   it("derives one bounded GameLift creation token from the canonical claim", () => {
     const claimId = "00000000-0000-4000-8000-000000000040";
     const creationId = "00000000-0000-4000-8000-000000000041";
@@ -280,6 +315,9 @@ describe("matchmaker endpoint helpers", () => {
     const arenaId = "A2BC";
     const gameSessionId = "game-session-1";
     const memberPlayerIds = roster.members.map((member) => member.playerId).sort();
+    const memberLoadoutRevisions = roster.members
+      .map((member) => ({ playerId: member.playerId, revision: member.loadoutRevision }))
+      .sort((left, right) => left.playerId.localeCompare(right.playerId));
     const sessionFor = (playerId: string, playerSessionId: string, overrides: Record<string, unknown> = {}) => {
       const reservation = {
         claimId: roster.claimId,
@@ -287,6 +325,7 @@ describe("matchmaker endpoint helpers", () => {
         version: roster.version,
         playerId,
         memberPlayerIds,
+        memberLoadoutRevisions,
         arenaId,
         buildId: roster.buildId,
         region: roster.region,
@@ -594,7 +633,7 @@ function rosterFor(seed: number, size: 1 | 2 | 3): TrustedPartyRoster {
     region: "ca-central-1",
     issuedAt: 1_785_552_000_000,
     expiresAt: 1_785_552_030_000,
-    members: ids.map((playerId, index) => ({ playerId, name: `Pilot ${seed}-${index}` })),
+    members: ids.map((playerId, index) => ({ playerId, name: `Pilot ${seed}-${index}`, loadoutRevision: index + 1 })),
   };
 }
 

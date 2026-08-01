@@ -9,6 +9,8 @@ type ManifestScreenProps = {
   onNewRun: () => void;
   actionLabel?: string;
   onSaveProgress?: () => void;
+  secondaryActionLabel?: string;
+  onSecondaryAction?: () => void;
 };
 
 const outcomeLabels: Record<RunResult["outcome"], string> = {
@@ -36,7 +38,17 @@ function ItemList({ items }: { items: Item[] }) {
   ))}</ul>;
 }
 
-export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun, actionLabel = "↻ NEW RUN", onSaveProgress }: ManifestScreenProps) {
+export function ManifestScreen({
+  result,
+  aiKills,
+  playerKills,
+  runTime,
+  onNewRun,
+  actionLabel = "↻ NEW RUN",
+  onSaveProgress,
+  secondaryActionLabel,
+  onSecondaryAction,
+}: ManifestScreenProps) {
   return (
     <section className="manifest-overlay" aria-label="Run manifest">
       <div className="manifest-panel">
@@ -101,6 +113,11 @@ export function ManifestScreen({ result, aiKills, playerKills, runTime, onNewRun
         <button type="button" className="manifest-new-run" onClick={onNewRun}>
           {actionLabel}
         </button>
+        {secondaryActionLabel && onSecondaryAction ? (
+          <button type="button" className="manifest-secondary-action" onClick={onSecondaryAction}>
+            {secondaryActionLabel}
+          </button>
+        ) : null}
       </div>
     </section>
   );

@@ -81,6 +81,10 @@ type Member = Omit<LobbyMember, "squadId"> & {
    * account can still release a reservation issued to one of its retired
    * internal aliases without putting that UUID on the public protocol. */
   publicReservationPlayerId: string | null;
+  /** Signed claim/loadout fence consumed atomically at the next match start. */
+  queueClaimId: string | null;
+  queuePartyVersion: number | null;
+  queueLoadoutRevision: number | null;
   queuedForNextRun: boolean;
 };
 
@@ -112,6 +116,9 @@ export type PublicPartyJoinInput = {
   persistencePlayerId: string;
   partyId: string;
   reservationPlayerId: string;
+  queueClaimId: string;
+  queuePartyVersion: number;
+  queueLoadoutRevision: number;
   previousPlayerIds: string[];
   previousPersistencePlayerIds: string[];
 };
@@ -343,6 +350,8 @@ export class Room {
   joinPublicParty(party: readonly PublicPartyJoinInput[]): PublicPartyJoinResult {
     if (!this.hotArena || this.disposed || party.length < 1 || party.length > 3
       || new Set(party.map((entry) => entry.partyId)).size !== 1
+      || new Set(party.map((entry) => entry.queueClaimId)).size !== 1
+      || new Set(party.map((entry) => entry.queuePartyVersion)).size !== 1
       || new Set(party.map((entry) => entry.token)).size !== party.length
       || party.some((entry) => entry.peer.isOpen?.() === false)) {
       return { accepted: false, code: "party_invalid", retryable: false };
@@ -350,7 +359,9 @@ export class Room {
     const publicIdentities = new Set<string>();
     const persistenceIdentities = new Set<string>();
     for (const entry of party) {
-      if (!entry.playerId || !entry.persistencePlayerId || !entry.reservationPlayerId
+      if (!entry.playerId || !entry.persistencePlayerId || !entry.reservationPlayerId || !isUuidValue(entry.queueClaimId)
+        || !Number.isSafeInteger(entry.queuePartyVersion) || entry.queuePartyVersion < 1
+        || !Number.isSafeInteger(entry.queueLoadoutRevision) || entry.queueLoadoutRevision < 1
         || this.memberByToken.has(entry.token)) {
         return { accepted: false, code: "party_invalid", retryable: false };
       }
@@ -407,6 +418,9 @@ export class Room {
       matchStart: null,
       partyId,
       publicReservationPlayerId: entry.reservationPlayerId,
+      queueClaimId: entry.queueClaimId,
+      queuePartyVersion: entry.queuePartyVersion,
+      queueLoadoutRevision: entry.queueLoadoutRevision,
       queuedForNextRun: true,
     }));
     for (const member of members) {
@@ -415,7 +429,7 @@ export class Room {
     }
     for (const member of members) this.sendWelcome(member);
     this.broadcastLobby();
-    this.beginPublicAssemblyIfNeeded();
+    this.activateFreshPublicClaim();
     return { accepted: true, bindings: members.map((member) => ({ peerId: member.peer!.id, playerId: member.playerId })) };
   }
 
@@ -558,6 +572,9 @@ export class Room {
       activeKillCamId: null,
       partyId: this.hotArena ? sanitizePartyId(partyId, resolvedPlayerId ?? token) : `legacy-${resolvedPlayerId ?? token}`,
       publicReservationPlayerId: this.hotArena ? publicReservationPlayerId ?? null : null,
+      queueClaimId: null,
+      queuePartyVersion: null,
+      queueLoadoutRevision: null,
       queuedForNextRun: true,
     };
     if (this.hotArena) {
@@ -590,7 +607,7 @@ export class Room {
     }
     this.sendWelcome(member);
     this.broadcastLobby();
-    if (this.hotArena) this.beginPublicAssemblyIfNeeded();
+    if (this.hotArena) this.activateFreshPublicClaim();
     return member;
   }
 
@@ -640,17 +657,11 @@ export class Room {
         return;
       }
       case "deployAgain":
-        if (!this.hotArena || this.phase !== "results") {
-          member.peer?.send({ type: "err", code: "bad_phase", msg: "Deploy again is available after a public run." });
-          return;
-        }
-        if (this.retiring) {
-          member.peer?.send({ type: "err", code: "arena_retiring", msg: "This arena is retiring. Quick play will place the next deployment elsewhere." });
-          return;
-        }
-        this.queueParty(member.partyId);
-        if (this.persistenceSettled) this.enterPublicAssembly();
-        else this.broadcastLobby();
+        member.peer?.send({
+          type: "err",
+          code: "fresh_claim_required",
+          msg: "Deploy again must create a fresh quick-play claim.",
+        });
         return;
       case "leaveRun":
         this.leaveRun(member);
@@ -964,12 +975,6 @@ export class Room {
     return [...this.members.values()].filter((member) => member.queuedForNextRun && (member.peer !== null || member.handoffTimer !== null));
   }
 
-  private queueParty(partyId: string): void {
-    for (const candidate of this.members.values()) {
-      if (candidate.partyId === partyId && (candidate.peer || candidate.handoffTimer)) candidate.queuedForNextRun = true;
-    }
-  }
-
   private beginPublicAssemblyIfNeeded(): void {
     if (!this.hotArena || this.phase !== "assembling" || !this.persistenceSettled || this.retiring || this.readyMembers().length === 0 || this.assemblyStartedAt !== null) return;
     this.assemblyStartedAt = this.now();
@@ -977,6 +982,16 @@ export class Room {
     this.phase = "assembling";
     this.publishPublicAdmission(true, this.assemblyDeadlineAt);
     this.broadcastLobby();
+  }
+
+  /** A results socket cannot opt itself in. Only a newly admitted allocator
+   * claim may move the arena back to assembly, after persistence has closed
+   * the prior run. Claims arriving while settlement is pending are retained;
+   * endHotRun's finalizer activates them once the boundary is safe. */
+  private activateFreshPublicClaim(): void {
+    if (!this.hotArena) return;
+    if (this.phase === "results" && this.persistenceSettled) this.enterPublicAssembly();
+    else this.beginPublicAssemblyIfNeeded();
   }
 
   private enterPublicAssembly(): void {
@@ -1211,6 +1226,16 @@ export class Room {
         mapId: downtownMap.id,
         startedAt: new Date(this.now()),
         playerIds: runMembers.filter((member) => member.persistenceEligible).map((member) => member.persistencePlayerId),
+        ...(this.hotArena && runMembers.every((member) => member.queueClaimId && member.queuePartyVersion && member.queueLoadoutRevision)
+          ? {
+            queueClaims: runMembers.filter((member) => member.persistenceEligible).map((member) => ({
+              playerId: member.persistencePlayerId,
+              claimId: member.queueClaimId!,
+              partyVersion: member.queuePartyVersion!,
+              loadoutRevision: member.queueLoadoutRevision!,
+            })),
+          }
+          : {}),
       });
       loadouts = new Map(Object.entries(started.loadouts));
     } catch (error) {
@@ -1320,6 +1345,9 @@ export class Room {
       member.persistedOutcome = null;
       member.insertionName = insertion.name;
       member.queuedForNextRun = false;
+      member.queueClaimId = null;
+      member.queuePartyVersion = null;
+      member.queueLoadoutRevision = null;
       if (this.hotArena && controller === "ai") expiredTakeovers.push(member);
       squadCounts.set(member.squadId, count + 1);
     }
@@ -2050,6 +2078,10 @@ function makeSpawn(
 
 function sanitizeName(name: string): string {
   return name.trim().replace(/\s+/g, " ").slice(0, 24) || "Player";
+}
+
+function isUuidValue(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function safeErrorName(error: unknown): string {

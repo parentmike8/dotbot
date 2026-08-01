@@ -6,6 +6,7 @@
 export type TrustedPartyRosterMember = {
   playerId: string;
   name: string;
+  loadoutRevision: number;
 };
 
 export type TrustedPartyRoster = {
@@ -27,6 +28,7 @@ export type TrustedPartyReservation = {
   version: number;
   playerId: string;
   memberPlayerIds: string[];
+  memberLoadoutRevisions: Array<{ playerId: string; revision: number }>;
   arenaId: string;
   buildId: string;
   region: string;
@@ -72,11 +74,13 @@ export function parseTrustedPartyRoster(value: unknown): TrustedPartyRoster | nu
 
   const members: TrustedPartyRosterMember[] = [];
   for (const memberValue of value.members) {
-    if (!isRecord(memberValue) || !hasOnlyKeys(memberValue, ["playerId", "name"] as const)) return null;
+    if (!isRecord(memberValue) || !hasOnlyKeys(memberValue, ["playerId", "name", "loadoutRevision"] as const)) return null;
     const playerId = stringValue(memberValue.playerId);
     const name = stringValue(memberValue.name);
-    if (!uuidPattern.test(playerId) || name.length < 1 || name.length > 24 || /[\u0000-\u001f\u007f]/.test(name)) return null;
-    members.push({ playerId: playerId.toLowerCase(), name });
+    const loadoutRevision = memberValue.loadoutRevision;
+    if (!uuidPattern.test(playerId) || name.length < 1 || name.length > 24 || /[\u0000-\u001f\u007f]/.test(name)
+      || !Number.isSafeInteger(loadoutRevision) || (loadoutRevision as number) < 1) return null;
+    members.push({ playerId: playerId.toLowerCase(), name, loadoutRevision: loadoutRevision as number });
   }
   members.sort((left, right) => left.playerId.localeCompare(right.playerId));
   if (new Set(members.map((member) => member.playerId)).size !== members.length) return null;
@@ -106,7 +110,7 @@ export function canonicalTrustedPartyRoster(value: TrustedPartyRoster): string {
 }
 
 export function parseTrustedPartyReservation(value: unknown): TrustedPartyReservation | null {
-  const keys = ["claimId", "partyId", "version", "playerId", "memberPlayerIds", "arenaId", "buildId", "region", "expiresAt"] as const;
+  const keys = ["claimId", "partyId", "version", "playerId", "memberPlayerIds", "memberLoadoutRevisions", "arenaId", "buildId", "region", "expiresAt"] as const;
   if (!isRecord(value) || !hasOnlyKeys(value, keys)) return null;
   const claimId = stringValue(value.claimId);
   const partyId = stringValue(value.partyId);
@@ -118,17 +122,29 @@ export function parseTrustedPartyReservation(value: unknown): TrustedPartyReserv
     || !arenaPattern.test(arenaId) || !safeMetadata(buildId, 64) || !safeMetadata(region, 64)
     || !Number.isSafeInteger(value.version) || (value.version as number) < 1
     || !Number.isSafeInteger(value.expiresAt)
-    || !Array.isArray(value.memberPlayerIds) || value.memberPlayerIds.length < 1 || value.memberPlayerIds.length > 3) return null;
+    || !Array.isArray(value.memberPlayerIds) || value.memberPlayerIds.length < 1 || value.memberPlayerIds.length > 3
+    || !Array.isArray(value.memberLoadoutRevisions) || value.memberLoadoutRevisions.length !== value.memberPlayerIds.length) return null;
   const memberPlayerIds = value.memberPlayerIds.map((member) => stringValue(member).toLowerCase()).sort();
   if (memberPlayerIds.some((member) => !uuidPattern.test(member))
     || new Set(memberPlayerIds).size !== memberPlayerIds.length
     || !memberPlayerIds.includes(playerId)) return null;
+  const memberLoadoutRevisions: Array<{ playerId: string; revision: number }> = [];
+  for (const entry of value.memberLoadoutRevisions) {
+    if (!isRecord(entry) || !hasOnlyKeys(entry, ["playerId", "revision"] as const)) return null;
+    const revisionPlayerId = stringValue(entry.playerId).toLowerCase();
+    if (!uuidPattern.test(revisionPlayerId) || !Number.isSafeInteger(entry.revision) || (entry.revision as number) < 1) return null;
+    memberLoadoutRevisions.push({ playerId: revisionPlayerId, revision: entry.revision as number });
+  }
+  memberLoadoutRevisions.sort((left, right) => left.playerId.localeCompare(right.playerId));
+  if (new Set(memberLoadoutRevisions.map((entry) => entry.playerId)).size !== memberLoadoutRevisions.length
+    || memberLoadoutRevisions.some((entry, index) => entry.playerId !== memberPlayerIds[index])) return null;
   return {
     claimId: claimId.toLowerCase(),
     partyId,
     version: value.version as number,
     playerId,
     memberPlayerIds,
+    memberLoadoutRevisions,
     arenaId,
     buildId,
     region,

@@ -711,6 +711,78 @@ describe("NetSession item edges", () => {
     session.dispose();
   });
 
+  it("uses the public handshake and exposes assembly, roles, and reconnect state without legacy room actions", async () => {
+    const transport = new FakeTransport();
+    const arenaStates: string[] = [];
+    const controllers: string[] = [];
+    const connections: string[] = [];
+    let runOvers = 0;
+    const session = new NetSession({
+      url: "wss://game.example/ws",
+      roomCode: "A2BC",
+      name: "Ada",
+      token: "token",
+      playerSessionId: "psess-public",
+      mode: "public",
+      transportFactory: () => transport,
+      onArenaState: (state) => arenaStates.push(state.phase),
+      onRoleController: (state) => controllers.push(`${state.roleId}:${state.controller}`),
+      onConnectionChange: (state) => connections.push(state),
+      onRunOver: () => { runOvers += 1; },
+    });
+    const started = session.start();
+    transport.handlers?.open();
+    expect(transport.sent[0]?.message).toEqual({
+      type: "quickPlayHello",
+      token: "token",
+      name: "Ada",
+      playerSessionId: "psess-public",
+    });
+    transport.handlers?.message({
+      type: "arenaWelcome",
+      playerId: "P-AAAA-BBBB",
+      arenaId: "A2BC",
+      phase: "assembling",
+      members: [],
+      retiring: false,
+      assemblyStartedAt: 100,
+      assemblyDeadlineAt: 6_100,
+    });
+    transport.handlers?.message({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "human-P-AAAA-BBBB",
+      meta: [],
+      tickHz: 60,
+      endTick: 3_600,
+      insertionName: "WEST GATE",
+      dotBaseline: [],
+      matchId: "00000000-0000-4000-8000-000000000024",
+      roles: [{ roleId: "alpha-0", squadId: "alpha", slot: 0, controller: "human", name: "Ada", playerId: "P-AAAA-BBBB" }],
+    });
+    await started;
+    transport.handlers?.message({
+      type: "roleController",
+      matchId: "00000000-0000-4000-8000-000000000024",
+      roleId: "alpha-0",
+      controller: "ai",
+      reason: "disconnect_timeout",
+    });
+    transport.handlers?.message({
+      type: "runOver",
+      reason: "timeout",
+      keptItems: [],
+      lostItems: [],
+      learnedBlueprints: [],
+    });
+    expect(arenaStates).toEqual(["assembling"]);
+    expect(controllers).toEqual(["alpha-0:ai"]);
+    expect(connections).toContain("connected");
+    expect(runOvers).toBe(1);
+    session.dispose();
+  });
+
   it("scrubs staged take and downed actions during a reconnect handoff", () => {
     const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
     session.sendInput({

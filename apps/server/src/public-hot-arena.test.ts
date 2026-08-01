@@ -311,6 +311,14 @@ describe("public quick-play Room mode", () => {
     expect(room.phase).toBe("results");
 
     room.receive("pilot", { type: "deployAgain" });
+    expect(room.phase).toBe("results");
+    expect(pilot.messages).toContainEqual(expect.objectContaining({ type: "err", code: "fresh_claim_required" }));
+
+    // DEPLOY AGAIN is a client action: leave the completed reservation, then
+    // admit the same durable identity under a fresh allocator claim/socket.
+    room.receive("pilot", { type: "leaveRun" });
+    const redeployed = collectingPeer("pilot-redeployed");
+    expect(room.join(redeployed.peer, "token", "Pilot", "pilot", undefined, "party")).not.toBeNull();
     expect(room.phase).toBe("assembling");
     now += 1_000;
     room.tick(now);
@@ -337,6 +345,8 @@ describe("public quick-play Room mode", () => {
     expect(secondRun.simulation.getSnapshot().mines).toEqual([]);
     expect(pilot.messages.filter((message) => message.type === "matchStart").map((message) => message.matchId)).toEqual([
       "00000000-0000-4000-8000-000000000021",
+    ]);
+    expect(redeployed.messages.filter((message) => message.type === "matchStart").map((message) => message.matchId)).toEqual([
       "00000000-0000-4000-8000-000000000022",
     ]);
     expect(persistence.starts).toEqual([
@@ -443,7 +453,9 @@ describe("public quick-play Room mode", () => {
     (room as unknown as { end(reason: string): void }).end("complete");
     await room.waitForPersistence();
 
-    room.receive("stay", { type: "deployAgain" });
+    room.receive("stay", { type: "leaveRun" });
+    released.length = 0;
+    expect(room.join(collectingPeer("staying-fresh").peer, "stay-token", "Stay", "stay", undefined, "stay-party")).not.toBeNull();
     expect(room.phase).toBe("assembling");
     expect(room.publicArenaMembers.map((member) => member.playerId)).toEqual(["stay"]);
     expect(released).toEqual(["leaving-peer"]);
@@ -471,7 +483,8 @@ describe("public quick-play Room mode", () => {
     room.disconnect(leaving.peer.id);
     (room as unknown as { end(reason: string): void }).end("complete");
     await room.waitForPersistence();
-    room.receive("stay", { type: "deployAgain" });
+    room.receive("stay", { type: "leaveRun" });
+    expect(room.join(collectingPeer("staying-fresh").peer, "stay-token", "Stay", "stay", undefined, "stay-party", undefined, "reserved-stay-fresh")).not.toBeNull();
 
     expect(releases).toContainEqual({
       peerId: null,
@@ -545,7 +558,7 @@ describe("public quick-play Room mode", () => {
     expect(room.phase).toBe("results");
     expect(room.readyForDisposal).toBe(true);
     expect(persistence.starts).toHaveLength(1);
-    expect(pilot.messages).toContainEqual(expect.objectContaining({ type: "err", code: "arena_retiring" }));
+    expect(pilot.messages).toContainEqual(expect.objectContaining({ type: "err", code: "fresh_claim_required" }));
   });
 
   it("freezes for reconnect grace, then labels the same player role as AI for the rest of the run", async () => {
@@ -945,7 +958,8 @@ describe("public quick-play Room mode", () => {
     expect(retired).not.toHaveBeenCalled();
     expect(manager.rooms).toBe(1);
 
-    room.receive("pilot", { type: "deployAgain" });
+    room.receive("pilot", { type: "leaveRun" });
+    expect(room.join(collectingPeer("pilot-fresh").peer, "token", "Pilot", "pilot", undefined, "party")).not.toBeNull();
     now = 2_000;
     (manager as unknown as { tick(): void }).tick();
     await vi.waitFor(() => expect(room.phase).toBe("live"));

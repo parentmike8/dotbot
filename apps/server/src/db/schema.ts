@@ -12,6 +12,8 @@ export const players = pgTable("players", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
   loadout: jsonb("loadout").$type<WireItemCode[]>().notNull().default([]),
+  /** Incremented for every loadout replacement or match-time consumption. */
+  loadoutRevision: integer("loadout_revision").notNull().default(1),
   /** Cosmetic floor-plan choice; every shell has identical slots. */
   baseShell: text("base_shell").$type<BaseShellId>().notNull().default("workshop"),
   presets: jsonb("presets").$type<LoadoutPreset[]>().notNull().default([]),
@@ -134,7 +136,14 @@ export const partyQueueClaims = pgTable("party_queue_claims", {
   partyVersion: integer("party_version").notNull(),
   buildId: text("build_id").notNull(),
   region: text("region").notNull(),
+  loadoutSnapshots: jsonb("loadout_snapshots").$type<Array<{
+    playerId: string;
+    name: string;
+    loadoutRevision: number;
+    loadout: WireItemCode[];
+  }>>().notNull().default([]),
   status: text("status").notNull().default("active"),
+  startedMatchId: uuid("started_match_id"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

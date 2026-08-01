@@ -17,11 +17,16 @@ import { WorldMapOverlay } from "../WorldMapOverlay";
 type NetGameViewProps = {
   session: NetSession;
   roomCode: string;
+  roomLabel?: string;
   onReturnToLobby: () => void;
   returnLabel?: string;
   connectionMessage?: string;
+  connectionActionLabel?: string;
+  onConnectionAction?: () => void;
   offerSaveProgress?: boolean;
   onSaveProgress?: () => void;
+  secondaryActionLabel?: string;
+  onSecondaryAction?: () => void;
 };
 
 /**
@@ -34,7 +39,20 @@ type NetGameViewProps = {
  * What is left here is only what a networked match has and a sandbox does not: a room
  * to be in, other people's cameras to borrow, and a lobby to go back to.
  */
-export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = "Return to lobby", connectionMessage = "", offerSaveProgress = false, onSaveProgress }: NetGameViewProps) {
+export function NetGameView({
+  session,
+  roomCode,
+  roomLabel,
+  onReturnToLobby,
+  returnLabel = "Return to lobby",
+  connectionMessage = "",
+  connectionActionLabel,
+  onConnectionAction,
+  offerSaveProgress = false,
+  onSaveProgress,
+  secondaryActionLabel,
+  onSecondaryAction,
+}: NetGameViewProps) {
   const {
     hostRef, snapshot, events, runResult, spectating, debugVisible, networkDebug, map,
     settingsVisible, toggleSettings, joystick, joystickHandlers, queueDash, cycleSpectator, leaveRun,
@@ -93,7 +111,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
       {connectionMessage ? (
         <aside className="net-game-connection" role="status" aria-live="polite">
           <strong>{connectionMessage}</strong>
-          <button type="button" onClick={onReturnToLobby}>{returnLabel}</button>
+          <button type="button" onClick={onConnectionAction ?? onReturnToLobby}>{connectionActionLabel ?? returnLabel}</button>
         </aside>
       ) : null}
 
@@ -110,7 +128,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         >
           Map <kbd>M</kbd>
         </button>
-        <span className="room-chip">Room {roomCode}</span>
+        <span className="room-chip">{roomLabel ?? `Room ${roomCode}`}</span>
       </RunReadout>
 
       {runResult === null && player ? (
@@ -238,7 +256,7 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
         <DebugPanel snapshot={snapshot} config={session.config} networkDebug={networkDebug} />
       ) : null}
 
-      {runResult && !spectateMode ? (
+      {runResult && (!spectateMode || onSecondaryAction) ? (
         <ManifestScreen
           result={runResult}
           aiKills={downCounts.ai}
@@ -250,6 +268,8 @@ export function NetGameView({ session, roomCode, onReturnToLobby, returnLabel = 
           }}
           actionLabel={returnLabel}
           onSaveProgress={offerSaveProgress ? onSaveProgress : undefined}
+          secondaryActionLabel={secondaryActionLabel}
+          onSecondaryAction={onSecondaryAction}
         />
       ) : null}
     </main>

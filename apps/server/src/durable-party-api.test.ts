@@ -43,8 +43,17 @@ class DurableApiPersistence extends NoopPersistence {
       requestingPlayerId: leaderId,
       buildId: input.buildId,
       region: input.region,
-      members: [{ playerId: leaderId, name: "Leader" }, { playerId: memberId, name: "Member" }],
+      status: "active",
+      members: [
+        { playerId: leaderId, name: "Leader", loadoutRevision: 4 },
+        { playerId: memberId, name: "Member", loadoutRevision: 9 },
+      ],
     };
+  }
+  override async getPartyQueueStatus(_token: string, requestedClaimId: string): Promise<PartyQueueClaim | null> {
+    return requestedClaimId === claimId
+      ? this.claimPartyQueue(_token, { requestId: requestedClaimId, buildId: "web-42", region: "ca-central-1" })
+      : null;
   }
 }
 
@@ -53,6 +62,43 @@ afterEach(() => {
 });
 
 describe("durable party APIs", () => {
+  it("keeps public deployment client config default-off and exposes only an explicitly complete launch spine", async () => {
+    const { app: legacy } = await createServer({
+      persistence: new DurableApiPersistence(),
+      matchmakerUrl: null,
+      quickPlayBuildId: null,
+      quickPlayRegions: [],
+    });
+    expect((await legacy.inject({ method: "GET", url: "/api/game-config" })).json()).toEqual({
+      matchmakerUrl: null,
+      publicQuickPlayEnabled: false,
+      durablePartiesEnabled: false,
+      atomicPartyAllocationEnabled: false,
+      quickPlayBuildId: null,
+      quickPlayRegions: [],
+    });
+    await legacy.close();
+
+    const { app: publicApp } = await createServer({
+      persistence: new DurableApiPersistence(),
+      publicQuickPlay: true,
+      durableParties: true,
+      atomicPartyAllocation: true,
+      matchmakerUrl: "https://match.example.test/public",
+      quickPlayBuildId: "web-42",
+      quickPlayRegions: ["ca-central-1", "ca-central-1", "invalid region"],
+    });
+    expect((await publicApp.inject({ method: "GET", url: "/api/game-config" })).json()).toEqual({
+      matchmakerUrl: "https://match.example.test/public",
+      publicQuickPlayEnabled: true,
+      durablePartiesEnabled: true,
+      atomicPartyAllocationEnabled: true,
+      quickPlayBuildId: "web-42",
+      quickPlayRegions: ["ca-central-1"],
+    });
+    await publicApp.close();
+  });
+
   it("preserves legacy behavior and hides every new route while the durable gate is off", async () => {
     const persistence = new DurableApiPersistence();
     const legacy = vi.spyOn(persistence, "createPartyInvite");
@@ -151,6 +197,41 @@ describe("durable party APIs", () => {
     await app.close();
   });
 
+  it("signs status on its own operation domain without returning roster or party metadata", async () => {
+    process.env.DOTBOT_RELAY_SECRET = secret;
+    const { app } = await createServer({
+      persistence: new DurableApiPersistence(), publicQuickPlay: true, durableParties: true, atomicPartyAllocation: true,
+    });
+    const body = JSON.stringify({
+      token: "device-token-with-enough-entropy",
+      partyAllocationVersion: "party-v1",
+      operation: "status",
+      claimId,
+    });
+    const requestId = randomUUID();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/internal/matchmaker-auth",
+      headers: {
+        "content-type": "application/json",
+        ...signedHeaders("matchmaker-auth", body, Date.now().toString(), requestId),
+      },
+      payload: JSON.parse(body),
+    });
+    expect(response.statusCode).toBe(200);
+    const payload = response.json<{ queueClaimId: string; playerId: string; status: string; statusSignature: string }>();
+    expect(payload).toEqual({
+      queueClaimId: claimId,
+      playerId: leaderId,
+      status: "active",
+      statusSignature: createHmac("sha256", secret)
+        .update(`party-status.${requestId}.${claimId}.${leaderId}.active`).digest("hex"),
+    });
+    expect(response.body).not.toContain(`party-${"a".repeat(32)}`);
+    expect(response.body).not.toContain(memberId);
+    await app.close();
+  });
+
   it("preflights without mutating the arena and rejects replayed allocator operations", async () => {
     const verifyPartyOperation = vi.fn(async () => ({
       gameSessionId: "game-session-1", arenaId: "A2BC", buildId: "web-42", region: "ca-central-1",
@@ -176,7 +257,10 @@ describe("durable party APIs", () => {
       region: "ca-central-1",
       issuedAt: now,
       expiresAt: now + 30_000,
-      members: [{ playerId: leaderId, name: "Leader" }, { playerId: memberId, name: "Member" }],
+      members: [
+        { playerId: leaderId, name: "Leader", loadoutRevision: 4 },
+        { playerId: memberId, name: "Member", loadoutRevision: 9 },
+      ],
     };
     const requestId = randomUUID();
     const first = await app.inject({

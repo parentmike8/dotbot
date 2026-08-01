@@ -59,7 +59,7 @@ export type PartyPackingReservation = {
   version: number;
   memberPlayerIds: string[];
 };
-type AtomicAllocationRecord = {
+export type AtomicAllocationRecord = {
   pk: string;
   status: "allocating" | "active" | "cancelling" | "cancelled";
   owner?: string;
@@ -144,6 +144,9 @@ type AtomicCancellationAuthorization = {
   claimId: string;
   playerId: string;
 };
+type AtomicStatusAuthorization = AtomicCancellationAuthorization & {
+  status: "active" | "cancelling" | "cancelled" | "completed" | "expired";
+};
 
 export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Promise<APIGatewayProxyResultV2 | { result?: unknown; error?: string }> {
   if (isInternalEvent(event)) {
@@ -176,7 +179,8 @@ export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Pr
     if (isPublicQuickPlayEnabled() && (route === "POST /rooms" || route === "POST /rooms/{roomCode}/join")) {
       return response(404, { error: "Route not found." });
     }
-    if (route === "POST /quick-play/cancel" && !isAtomicPartyAllocationEnabled()) {
+    if ((route === "POST /quick-play/cancel" || route === "POST /quick-play/status")
+      && (!isPublicQuickPlayEnabled() || !isAtomicPartyAllocationEnabled())) {
       return response(404, { error: "Route not found." });
     }
     const payload = parseBody(event.body);
@@ -185,6 +189,9 @@ export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Pr
     }
     if (route === "POST /quick-play/cancel") {
       return response(200, await cancelAtomicQuickPlay(payload));
+    }
+    if (route === "POST /quick-play/status") {
+      return response(200, await atomicQuickPlayStatus(payload));
     }
     const identity = await authenticate(payload.token);
     if (route === "POST /quick-play") return response(200, await quickPlay(identity, payload));
@@ -573,7 +580,9 @@ export function partyRosterAllocationDigest(roster: TrustedPartyRoster): string 
     leaderPlayerId: roster.leaderPlayerId,
     buildId: roster.buildId,
     region: roster.region,
-    memberPlayerIds: roster.members.map((member) => member.playerId).sort(),
+    memberLoadoutRevisions: roster.members
+      .map((member) => ({ playerId: member.playerId, revision: member.loadoutRevision }))
+      .sort((left, right) => left.playerId.localeCompare(right.playerId)),
   })).digest("hex");
 }
 
@@ -1264,6 +1273,9 @@ async function createPartyPlayerSessions(
   roster: TrustedPartyRoster,
 ): Promise<StoredPartyAllocation[]> {
   const memberPlayerIds = roster.members.map((member) => member.playerId).sort();
+  const memberLoadoutRevisions = roster.members
+    .map((member) => ({ playerId: member.playerId, revision: member.loadoutRevision }))
+    .sort((left, right) => left.playerId.localeCompare(right.playerId));
   const reservationExpiresAt = Date.now() + 2 * 60_000;
   const playerDataMap = Object.fromEntries(memberPlayerIds.map((playerId) => {
     const reservation: TrustedPartyReservation = {
@@ -1272,6 +1284,7 @@ async function createPartyPlayerSessions(
       version: roster.version,
       playerId,
       memberPlayerIds,
+      memberLoadoutRevisions,
       arenaId,
       buildId: roster.buildId,
       region: roster.region,
@@ -1890,6 +1903,71 @@ async function cancelAtomicQuickPlay(payload: Record<string, unknown>): Promise<
   throw new MatchmakerError(503, "Party cancellation is reconciling. Retry together.", true);
 }
 
+async function atomicQuickPlayStatus(payload: Record<string, unknown>): Promise<{
+  status: "allocating" | "active" | "cancelling" | "cancelled" | "completed" | "expired";
+  queueTicket: string;
+  allocation?: ConnectionAllocation;
+}> {
+  const token = validPlayerToken(payload.token);
+  const claimId = typeof payload.queueTicket === "string" ? payload.queueTicket.trim().toLowerCase() : "";
+  if (!isUuid(claimId)) throw new MatchmakerError(400, "A valid quick-play status ticket is required.");
+  const authorization = await authenticatePartyStatus(token, claimId);
+  if (authorization.status !== "active" && authorization.status !== "completed") {
+    return { status: authorization.status, queueTicket: claimId };
+  }
+  const record = (await database.send(new GetCommand({
+    TableName: requiredEnv("TABLE_NAME"),
+    Key: { pk: allocationKey(claimId) },
+    ConsistentRead: true,
+  }))).Item as AtomicAllocationRecord | undefined;
+  if (!record) {
+    return { status: authorization.status === "completed" ? "completed" : "allocating", queueTicket: claimId };
+  }
+  if (!record.memberPlayerIds?.includes(authorization.playerId)) {
+    throw new MatchmakerError(403, "This player cannot inspect that party allocation.");
+  }
+  if (authorization.status === "completed") {
+    if (record.status !== "active" || record.expiresAt <= Math.floor(Date.now() / 1000)) {
+      return { status: "completed", queueTicket: claimId };
+    }
+    const allocation = allocationForQueueStatus(record, claimId, authorization.playerId);
+    if (!allocation) throw new MatchmakerError(503, "Party allocation status is reconciling.", true);
+    return { status: "completed", queueTicket: claimId, allocation };
+  }
+  if (record.expiresAt <= Math.floor(Date.now() / 1000)) return { status: "expired", queueTicket: claimId };
+  if (record.status === "allocating") return { status: "allocating", queueTicket: claimId };
+  if (record.status === "cancelling") return { status: "cancelling", queueTicket: claimId };
+  if (record.status === "cancelled") return { status: "cancelled", queueTicket: claimId };
+  const allocation = allocationForQueueStatus(record, claimId, authorization.playerId);
+  if (!allocation) throw new MatchmakerError(503, "Party allocation status is reconciling.", true);
+  return { status: "active", queueTicket: claimId, allocation };
+}
+
+/** Projects exactly one authorized member's reconnect data from a completed
+ * atomic claim. Canonical roster and other member sessions never cross the
+ * public status boundary. */
+export function allocationForQueueStatus(
+  record: AtomicAllocationRecord | undefined,
+  claimId: string,
+  playerId: string,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): ConnectionAllocation | null {
+  if (!record || record.status !== "active" || record.expiresAt <= nowSeconds
+    || !record.memberPlayerIds?.includes(playerId)) return null;
+  const complete = allocationFromRecord(record);
+  const member = complete?.allocations.find((entry) => entry.playerId === playerId);
+  if (!complete || !member) return null;
+  return {
+    mode: "public-hot-arena",
+    arenaId: complete.arenaId,
+    playerSessionId: member.playerSessionId,
+    websocketUrl: member.websocketUrl,
+    expiresAt: member.expiresAt,
+    queueTicket: claimId,
+    partySize: complete.memberPlayerIds.length,
+  };
+}
+
 async function authenticatePartyCancellation(token: string, claimId: string): Promise<AtomicCancellationAuthorization> {
   const body = JSON.stringify({ token, partyAllocationVersion: "party-v1", operation: "cancel", claimId });
   const timestamp = Date.now().toString();
@@ -1915,6 +1993,38 @@ async function authenticatePartyCancellation(token: string, claimId: string): Pr
     throw new MatchmakerError(401, "Party cancellation was not authorized.");
   }
   return { claimId, playerId };
+}
+
+async function authenticatePartyStatus(token: string, claimId: string): Promise<AtomicStatusAuthorization> {
+  const body = JSON.stringify({ token, partyAllocationVersion: "party-v1", operation: "status", claimId });
+  const timestamp = Date.now().toString();
+  const requestId = randomUUID();
+  const secret = await relaySecret();
+  let responseValue: Response;
+  try {
+    responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/matchmaker-auth`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...signControlPlaneRequest(secret, body, timestamp, requestId, "matchmaker-auth") },
+      body,
+      signal: AbortSignal.timeout(3_000),
+    });
+  } catch {
+    throw controlPlaneFailure(503, "Party status was not authorized.");
+  }
+  if (!responseValue.ok) throw controlPlaneFailure(responseValue.status, "Party status was not authorized.");
+  const result = await responseValue.json() as { queueClaimId?: unknown; playerId?: unknown; status?: unknown; statusSignature?: unknown };
+  const playerId = typeof result.playerId === "string" ? result.playerId : "";
+  const status = result.status;
+  const signature = typeof result.statusSignature === "string" ? result.statusSignature : "";
+  if (result.queueClaimId !== claimId || !isUuid(playerId) || !isCloudQueueStatus(status)
+    || !validHexHmac(createHmac("sha256", secret).update(`party-status.${requestId}.${claimId}.${playerId}.${status}`).digest("hex"), signature)) {
+    throw new MatchmakerError(401, "Party status was not authorized.");
+  }
+  return { claimId, playerId, status };
+}
+
+function isCloudQueueStatus(value: unknown): value is AtomicStatusAuthorization["status"] {
+  return value === "active" || value === "cancelling" || value === "cancelled" || value === "completed" || value === "expired";
 }
 
 async function completePartyCancellation(token: string, claimId: string): Promise<void> {

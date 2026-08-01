@@ -30,6 +30,7 @@ import type {
   RegisteredPlayer,
   RunManifest,
   MatchStartResult,
+  MatchQueueClaim,
   VerifiedExternalIdentity,
 } from "./Persistence";
 import { PartyConflictError, PersistenceConflictError } from "./Persistence";
@@ -150,6 +151,7 @@ export class PostgresPersistence implements Persistence {
         name: players.displayName,
         publicPlayerId: players.publicPlayerId,
         loadout: players.loadout,
+        loadoutRevision: players.loadoutRevision,
         shell: players.baseShell,
         presets: players.presets,
         insertionPreference: players.insertionPreference,
@@ -190,6 +192,7 @@ export class PostgresPersistence implements Persistence {
           name: players.displayName,
           publicPlayerId: players.publicPlayerId,
           loadout: players.loadout,
+          loadoutRevision: players.loadoutRevision,
           shell: players.baseShell,
           presets: players.presets,
           insertionPreference: players.insertionPreference,
@@ -673,7 +676,7 @@ export class PostgresPersistence implements Persistence {
     if (!isUuid(input.requestId) || !safeInternalMetadata(input.buildId, 64) || !safeInternalMetadata(input.region, 64)) {
       throw new PartyConflictError("party_membership_conflict", "Invalid party queue claim metadata.");
     }
-    return this.db.transaction(async (tx) => {
+    return this.retryConcurrentPartyTransaction(() => this.db.transaction(async (tx) => {
       const actor = await this.partyActor(tx, token);
       if (!actor) throw new PartyConflictError("party_membership_conflict", "Unknown device token.");
       const membership = await this.partyMembershipForActor(tx, actor);
@@ -682,22 +685,36 @@ export class PostgresPersistence implements Persistence {
         const [existing] = await tx.select().from(partyQueueClaims).where(and(
           isNull(partyQueueClaims.partyId),
           eq(partyQueueClaims.requestingPlayerId, actor.playerId),
-          eq(partyQueueClaims.status, "active"),
+          inArray(partyQueueClaims.status, ["active", "cancelling"]),
           gt(partyQueueClaims.expiresAt, new Date()),
         )).for("update");
         if (existing) {
+          if (existing.status === "cancelling") throw new PartyConflictError("party_queued", "Quick-play cancellation is still reconciling.");
           assertQueueCompatibility(existing, input);
-          return this.soloQueueClaim(existing.id, actor, input.buildId, input.region);
+          return this.soloQueueClaim(existing, actor);
         }
+        const loadoutSnapshots = await this.lockQueueLoadoutSnapshots(tx, [actor.playerId]);
         await tx.insert(partyQueueClaims).values({
           id: input.requestId,
           requestingPlayerId: actor.playerId,
           partyVersion: 1,
           buildId: input.buildId,
           region: input.region,
+          loadoutSnapshots,
           expiresAt: new Date(Date.now() + 6 * 60 * 60_000),
         });
-        return this.soloQueueClaim(input.requestId, actor, input.buildId, input.region);
+        return this.soloQueueClaim({
+          id: input.requestId,
+          partyId: null,
+          requestingPlayerId: actor.playerId,
+          partyVersion: 1,
+          buildId: input.buildId,
+          region: input.region,
+          loadoutSnapshots,
+          status: "active",
+          startedMatchId: null,
+          expiresAt: new Date(Date.now() + 6 * 60 * 60_000),
+        }, actor);
       }
       const party = await this.lockParty(tx, membership.partyId);
       if (!party) throw new PartyConflictError("party_membership_conflict", "Party no longer exists.");
@@ -706,10 +723,11 @@ export class PostgresPersistence implements Persistence {
       }
       const [existing] = await tx.select().from(partyQueueClaims).where(and(
         eq(partyQueueClaims.partyId, party.id),
-        eq(partyQueueClaims.status, "active"),
+        inArray(partyQueueClaims.status, ["active", "cancelling"]),
         gt(partyQueueClaims.expiresAt, new Date()),
       )).for("update");
       if (existing) {
+        if (existing.status === "cancelling") throw new PartyConflictError("party_queued", "Quick-play cancellation is still reconciling.");
         assertQueueCompatibility(existing, input);
         if (existing.partyVersion !== party.version) {
           throw new PartyConflictError("party_version_stale", "The queued party roster is stale. Cancel before retrying.");
@@ -717,6 +735,8 @@ export class PostgresPersistence implements Persistence {
         return this.partyQueueClaimById(tx, existing.id, party, actor.playerId, input.buildId, input.region);
       }
       if (party.leaderPlayerId !== actor.playerId) throw new PartyConflictError("party_leader_required", "Only the party leader can start queueing.");
+      const roster = await this.readPartyMembers(tx, party.id);
+      const loadoutSnapshots = await this.lockQueueLoadoutSnapshots(tx, roster.map((member) => member.playerId));
       await tx.insert(partyQueueClaims).values({
         id: input.requestId,
         partyId: party.id,
@@ -724,9 +744,28 @@ export class PostgresPersistence implements Persistence {
         partyVersion: party.version,
         buildId: input.buildId,
         region: input.region,
+        loadoutSnapshots,
         expiresAt: new Date(Date.now() + 6 * 60 * 60_000),
       });
       return this.partyQueueClaimById(tx, input.requestId, party, actor.playerId, input.buildId, input.region);
+    }));
+  }
+
+  async getPartyQueueStatus(token: string, claimId: string): Promise<PartyQueueClaim | null> {
+    if (!isUuid(claimId)) return null;
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return null;
+      const [claim] = await tx.select().from(partyQueueClaims).where(eq(partyQueueClaims.id, claimId)).limit(1);
+      if (!claim) return null;
+      const membership = await this.partyMembershipForActor(tx, actor, false);
+      if (claim.partyId) {
+        if (membership?.partyId !== claim.partyId) return null;
+        const party = await this.lockParty(tx, claim.partyId);
+        if (!party || !await this.isPartyMember(tx, party.id, actor.playerId)) return null;
+        return this.partyQueueClaimByRecord(claim, party, actor.playerId);
+      }
+      return claim.requestingPlayerId === actor.playerId ? this.soloQueueClaim(claim, actor) : null;
     });
   }
 
@@ -741,16 +780,24 @@ export class PostgresPersistence implements Persistence {
         if (!party) return null;
         if ((await this.partyMembershipForActor(tx, actor))?.partyId !== party.id) return null;
         const [claim] = await tx.select().from(partyQueueClaims).where(eq(partyQueueClaims.id, claimId)).for("update");
-        if (!claim || claim.partyId !== party.id || (claim.status !== "active" && claim.status !== "cancelled")
-          || (claim.status === "active" && claim.expiresAt <= new Date())) return null;
-        return this.partyQueueClaimById(tx, claim.id, party, actor.playerId, claim.buildId, claim.region);
+        if (!claim || claim.partyId !== party.id || !["active", "cancelling", "cancelled"].includes(claim.status)) return null;
+        const fenced = claim.status === "active"
+          ? (await tx.update(partyQueueClaims).set({ status: "cancelling", updatedAt: new Date() })
+            .where(and(eq(partyQueueClaims.id, claim.id), eq(partyQueueClaims.status, "active")))
+            .returning())[0]
+          : claim;
+        return fenced ? this.partyQueueClaimByRecord(fenced, party, actor.playerId) : null;
       }
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`dotbot-solo-party:${actor.playerId}`}, 0))`);
       const [claim] = await tx.select().from(partyQueueClaims).where(eq(partyQueueClaims.id, claimId)).for("update");
       if (!claim || claim.partyId !== null || claim.requestingPlayerId !== actor.playerId
-        || (claim.status !== "active" && claim.status !== "cancelled")
-        || (claim.status === "active" && claim.expiresAt <= new Date())) return null;
-      return this.soloQueueClaim(claim.id, actor, claim.buildId, claim.region);
+        || !["active", "cancelling", "cancelled"].includes(claim.status)) return null;
+      const fenced = claim.status === "active"
+        ? (await tx.update(partyQueueClaims).set({ status: "cancelling", updatedAt: new Date() })
+          .where(and(eq(partyQueueClaims.id, claim.id), eq(partyQueueClaims.status, "active")))
+          .returning())[0]
+        : claim;
+      return fenced ? this.soloQueueClaim(fenced, actor) : null;
     });
   }
 
@@ -770,9 +817,9 @@ export class PostgresPersistence implements Persistence {
       const [claim] = await tx.select().from(partyQueueClaims).where(eq(partyQueueClaims.id, claimId)).for("update");
       if (!claim || (claim.partyId ? claim.partyId !== membership?.partyId : claim.requestingPlayerId !== actor.playerId)) return false;
       if (claim.status === "cancelled") return true;
-      if (claim.status !== "active") return false;
+      if (claim.status !== "cancelling") return false;
       const updated = await tx.update(partyQueueClaims).set({ status: "cancelled", updatedAt: new Date() })
-        .where(and(eq(partyQueueClaims.id, claim.id), eq(partyQueueClaims.status, "active")))
+        .where(and(eq(partyQueueClaims.id, claim.id), eq(partyQueueClaims.status, "cancelling")))
         .returning({ id: partyQueueClaims.id });
       return updated.length === 1;
     });
@@ -938,6 +985,7 @@ export class PostgresPersistence implements Persistence {
       const [player] = await tx.select({ id: players.id, loadout: players.loadout })
         .from(players).where(eq(players.id, identity.playerId)).limit(1).for("update");
       if (!player) throw new Error("Unknown device token.");
+      await this.assertPlayerLoadoutUnlocked(tx, player.id);
 
       if (player.loadout.length > 0) {
         await tx.insert(stashItems).values(player.loadout.map((itemType) => ({ playerId: player.id, itemType, qty: 1 })));
@@ -953,7 +1001,7 @@ export class PostgresPersistence implements Persistence {
         if (row.qty > 1) await tx.update(stashItems).set({ qty: row.qty - 1 }).where(eq(stashItems.id, row.id));
         else await tx.delete(stashItems).where(eq(stashItems.id, row.id));
       }
-      await tx.update(players).set({ loadout }).where(eq(players.id, player.id));
+      await tx.update(players).set({ loadout, loadoutRevision: sql`${players.loadoutRevision} + 1` }).where(eq(players.id, player.id));
     });
     return this.getBase(token);
   }
@@ -966,7 +1014,9 @@ export class PostgresPersistence implements Persistence {
       const [player] = await tx.select({ loadout: players.loadout })
         .from(players).where(eq(players.id, playerId)).limit(1).for("update");
       const loadout = player?.loadout ?? [];
-      if (player && loadout.length > 0) await tx.update(players).set({ loadout: [] }).where(eq(players.id, playerId));
+      if (player) await this.assertPlayerLoadoutUnlocked(tx, playerId);
+      if (player && loadout.length > 0) await tx.update(players)
+        .set({ loadout: [], loadoutRevision: sql`${players.loadoutRevision} + 1` }).where(eq(players.id, playerId));
       return loadout;
     });
   }
@@ -1079,6 +1129,7 @@ export class PostgresPersistence implements Persistence {
       const [player] = await tx.select({ id: players.id, loadout: players.loadout, presets: players.presets })
         .from(players).where(eq(players.id, identity.playerId)).limit(1).for("update");
       if (!player) return null;
+      await this.assertPlayerLoadoutUnlocked(tx, player.id);
       const preset = player.presets[presetIndex];
       if (!preset) throw new Error("Unknown loadout preset.");
       if (player.loadout.length > 0) {
@@ -1099,7 +1150,7 @@ export class PostgresPersistence implements Persistence {
         else await tx.update(stashItems).set({ qty: row.qty }).where(eq(stashItems.id, row.id));
         applied.push(itemType);
       }
-      await tx.update(players).set({ loadout: applied }).where(eq(players.id, player.id));
+      await tx.update(players).set({ loadout: applied, loadoutRevision: sql`${players.loadoutRevision} + 1` }).where(eq(players.id, player.id));
       return [...missingCounts].map(([itemType, qty]) => ({ itemType, qty }));
     });
     if (!missing) return null;
@@ -1157,7 +1208,14 @@ export class PostgresPersistence implements Persistence {
     if (updated.length === 0) throw new Error("ACTIVE CONTRACT NOT FOUND.");
   }
 
-  async startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date; playerIds: string[] }): Promise<MatchStartResult> {
+  async startMatch(input: {
+    matchId: string;
+    roomCode: string;
+    mapId: string;
+    startedAt: Date;
+    playerIds: string[];
+    queueClaims?: MatchQueueClaim[];
+  }): Promise<MatchStartResult> {
     const requestedPlayerIds = [...new Set(input.playerIds)];
     if (requestedPlayerIds.length === 0 || requestedPlayerIds.length > PUBLIC_EXTRACTION_ROLE_COUNT) {
       throw new Error(`A match must register between one and ${PUBLIC_EXTRACTION_ROLE_COUNT} players.`);
@@ -1181,17 +1239,73 @@ export class PostgresPersistence implements Persistence {
         throw new Error("Match id is already registered with different metadata.");
       }
       if (created.length === 1) {
-        const lockedPlayers = await tx.select({ id: players.id, loadout: players.loadout }).from(players)
-          .where(inArray(players.id, playerIds)).for("update");
+        const lockedPlayers = await tx.select({ id: players.id, loadout: players.loadout, loadoutRevision: players.loadoutRevision }).from(players)
+          .where(inArray(players.id, [...playerIds].sort())).orderBy(asc(players.id)).for("update");
         if (lockedPlayers.length !== playerIds.length) throw new Error("Match roster contains an unknown player.");
-        const canonicalLoadouts = Object.fromEntries(lockedPlayers.map((player) => [player.id, player.loadout]));
+        let canonicalLoadouts: Record<string, WireItemCode[]>;
+        const completedClaimIds: string[] = [];
+        if (input.queueClaims) {
+          if (input.queueClaims.length !== requestedPlayerIds.length) throw new Error("Match queue claim roster is incomplete.");
+          const claimsByCanonical = new Map<string, MatchQueueClaim>();
+          for (const entry of input.queueClaims) {
+            const canonicalPlayerId = canonicalByRequested.get(entry.playerId) ?? entry.playerId;
+            if (!playerIds.includes(canonicalPlayerId) || claimsByCanonical.has(canonicalPlayerId) || !isUuid(entry.claimId)
+              || !Number.isSafeInteger(entry.partyVersion) || entry.partyVersion < 1
+              || !Number.isSafeInteger(entry.loadoutRevision) || entry.loadoutRevision < 1) {
+              throw new Error("Match queue claim roster is invalid.");
+            }
+            claimsByCanonical.set(canonicalPlayerId, { ...entry, playerId: canonicalPlayerId });
+          }
+          if (claimsByCanonical.size !== playerIds.length) throw new Error("Match queue claim roster is incomplete.");
+          const claimIds = [...new Set([...claimsByCanonical.values()].map((entry) => entry.claimId))].sort();
+          const claimRows = await tx.select().from(partyQueueClaims)
+            .where(inArray(partyQueueClaims.id, claimIds)).orderBy(asc(partyQueueClaims.id)).for("update");
+          if (claimRows.length !== claimIds.length) throw new Error("Match queue claim no longer exists.");
+          const playerById = new Map(lockedPlayers.map((player) => [player.id, player]));
+          canonicalLoadouts = {};
+          for (const claim of claimRows) {
+            if (claim.status !== "active" || claim.expiresAt <= new Date() || claim.startedMatchId) {
+              throw new Error("Match queue claim is no longer active.");
+            }
+            const claimEntries = [...claimsByCanonical.values()].filter((entry) => entry.claimId === claim.id);
+            const snapshots = validatedLoadoutSnapshots(claim.loadoutSnapshots);
+            if (claimEntries.length !== snapshots.length || claimEntries.some((entry) => entry.partyVersion !== claim.partyVersion)) {
+              throw new Error("Match queue claim party version is stale.");
+            }
+            const snapshotByPlayer = new Map(snapshots.map((snapshot) => [snapshot.playerId, snapshot]));
+            for (const entry of claimEntries) {
+              const snapshot = snapshotByPlayer.get(entry.playerId);
+              const player = playerById.get(entry.playerId);
+              if (!snapshot || !player || entry.loadoutRevision !== snapshot.loadoutRevision
+                || player.loadoutRevision !== snapshot.loadoutRevision) {
+                throw new Error("Match queue claim loadout revision is stale.");
+              }
+              if (JSON.stringify(player.loadout) !== JSON.stringify(snapshot.loadout)) {
+                throw new Error("Match queue claim loadout snapshot is stale.");
+              }
+              canonicalLoadouts[entry.playerId] = [...snapshot.loadout];
+            }
+            completedClaimIds.push(claim.id);
+          }
+        } else {
+          for (const playerId of playerIds) await this.assertPlayerLoadoutUnlocked(tx, playerId);
+          canonicalLoadouts = Object.fromEntries(lockedPlayers.map((player) => [player.id, [...player.loadout]]));
+        }
         await tx.insert(matchParticipants).values(playerIds.map((playerId) => ({
           matchId: input.matchId,
           playerId,
           outcome: "active",
           startingLoadout: canonicalLoadouts[playerId] ?? [],
         })));
-        await tx.update(players).set({ loadout: [] }).where(inArray(players.id, playerIds));
+        await tx.update(players).set({ loadout: [], loadoutRevision: sql`${players.loadoutRevision} + 1` })
+          .where(inArray(players.id, playerIds));
+        if (completedClaimIds.length > 0) {
+          const completed = await tx.update(partyQueueClaims)
+            .set({ status: "completed", startedMatchId: input.matchId, updatedAt: new Date() })
+            .where(and(inArray(partyQueueClaims.id, completedClaimIds), eq(partyQueueClaims.status, "active")))
+            .returning({ id: partyQueueClaims.id });
+          if (completed.length !== completedClaimIds.length) throw new Error("Match queue claim completion lost its transaction race.");
+        }
         return { loadouts: Object.fromEntries(requestedPlayerIds.map((requested) => [requested, canonicalLoadouts[canonicalByRequested.get(requested)!] ?? []])) };
       }
 
@@ -1200,6 +1314,14 @@ export class PostgresPersistence implements Persistence {
       const registeredIds = new Set(participants.map((participant) => participant.playerId));
       if (registeredIds.size !== playerIds.length || playerIds.some((playerId) => !registeredIds.has(playerId))) {
         throw new Error("Match id is already registered with a different player roster.");
+      }
+      if (input.queueClaims) {
+        const claimIds = [...new Set(input.queueClaims.map((entry) => entry.claimId))];
+        const completed = await tx.select({ id: partyQueueClaims.id, startedMatchId: partyQueueClaims.startedMatchId })
+          .from(partyQueueClaims).where(inArray(partyQueueClaims.id, claimIds));
+        if (completed.length !== claimIds.length || completed.some((claim) => claim.startedMatchId !== input.matchId)) {
+          throw new Error("Match idempotency does not match the completed queue claims.");
+        }
       }
       const canonicalLoadouts = Object.fromEntries(participants.map((participant) => [participant.playerId, participant.loadout]));
       return { loadouts: Object.fromEntries(requestedPlayerIds.map((requested) => [requested, canonicalLoadouts[canonicalByRequested.get(requested)!] ?? []])) };
@@ -1524,7 +1646,7 @@ export class PostgresPersistence implements Persistence {
   ): Promise<void> {
     const [claim] = await tx.select({ id: partyQueueClaims.id }).from(partyQueueClaims).where(and(
       eq(partyQueueClaims.partyId, partyId),
-      eq(partyQueueClaims.status, "active"),
+      inArray(partyQueueClaims.status, ["active", "cancelling"]),
       gt(partyQueueClaims.expiresAt, new Date()),
     )).limit(1).for("update");
     if (claim) throw new PartyConflictError("party_queued", "Cancel public queueing before changing party membership.");
@@ -1537,7 +1659,7 @@ export class PostgresPersistence implements Persistence {
     const [claim] = await tx.select({ id: partyQueueClaims.id }).from(partyQueueClaims).where(and(
       isNull(partyQueueClaims.partyId),
       eq(partyQueueClaims.requestingPlayerId, playerId),
-      eq(partyQueueClaims.status, "active"),
+      inArray(partyQueueClaims.status, ["active", "cancelling"]),
       gt(partyQueueClaims.expiresAt, new Date()),
     )).limit(1).for("update");
     if (claim) throw new PartyConflictError("party_queued", "Cancel public queueing before joining a party.");
@@ -1571,45 +1693,109 @@ export class PostgresPersistence implements Persistence {
     claimId: string,
     party: { id: string; matchmakingKey: string; version: number; leaderPlayerId: string },
     requestingPlayerId: string,
-    buildId: string,
-    region: string,
+    _buildId: string,
+    _region: string,
   ): Promise<PartyQueueClaim> {
-    const members = await tx.select({ playerId: players.id, name: players.displayName })
-      .from(partyMembers)
-      .innerJoin(players, eq(players.id, partyMembers.playerId))
-      .where(eq(partyMembers.partyId, party.id))
-      .orderBy(asc(partyMembers.joinedAt), asc(partyMembers.playerId));
-    if (members.length < 1 || members.length > 3 || !members.some((member) => member.playerId === requestingPlayerId)) {
+    const [claim] = await tx.select().from(partyQueueClaims).where(eq(partyQueueClaims.id, claimId)).limit(1);
+    if (!claim) throw new PartyConflictError("party_membership_conflict", "Party queue claim no longer exists.");
+    return this.partyQueueClaimByRecord(claim, party, requestingPlayerId);
+  }
+
+  private partyQueueClaimByRecord(
+    claim: typeof partyQueueClaims.$inferSelect,
+    party: { id: string; matchmakingKey: string; version: number; leaderPlayerId: string },
+    requestingPlayerId: string,
+  ): PartyQueueClaim {
+    const members = validatedLoadoutSnapshots(claim.loadoutSnapshots);
+    if (claim.partyId !== party.id || claim.partyVersion !== party.version || members.length < 1 || members.length > 3
+      || !members.some((member) => member.playerId === requestingPlayerId)
+      || !members.some((member) => member.playerId === party.leaderPlayerId)) {
       throw new PartyConflictError("party_membership_conflict", "Canonical party roster is invalid.");
     }
     return {
-      claimId,
+      claimId: claim.id,
       partyId: party.matchmakingKey,
-      version: party.version,
+      version: claim.partyVersion,
       leaderPlayerId: party.leaderPlayerId,
       requestingPlayerId,
-      buildId,
-      region,
-      members,
+      buildId: claim.buildId,
+      region: claim.region,
+      status: queueClaimStatus(claim),
+      ...(claim.startedMatchId ? { startedMatchId: claim.startedMatchId } : {}),
+      members: members.map(({ playerId, name, loadoutRevision }) => ({ playerId, name, loadoutRevision })),
     };
   }
 
   private soloQueueClaim(
-    claimId: string,
+    claim: typeof partyQueueClaims.$inferSelect | {
+      id: string;
+      partyId: null;
+      requestingPlayerId: string;
+      partyVersion: number;
+      buildId: string;
+      region: string;
+      loadoutSnapshots: typeof partyQueueClaims.$inferSelect["loadoutSnapshots"];
+      status: string;
+      startedMatchId: string | null;
+      expiresAt: Date;
+    },
     actor: { playerId: string; name: string },
-    buildId: string,
-    region: string,
   ): PartyQueueClaim {
+    const [snapshot] = validatedLoadoutSnapshots(claim.loadoutSnapshots);
+    if (!snapshot || snapshot.playerId !== actor.playerId || claim.requestingPlayerId !== actor.playerId) {
+      throw new PartyConflictError("party_membership_conflict", "Canonical solo queue claim is invalid.");
+    }
     return {
-      claimId,
+      claimId: claim.id,
       partyId: `solo-${createHash("sha256").update(actor.playerId).digest("hex").slice(0, 24)}`,
       version: 1,
       leaderPlayerId: actor.playerId,
       requestingPlayerId: actor.playerId,
-      buildId,
-      region,
-      members: [{ playerId: actor.playerId, name: actor.name }],
+      buildId: claim.buildId,
+      region: claim.region,
+      status: queueClaimStatus(claim),
+      ...(claim.startedMatchId ? { startedMatchId: claim.startedMatchId } : {}),
+      members: [{ playerId: actor.playerId, name: snapshot.name, loadoutRevision: snapshot.loadoutRevision }],
     };
+  }
+
+  private async lockQueueLoadoutSnapshots(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    playerIds: readonly string[],
+  ): Promise<Array<{ playerId: string; name: string; loadoutRevision: number; loadout: WireItemCode[] }>> {
+    const uniqueIds = [...new Set(playerIds)];
+    if (uniqueIds.length < 1 || uniqueIds.length > 3) {
+      throw new PartyConflictError("party_membership_conflict", "Canonical party roster is invalid.");
+    }
+    const locked = await tx.select({
+      playerId: players.id,
+      name: players.displayName,
+      loadoutRevision: players.loadoutRevision,
+      loadout: players.loadout,
+    }).from(players).where(inArray(players.id, [...uniqueIds].sort())).orderBy(asc(players.id)).for("update");
+    if (locked.length !== uniqueIds.length) throw new PartyConflictError("party_membership_conflict", "Canonical party roster is invalid.");
+    const byId = new Map(locked.map((entry) => [entry.playerId, entry]));
+    return uniqueIds.map((playerId) => {
+      const entry = byId.get(playerId);
+      if (!entry) throw new PartyConflictError("party_membership_conflict", "Canonical party roster is invalid.");
+      return { ...entry, loadout: [...entry.loadout] };
+    });
+  }
+
+  private async assertPlayerLoadoutUnlocked(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    playerId: string,
+  ): Promise<void> {
+    const membership = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+      .where(eq(partyMembers.playerId, playerId)).limit(1);
+    const [claim] = await tx.select({ id: partyQueueClaims.id }).from(partyQueueClaims).where(and(
+      membership[0]
+        ? eq(partyQueueClaims.partyId, membership[0].partyId)
+        : and(isNull(partyQueueClaims.partyId), eq(partyQueueClaims.requestingPlayerId, playerId)),
+      inArray(partyQueueClaims.status, ["active", "cancelling"]),
+      gt(partyQueueClaims.expiresAt, new Date()),
+    )).limit(1).for("update");
+    if (claim) throw new PartyConflictError("party_queued", "Cancel public queueing before changing loadout.");
   }
 
   private async removePartyMembershipForDeletion(
@@ -1766,6 +1952,7 @@ export class PostgresPersistence implements Persistence {
       name: string;
       publicPlayerId: string;
       loadout: WireItemCode[];
+      loadoutRevision: number;
       shell: BaseShellId;
       presets: LoadoutPreset[];
       insertionPreference: string | null;
@@ -1777,6 +1964,7 @@ export class PostgresPersistence implements Persistence {
       name: string;
       publicPlayerId: string;
       loadout: WireItemCode[];
+      loadoutRevision: number;
       shell: BaseShellId;
       presets: LoadoutPreset[];
       insertionPreference: string | null;
@@ -1955,6 +2143,7 @@ export class PostgresPersistence implements Persistence {
     await tx.update(playerDevices).set({ playerId: target.id }).where(eq(playerDevices.playerId, source.id));
     await tx.update(players).set({
       loadout: [],
+      loadoutRevision: Math.max(source.loadoutRevision, target.loadoutRevision) + 1,
       baseTutorialPhase: source.tutorialRevision > target.tutorialRevision ? source.tutorialPhase : target.tutorialPhase,
       baseTutorialRevision: Math.max(source.tutorialRevision, target.tutorialRevision),
       lastSeenAt: new Date(),
@@ -2040,6 +2229,49 @@ function assertQueueCompatibility(
   if (claim.buildId !== input.buildId || claim.region !== input.region) {
     throw new PartyConflictError("party_queued", "This party is already queued for another compatible build or region.");
   }
+}
+
+function queueClaimStatus(claim: { status: string; expiresAt: Date }): PartyQueueClaim["status"] {
+  if ((claim.status === "active" || claim.status === "cancelling") && claim.expiresAt <= new Date()) return "expired";
+  if (claim.status === "active" || claim.status === "cancelling" || claim.status === "cancelled" || claim.status === "completed") {
+    return claim.status;
+  }
+  throw new PartyConflictError("party_membership_conflict", "Party queue claim has an invalid status.");
+}
+
+function validatedLoadoutSnapshots(value: unknown): Array<{
+  playerId: string;
+  name: string;
+  loadoutRevision: number;
+  loadout: WireItemCode[];
+}> {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 3) {
+    throw new PartyConflictError("party_membership_conflict", "Party queue claim has an invalid loadout snapshot.");
+  }
+  const snapshots = value.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new PartyConflictError("party_membership_conflict", "Party queue claim has an invalid loadout snapshot.");
+    }
+    const candidate = entry as Record<string, unknown>;
+    if (Object.keys(candidate).length !== 4 || !["playerId", "name", "loadoutRevision", "loadout"].every((key) => key in candidate)
+      || typeof candidate.playerId !== "string" || !isUuid(candidate.playerId)
+      || typeof candidate.name !== "string" || candidate.name.length < 1 || candidate.name.length > 24
+      || !Number.isSafeInteger(candidate.loadoutRevision) || (candidate.loadoutRevision as number) < 1
+      || !Array.isArray(candidate.loadout) || candidate.loadout.length > 4
+      || !candidate.loadout.every((item) => typeof item === "string" && (item === "h" || item === "r" || item === "d" || item === "i" || item === "m"))) {
+      throw new PartyConflictError("party_membership_conflict", "Party queue claim has an invalid loadout snapshot.");
+    }
+    return {
+      playerId: candidate.playerId.toLowerCase(),
+      name: candidate.name,
+      loadoutRevision: candidate.loadoutRevision as number,
+      loadout: [...candidate.loadout] as WireItemCode[],
+    };
+  });
+  if (new Set(snapshots.map((entry) => entry.playerId)).size !== snapshots.length) {
+    throw new PartyConflictError("party_membership_conflict", "Party queue claim has a duplicate loadout snapshot.");
+  }
+  return snapshots;
 }
 
 function isUuid(value: string): boolean {

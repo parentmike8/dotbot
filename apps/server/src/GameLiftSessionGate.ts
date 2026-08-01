@@ -17,11 +17,15 @@ export type PublicPlayerAdmission = {
   partyVersion?: number;
   partyClaimId?: string;
   partyMemberPlayerIds?: string[];
+  partyMemberLoadoutRevisions?: Array<{ playerId: string; revision: number }>;
+  loadoutRevision?: number;
 };
 export type AtomicPublicPlayerAdmission = PublicPlayerAdmission & {
   partyVersion: number;
   partyClaimId: string;
   partyMemberPlayerIds: string[];
+  partyMemberLoadoutRevisions: Array<{ playerId: string; revision: number }>;
+  loadoutRevision: number;
   partyReservationExpiresAt: number;
 };
 export type InspectedPublicPlayerSession = {
@@ -404,6 +408,8 @@ function parseAtomicAdmission(
     partyVersion: reservation.version,
     partyClaimId: reservation.claimId,
     partyMemberPlayerIds: reservation.memberPlayerIds,
+    partyMemberLoadoutRevisions: reservation.memberLoadoutRevisions,
+    loadoutRevision: reservation.memberLoadoutRevisions.find((entry) => entry.playerId === playerId)!.revision,
     partyReservationExpiresAt: reservation.expiresAt,
   };
 }
@@ -428,6 +434,7 @@ function validAtomicPartyBatch(inspected: readonly InspectedPublicPlayerSession[
     || inspected.some((entry) => !entry.playerSessionId || entry.playerSessionId.length > 2048)) return false;
   const first = inspected[0].admission;
   const expectedMembers = first.partyMemberPlayerIds.join(".");
+  const expectedLoadoutRevisions = JSON.stringify(first.partyMemberLoadoutRevisions);
   if (first.partyMemberPlayerIds.length !== inspected.length) return false;
   const admittedMembers = inspected.map((entry) => entry.admission.playerId).sort();
   if (admittedMembers.join(".") !== expectedMembers) return false;
@@ -438,6 +445,8 @@ function validAtomicPartyBatch(inspected: readonly InspectedPublicPlayerSession[
     && admission.buildId === first.buildId
     && admission.region === first.region
     && admission.partyReservationExpiresAt === first.partyReservationExpiresAt
+    && admission.loadoutRevision === admission.partyMemberLoadoutRevisions.find((entry) => entry.playerId === admission.playerId)?.revision
+    && JSON.stringify(admission.partyMemberLoadoutRevisions) === expectedLoadoutRevisions
     && admission.partyMemberPlayerIds.join(".") === expectedMembers);
 }
 
@@ -451,6 +460,8 @@ function canonicalAtomicAdmission(admission: AtomicPublicPlayerAdmission): strin
     partyVersion: admission.partyVersion,
     partyClaimId: admission.partyClaimId,
     partyMemberPlayerIds: admission.partyMemberPlayerIds,
+    partyMemberLoadoutRevisions: admission.partyMemberLoadoutRevisions,
+    loadoutRevision: admission.loadoutRevision,
     partyReservationExpiresAt: admission.partyReservationExpiresAt,
   });
 }

@@ -36,6 +36,11 @@ export type CreateServerOptions = RoomManagerOptions & {
   durableParties?: boolean;
   /** Signed whole-roster allocator contract. Requires durable parties. */
   atomicPartyAllocation?: boolean;
+  /** Public client bootstrap metadata. These remain explicit so tests and
+   * local validation never inherit an ambient production allocator. */
+  matchmakerUrl?: string | null;
+  quickPlayBuildId?: string | null;
+  quickPlayRegions?: readonly string[];
   arenaDirectory?: ArenaDirectory;
   firebaseIdentityVerifier?: FirebaseIdentityVerifier | null;
   identityRateLimiter?: IdentityRateLimiter;
@@ -73,6 +78,9 @@ export async function createServer(options: CreateServerOptions = {}) {
   const publicQuickPlay = options.publicQuickPlay ?? false;
   const durableParties = options.durableParties ?? false;
   const atomicPartyAllocation = publicQuickPlay && durableParties && (options.atomicPartyAllocation ?? false);
+  const matchmakerUrl = cleanPublicUrl(options.matchmakerUrl === undefined ? process.env.DOTBOT_MATCHMAKER_URL : options.matchmakerUrl);
+  const quickPlayBuildId = cleanQuickPlayMetadata(options.quickPlayBuildId === undefined ? process.env.QUICK_PLAY_BUILD_ID : options.quickPlayBuildId);
+  const quickPlayRegions = cleanQuickPlayRegions(options.quickPlayRegions ?? configuredQuickPlayRegions());
   const activePlayerSessions = new Map<string, {
     playerId: string;
     publicAdmission?: import("./GameLiftSessionGate").PublicPlayerAdmission;
@@ -165,7 +173,12 @@ export async function createServer(options: CreateServerOptions = {}) {
   });
 
   app.get("/api/game-config", async () => ({
-    matchmakerUrl: process.env.DOTBOT_MATCHMAKER_URL ?? null,
+    matchmakerUrl,
+    publicQuickPlayEnabled: publicQuickPlay,
+    durablePartiesEnabled: durableParties,
+    atomicPartyAllocationEnabled: atomicPartyAllocation,
+    quickPlayBuildId,
+    quickPlayRegions,
   }));
 
   app.post("/api/gamelift/drain", async (request, reply) => {
@@ -274,6 +287,18 @@ export async function createServer(options: CreateServerOptions = {}) {
           const claimId = typeof request.body.claimId === "string" ? request.body.claimId : "";
           const buildId = typeof request.body.buildId === "string" ? request.body.buildId.trim() : "";
           const region = typeof request.body.region === "string" ? request.body.region.trim() : "";
+          if (operation === "status") {
+            const claim = await persistence.getPartyQueueStatus?.(token, claimId);
+            if (!claim) return reply.code(409).send({ error: "Party queue claim is unavailable." });
+            return {
+              queueClaimId: claim.claimId,
+              playerId: claim.requestingPlayerId,
+              status: claim.status,
+              statusSignature: createHmac("sha256", relaySecret)
+                .update(`party-status.${requestId}.${claim.claimId}.${claim.requestingPlayerId}.${claim.status}`)
+                .digest("hex"),
+            };
+          }
           if (operation === "cancel-complete") {
             const completed = await persistence.completePartyQueueCancellation(token, claimId);
             if (!completed) return reply.code(409).send({ error: "Party queue cancellation could not be completed." });
@@ -295,7 +320,18 @@ export async function createServer(options: CreateServerOptions = {}) {
             : null;
           if (!claim) return reply.code(409).send({ error: "Party queue claim is no longer active." });
           const issuedAt = Date.now();
-          const roster: TrustedPartyRoster = { ...claim, issuedAt, expiresAt: issuedAt + 30_000 };
+          const roster: TrustedPartyRoster = {
+            claimId: claim.claimId,
+            partyId: claim.partyId,
+            version: claim.version,
+            leaderPlayerId: claim.leaderPlayerId,
+            requestingPlayerId: claim.requestingPlayerId,
+            buildId: claim.buildId,
+            region: claim.region,
+            issuedAt,
+            expiresAt: issuedAt + 30_000,
+            members: claim.members,
+          };
           const canonicalRoster = canonicalTrustedPartyRoster(roster);
           return {
             partyRoster: roster,
@@ -1483,11 +1519,19 @@ async function dispatchPersistenceRelay(persistence: Persistence, payload: unkno
     case "startMatch": {
       const startedAt = parseRelayDate(value.startedAt);
       const playerIds = parsePlayerIds(value.playerIds);
+      const queueClaims = value.queueClaims === undefined ? undefined : parseMatchQueueClaims(value.queueClaims);
       if (!isUuid(value.matchId) || typeof value.roomCode !== "string" || !/^[A-HJ-NP-Z2-9]{4}$/.test(value.roomCode)
-        || value.mapId !== downtownMap.id || !startedAt || !playerIds) {
+        || value.mapId !== downtownMap.id || !startedAt || !playerIds || (value.queueClaims !== undefined && !queueClaims)) {
         throw new RelayPayloadError("Invalid match start payload.");
       }
-      return persistence.startMatch({ matchId: value.matchId, roomCode: value.roomCode, mapId: value.mapId, startedAt, playerIds });
+      return persistence.startMatch({
+        matchId: value.matchId,
+        roomCode: value.roomCode,
+        mapId: value.mapId,
+        startedAt,
+        playerIds,
+        ...(queueClaims ? { queueClaims } : {}),
+      });
     }
     case "recordExtraction": {
       const manifest = parseRunManifest(value.manifest);
@@ -1525,6 +1569,26 @@ function parsePlayerIds(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > PUBLIC_EXTRACTION_ROLE_COUNT || !value.every(isUuid)) return null;
   const unique = [...new Set(value)];
   return unique.length === value.length ? unique : null;
+}
+
+function parseMatchQueueClaims(value: unknown): NonNullable<Parameters<Persistence["startMatch"]>[0]["queueClaims"]> | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > PUBLIC_EXTRACTION_ROLE_COUNT) return null;
+  const parsed = value.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const candidate = entry as Record<string, unknown>;
+    if (Object.keys(candidate).length !== 4 || !isUuid(candidate.playerId) || !isUuid(candidate.claimId)
+      || !Number.isSafeInteger(candidate.partyVersion) || Number(candidate.partyVersion) < 1
+      || !Number.isSafeInteger(candidate.loadoutRevision) || Number(candidate.loadoutRevision) < 1) return null;
+    return {
+      playerId: candidate.playerId,
+      claimId: candidate.claimId,
+      partyVersion: Number(candidate.partyVersion),
+      loadoutRevision: Number(candidate.loadoutRevision),
+    };
+  });
+  if (parsed.some((entry) => entry === null)) return null;
+  const claims = parsed as NonNullable<Parameters<Persistence["startMatch"]>[0]["queueClaims"]>;
+  return new Set(claims.map((entry) => entry.playerId)).size === claims.length ? claims : null;
 }
 
 function parseRelayDate(value: unknown): Date | null {
@@ -1754,6 +1818,34 @@ function parsePresets(value: unknown): LoadoutPreset[] | null {
 
 function isWireLoadoutCode(value: unknown): value is WireLoadoutCode {
   return value === "h" || value === "r" || value === "d" || value === "i" || value === "m";
+}
+
+function cleanPublicUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value.trim());
+    const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]" || url.hostname === "::1";
+    return url.protocol === "https:" || (url.protocol === "http:" && loopback) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function cleanQuickPlayMetadata(value: string | null | undefined): string | null {
+  const clean = value?.trim() ?? "";
+  return clean && clean.toLowerCase() !== "disabled" && /^[A-Za-z0-9._-]{1,64}$/.test(clean) ? clean : null;
+}
+
+function configuredQuickPlayRegions(): string[] {
+  return (process.env.QUICK_PLAY_REGIONS
+    ?? process.env.GAME_LOCATION
+    ?? process.env.GAMELIFT_REGION
+    ?? process.env.AWS_REGION
+    ?? "us-east-1").split(",");
+}
+
+function cleanQuickPlayRegions(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => /^[a-z0-9-]{3,64}$/.test(value)))];
 }
 
 function errorMessage(error: unknown): string {

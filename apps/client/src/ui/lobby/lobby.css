@@ -41,6 +41,19 @@
 .lobby-start { width: 100%; }
 .lobby-waiting, .lobby-error { margin: 16px 0 0; font-size: 12px; font-weight: 750; }
 .lobby-error { color: #b42318; }
+.public-queue-card { position: relative; }
+.public-queue-card > header p { margin-bottom: 18px; }
+.public-party-status { display: grid; gap: 5px; margin: 0 0 18px; padding: 10px 0; border-top: 1.5px solid var(--ink); border-bottom: 1.5px solid var(--ink); text-transform: uppercase; }
+.public-party-status strong { font-size: 11px; letter-spacing: .12em; }
+.public-party-status span { color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .08em; }
+.public-queue-status { min-height: 18px; margin: 14px 0; font: 850 10px/1.5 ui-monospace, monospace; letter-spacing: .09em; text-transform: uppercase; }
+.public-queue-actions { display: grid; gap: 7px; }
+.public-assembly-roster { margin-top: 4px; }
+.public-assembly-roster > header { display: flex; justify-content: space-between; gap: 12px; padding-bottom: 7px; font-size: 9px; letter-spacing: .09em; }
+.public-assembly-roster ol { max-height: 150px; margin: 0; padding: 0; overflow: auto; border-top: 1px solid var(--ink); list-style: none; }
+.public-assembly-roster li { display: flex; min-height: 28px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid rgba(17,17,17,.16); font-size: 9px; text-transform: uppercase; }
+.public-assembly-roster em { padding: 2px 4px; background: var(--ink); color: var(--paper); font-size: 7px; font-style: normal; letter-spacing: .08em; }
+.public-assembly-roster .lobby-ai { color: var(--muted); }
 
 .net-game-connection {
   position: fixed;
@@ -76,7 +89,7 @@
 .net-game-bays > span { color: var(--muted); font-size: 8px; font-weight: 850; letter-spacing: .12em; }
 .net-game-bays > div { display: grid; grid-template-columns: repeat(4,34px); gap: 4px; }
 .net-game-bays b { display: grid; height: 32px; place-items: center; border: 1px solid var(--ink); background: var(--paper); font: 900 17px/1 ui-monospace,monospace; }
-.spectating-chip { position: absolute; z-index: 21; top: 14px; left: 50%; padding: 8px 12px; border: 1px solid var(--ink); background: var(--paper-glass); color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 850; letter-spacing: 1.4px; transform: translateX(-50%); }
+.spectating-chip { position: absolute; z-index: 21; top: 14px; bottom: auto; left: 50%; padding: 8px 12px; border: 1px solid var(--ink); background: var(--paper-glass); color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 850; letter-spacing: 1.4px; transform: translateX(-50%); }
 .leave-to-base { position: absolute; z-index: 22; right: 14px; bottom: 14px; padding: 11px 14px; border: 2px solid var(--ink); background: var(--paper); color: var(--ink); font: 850 10px/1 ui-monospace, monospace; letter-spacing: .12em; }
 .body-prompt, .downed-self { bottom: 22px; }
-@media (max-width: 620px) { .lobby-actions, .lobby-squads { grid-template-columns: 1fr; } .lobby-or { text-align: center; } }
+@media (max-width: 620px) { .lobby-actions, .lobby-squads { grid-template-columns: 1fr; } .lobby-or { text-align: center; } .public-queue-card { min-height: min(540px, calc(100vh - 30px)); } }

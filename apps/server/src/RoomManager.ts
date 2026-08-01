@@ -416,6 +416,9 @@ export class RoomManager {
       persistencePlayerId: entry.identity.playerId,
       partyId: entry.admission.partyId,
       reservationPlayerId: entry.admission.playerId,
+      queueClaimId: entry.admission.partyClaimId,
+      queuePartyVersion: entry.admission.partyVersion,
+      queueLoadoutRevision: entry.admission.loadoutRevision,
       previousPlayerIds: entry.identity.previousPublicPlayerIds?.map(formatPublicPlayerId) ?? [],
       previousPersistencePlayerIds: entry.identity.previousPlayerIds ?? [],
     })));

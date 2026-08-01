@@ -272,6 +272,8 @@ describe("RoomManager atomic party admission", () => {
       partyVersion: 3,
       partyClaimId: "00000000-0000-4000-8000-000000000010",
       partyMemberPlayerIds: memberIds,
+      partyMemberLoadoutRevisions: memberIds.map((playerId, index) => ({ playerId, revision: index + 1 })),
+      loadoutRevision: 1,
       partyReservationExpiresAt: Date.now() + 30_000,
     };
     const prepared = [...identities.entries()].map(([token, identity], index): PreparedPublicPartyMember => {
@@ -279,7 +281,7 @@ describe("RoomManager atomic party admission", () => {
       return {
         peer: peer(messages, `party-peer-${index + 1}`),
         message: { type: "quickPlayHello", token, name: identity.name, playerSessionId: `session-${index + 1}` },
-        admission: { ...baseAdmission, playerId: identity.playerId },
+        admission: { ...baseAdmission, playerId: identity.playerId, loadoutRevision: index + 1 },
         identity,
         isPeerActive: () => true,
       };

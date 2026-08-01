@@ -34,12 +34,18 @@ export type NetSessionOptions = {
   roomCode: string;
   name: string;
   token: string;
+  mode?: "legacy" | "public";
   playerSessionId?: string;
   preferredSquad?: LobbySquadId;
   /** Production seam for WebTransport; WebSocket remains the compatibility
    * default for current and older mobile browsers. */
   transportFactory?: GameTransportFactory;
   onLobby?: (state: { roomCode: string; members: LobbyMember[]; hostId: string; playerId: string; locked: boolean }) => void;
+  onArenaState?: (state: Pick<Extract<ServerMessage, { type: "arenaWelcome" | "arenaState" }>, "phase" | "members" | "retiring" | "assemblyStartedAt" | "assemblyDeadlineAt">) => void;
+  onMatchStart?: (state: Pick<Extract<ServerMessage, { type: "matchStart" }>, "matchId" | "roles">) => void;
+  onRoleController?: (state: Extract<ServerMessage, { type: "roleController" }>) => void;
+  onRunOver?: () => void;
+  onConnectionChange?: (state: "connecting" | "connected" | "reconnecting" | "failed" | "disconnected") => void;
   onError?: (message: string) => void;
 };
 
@@ -161,10 +167,12 @@ export class NetSession implements GameSession {
   }
 
   requestStartMatch(): void {
+    if (this.options.mode === "public") return;
     this.send({ type: "startMatch" });
   }
 
   requestSquad(squadId: LobbySquadId): void {
+    if (this.options.mode === "public") return;
     this.send({ type: "joinSquad", squadId });
   }
 
@@ -368,6 +376,7 @@ export class NetSession implements GameSession {
     this.pendingInputs = [];
     this.predictor = null;
     this.dotStore.clear();
+    this.options.onConnectionChange?.("disconnected");
   }
 
   private receive(message: ServerMessage): void {
@@ -382,6 +391,7 @@ export class NetSession implements GameSession {
         this.reconnectAttempt = 0;
         this.reconnectStartedAt = null;
         this.options.onError?.("");
+        this.options.onConnectionChange?.("connected");
         this.playerIdValue = message.playerId;
         this.roomCode = message.roomCode;
         this.options.onLobby?.({
@@ -393,8 +403,6 @@ export class NetSession implements GameSession {
         });
         return;
       case "arenaWelcome":
-        // Mechanical compatibility for the additive server path. The public
-        // launch UI/session owner will consume arena state in its own lane.
         if (this.connectTimeoutTimer) clearTimeout(this.connectTimeoutTimer);
         this.connectTimeoutTimer = null;
         this.handshakeReady = true;
@@ -402,6 +410,9 @@ export class NetSession implements GameSession {
         this.reconnectStartedAt = null;
         this.options.onError?.("");
         this.playerIdValue = message.playerId;
+        this.roomCode = message.arenaId;
+        this.options.onConnectionChange?.("connected");
+        this.options.onArenaState?.(message);
         if (message.phase === "results") this.resetRunTransportState();
         return;
       case "lobby":
@@ -414,7 +425,10 @@ export class NetSession implements GameSession {
         });
         return;
       case "arenaState":
+        this.options.onArenaState?.(message);
+        return;
       case "roleController":
+        this.options.onRoleController?.(message);
         return;
       case "matchStart":
         this.runGeneration += 1;
@@ -429,6 +443,7 @@ export class NetSession implements GameSession {
         this.metaIndex = new Map(message.meta.map((meta) => [meta.id, meta]));
         this.dotStore = new Map(message.dotBaseline.map((dot) => [dot.id, { ...dot, position: { ...dot.position } }]));
         this.runState = { phase: "live" };
+        this.options.onMatchStart?.({ matchId: message.matchId, roles: message.roles });
         this.resolveStart?.();
         this.resolveStart = null;
         this.rejectStart = null;
@@ -496,6 +511,7 @@ export class NetSession implements GameSession {
             payout: completion.payout.map(itemFromCode),
           })),
         };
+        this.options.onRunOver?.();
         return;
       case "matchEnd":
         return;
@@ -528,6 +544,7 @@ export class NetSession implements GameSession {
   private connectTransport(): void {
     if (this.disposed) return;
     this.handshakeReady = false;
+    this.options.onConnectionChange?.(this.reconnectStartedAt === null ? "connecting" : "reconnecting");
     const generation = ++this.transportGeneration;
     const transport = (this.options.transportFactory ?? createWebSocketGameTransport)(this.options.url);
     this.transport = transport;
@@ -548,17 +565,24 @@ export class NetSession implements GameSession {
         if (generation !== this.transportGeneration || this.disposed) return;
         // Hello deliberately bypasses the admitted-traffic gate. Every other
         // client message waits for this connection's welcome acknowledgement.
-        transport.send({
-          type: "hello",
-          token: this.options.token,
-          name: this.options.name,
-          // A create-room request starts with an empty code. Once the server
-          // assigns one, every reconnect must target that room rather than
-          // accidentally creating a second room during a network handoff.
-          roomCode: (this.roomCode || this.options.roomCode).trim().toUpperCase(),
-          preferredSquad: this.options.preferredSquad,
-          playerSessionId: this.options.playerSessionId,
-        }, "reliable");
+        transport.send(this.options.mode === "public"
+          ? {
+            type: "quickPlayHello",
+            token: this.options.token,
+            name: this.options.name,
+            playerSessionId: this.options.playerSessionId,
+          }
+          : {
+            type: "hello",
+            token: this.options.token,
+            name: this.options.name,
+            // A create-room request starts with an empty code. Once the server
+            // assigns one, every reconnect must target that room rather than
+            // accidentally creating a second room during a network handoff.
+            roomCode: (this.roomCode || this.options.roomCode).trim().toUpperCase(),
+            preferredSquad: this.options.preferredSquad,
+            playerSessionId: this.options.playerSessionId,
+          }, "reliable");
       },
       message: (message) => {
         if (generation === this.transportGeneration && !this.disposed) this.receive(message);
@@ -633,7 +657,10 @@ export class NetSession implements GameSession {
     this.reconnectStartedAt ??= now;
     if (now - this.reconnectStartedAt >= reconnectWindowMs) {
       this.disposed = true;
-      this.failStart("Connection to the game server was lost. Return to the lobby and rejoin.");
+      this.options.onConnectionChange?.("failed");
+      this.failStart(this.options.mode === "public"
+        ? "Connection to the arena was lost. Return to base and deploy again."
+        : "Connection to the game server was lost. Return to the lobby and rejoin.");
       return;
     }
     this.options.onError?.("CONNECTION INTERRUPTED · RECONNECTING…");

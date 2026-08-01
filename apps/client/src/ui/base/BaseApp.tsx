@@ -26,7 +26,7 @@ import { itemToCode, type WireItemCode } from "@dotbot/protocol";
 import { useDotBotGame } from "../../game/useDotBotGame";
 import { LocalSession } from "../../game/session/LocalSession";
 import { BaseTutorialSession } from "../../game/session/BaseTutorialSession";
-import { LobbyApp } from "../lobby/LobbyApp";
+import { DeploymentApp } from "../lobby/DeploymentApp";
 import { acceptPartyInvite, deviceTokenKey, ensureAccountToken, partyInviteCodeFromHash, playerNameKey } from "../identity";
 import "./base.css";
 import { advanceBaseChannel, findBaseTarget, type BaseChannelState, type BaseTarget } from "./baseFlow";
@@ -385,7 +385,7 @@ export function BaseApp() {
   }
 
   if (deployment && isBaseTutorialComplete(base.tutorial)) {
-    return <LobbyApp embedded onReturnToBase={() => {
+    return <DeploymentApp embedded onReturnToBase={() => {
       setDeployment(false);
       setPanel(null);
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);

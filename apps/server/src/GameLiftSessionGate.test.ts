@@ -93,6 +93,10 @@ describe("GameLiftSessionGate", () => {
         "00000000-0000-4000-8000-000000000001",
         "00000000-0000-4000-8000-000000000002",
       ],
+      memberLoadoutRevisions: [
+        { playerId: "00000000-0000-4000-8000-000000000001", revision: 4 },
+        { playerId: "00000000-0000-4000-8000-000000000002", revision: 9 },
+      ],
       arenaId: "A2BC",
       buildId: "web-42",
       region: "ca-central-1",
@@ -161,6 +165,7 @@ describe("GameLiftSessionGate", () => {
       version: 2,
       playerId: "00000000-0000-4000-8000-000000000001",
       memberPlayerIds: ["00000000-0000-4000-8000-000000000001"],
+      memberLoadoutRevisions: [{ playerId: "00000000-0000-4000-8000-000000000001", revision: 4 }],
       arenaId: "A2BC",
       buildId: "web-42",
       region: "ca-central-1",
@@ -203,6 +208,7 @@ describe("GameLiftSessionGate", () => {
       version: 2,
       playerId: "00000000-0000-4000-8000-000000000001",
       memberPlayerIds: ["00000000-0000-4000-8000-000000000001"],
+      memberLoadoutRevisions: [{ playerId: "00000000-0000-4000-8000-000000000001", revision: 4 }],
       arenaId: "A2BC",
       buildId: "web-42",
       region: "ca-central-1",
@@ -262,6 +268,8 @@ describe("GameLiftSessionGate", () => {
       partyVersion: 3,
       partyClaimId: "00000000-0000-4000-8000-000000000010",
       partyMemberPlayerIds: ["00000000-0000-4000-8000-000000000001"],
+      partyMemberLoadoutRevisions: [{ playerId: "00000000-0000-4000-8000-000000000001", revision: 4 }],
+      loadoutRevision: 4,
       partyReservationExpiresAt: Date.now() + 30_000,
     };
     const gate = new GameLiftSessionGate({

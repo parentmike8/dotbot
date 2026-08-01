@@ -312,10 +312,19 @@ describe.skipIf(!databaseAvailable)("durable party authority", () => {
     ]);
     expect(new Set(claims.map((claim) => claim.claimId))).toEqual(new Set([claims[0].claimId]));
     expect(claims[0].members).toHaveLength(2);
+    const queuedMergeIdentity = linkedIdentity("queue-merge-target");
+    await persistence.linkAccount(joiner.token, queuedMergeIdentity);
+    await expect(persistence.linkAccount(member.token, { ...queuedMergeIdentity, provider: "phone" }))
+      .rejects.toMatchObject({ code: "party_queued" });
     await expect(persistence.acceptDurablePartyInvite(joiner.token, invite!.code)).rejects.toMatchObject({ code: "party_queued" });
     await expect(persistence.leaveParty(member.token, 2)).rejects.toMatchObject({ code: "party_queued" });
     await expect(persistence.transferPartyLeader(leader.token, member.publicPlayerId, 2)).rejects.toMatchObject({ code: "party_queued" });
 
+    expect(await persistence.getPartyQueueStatus(member.token, claims[0].claimId)).toMatchObject({
+      claimId: claims[0].claimId,
+      requestingPlayerId: member.playerId,
+      status: "active",
+    });
     const cancellation = await persistence.cancelPartyQueue(member.token, claims[0].claimId);
     expect(cancellation?.requestingPlayerId).toBe(member.playerId);
     expect(await persistence.completePartyQueueCancellation(member.token, claims[0].claimId)).toBe(true);
@@ -335,5 +344,69 @@ describe.skipIf(!databaseAvailable)("durable party authority", () => {
       requestId: randomUUID(), buildId: "web-queue", region: "ca-central-1",
     })).rejects.toMatchObject({ code: "party_version_stale" });
     await persistence.completePartyQueueCancellation(leader.token, staleClaim.claimId);
+  });
+
+  it("snapshots versioned loadouts, locks changes, and gives cancel/start exactly one transactional winner", async () => {
+    const ids = ["LCKABCDE", "LCKBCDEF"];
+    const persistence = new PostgresPersistence(sql!, () => ids.shift() ?? "LCKCDEFG");
+    const leader = await persistence.registerPlayer("Loadout leader");
+    const member = await persistence.registerPlayer("Loadout member");
+    await persistence.linkAccount(leader.token, linkedIdentity("loadout-leader"));
+    const invite = await persistence.createDurablePartyInvite(leader.token);
+    await persistence.acceptDurablePartyInvite(member.token, invite!.code);
+    await sql!`update players set loadout = '["h"]'::jsonb, loadout_revision = 4 where id = ${leader.playerId}`;
+    await sql!`update players set loadout = '["r"]'::jsonb, loadout_revision = 9 where id = ${member.playerId}`;
+
+    const claim = await persistence.claimPartyQueue(leader.token, {
+      requestId: randomUUID(), buildId: "web-lock", region: "ca-central-1",
+    });
+    expect(claim.status).toBe("active");
+    expect(claim.members).toEqual([
+      { playerId: leader.playerId, name: "Loadout leader", loadoutRevision: 4 },
+      { playerId: member.playerId, name: "Loadout member", loadoutRevision: 9 },
+    ]);
+    await expect(persistence.setLoadout(leader.token, [])).rejects.toMatchObject({ code: "party_queued" });
+
+    await expect(persistence.startMatch({
+      matchId: randomUUID(), roomCode: "A2BC", mapId: "downtown", startedAt: new Date(),
+      playerIds: [leader.playerId, member.playerId],
+      queueClaims: claim.members.map((entry) => ({
+        playerId: entry.playerId,
+        claimId: claim.claimId,
+        partyVersion: claim.version,
+        loadoutRevision: entry.loadoutRevision + (entry.playerId === leader.playerId ? 1 : 0),
+      })),
+    })).rejects.toThrow(/loadout revision/i);
+
+    const matchId = randomUUID();
+    const start = persistence.startMatch({
+      matchId, roomCode: "A2BC", mapId: "downtown", startedAt: new Date(),
+      playerIds: [leader.playerId, member.playerId],
+      queueClaims: claim.members.map((entry) => ({
+        playerId: entry.playerId,
+        claimId: claim.claimId,
+        partyVersion: claim.version,
+        loadoutRevision: entry.loadoutRevision,
+      })),
+    });
+    const cancel = persistence.cancelPartyQueue(member.token, claim.claimId);
+    const [started, cancelled] = await Promise.allSettled([start, cancel]);
+    const [terminal] = await sql!<Array<{ status: string; startedMatchId: string | null }>>`
+      select status, started_match_id as "startedMatchId" from party_queue_claims where id = ${claim.claimId}
+    `;
+    expect(["completed", "cancelling"]).toContain(terminal.status);
+    if (terminal.status === "completed") {
+      expect(started.status).toBe("fulfilled");
+      expect(cancelled.status === "fulfilled" ? cancelled.value : null).toBeNull();
+      expect(terminal.startedMatchId).toBe(matchId);
+      expect((started as PromiseFulfilledResult<{ loadouts: Record<string, string[]> }>).value.loadouts).toEqual({
+        [leader.playerId]: ["h"], [member.playerId]: ["r"],
+      });
+    } else {
+      expect(cancelled.status).toBe("fulfilled");
+      expect(started.status).toBe("rejected");
+      expect(terminal.startedMatchId).toBeNull();
+      expect(await persistence.completePartyQueueCancellation(member.token, claim.claimId)).toBe(true);
+    }
   });
 });

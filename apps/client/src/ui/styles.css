@@ -2018,6 +2018,25 @@ button {
   color: var(--paper);
 }
 
+.manifest-secondary-action {
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px 20px;
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+}
+
+.manifest-secondary-action:hover,
+.manifest-secondary-action:focus-visible {
+  border-color: var(--ink);
+}
+
 /* ---------------------------------------------------------------------------
    The spawn picker — where the next run starts.
    Above the manifest (z 20), because "new run" from the end-of-run screen opens it.

@@ -98,7 +98,16 @@ export type PartyQueueClaim = {
   requestingPlayerId: string;
   buildId: string;
   region: string;
-  members: Array<{ playerId: string; name: string }>;
+  status: "active" | "cancelling" | "cancelled" | "completed" | "expired";
+  startedMatchId?: string;
+  members: Array<{ playerId: string; name: string; loadoutRevision: number }>;
+};
+
+export type MatchQueueClaim = {
+  playerId: string;
+  claimId: string;
+  partyVersion: number;
+  loadoutRevision: number;
 };
 
 export type RunManifest = {
@@ -184,6 +193,8 @@ export interface Persistence {
   disbandParty(token: string, expectedVersion?: number): Promise<boolean>;
   transferPartyLeader(token: string, publicPlayerId: string, expectedVersion?: number): Promise<PartySummary | null>;
   claimPartyQueue(token: string, input: { requestId: string; buildId: string; region: string }): Promise<PartyQueueClaim>;
+  /** Optional on rollback/no-op adapters; the public atomic path requires it. */
+  getPartyQueueStatus?(token: string, claimId: string): Promise<PartyQueueClaim | null>;
   cancelPartyQueue(token: string, claimId: string): Promise<PartyQueueClaim | null>;
   completePartyQueueCancellation(token: string, claimId: string): Promise<boolean>;
   getProfile(token: string): Promise<PlayerProfile | null>;
@@ -203,7 +214,7 @@ export interface Persistence {
   rerollContracts(token: string): Promise<void>;
   abandonContract(token: string, contractId: string): Promise<void>;
   consumeLoadout(playerId: string): Promise<WireItemCode[]>;
-  startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date; playerIds: string[] }): Promise<MatchStartResult>;
+  startMatch(input: { matchId: string; roomCode: string; mapId: string; startedAt: Date; playerIds: string[]; queueClaims?: MatchQueueClaim[] }): Promise<MatchStartResult>;
   recordExtraction(input: {
     matchId: string;
     playerId: string;

@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cancelPublicPartyAllocation, PublicPartyQueueError, requestPublicPartyAllocation } from "./publicPartyQueue";
+import {
+  cancelPublicPartyAllocation,
+  getPublicPartyAllocationStatus,
+  PublicPartyQueueError,
+  requestPublicPartyAllocation,
+} from "./publicPartyQueue";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -72,6 +77,7 @@ describe("public party queue API", () => {
   });
 
   it("cancels by opaque queue ticket and surfaces incomplete reconciliation", async () => {
+    const controller = new AbortController();
     const responses = [
       new Response(JSON.stringify({ error: "reconciling", retryable: true }), { status: 503 }),
       new Response(JSON.stringify({ cancelled: true }), { status: 200 }),
@@ -79,12 +85,67 @@ describe("public party queue API", () => {
     const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe("https://matchmaker.example/prod/quick-play/cancel");
       expect(init?.body).toBe(JSON.stringify({ token: "device-token", queueTicket: "opaque-ticket" }));
+      expect(init?.signal).toBe(controller.signal);
       return responses.shift()!;
     });
     vi.stubGlobal("fetch", request);
-    await expect(cancelPublicPartyAllocation({ matchmakerUrl: "https://matchmaker.example/prod", token: "device-token", queueTicket: "opaque-ticket" }))
+    await expect(cancelPublicPartyAllocation({ matchmakerUrl: "https://matchmaker.example/prod", token: "device-token", queueTicket: "opaque-ticket", signal: controller.signal }))
       .rejects.toMatchObject({ status: 503, retryable: true });
-    await expect(cancelPublicPartyAllocation({ matchmakerUrl: "https://matchmaker.example/prod", token: "device-token", queueTicket: "opaque-ticket" }))
+    await expect(cancelPublicPartyAllocation({ matchmakerUrl: "https://matchmaker.example/prod", token: "device-token", queueTicket: "opaque-ticket", signal: controller.signal }))
       .resolves.toBeUndefined();
+  });
+
+  it("recovers an uncertain response without exposing another party member's allocation", async () => {
+    const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("https://matchmaker.example/prod/quick-play/status");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        token: "device-token",
+        queueTicket: "00000000-0000-4000-8000-000000000504",
+      });
+      return new Response(JSON.stringify({
+        status: "active",
+        queueTicket: "00000000-0000-4000-8000-000000000504",
+        allocation: {
+          mode: "public-hot-arena",
+          arenaId: "A2BC",
+          playerSessionId: "player-session-self",
+          websocketUrl: "wss://compute.example:7001/ws",
+          queueTicket: "00000000-0000-4000-8000-000000000504",
+          partySize: 3,
+        },
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", request);
+    await expect(getPublicPartyAllocationStatus({
+      matchmakerUrl: "https://matchmaker.example/prod",
+      token: "device-token",
+      queueTicket: "00000000-0000-4000-8000-000000000504",
+    })).resolves.toMatchObject({
+      status: "active",
+      allocation: { playerSessionId: "player-session-self" },
+    });
+  });
+
+  it("accepts this member's completed-claim allocation for response-lost reconnect", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      status: "completed",
+      queueTicket: "00000000-0000-4000-8000-000000000505",
+      allocation: {
+        mode: "public-hot-arena",
+        arenaId: "A2BC",
+        playerSessionId: "player-session-self",
+        websocketUrl: "wss://compute.example:7001/ws",
+        queueTicket: "00000000-0000-4000-8000-000000000505",
+        partySize: 3,
+      },
+    }), { status: 200 })));
+    await expect(getPublicPartyAllocationStatus({
+      matchmakerUrl: "https://matchmaker.example/prod",
+      token: "device-token",
+      queueTicket: "00000000-0000-4000-8000-000000000505",
+    })).resolves.toMatchObject({
+      status: "completed",
+      allocation: { playerSessionId: "player-session-self" },
+    });
   });
 });

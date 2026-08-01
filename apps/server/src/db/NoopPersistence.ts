@@ -60,6 +60,7 @@ export class NoopPersistence implements Persistence {
   async claimPartyQueue(_token: string, _input: { requestId: string; buildId: string; region: string }): Promise<PartyQueueClaim> {
     throw new Error("Durable party queueing requires live persistence.");
   }
+  async getPartyQueueStatus(_token: string, _claimId: string): Promise<PartyQueueClaim | null> { return null; }
   async cancelPartyQueue(_token: string, _claimId: string): Promise<PartyQueueClaim | null> { return null; }
   async completePartyQueueCancellation(_token: string, _claimId: string): Promise<boolean> { return false; }
 
