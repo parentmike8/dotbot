@@ -98,6 +98,56 @@ describe("fixed-delay interpolation", () => {
     expect(sampled.snapshot.bots[0].radarPings).not.toBe(older.bots[0].radarPings);
   });
 
+  it("does not reveal a refreshed Radar sample before its authoritative tick", () => {
+    const older = snapshot(0, 0);
+    const newer = snapshot(3, 30);
+    older.bots[0].radarPings = [{
+      botId: "target", floorId: "outdoor", x: 25, y: 40, ageMs: 1_950,
+    }];
+    newer.bots[0].radarPings = [{
+      botId: "target", floorId: "outdoor", x: 125, y: 140, ageMs: 0,
+    }];
+    const timeline = [{ tick: 0, snapshot: older }, { tick: 3, snapshot: newer }];
+
+    expect(sampleTimeline(timeline, 2.9, 3)?.snapshot.bots[0].radarPings).toEqual([{
+      botId: "target", floorId: "outdoor", x: 25, y: 40, ageMs: 1_950,
+    }]);
+    expect(sampleTimeline(timeline, 3, 3)?.snapshot.bots[0].radarPings).toEqual([{
+      botId: "target", floorId: "outdoor", x: 125, y: 140, ageMs: 0,
+    }]);
+  });
+
+  it("switches mine authorization presentation at the authoritative boundary", () => {
+    const older = snapshot(0, 0);
+    const newer = snapshot(3, 30);
+    older.mines = [{
+      id: "mine-private",
+      position: { x: 40, y: 50 },
+      radius: 10,
+      placedByBotId: "",
+      squadId: "",
+      floorId: "outdoor",
+      placedAtMs: 0,
+      revealedToBotIds: [],
+      presentation: "revealed",
+      disguise: "radar",
+    }];
+    newer.mines = [{
+      ...older.mines[0],
+      presentation: "disguised",
+      seam: true,
+    }];
+    const timeline = [{ tick: 0, snapshot: older }, { tick: 3, snapshot: newer }];
+
+    const beforeBoundary = sampleTimeline(timeline, 2.9, 3)?.snapshot.mines[0];
+    expect(beforeBoundary).toMatchObject({ presentation: "revealed" });
+    expect(beforeBoundary?.seam).toBeUndefined();
+    expect(sampleTimeline(timeline, 3, 3)?.snapshot.mines[0]).toMatchObject({
+      presentation: "disguised",
+      seam: true,
+    });
+  });
+
   it("treats newer omission and addition as authoritative at the snapshot boundary", () => {
     const older = snapshot(0, 0);
     const newer = snapshot(3, 30);

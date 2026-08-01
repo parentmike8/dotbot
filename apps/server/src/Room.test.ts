@@ -163,6 +163,47 @@ describe("Room lobby squads", () => {
   });
 });
 
+describe("Room private event fan-out", () => {
+  it("sends no packet at all to a rival when a mine sensor event filters to empty", async () => {
+    const room = new Room("PRIV", {
+      countdownMs: 0,
+      persistence: new NoopPersistence(),
+      aiWingmates: false,
+    });
+    const alpha = collectingPeer("private-alpha");
+    const bravo = collectingPeer("private-bravo");
+    room.join(alpha.peer, "private-token-a", "Alpha", "private-a", "alpha");
+    room.join(bravo.peer, "private-token-b", "Bravo", "private-b", "bravo");
+    room.receive("private-a", { type: "startMatch" });
+    await waitFor(() => room.phase === "live");
+
+    const internals = room as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: { getSnapshot(): import("@dotbot/game/types").GameSnapshot };
+      broadcastEvents(events: import("@dotbot/game/types").SimEvent[], snapshot: import("@dotbot/game/types").GameSnapshot): void;
+    };
+    alpha.messages.length = 0;
+    bravo.messages.length = 0;
+    const ownerId = internals.members.get("private-a")!.botId;
+    const owner = internals.simulation.getSnapshot().bots.find((bot) => bot.id === ownerId)!;
+    internals.broadcastEvents([{
+      type: "mineSensor",
+      botId: ownerId,
+      squadId: "alpha",
+      mineId: "mine-00000000-0000-4000-8000-000000000001",
+      position: { ...owner.position },
+      floorId: owner.floorId,
+    }], internals.simulation.getSnapshot());
+
+    expect(alpha.messages).toEqual([expect.objectContaining({
+      type: "ev",
+      events: [expect.objectContaining({ type: "mineSensor", botId: ownerId })],
+    })]);
+    expect(bravo.messages).toEqual([]);
+    room.dispose();
+  });
+});
+
 describe("Room GIVE UP", () => {
   it("returns a died manifest for a downed member while their squadmate keeps playing", async () => {
     class CountingPersistence extends NoopPersistence {

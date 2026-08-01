@@ -523,6 +523,14 @@ describe("DotBotSimulation", () => {
         enemySpawn({ id: "ai-enemy", controller: "ai", isAmbient: false, position: { x: 200, y: 180 } }),
         enemySpawn({ id: "ambient", controller: "frozen", position: { x: 160, y: 180 } }),
         enemySpawn({
+          id: "downed-player-role",
+          controller: "frozen",
+          isAmbient: false,
+          state: "downed",
+          shields: 0,
+          position: { x: 120, y: 180 },
+        }),
+        enemySpawn({
           id: "invisible-enemy",
           controller: "human",
           isAmbient: false,
@@ -536,7 +544,11 @@ describe("DotBotSimulation", () => {
     simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
     runTicks(simulation, 5);
     const contacts = simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.radarPings ?? [];
-    expect(contacts.map((contact) => contact.botId).sort()).toEqual(["ai-enemy", "human-enemy"]);
+    expect(contacts.map((contact) => contact.botId).sort()).toEqual([
+      "ai-enemy",
+      "downed-player-role",
+      "human-enemy",
+    ]);
     expect(contacts[0]).toMatchObject({
       botId: expect.any(String),
       floorId: "outdoor",
@@ -585,9 +597,19 @@ describe("DotBotSimulation", () => {
     }
     const snapshot = simulation.getSnapshot();
     expect(snapshot.bots.find((bot) => bot.id === "player")?.bays).toEqual(emptyBays());
-    expect(snapshot.mines.map((mine) => mine.id)).toEqual(["mine-player-1", "mine-player-2"]);
+    expect(snapshot.mines.every((mine) => !mine.id.includes("player"))).toBe(true);
+    expect(snapshot.mines.map((mine) => mine.id)).toEqual([
+      expect.stringMatching(/^mine-[0-9a-f]{8}-[0-9a-f-]{27}$/),
+      expect.stringMatching(/^mine-[0-9a-f]{8}-[0-9a-f-]{27}$/),
+    ]);
+    expect(new Set(snapshot.mines.map((mine) => mine.id)).size).toBe(2);
+    expect(snapshot.mines.every((mine) => !/^mine-\d+$/.test(mine.id))).toBe(true);
     expect(snapshot.noises).toEqual([]);
-    expect(simulation.drainEvents()).toContainEqual({ type: "mineRotated", botId: "player", mineId: "mine-player-0" });
+    expect(simulation.drainEvents()).toContainEqual({
+      type: "mineRotated",
+      botId: "player",
+      mineId: expect.stringMatching(/^mine-[0-9a-f]{8}-[0-9a-f-]{27}$/),
+    });
     simulation.dispose();
   });
 
@@ -658,6 +680,30 @@ describe("DotBotSimulation", () => {
     plateless.dispose();
   });
 
+  it("resolves simultaneous mine overlaps once and chooses the nearest/id tie deterministically", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ bays: [mineItem, null, null, null], position: { x: 100, y: 180 } }),
+        enemySpawn({ id: "rival-a", controller: "frozen", isAmbient: false, position: { x: 100, y: 180 } }),
+        enemySpawn({ id: "rival-b", controller: "frozen", isAmbient: false, position: { x: 100, y: 180 } }),
+      ]),
+      // Keep the deliberately simultaneous fixture coincident until the mine
+      // resolves; ordinary production separation does not define trigger order.
+      config: { ...testConfig, botSeparationSpeed: 0 },
+    });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    simulation.step();
+    expect(simulation.getSnapshot().mines).toHaveLength(1);
+
+    simulation.step();
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.mines).toEqual([]);
+    expect(snapshot.bots.find((bot) => bot.id === "rival-a")?.shields).toBe(2);
+    expect(snapshot.bots.find((bot) => bot.id === "rival-b")?.shields).toBe(3);
+    expect(snapshot.noises.filter((noise) => noise.kind === "mineDetonation")).toHaveLength(1);
+    simulation.dispose();
+  });
+
   it("consumes and audibly detonates a mine without bypassing authoritative invulnerability", async () => {
     const simulation = await DotBotSimulation.create({
       map: makeMap([
@@ -723,6 +769,40 @@ describe("DotBotSimulation", () => {
     simulation.step();
     expect(simulation.getSnapshot().mines).toEqual([]);
     expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.shields).toBe(2);
+    simulation.dispose();
+  });
+
+  it("uses the authored DotBot silhouette for physical mine contact", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ bays: [mineItem, null, null, null], position: { x: 100, y: 180 } }),
+        enemySpawn({
+          controller: "frozen",
+          isAmbient: false,
+          position: { x: 220, y: 180 },
+          maxShields: 3,
+          shields: 0,
+        }),
+      ]),
+      config: testConfig,
+    });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    simulation.step();
+    const internals = simulation as unknown as {
+      bots: Map<string, { position: Vec2 }>;
+    };
+    // A stripped Core reaches 9.6 units and the mine reaches 10. At 25 units
+    // their visible/authoritative shapes have daylight between them.
+    internals.bots.get("player")!.position = { x: 300, y: 180 };
+    internals.bots.get("enemy")!.position = { x: 125, y: 180 };
+    simulation.step();
+    expect(simulation.getSnapshot().mines).toHaveLength(1);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.shields).toBe(0);
+
+    internals.bots.get("enemy")!.position = { x: 119, y: 180 };
+    simulation.step();
+    expect(simulation.getSnapshot().mines).toEqual([]);
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "enemy")?.state).toBe("downed");
     simulation.dispose();
   });
 
@@ -985,6 +1065,34 @@ describe("DotBotSimulation", () => {
     simulation.dispose();
   });
 
+  it("does not stack an overcharged dash onto the dash already in flight", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([playerSpawn({ bays: [overchargeItem, null, null, null] })]),
+      config: testConfig,
+    });
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.step();
+    const beforeActivation = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(beforeActivation.dashActiveMs).toBeGreaterThan(0);
+
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true, useBay: 0 });
+    simulation.step();
+    let player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    expect(player.dashOverchargeMs).toBeGreaterThan(59_000);
+    expect(player.dashActiveMs).toBeLessThan(beforeActivation.dashActiveMs);
+    expect(player.dashCooldownMs).toBe(0);
+
+    while (player.dashActiveMs > 0) {
+      simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: false });
+      simulation.step();
+      player = simulation.getSnapshot().bots.find((bot) => bot.id === "player")!;
+    }
+    simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true });
+    simulation.step();
+    expect(simulation.getSnapshot().bots.find((bot) => bot.id === "player")?.dashActiveMs).toBeGreaterThan(0);
+    simulation.dispose();
+  });
+
   it("suppresses both firing and dash noise under incognito", async () => {
     const simulation = await makeSimulation([playerSpawn({ bays: [incognitoItem] })]);
     simulation.applyInput("player", { move: { x: 1, y: 0 }, dash: true, useBay: 0 });
@@ -1086,6 +1194,44 @@ describe("DotBotSimulation", () => {
       dashOverchargeMs: 0,
       incognitoMs: 0,
     });
+    simulation.dispose();
+  });
+
+  it("revokes viewer-private mine reveals when Radar is cleared on down", async () => {
+    const simulation = await DotBotSimulation.create({
+      map: makeMap([
+        playerSpawn({ bays: [radarItem, null, null, null], position: { x: 100, y: 180 } }),
+        enemySpawn({
+          id: "mine-owner",
+          controller: "human",
+          isAmbient: false,
+          bays: [mineItem, null, null, null],
+          position: { x: 180, y: 180 },
+        }),
+      ]),
+      config: { ...testConfig, radarRadius: 200 },
+    });
+    simulation.applyInput("player", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    simulation.applyInput("mine-owner", { move: { x: 0, y: 0 }, dash: false, useBay: 0 });
+    simulation.step();
+    expect(simulation.getSnapshot().mines[0].revealedToBotIds).toEqual(["player"]);
+
+    const internals = simulation as unknown as {
+      bots: Map<string, unknown>;
+      putBotDown: (target: unknown, byBotId: string, cause: {
+        kind: "environment";
+        tick: number;
+        position: Vec2;
+        direction: Vec2;
+      }) => void;
+    };
+    internals.putBotDown(internals.bots.get("player")!, "environment", {
+      kind: "environment",
+      tick: simulation.getSnapshot().debug.tickCount,
+      position: { x: 100, y: 180 },
+      direction: { x: 1, y: 0 },
+    });
+    expect(simulation.getSnapshot().mines[0].revealedToBotIds).toEqual([]);
     simulation.dispose();
   });
 

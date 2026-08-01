@@ -131,14 +131,20 @@ describe("KillCamHistory", () => {
     hidden.bots = hidden.bots.map((entry) =>
       entry.id === "killer" ? { ...entry, incognitoMs: 500 } : entry);
     history.record(hidden);
-    const contact = snapshot(15, 100, { x: 145, y: 100 });
-    contact.bots = contact.bots.map((entry) =>
-      entry.id === "killer" ? { ...entry, incognitoMs: 450 } : entry);
+    // Two damaged two-plate bodies overlap at 40 px even though the old
+    // single-ray reach sum reported only 33.6 px. Historical disclosure has
+    // to use the exact authored shape or the replay can hide a real blocker.
+    const contact = snapshot(15, 100, { x: 140, y: 100 });
+    contact.bots = contact.bots.map((entry) => ({
+      ...entry,
+      shieldSegments: [1, 1, 0],
+      ...(entry.id === "killer" ? { incognitoMs: 450 } : {}),
+    }));
     history.record(contact);
 
     const clip = history.createClip("victim", "killer", {
       ...dashCause,
-      position: { x: 145, y: 100 },
+      position: { x: 140, y: 100 },
     })!;
     expect(clip.frames[0].source).toBeUndefined();
     expect(clip.frames[1].source?.id).toBe("killer");

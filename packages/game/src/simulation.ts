@@ -432,6 +432,8 @@ export class DotBotSimulation {
   }> = [];
   private readonly dots = new Map<string, InternalDot>();
   private readonly mines = new Map<string, InternalMine>();
+  /** Every authored mine is the same physical disc; build its contact shape once. */
+  private readonly mineContactShape: ContactShape;
   private readonly coverages = new Map<string, ActiveCoverage>();
   private readonly doors = new Map<string, InternalDoor>();
   /** Everything static a bot collides with, per physics floor. */
@@ -458,12 +460,13 @@ export class DotBotSimulation {
   /** `aggressor faction -> protected squad`, refreshed only by a hostile action. */
   private readonly squadHostilityUntil = new Map<string, number>();
   private noiseSeq = 0;
-  private mineSeq = 0;
   private dropSeq = 0;
 
   private constructor(map: MapDocument, config: GameConfig) {
     this.map = map;
     this.config = config;
+    this.mineContactShape = makeContactShape(1);
+    buildContactShape(this.mineContactShape, config.dotRadius, 0, [1]);
     this.buildStaticCollision();
     this.collectStairs();
     this.collectDoors();
@@ -1207,7 +1210,6 @@ export class DotBotSimulation {
       if (
         target.id === bot.id
         || target.isAmbient
-        || target.state !== "alive"
         || target.incognitoMs > 0
         || physicsFloorId(this.map, target.floorId) !== physicsFloorId(this.map, bot.floorId)
         || distance(bot.position, target.position) > this.config.radarRadius
@@ -1271,8 +1273,15 @@ export class DotBotSimulation {
   }
 
   private placeMine(bot: InternalBot): void {
+    let mineId: string;
+    do {
+      mineId = opaqueMineId();
+    } while (this.mines.has(mineId));
     const mine: InternalMine = {
-      id: `mine-${bot.id}-${this.mineSeq++}`,
+      // Public snapshots need a stable entity id, but it must not encode the
+      // owner's bot id: rivals receive this id even when every ownership field
+      // is correctly redacted by the interest filter.
+      id: mineId,
       position: { ...bot.position },
       radius: this.config.dotRadius,
       placedByBotId: bot.id,
@@ -1317,7 +1326,7 @@ export class DotBotSimulation {
           && this.mineIsHostileTo(mine, bot),
         )
         .sort((left, right) => distance(left.position, mine.position) - distance(right.position, mine.position) || left.id.localeCompare(right.id));
-      const trigger = intruders.find((bot) => distance(bot.position, mine.position) <= bot.radius + mine.radius);
+      const trigger = intruders.find((bot) => this.mineTouchesBot(mine, bot));
       if (trigger) {
         this.detonateMine(mine, trigger);
         continue;
@@ -1347,6 +1356,24 @@ export class DotBotSimulation {
 
   private mineIsHostileTo(mine: InternalMine, target: InternalBot): boolean {
     return target.factionKind === "ambient" || target.squadId !== mine.squadId;
+  }
+
+  /** Mine disc against the same exact plated silhouette used by separation and combat. */
+  private mineTouchesBot(mine: InternalMine, target: InternalBot): boolean {
+    const dx = mine.position.x - target.position.x;
+    const dy = mine.position.y - target.position.y;
+    const centres = Math.hypot(dx, dy);
+    if (centres <= 0.001) return true;
+    const towardMine = Math.atan2(dy, dx);
+    const seed = contactReach(target.radius, target.facing, target.shieldSegments, towardMine) + mine.radius;
+    const contact = contactDistance(
+      this.shapeOf(target),
+      this.mineContactShape,
+      dx / centres,
+      dy / centres,
+      seed,
+    );
+    return centres <= contact;
   }
 
   private detonateMine(mine: InternalMine, target: InternalBot): void {
@@ -1412,6 +1439,7 @@ export class DotBotSimulation {
     target.radarPingElapsedMs = 0;
     target.radarPings = [];
     target.incognitoMs = 0;
+    for (const mine of this.mines.values()) mine.revealMsByBotId.delete(target.id);
     for (const observer of this.bots.values()) {
       observer.radarPings = observer.radarPings.filter((contact) => contact.botId !== target.id);
     }
@@ -4144,6 +4172,19 @@ function sameItem(left: Item, right: unknown): boolean {
   if (left.kind === "powerup") return candidate.kind === "powerup" && left.type === candidate.type;
   if (left.kind === "blueprint") return candidate.kind === "blueprint" && left.blueprintId === candidate.blueprintId;
   return candidate.kind === "mine";
+}
+
+/** Stable for this mine's lifetime without encoding its owner, placement time,
+ * or the count/order of mines the viewer was never authorized to know about. */
+function opaqueMineId(): string {
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  // RFC 4122 v4 layout keeps the result recognizable and well-supported while
+  // retaining 122 random bits. The `mine-` prefix remains useful in diagnostics.
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `mine-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function toBotSnapshot(bot: InternalBot): DotBotEntity {

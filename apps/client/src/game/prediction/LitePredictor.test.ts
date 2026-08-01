@@ -111,9 +111,38 @@ describe("LitePredictor", () => {
       dashActiveMs: expect.any(Number),
       dashCooldownMs: 0,
       bays: [null, null, null],
+      inventoryRevision: 1,
     });
     expect(predictor.current.dashActiveMs).toBeGreaterThan(0);
     expect(predictor.current.dashOverchargeMs).toBeGreaterThan(59_000);
+  });
+
+  it("gives a valid authoritative drop precedence over same-frame overcharge activation", () => {
+    const overcharge = { kind: "powerup", type: "dashOvercharge" } as const;
+    const health = { kind: "powerup", type: "health" } as const;
+    const predictor = new LitePredictor(
+      downtownMap,
+      defaultGameConfig,
+      makeBot({
+        bays: [overcharge, health, null],
+        inventoryRevision: 0,
+        dashCooldownMs: 900,
+      }),
+    );
+
+    predictor.step({
+      move: { x: 1, y: 0 },
+      dash: true,
+      useBay: 0,
+      drop: { from: "bay", index: 1, revision: 0, expected: health },
+    });
+
+    expect(predictor.current).toMatchObject({
+      bays: [overcharge, null, null],
+      inventoryRevision: 1,
+      dashActiveMs: 0,
+      dashOverchargeMs: 0,
+    });
   });
 
   it("moves a full-size predicted bot through Mercy's standard ward-to-core doorway", () => {

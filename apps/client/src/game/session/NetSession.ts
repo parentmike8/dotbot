@@ -412,7 +412,12 @@ export class NetSession implements GameSession {
         return;
       case "matchStart":
         this.snapshots = [];
+        this.events = [];
+        this.killCams = [];
+        this.replayActive = false;
+        this.activeKillCamId = null;
         this.serverClockTick = null;
+        this.serverClockClientMs = 0;
         this.lastRenderTick = Number.NEGATIVE_INFINITY;
         this.lastRenderedRemote = null;
         this.lastOwnRenderedPosition = null;
@@ -422,9 +427,17 @@ export class NetSession implements GameSession {
         this.correctionOffset = { x: 0, y: 0 };
         this.impactTelemetry = createImpactTelemetry();
         this.impactPredictionSeq = 0;
+        this.lastImpactFxAtMs = Number.NEGATIVE_INFINITY;
         this.interpolationDelayMs = maximumInterpolationDelayMs;
-        this.pendingInputs = [];
-        this.killCams = [];
+        this.snapshotIntervalsMs.splice(0);
+        this.lastSnapshotArrivalMs = null;
+        this.correctionTimesMs.splice(0);
+        this.bufferDepthSnapshots = 0;
+        this.predictionErrorPx = 0;
+        this.warnedClockDrift = false;
+        // A new authoritative run must not inherit a queued bay activation,
+        // body action, or held movement from the prior run/reconnect window.
+        this.clearInputsForHandoff();
         this.mapValue = message.map;
         this.configValue = message.config;
         this.playerIdValue = message.yourBotId;
@@ -591,6 +604,8 @@ export class NetSession implements GameSession {
     this.queuedUseBay = undefined;
     this.queuedSwapBay = undefined;
     this.queuedDrop = undefined;
+    this.stagedDownedVerb = undefined;
+    this.queuedTake = undefined;
     this.queuedPlea = false;
     this.queuedPing = undefined;
     this.edgeAwaitingFlush = false;

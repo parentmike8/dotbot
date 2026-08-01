@@ -1,6 +1,6 @@
 import { contextKey, doorEntityCollisionRect, physicsFloorId } from "@dotbot/game/mapModel";
 import { distance } from "@dotbot/game/math";
-import { contactReach } from "@dotbot/game/shields";
+import { bodiesTouching } from "@dotbot/game/bodyContact";
 import type { DoorEntity, DownCause, GameSnapshot, MapDocument, SimEvent } from "@dotbot/game/types";
 import { hasLineOfSight, OUTDOOR_SIGHT, seesOutdoors } from "@dotbot/game/visibility";
 import type { KillCamActor, KillCamClip, KillCamFrame } from "./messages";
@@ -210,11 +210,5 @@ function historicallyVisible(
 }
 
 function historicallyTouching(victim: HistoryActor, source: HistoryActor): boolean {
-  const toward = Math.atan2(
-    source.position.y - victim.position.y,
-    source.position.x - victim.position.x,
-  );
-  const span = contactReach(victim.radius, victim.facing, victim.shieldSegments, toward)
-    + contactReach(source.radius, source.facing, source.shieldSegments, toward + Math.PI);
-  return distance(victim.position, source.position) <= span + 1;
+  return bodiesTouching(victim, source, 1);
 }

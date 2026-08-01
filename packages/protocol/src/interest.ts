@@ -1,6 +1,6 @@
 import { classifyNoise, contextKey, doorEntityCollisionRect, physicsFloorId } from "@dotbot/game/mapModel";
 import { distance } from "@dotbot/game/math";
-import { contactReach } from "@dotbot/game/shields";
+import { bodiesTouching } from "@dotbot/game/bodyContact";
 import type { MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
 import { hasLineOfSight, OUTDOOR_SIGHT, seesOutdoors } from "@dotbot/game/visibility";
 import type { EntityMeta, FullWireSnapshot, MatchIntel, WireBot } from "./messages";
@@ -82,6 +82,7 @@ export function filterForViewer(
     };
   });
   const includedBotIds = new Set(bots.map((bot) => bot.i));
+  const allBotIds = new Set(wire.bots.map((bot) => bot.i));
   const dots = wire.dots.filter((dot) => visibleFloors.has(physicsFloorId(viewerCtx.map, dot.floorId)));
   const mines = wire.mines
     .filter((mine) => {
@@ -98,7 +99,9 @@ export function filterForViewer(
         position: mine.position,
         radius: mine.radius,
         floorId: mine.floorId,
-        placedAtMs: mine.placedAtMs,
+        // Exact placement time is server bookkeeping for owner rotation. A
+        // rival does not need a correlation handle back to the placer.
+        placedAtMs: squadMine ? mine.placedAtMs : 0,
         ...(squadMine ? { placedByBotId: mine.placedByBotId, squadId: mine.squadId } : {}),
         presentation: squadMine ? "squad" as const : radarRevealed ? "revealed" as const : "disguised" as const,
         ...(!squadMine ? { disguise: deterministicMineDisguise(mine.id) } : {}),
@@ -106,9 +109,12 @@ export function filterForViewer(
       };
     });
   const coverages = wire.coverages.filter((coverage) =>
-    visibleFloors.has(physicsFloorForBot(wire.bots, viewerCtx.map, coverage.actorId))
-      || includedBotIds.has(coverage.actorId)
-      || includedBotIds.has(coverage.targetId),
+    // A channel is actor state. Never disclose a hidden actor merely because
+    // its target is visible; likewise, a bot target must independently be in
+    // this viewer's interest set. Dot/extraction/hold-index targets are not bot
+    // identities and remain useful once their actor is authorized.
+    includedBotIds.has(coverage.actorId)
+      && (!allBotIds.has(coverage.targetId) || includedBotIds.has(coverage.targetId)),
   );
   const listeners = isSpectating
     ? squadBots.filter((bot) => (bot.s ?? "alive") === "alive" && visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor")))
@@ -202,17 +208,17 @@ function botsPhysicallyTouch(
   target: WireBot,
   targetMeta: EntityMeta,
 ): boolean {
-  const observerPosition = wirePosition(observer);
-  const targetPosition = wirePosition(target);
-  const toward = Math.atan2(targetPosition.y - observerPosition.y, targetPosition.x - observerPosition.x);
   const observerSegments = observer.sh ?? Array(observerMeta.maxShields).fill(1);
   const targetSegments = target.sh ?? Array(targetMeta.maxShields).fill(1);
-  const contactDistance = contactReach(observerMeta.radius, observer.f ?? 0, observerSegments, toward)
-    + contactReach(targetMeta.radius, target.f ?? 0, targetSegments, toward + Math.PI);
-  return distance(observerPosition, targetPosition) <= contactDistance + 1;
-}
-
-function physicsFloorForBot(bots: readonly WireBot[], map: MapDocument, botId: string): string {
-  const bot = bots.find((candidate) => candidate.i === botId);
-  return bot ? physicsFloorId(map, bot.fl ?? "outdoor") : "";
+  return bodiesTouching({
+    position: wirePosition(observer),
+    radius: observerMeta.radius,
+    facing: observer.f ?? 0,
+    shieldSegments: observerSegments,
+  }, {
+    position: wirePosition(target),
+    radius: targetMeta.radius,
+    facing: target.f ?? 0,
+    shieldSegments: targetSegments,
+  }, 1);
 }

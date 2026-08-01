@@ -240,12 +240,21 @@ function interpolateBot(bot: DotBotEntity, next: DotBotEntity | undefined, alpha
     radarPings = sourcePings.map((ping) => {
       const previousPing = previousPings.get(ping.botId) ?? ping;
       const nextPing = nextPings.get(ping.botId);
-      return nextPing ? {
+      if (!nextPing) return { ...ping };
+      const refreshedSample = nextPing.ageMs < previousPing.ageMs
+        || nextPing.x !== previousPing.x
+        || nextPing.y !== previousPing.y
+        || nextPing.floorId !== previousPing.floorId;
+      // A Radar point is sampled intel, not a continuously tracked body. Hold
+      // the old stale return through the interval and switch only at the newer
+      // snapshot tick; tweening would expose the future sample before it exists.
+      if (refreshedSample) return { ...(alpha >= 1 ? nextPing : previousPing) };
+      return {
         ...nextPing,
-        x: lerp(previousPing.x, nextPing.x, alpha),
-        y: lerp(previousPing.y, nextPing.y, alpha),
+        x: previousPing.x,
+        y: previousPing.y,
         ageMs: lerp(previousPing.ageMs, nextPing.ageMs, alpha),
-      } : { ...ping };
+      };
     });
   }
   return {
@@ -263,8 +272,15 @@ function interpolateBot(bot: DotBotEntity, next: DotBotEntity | undefined, alpha
 }
 
 function interpolateMine(mine: MineEntity, next: MineEntity | undefined, alpha: number): MineEntity {
-  if (!next || mine.floorId !== next.floorId) return mine;
-  return { ...mine, position: interpolatePoint(mine.position, next.position, alpha) };
+  if (!next || mine.floorId !== next.floorId) {
+    return { ...mine, position: { ...mine.position }, revealedToBotIds: [...mine.revealedToBotIds] };
+  }
+  const authorized = alpha >= 1 ? next : mine;
+  return {
+    ...authorized,
+    position: interpolatePoint(mine.position, next.position, alpha),
+    revealedToBotIds: [...authorized.revealedToBotIds],
+  };
 }
 
 function interpolateNoise(noise: NoiseEvent, next: NoiseEvent | undefined, alpha: number): NoiseEvent {

@@ -453,6 +453,85 @@ describe("NetSession item edges", () => {
     expect(internals.dotStore.get("outside")?.captureProgressMs).toBe(500);
   });
 
+  it("starts a run without replay, event, timing, or staged-action state from the prior run", () => {
+    const sent: ClientMessage[] = [];
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    Object.assign(session as unknown as object, {
+      transport: { send: (message: ClientMessage) => sent.push(message) },
+      mapValue: downtownMap,
+      configValue: defaultGameConfig,
+      playerIdValue: "viewer",
+      tickHz: 60,
+      handshakeReady: true,
+    });
+    session.sendInput({
+      move: { x: 1, y: 0 },
+      dash: true,
+      useBay: 0,
+      take: { fromBotId: "old-body", index: "all" },
+      downedVerb: "revive",
+    });
+    const internals = session as unknown as {
+      receive(message: unknown): void;
+      advancePrediction(ms: number): void;
+      replayActive: boolean;
+      activeKillCamId: string | null;
+      snapshotIntervalsMs: number[];
+      lastSnapshotArrivalMs: number | null;
+    };
+    internals.receive({ type: "ev", events: [{ type: "mineSensor", botId: "viewer", mineId: "old-mine" }] });
+    internals.replayActive = true;
+    internals.activeKillCamId = "old-clip";
+    internals.snapshotIntervalsMs.push(45, 55);
+    internals.lastSnapshotArrivalMs = 1_000;
+
+    internals.receive({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "viewer",
+      meta: [{ id: "viewer", name: "Ada", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
+      tickHz: 60,
+      endTick: 3600,
+      insertionName: "TEST",
+      dotBaseline: [],
+    });
+    internals.advancePrediction((1000 / 60) * 2 + 1);
+
+    const frames = sent
+      .filter((message): message is Extract<ClientMessage, { type: "input" }> => message.type === "input")
+      .flatMap((message) => message.frames ?? []);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((frame) => frame.move[0] === 0 && frame.move[1] === 0 && frame.dash === false)).toBe(true);
+    expect(frames.every((frame) => frame.useBay === undefined)).toBe(true);
+    expect(frames.every((frame) => frame.take === undefined)).toBe(true);
+    expect(frames.every((frame) => frame.downedVerb === undefined)).toBe(true);
+    expect(session.drainEvents()).toEqual([]);
+    expect(internals.replayActive).toBe(false);
+    expect(internals.activeKillCamId).toBeNull();
+    expect(internals.snapshotIntervalsMs).toEqual([]);
+    expect(internals.lastSnapshotArrivalMs).toBeNull();
+  });
+
+  it("scrubs staged take and downed actions during a reconnect handoff", () => {
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    session.sendInput({
+      move: { x: 0, y: 0 },
+      dash: false,
+      take: { fromBotId: "stale-body", index: "all" },
+      downedVerb: "loot",
+    });
+    const internals = session as unknown as {
+      clearInputsForHandoff(): void;
+      queuedTake: InputCommand["take"];
+      stagedDownedVerb: InputCommand["downedVerb"];
+    };
+    internals.clearInputsForHandoff();
+
+    expect(internals.queuedTake).toBeUndefined();
+    expect(internals.stagedDownedVerb).toBeUndefined();
+  });
+
   it("reconnects with the same GameLift reservation after a brief mobile network handoff", async () => {
     vi.useFakeTimers();
     const transports: FakeTransport[] = [];

@@ -18,9 +18,10 @@ import {
 } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, Rect, SimEvent, Solid, Vec2 } from "@dotbot/game/types";
+import { bodiesTouching } from "@dotbot/game/bodyContact";
 import type { KillCamClip, MatchIntel } from "@dotbot/protocol";
 import type { KillCamImpact } from "../killCam";
-import { CORE_REACH, contactReach } from "@dotbot/game/shields";
+import { CORE_REACH } from "@dotbot/game/shields";
 import type { PredictedImpact } from "../session/GameSession";
 import { buildMapArt, makeWorldLabel, type MapArt } from "./mapArt";
 import { CAPTION } from "./worldCaption";
@@ -2085,25 +2086,7 @@ export class GameRenderer {
 }
 
 function botsPhysicallyTouch(observer: DotBotEntity, target: DotBotEntity): boolean {
-  const toward = Math.atan2(
-    target.position.y - observer.position.y,
-    target.position.x - observer.position.x,
-  );
-  const span = contactReach(
-    observer.radius,
-    observer.facing,
-    observer.shieldSegments,
-    toward,
-  ) + contactReach(
-    target.radius,
-    target.facing,
-    target.shieldSegments,
-    toward + Math.PI,
-  );
-  return Math.hypot(
-    target.position.x - observer.position.x,
-    target.position.y - observer.position.y,
-  ) <= span + 1;
+  return bodiesTouching(observer, target, 1);
 }
 
 function clampVector(vector: Vec2, maximum: number): Vec2 {

@@ -1522,9 +1522,13 @@ export class Room {
     for (const member of this.members.values()) {
       if (!member.streaming || !member.peer) continue;
       const includedBotIds = this.includedBotIds(member, snapshot);
+      const visibleEvents = filterEventsForViewer(events, meta, includedBotIds, member.squadId);
+      // An empty reliable packet is still information: its timing tells a rival
+      // that a hidden squad just produced a private event (notably mine sensors).
+      if (visibleEvents.length === 0) continue;
       this.sendStream(member, {
         type: "ev",
-        events: filterEventsForViewer(events, meta, includedBotIds, member.squadId).map(toWireEvent),
+        events: visibleEvents.map(toWireEvent),
       });
     }
   }
