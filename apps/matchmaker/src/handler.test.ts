@@ -16,6 +16,7 @@ import {
   isClosedGameSessionError,
   isFleetWakingError,
   isFullGameSessionError,
+  isGameLiftPlayerSessionReadinessError,
   normalizeAtomicQuickPlayRequest,
   normalizeQuickPlayTicket,
   packingReservation,
@@ -25,6 +26,7 @@ import {
   partyRosterAllocationDigest,
   publicArenaKey,
   recoverableAtomicArenaCreation,
+  retryGameLiftPlayerSessionReadiness,
   retainAtomicAllocationCleanupRequest,
   retainAtomicArenaCreationIntentRequest,
   selectPartyCleanupPlayerSessions,
@@ -71,6 +73,44 @@ describe("matchmaker endpoint helpers", () => {
     expect(isFleetWakingError({ name: "NotReadyException" })).toBe(true);
     expect(isFleetWakingError({ name: "InternalServiceException" })).toBe(false);
     expect(isFleetWakingError(new Error("network failure"))).toBe(false);
+  });
+
+  it("retries only non-committing GameLift player-session readiness errors", async () => {
+    const waits: number[] = [];
+    const operation = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("not propagated"), { name: "InvalidRequestException" }))
+      .mockRejectedValueOnce(Object.assign(new Error("not propagated"), { name: "NotReadyException" }))
+      .mockResolvedValue({ PlayerSessions: [{ PlayerSessionId: "psess-ready" }] });
+
+    await expect(retryGameLiftPlayerSessionReadiness(
+      operation,
+      async (milliseconds) => { waits.push(milliseconds); },
+    )).resolves.toEqual({ PlayerSessions: [{ PlayerSessionId: "psess-ready" }] });
+    expect(operation).toHaveBeenCalledTimes(3);
+    expect(waits).toEqual([100, 200]);
+    expect(isGameLiftPlayerSessionReadinessError({ name: "InvalidRequestException" })).toBe(true);
+    expect(isGameLiftPlayerSessionReadinessError({ name: "NotReadyException" })).toBe(true);
+    expect(isGameLiftPlayerSessionReadinessError({ name: "InternalServiceException" })).toBe(false);
+  });
+
+  it("does not replay uncertain or permanent CreatePlayerSessions failures", async () => {
+    const error = Object.assign(new Error("network result unknown"), { name: "InternalServiceException" });
+    const operation = vi.fn().mockRejectedValue(error);
+    await expect(retryGameLiftPlayerSessionReadiness(operation, async () => undefined)).rejects.toBe(error);
+    expect(operation).toHaveBeenCalledOnce();
+  });
+
+  it("bounds persistent readiness failures", async () => {
+    const error = Object.assign(new Error("still not ready"), { name: "InvalidRequestException" });
+    const operation = vi.fn().mockRejectedValue(error);
+    const waits: number[] = [];
+    await expect(retryGameLiftPlayerSessionReadiness(
+      operation,
+      async (milliseconds) => { waits.push(milliseconds); },
+      3,
+    )).rejects.toBe(error);
+    expect(operation).toHaveBeenCalledTimes(3);
+    expect(waits).toEqual([100, 200]);
   });
 
   it("maps closed and full sessions to stable client errors", () => {

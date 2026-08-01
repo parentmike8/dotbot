@@ -1303,11 +1303,11 @@ async function createPartyPlayerSessions(
   }));
   let created: CreatePlayerSessionsCommandOutput;
   try {
-    created = await gameLift.send(new CreatePlayerSessionsCommand({
+    created = await retryGameLiftPlayerSessionReadiness(() => gameLift.send(new CreatePlayerSessionsCommand({
       GameSessionId: gameSessionId,
       PlayerIds: memberPlayerIds,
       PlayerDataMap: playerDataMap,
-    }));
+    })));
   } catch {
     // The service may have committed some or all reservations before the SDK
     // lost its response. The pre-call cleanup intent lets reconciliation find
@@ -1331,6 +1331,35 @@ async function createPartyPlayerSessions(
     ...allocation,
     expiresAt: new Date(reservationExpiresAt).toISOString(),
   }));
+}
+
+/**
+ * A newly activated managed-EC2 GameSession can answer on its server endpoint
+ * just before the GameLift control plane accepts CreatePlayerSessions. Those
+ * readiness responses are 400-class, non-committing failures, so retrying the
+ * exact whole-party request cannot duplicate a reservation. All other errors
+ * remain uncertain and go through the durable discovery/cleanup path.
+ */
+export async function retryGameLiftPlayerSessionReadiness<T>(
+  operation: () => Promise<T>,
+  wait: (milliseconds: number) => Promise<void> = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  attempts = 6,
+): Promise<T> {
+  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 10) throw new Error("Invalid GameLift readiness retry count.");
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isGameLiftPlayerSessionReadinessError(error) || attempt === attempts - 1) throw error;
+      await wait(100 * 2 ** attempt);
+    }
+  }
+  throw new Error("GameLift player-session readiness retries were exhausted.");
+}
+
+export function isGameLiftPlayerSessionReadinessError(error: unknown): boolean {
+  const name = awsErrorName(error);
+  return name === "InvalidRequestException" || name === "NotReadyException";
 }
 
 /** GameLift changes an unaccepted player session from RESERVED to TIMEDOUT
