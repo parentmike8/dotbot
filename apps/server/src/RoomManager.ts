@@ -3,7 +3,9 @@ import type { GameConfig } from "@dotbot/game/types";
 import { isBaseTutorialComplete } from "@dotbot/game/baseTutorial";
 import type { ClientMessage, ServerMessage } from "@dotbot/protocol";
 import { NoopPersistence, type Persistence, type PlayerIdentity } from "./db";
-import { Room, type PublicMemberRelease, type RoomBandwidthHealth, type RoomPeer } from "./Room";
+import { Room, type PublicMemberRelease, type PublicPartyAdmissionDecision, type RoomBandwidthHealth, type RoomPeer } from "./Room";
+import type { AtomicPublicPlayerAdmission, PublicPlayerAdmission } from "./GameLiftSessionGate";
+import type { PublicHuman } from "./hotArena";
 
 const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -29,12 +31,12 @@ export type RoomManagerOptions = {
   onPublicMemberReleased?: (release: PublicMemberRelease) => void | Promise<void>;
 };
 
-export type PublicPlayerAdmission = {
-  playerId: string;
-  arenaId: string;
-  partyId: string;
-  buildId: string;
-  region: string;
+export type PreparedPublicPartyMember = {
+  peer: RoomPeer;
+  message: Extract<ClientMessage, { type: "quickPlayHello" }>;
+  admission: AtomicPublicPlayerAdmission;
+  identity: PlayerIdentity;
+  isPeerActive: () => boolean;
 };
 
 export class RoomManager {
@@ -108,6 +110,20 @@ export class RoomManager {
 
   join(code: string): Room | undefined {
     return this.roomMap.get(code.trim().toUpperCase());
+  }
+
+  /** Signed allocator preflight. Deliberately never creates a Room or changes
+   * membership/countdown state; startup callers retry until the assigned room
+   * exists. */
+  preflightPublicParty(arenaId: string, party: readonly PublicHuman[]): PublicPartyAdmissionDecision {
+    if (!this.options.hotArena) return { accepted: false, code: "arena_capacity", retryable: true };
+    const room = this.join(arenaId);
+    return room?.evaluatePublicPartyAdmission(party)
+      ?? { accepted: false, code: "arena_capacity", retryable: true };
+  }
+
+  releasePublicReservations(reservationPlayerIds: ReadonlySet<string>): void {
+    for (const room of this.roomMap.values()) room.releasePublicReservations(reservationPlayerIds);
   }
 
   async handleHello(
@@ -300,6 +316,131 @@ export class RoomManager {
     return true;
   }
 
+  /** Performs all async identity, tutorial, alias, and assigned-arena checks
+   * without touching Room membership. GameLift remains reserved, not
+   * accepted, while the other signed roster members arrive. */
+  async preparePublicPartyMember(
+    peer: RoomPeer,
+    message: Extract<ClientMessage, { type: "quickPlayHello" }>,
+    admission: AtomicPublicPlayerAdmission,
+    isPeerActive: () => boolean = () => true,
+  ): Promise<PreparedPublicPartyMember | null> {
+    if (!this.options.hotArena) {
+      peer.send({ type: "err", code: "quick_play_unavailable", msg: "Public quick play is not enabled on this server." });
+      return null;
+    }
+    if (!this.persistence.live) {
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Authoritative base progress could not be verified. Try again." });
+      return null;
+    }
+    let identity: PlayerIdentity;
+    try {
+      identity = await this.persistence.resolveOrRegisterPlayer(message.token, message.name);
+    } catch (error) {
+      console.warn("[persistence] identity lookup failed; rejecting staged party admission.", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
+      return null;
+    }
+    if (!isPeerActive() || peer.isOpen?.() === false) return null;
+    if (!matchesReservedPlayerIdentity(identity, admission.playerId)) {
+      peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
+      return null;
+    }
+    try {
+      const tutorial = await this.persistence.getBaseTutorialForPlayer(identity.playerId);
+      if (!tutorial || !isBaseTutorialComplete(tutorial)) {
+        peer.send({ type: "err", code: "tutorial_required", msg: "Complete the base introduction before deploying." });
+        return null;
+      }
+    } catch (error) {
+      console.warn("[persistence] tutorial lookup failed; rejecting staged party admission.", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      peer.send({ type: "err", code: "storage_unavailable", msg: "Base progress could not be verified. Try again." });
+      return null;
+    }
+    if (!isPeerActive() || peer.isOpen?.() === false) return null;
+    const assignedArenaId = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : admission.arenaId;
+    if (!isPeerActive() || peer.isOpen?.() === false) return null;
+    if (assignedArenaId !== admission.arenaId) {
+      peer.send({ type: "err", code: "arena_mismatch", msg: "This reservation belongs to a different arena." });
+      return null;
+    }
+    return { peer, message, admission, identity, isPeerActive };
+  }
+
+  /** Refreshes every canonical identity, then performs one synchronous Room
+   * commit. A failed member or arena check leaves membership unchanged. */
+  async commitPublicParty(
+    prepared: readonly PreparedPublicPartyMember[],
+    isCommitActive: () => boolean = () => true,
+  ): Promise<boolean> {
+    if (!isCommitActive() || !validPreparedParty(prepared)) return false;
+    const refreshed = await Promise.all(prepared.map(async (entry) => {
+      if (!isCommitActive() || !entry.isPeerActive() || entry.peer.isOpen?.() === false) return null;
+      try {
+        const identity = await this.persistence.resolveOrRegisterPlayer(entry.message.token, entry.message.name);
+        if (!isCommitActive() || !entry.isPeerActive() || entry.peer.isOpen?.() === false
+          || !matchesReservedPlayerIdentity(identity, entry.admission.playerId)) return null;
+        return { ...entry, identity };
+      } catch (error) {
+        console.warn("[persistence] final identity lookup failed; rejecting whole-party admission.", {
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
+        return null;
+      }
+    }));
+    if (refreshed.some((entry) => entry === null)) {
+      for (const entry of prepared) {
+        entry.peer.send({ type: "err", code: "party_invalid", msg: "The intact party could not be verified. Retry quick play together." });
+      }
+      return false;
+    }
+    if (!isCommitActive()) return false;
+    const party = refreshed as Array<PreparedPublicPartyMember & { identity: PlayerIdentity }>;
+    const room = this.join(party[0].admission.arenaId);
+    if (!room) {
+      for (const entry of party) {
+        entry.peer.send({ type: "err", code: "arena_unavailable", msg: "That arena is not ready. Retry quick play together.", retryable: true });
+      }
+      return false;
+    }
+    if (!isCommitActive()) return false;
+    const joined = room.joinPublicParty(party.map((entry) => ({
+      peer: entry.peer,
+      token: entry.message.token,
+      name: entry.identity.name,
+      playerId: formatPublicPlayerId(entry.identity.publicPlayerId),
+      persistencePlayerId: entry.identity.playerId,
+      partyId: entry.admission.partyId,
+      reservationPlayerId: entry.admission.playerId,
+      previousPlayerIds: entry.identity.previousPublicPlayerIds?.map(formatPublicPlayerId) ?? [],
+      previousPersistencePlayerIds: entry.identity.previousPlayerIds ?? [],
+    })));
+    if (!joined.accepted) {
+      for (const entry of party) {
+        entry.peer.send({
+          type: "err",
+          code: joined.code,
+          msg: joined.code === "party_composition_full"
+            ? "This arena cannot fit the intact party. Retry quick play together."
+            : joined.code === "arena_capacity"
+              ? "This arena cannot accept another party. Retry quick play together."
+              : "The intact party could not be admitted. Retry quick play together.",
+          ...(joined.retryable ? { retryable: true } : {}),
+        });
+      }
+      return false;
+    }
+    for (const binding of joined.bindings) {
+      const entry = party.find((candidate) => candidate.peer.id === binding.peerId)!;
+      this.peerRooms.set(entry.peer.id, { room, playerId: binding.playerId });
+    }
+    return true;
+  }
+
   async handleMessage(
     peer: RoomPeer,
     message: ClientMessage,
@@ -373,6 +514,24 @@ export class RoomManager {
         this.sessionRoomLookup = null;
       });
   }
+}
+
+function validPreparedParty(prepared: readonly PreparedPublicPartyMember[]): boolean {
+  if (prepared.length < 1 || prepared.length > 3
+    || new Set(prepared.map((entry) => entry.peer.id)).size !== prepared.length) return false;
+  const first = prepared[0].admission;
+  const expectedMembers = first.partyMemberPlayerIds.join(".");
+  return first.partyReservationExpiresAt > Date.now()
+    && first.partyMemberPlayerIds.length === prepared.length
+    && prepared.map((entry) => entry.admission.playerId).sort().join(".") === expectedMembers
+    && prepared.every(({ admission }) => admission.partyClaimId === first.partyClaimId
+      && admission.partyId === first.partyId
+      && admission.partyVersion === first.partyVersion
+      && admission.arenaId === first.arenaId
+      && admission.buildId === first.buildId
+      && admission.region === first.region
+      && admission.partyReservationExpiresAt === first.partyReservationExpiresAt
+      && admission.partyMemberPlayerIds.join(".") === expectedMembers);
 }
 
 function formatPublicPlayerId(value: string): string {

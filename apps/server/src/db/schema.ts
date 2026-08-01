@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { BaseShellId, ContractDefinition, LoadoutPreset } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
 import type { BaseTutorialPhase } from "@dotbot/game/baseTutorial";
@@ -85,10 +85,34 @@ export const playerBlocks = pgTable("player_blocks", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [primaryKey({ columns: [table.blockerPlayerId, table.blockedPlayerId] })]);
 
+/** Durable pre-run party authority. The random matchmaking key, not this UUID,
+ * crosses the signed control-plane/AWS boundary. */
+export const parties = pgTable("parties", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  matchmakingKey: text("matchmaking_key").notNull(),
+  version: integer("version").notNull().default(1),
+  leaderPlayerId: uuid("leader_player_id").notNull().references(() => players.id, { onDelete: "restrict" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("parties_matchmaking_key_unique").on(table.matchmakingKey)]);
+
+export const partyMembers = pgTable("party_members", {
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  playerId: uuid("player_id").notNull().references(() => players.id, { onDelete: "restrict" }),
+  /** Present only while membership is owned by one unlinked guest device. */
+  guestDeviceId: uuid("guest_device_id").references(() => playerDevices.id, { onDelete: "set null" }),
+  joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.partyId, table.playerId] }),
+  uniqueIndex("party_members_player_unique").on(table.playerId),
+]);
+
 export const partyInvites = pgTable("party_invites", {
   id: uuid("id").primaryKey().defaultRandom(),
   tokenHash: text("token_hash").notNull(),
   ownerPlayerId: uuid("owner_player_id").notNull().references(() => players.id, { onDelete: "cascade" }),
+  partyId: uuid("party_id").references(() => parties.id, { onDelete: "cascade" }),
+  rosterVersion: integer("roster_version"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   revoked: boolean("revoked").notNull().default(false),
@@ -97,8 +121,27 @@ export const partyInvites = pgTable("party_invites", {
 export const partyInviteAcceptances = pgTable("party_invite_acceptances", {
   inviteId: uuid("invite_id").notNull().references(() => partyInvites.id, { onDelete: "cascade" }),
   playerId: uuid("player_id").notNull().references(() => players.id, { onDelete: "cascade" }),
+  guestDeviceId: uuid("guest_device_id").references(() => playerDevices.id, { onDelete: "set null" }),
+  durable: boolean("durable").notNull().default(false),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [primaryKey({ columns: [table.inviteId, table.playerId] })]);
+
+/** Cloud SQL lease that freezes one canonical roster while AWS allocates it. */
+export const partyQueueClaims = pgTable("party_queue_claims", {
+  id: uuid("id").primaryKey(),
+  partyId: uuid("party_id").references(() => parties.id, { onDelete: "cascade" }),
+  requestingPlayerId: uuid("requesting_player_id").notNull().references(() => players.id, { onDelete: "cascade" }),
+  partyVersion: integer("party_version").notNull(),
+  buildId: text("build_id").notNull(),
+  region: text("region").notNull(),
+  status: text("status").notNull().default("active"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("party_queue_claims_party_status_idx").on(table.partyId, table.status, table.expiresAt),
+  index("party_queue_claims_requester_status_idx").on(table.requestingPlayerId, table.status, table.expiresAt),
+]);
 
 export const matchResults = pgTable("match_results", {
   id: uuid("id").primaryKey(),

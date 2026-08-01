@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { AccountSummary, FriendEntry, LinkAccountResult, PartyInviteAcceptance, Persistence, PlayerIdentity, PlayerProfile, PublicPlayer, RegisteredPlayer, VerifiedExternalIdentity } from "./Persistence";
+import type { AccountSummary, DurablePartyInvite, FriendEntry, LinkAccountResult, PartyInviteAcceptance, PartyQueueClaim, PartySummary, Persistence, PlayerIdentity, PlayerProfile, PublicPlayer, RegisteredPlayer, VerifiedExternalIdentity } from "./Persistence";
 import { DEFAULT_BASE_SHELL, starterBaseLayout } from "@dotbot/game/content/base";
 import type { BaseLayout, BaseObjectKind } from "@dotbot/game/types";
 import type { WireItemCode } from "@dotbot/protocol";
@@ -50,6 +50,18 @@ export class NoopPersistence implements Persistence {
   async acceptFriend(_token: string, _publicPlayerId: string): Promise<FriendEntry | null> { return null; }
   async createPartyInvite(_token: string): Promise<{ code: string; expiresAt: string } | null> { return null; }
   async acceptPartyInvite(_token: string, _code: string): Promise<PartyInviteAcceptance | null> { return null; }
+  async getParty(_token: string): Promise<PartySummary | null> { return null; }
+  async createDurablePartyInvite(_token: string): Promise<DurablePartyInvite | null> { return null; }
+  async revokeDurablePartyInvites(_token: string): Promise<PartySummary | null> { return null; }
+  async acceptDurablePartyInvite(_token: string, _code: string): Promise<PartyInviteAcceptance | null> { return null; }
+  async leaveParty(_token: string, _expectedVersion?: number): Promise<PartySummary | null> { return null; }
+  async disbandParty(_token: string, _expectedVersion?: number): Promise<boolean> { return false; }
+  async transferPartyLeader(_token: string, _publicPlayerId: string, _expectedVersion?: number): Promise<PartySummary | null> { return null; }
+  async claimPartyQueue(_token: string, _input: { requestId: string; buildId: string; region: string }): Promise<PartyQueueClaim> {
+    throw new Error("Durable party queueing requires live persistence.");
+  }
+  async cancelPartyQueue(_token: string, _claimId: string): Promise<PartyQueueClaim | null> { return null; }
+  async completePartyQueueCancellation(_token: string, _claimId: string): Promise<boolean> { return false; }
 
   async getProfile(_token: string): Promise<PlayerProfile> {
     return { name: "Player", stash: [], learnedBlueprints: [], recentManifests: [] };

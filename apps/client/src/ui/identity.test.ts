@@ -1,14 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   acceptPartyInvite,
+  createDurablePartyInvite,
   deviceTokenKey,
+  disbandDurableParty,
   ensureAccountToken,
+  fetchPartyState,
   fetchAccountState,
   createLinkedDeviceSession,
   linkGuestAccount,
+  leaveDurableParty,
   partyInviteCodeFromHash,
   playerNameKey,
   resetIdentityTestState,
+  revokeDurablePartyInvites,
+  transferDurablePartyLeader,
   updateDisplayName,
 } from "./identity";
 
@@ -146,5 +152,40 @@ describe("identity bootstrap", () => {
 
     await expect(acceptPartyInvite(code)).resolves.toMatchObject({ durable: false });
     expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("exposes durable party state and versioned mutations without internal identity fields", async () => {
+    localStorage.setItem(deviceTokenKey, "3".repeat(32));
+    const party = {
+      version: 4,
+      members: [{ publicPlayerId: "ABCD-EFGH", displayName: "Leader", leader: true }],
+      canInvite: true,
+    };
+    const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      expect(init?.headers).toMatchObject({ "x-device-token": "3".repeat(32) });
+      if (url === "/api/social/party" && init?.method === "GET") return new Response(JSON.stringify({ party }), { status: 200 });
+      if (url === "/api/social/party-invites" && init?.method === "POST") {
+        return new Response(JSON.stringify({ code: "durable-code", expiresAt: "2099-01-01T00:00:00.000Z", party }), { status: 201 });
+      }
+      if (url === "/api/social/party-invites" && init?.method === "DELETE") return new Response(JSON.stringify({ party }), { status: 200 });
+      if (url === "/api/social/party/leader") {
+        expect(init?.body).toBe(JSON.stringify({ version: 4, publicPlayerId: "JKLM-NPQR" }));
+        return new Response(JSON.stringify({ party }), { status: 200 });
+      }
+      if (url === "/api/social/party/disband" || url === "/api/social/party/leave") {
+        expect(init?.body).toBe(JSON.stringify({ version: 4 }));
+        return new Response(JSON.stringify({ party: null }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+    });
+    vi.stubGlobal("fetch", request);
+
+    expect(await fetchPartyState()).toEqual(party);
+    expect(await createDurablePartyInvite()).toMatchObject({ code: "durable-code", party });
+    expect(await revokeDurablePartyInvites()).toEqual(party);
+    expect(await transferDurablePartyLeader(4, "JKLM-NPQR")).toEqual(party);
+    await expect(disbandDurableParty(4)).resolves.toBeNull();
+    await expect(leaveDurableParty(4)).resolves.toBeNull();
   });
 });

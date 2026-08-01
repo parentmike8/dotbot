@@ -18,6 +18,7 @@
       "Action": [
         "gamelift:CreateGameSession",
         "gamelift:CreatePlayerSession",
+        "gamelift:CreatePlayerSessions",
         "gamelift:DescribeGameSessions",
         "gamelift:DescribePlayerSessions",
         "gamelift:TerminateGameSession"

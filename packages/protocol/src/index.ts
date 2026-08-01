@@ -3,3 +3,4 @@ export * from "./wire";
 export * from "./interest";
 export * from "./items";
 export * from "./killCamHistory";
+export * from "./internalParty";

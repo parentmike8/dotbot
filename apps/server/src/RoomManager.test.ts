@@ -3,7 +3,8 @@ import type { ServerMessage } from "@dotbot/protocol";
 import { completedBaseTutorialState, initialBaseTutorialState } from "@dotbot/game/baseTutorial";
 import { NoopPersistence } from "./db";
 import type { RoomPeer } from "./Room";
-import { matchesReservedPlayerIdentity, RoomManager } from "./RoomManager";
+import type { AtomicPublicPlayerAdmission } from "./GameLiftSessionGate";
+import { matchesReservedPlayerIdentity, RoomManager, type PreparedPublicPartyMember } from "./RoomManager";
 
 class TutorialPersistence extends NoopPersistence {
   override readonly live = true;
@@ -234,6 +235,77 @@ describe("RoomManager tutorial admission", () => {
       roomCode: roomCode!,
     }, "00000000-0000-4000-8000-000000000001")).toBe(false);
     expect(secondMessages).toContainEqual(expect.objectContaining({ type: "err", code: "room_unavailable" }));
+    await manager.stop();
+  });
+});
+
+describe("RoomManager atomic party admission", () => {
+  it("does not mutate Room until every signed roster member can commit together", async () => {
+    const identities = new Map([
+      ["party-token-one", {
+        playerId: "00000000-0000-4000-8000-000000000001",
+        publicPlayerId: "ABCDEFGH",
+        name: "Party one",
+      }],
+      ["party-token-two", {
+        playerId: "00000000-0000-4000-8000-000000000002",
+        publicPlayerId: "JKLMNPQR",
+        name: "Party two",
+      }],
+    ]);
+    class AtomicPersistence extends NoopPersistence {
+      override readonly live = true;
+      override async resolveOrRegisterPlayer(token: string) {
+        const identity = identities.get(token);
+        if (!identity) throw new Error("unknown token");
+        return identity;
+      }
+    }
+    const manager = new RoomManager({ persistence: new AtomicPersistence(), hotArena: {} });
+    const room = manager.createRoom("A2BC");
+    const memberIds = [...identities.values()].map((identity) => identity.playerId);
+    const baseAdmission: Omit<AtomicPublicPlayerAdmission, "playerId"> = {
+      arenaId: "A2BC",
+      partyId: "party-0123456789abcdef0123456789abcdef",
+      buildId: "web-42",
+      region: "ca-central-1",
+      partyVersion: 3,
+      partyClaimId: "00000000-0000-4000-8000-000000000010",
+      partyMemberPlayerIds: memberIds,
+      partyReservationExpiresAt: Date.now() + 30_000,
+    };
+    const prepared = [...identities.entries()].map(([token, identity], index): PreparedPublicPartyMember => {
+      const messages: ServerMessage[] = [];
+      return {
+        peer: peer(messages, `party-peer-${index + 1}`),
+        message: { type: "quickPlayHello", token, name: identity.name, playerSessionId: `session-${index + 1}` },
+        admission: { ...baseAdmission, playerId: identity.playerId },
+        identity,
+        isPeerActive: () => true,
+      };
+    });
+
+    expect(await manager.commitPublicParty(prepared.slice(0, 1))).toBe(false);
+    expect(room.size).toBe(0);
+    expect(await manager.commitPublicParty(prepared, () => false)).toBe(false);
+    expect(room.size).toBe(0);
+    const expired = prepared.map((member) => ({
+      ...member,
+      admission: { ...member.admission, partyReservationExpiresAt: Date.now() - 1 },
+    }));
+    expect(await manager.commitPublicParty(expired)).toBe(false);
+    expect(room.size).toBe(0);
+    expect(await manager.commitPublicParty(prepared)).toBe(true);
+    expect(room.size).toBe(2);
+    expect(room.publicArenaMembers.map((member) => member.partyId)).toEqual([
+      baseAdmission.partyId,
+      baseAdmission.partyId,
+    ]);
+    expect(manager.preflightPublicParty("A2BC", [{
+      playerId: "00000000-0000-4000-8000-000000000001",
+      name: "Duplicate device",
+      partyId: "party-fedcba9876543210fedcba9876543210",
+    }])).toEqual({ accepted: false, code: "party_invalid", retryable: false });
     await manager.stop();
   });
 });

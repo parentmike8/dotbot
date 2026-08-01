@@ -69,6 +69,9 @@ importers:
       '@aws-sdk/lib-dynamodb':
         specifier: ^3.883.0
         version: 3.1089.0(@aws-sdk/client-dynamodb@3.1089.0)
+      '@dotbot/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
     devDependencies:
       '@types/aws-lambda':
         specifier: ^8.10.152

@@ -6,7 +6,10 @@ import type {
   AccountSummary,
   FabricationResult,
   FriendEntry,
+  DurablePartyInvite,
   PartyInviteAcceptance,
+  PartyQueueClaim,
+  PartySummary,
   Persistence,
   PlayerBase,
   PlayerIdentity,
@@ -47,6 +50,16 @@ export class RemotePersistence implements Persistence {
   acceptFriend(_token: string, _publicPlayerId: string): Promise<FriendEntry | null> { return this.unsupported("acceptFriend"); }
   createPartyInvite(_token: string): ReturnType<Persistence["createPartyInvite"]> { return this.unsupported("createPartyInvite"); }
   acceptPartyInvite(_token: string, _code: string): Promise<PartyInviteAcceptance | null> { return this.unsupported("acceptPartyInvite"); }
+  getParty(_token: string): Promise<PartySummary | null> { return this.unsupported("getParty"); }
+  createDurablePartyInvite(_token: string): Promise<DurablePartyInvite | null> { return this.unsupported("createDurablePartyInvite"); }
+  revokeDurablePartyInvites(_token: string): Promise<PartySummary | null> { return this.unsupported("revokeDurablePartyInvites"); }
+  acceptDurablePartyInvite(_token: string, _code: string): Promise<PartyInviteAcceptance | null> { return this.unsupported("acceptDurablePartyInvite"); }
+  leaveParty(_token: string, _expectedVersion?: number): Promise<PartySummary | null> { return this.unsupported("leaveParty"); }
+  disbandParty(_token: string, _expectedVersion?: number): Promise<boolean> { return this.unsupported("disbandParty"); }
+  transferPartyLeader(_token: string, _publicPlayerId: string, _expectedVersion?: number): Promise<PartySummary | null> { return this.unsupported("transferPartyLeader"); }
+  claimPartyQueue(_token: string, _input: { requestId: string; buildId: string; region: string }): Promise<PartyQueueClaim> { return this.unsupported("claimPartyQueue"); }
+  cancelPartyQueue(_token: string, _claimId: string): Promise<PartyQueueClaim | null> { return this.unsupported("cancelPartyQueue"); }
+  completePartyQueueCancellation(_token: string, _claimId: string): Promise<boolean> { return this.unsupported("completePartyQueueCancellation"); }
   getProfile(_token: string): Promise<PlayerProfile | null> { return this.unsupported("getProfile"); }
   getBase(_token: string): Promise<PlayerBase | null> { return this.unsupported("getBase"); }
   advanceBaseTutorial(_token: string, _action: BaseTutorialAction, _revision: number): Promise<PlayerBase | null> { return this.unsupported("advanceBaseTutorial"); }

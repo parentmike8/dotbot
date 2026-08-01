@@ -92,6 +92,13 @@
       "when": 1785561707516,
       "tag": "0012_preserve_deleted_public_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1785569513845,
+      "tag": "0013_durable_party_allocation",
+      "breakpoints": true
     }
   ]
 }

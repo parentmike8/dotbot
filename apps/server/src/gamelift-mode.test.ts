@@ -191,6 +191,208 @@ describe("GameLift dedicated server mode", () => {
     await app.close();
   });
 
+  it("holds every atomic roster member outside Room until the complete GameLift batch is accepted", async () => {
+    process.env.NODE_ENV = "test";
+    const identities = new Map([
+      ["atomic-token-one", { playerId: "00000000-0000-4000-8000-000000000001", publicPlayerId: "ABCD2345", name: "Atomic one" }],
+      ["atomic-token-two", { playerId: "00000000-0000-4000-8000-000000000002", publicPlayerId: "JKLM2345", name: "Atomic two" }],
+    ]);
+    class AtomicPersistence extends CompletedTestPersistence {
+      override async resolveOrRegisterPlayer(token: string) {
+        const identity = identities.get(token);
+        if (!identity) throw new Error("unknown token");
+        return identity;
+      }
+    }
+    const memberPlayerIds = [...identities.values()].map((identity) => identity.playerId);
+    const partyReservationExpiresAt = Date.now() + 30_000;
+    const inspectPublicPlayerSession = vi.fn(async (playerSessionId: string) => {
+      const index = playerSessionId.endsWith("one") ? 0 : 1;
+      return {
+        playerSessionId,
+        admission: {
+          playerId: memberPlayerIds[index],
+          arenaId: "A2BC",
+          partyId: "party-0123456789abcdef0123456789abcdef",
+          buildId: "web-42",
+          region: "ca-central-1",
+          partyVersion: 4,
+          partyClaimId: "00000000-0000-4000-8000-000000000010",
+          partyMemberPlayerIds: memberPlayerIds,
+          partyReservationExpiresAt,
+        },
+      };
+    });
+    const acceptPublicPartySessions = vi.fn(async () => undefined);
+    const removePlayerSession = vi.fn(async (_playerSessionId: string) => undefined);
+    const gameLift = {
+      inspectPublicPlayerSession,
+      acceptPublicPartySessions,
+      removePlayerSession,
+      verifyPartyOperation: vi.fn(async () => ({
+        gameSessionId: "game-session-1", arenaId: "A2BC", buildId: "web-42", region: "ca-central-1",
+      })),
+      arenaId: async () => "A2BC",
+      endProcess: async () => undefined,
+    } as unknown as GameLiftSessionGate;
+    const { app, rooms } = await createServer({
+      persistence: new AtomicPersistence(),
+      gameLift,
+      publicQuickPlay: true,
+      durableParties: true,
+      atomicPartyAllocation: true,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP address");
+    await vi.waitFor(() => expect(rooms.join("A2BC")).toBeDefined());
+    const url = `ws://127.0.0.1:${address.port}/ws`;
+    const first = await connect(url);
+    const second = await connect(url);
+    const firstWelcome = waitForMessage(first, "arenaWelcome");
+    const secondWelcome = waitForMessage(second, "arenaWelcome");
+    first.send(JSON.stringify({
+      type: "quickPlayHello", token: "atomic-token-one", name: "Atomic one", playerSessionId: "psess-one",
+    }));
+    await vi.waitFor(() => expect(inspectPublicPlayerSession).toHaveBeenCalledTimes(1));
+    expect(rooms.join("A2BC")?.size).toBe(0);
+    expect(acceptPublicPartySessions).not.toHaveBeenCalled();
+
+    second.send(JSON.stringify({
+      type: "quickPlayHello", token: "atomic-token-two", name: "Atomic two", playerSessionId: "psess-two",
+    }));
+    await expect(Promise.all([firstWelcome, secondWelcome])).resolves.toHaveLength(2);
+    expect(acceptPublicPartySessions).toHaveBeenCalledOnce();
+    expect(rooms.join("A2BC")?.size).toBe(2);
+    expect(removePlayerSession).not.toHaveBeenCalled();
+
+    const mismatchedRelease = await app.inject({
+      method: "POST",
+      url: "/api/internal/public-party-release",
+      headers: { "x-dotbot-request-id": "00000000-0000-4000-8000-000000000099" },
+      payload: {
+        arenaId: "A2BC",
+        claimId: "00000000-0000-4000-8000-000000000099",
+        playerSessionIds: ["psess-one", "psess-two"],
+      },
+    });
+    expect(mismatchedRelease.statusCode).toBe(400);
+    expect(rooms.join("A2BC")?.size).toBe(2);
+    expect(removePlayerSession).not.toHaveBeenCalled();
+
+    const release = await app.inject({
+      method: "POST",
+      url: "/api/internal/public-party-release",
+      headers: { "x-dotbot-request-id": "00000000-0000-4000-8000-000000000098" },
+      payload: {
+        arenaId: "A2BC",
+        claimId: "00000000-0000-4000-8000-000000000010",
+        playerSessionIds: ["psess-one", "psess-two"],
+      },
+    });
+    expect(release.statusCode).toBe(200);
+    expect(rooms.join("A2BC")?.size).toBe(0);
+    expect(new Set(removePlayerSession.mock.calls.map(([playerSessionId]) => playerSessionId))).toEqual(new Set(["psess-one", "psess-two"]));
+    await Promise.all([closeClient(first), closeClient(second)]);
+    await app.close();
+  });
+
+  it("never removes a caller-supplied id after a definite atomic inspect rejection", async () => {
+    process.env.NODE_ENV = "test";
+    const removePlayerSession = vi.fn(async (_playerSessionId: string) => undefined);
+    const inspectPublicPlayerSession = vi.fn(async () => {
+      throw new Error("definite adapter rejection");
+    });
+    const gameLift = {
+      inspectPublicPlayerSession,
+      acceptPublicPartySessions: vi.fn(async () => undefined),
+      removePlayerSession,
+      arenaId: async () => "A2BC",
+      endProcess: async () => undefined,
+    } as unknown as GameLiftSessionGate;
+    const { app } = await createServer({
+      persistence: new CompletedTestPersistence(),
+      gameLift,
+      publicQuickPlay: true,
+      durableParties: true,
+      atomicPartyAllocation: true,
+      hotArena: {},
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP address");
+    const client = await connect(`ws://127.0.0.1:${address.port}/ws`);
+    client.send(JSON.stringify({
+      type: "quickPlayHello",
+      token: "untrusted-session-token",
+      name: "Untrusted",
+      playerSessionId: "foreign-player-session",
+    }));
+
+    expect(await waitForMessage(client, "err")).toMatchObject({ code: "player_session_rejected" });
+    expect(inspectPublicPlayerSession).toHaveBeenCalledWith("foreign-player-session");
+    expect(removePlayerSession).not.toHaveBeenCalled();
+    await closeClient(client);
+    await app.close();
+  });
+
+  it("keeps Room empty and reconciles the whole roster when batch acceptance fails", async () => {
+    process.env.NODE_ENV = "test";
+    const memberPlayerIds = [
+      "00000000-0000-4000-8000-000000000011",
+      "00000000-0000-4000-8000-000000000012",
+    ];
+    const partyReservationExpiresAt = Date.now() + 30_000;
+    class AtomicFailurePersistence extends CompletedTestPersistence {
+      override async resolveOrRegisterPlayer(token: string, offeredName: string) {
+        const index = token.endsWith("one") ? 0 : 1;
+        return { playerId: memberPlayerIds[index], publicPlayerId: index === 0 ? "ABCD2345" : "JKLM2345", name: offeredName };
+      }
+    }
+    const removePlayerSession = vi.fn(async (_playerSessionId: string) => undefined);
+    const gameLift = {
+      inspectPublicPlayerSession: vi.fn(async (playerSessionId: string) => {
+        const index = playerSessionId.endsWith("one") ? 0 : 1;
+        return {
+          playerSessionId,
+          admission: {
+            playerId: memberPlayerIds[index], arenaId: "A2BC", partyId: "party-fedcba9876543210fedcba9876543210",
+            buildId: "web-42", region: "ca-central-1", partyVersion: 2,
+            partyClaimId: "00000000-0000-4000-8000-000000000020", partyMemberPlayerIds: memberPlayerIds,
+            partyReservationExpiresAt,
+          },
+        };
+      }),
+      acceptPublicPartySessions: vi.fn(async () => { throw new Error("partial adapter accept"); }),
+      removePlayerSession,
+      arenaId: async () => "A2BC",
+      endProcess: async () => undefined,
+    } as unknown as GameLiftSessionGate;
+    const { app, rooms } = await createServer({
+      persistence: new AtomicFailurePersistence(), gameLift, publicQuickPlay: true, durableParties: true,
+      atomicPartyAllocation: true, hotArena: {},
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP address");
+    await vi.waitFor(() => expect(rooms.join("A2BC")).toBeDefined());
+    const first = await connect(`ws://127.0.0.1:${address.port}/ws`);
+    const second = await connect(`ws://127.0.0.1:${address.port}/ws`);
+    const errors = [waitForMessage(first, "err"), waitForMessage(second, "err")];
+    first.send(JSON.stringify({ type: "quickPlayHello", token: "failure-token-one", name: "One", playerSessionId: "psess-one" }));
+    second.send(JSON.stringify({ type: "quickPlayHello", token: "failure-token-two", name: "Two", playerSessionId: "psess-two" }));
+
+    await expect(Promise.all(errors)).resolves.toEqual([
+      expect.objectContaining({ code: "player_session_rejected" }),
+      expect.objectContaining({ code: "player_session_rejected" }),
+    ]);
+    await vi.waitFor(() => expect(removePlayerSession.mock.calls.map(([id]) => id).sort()).toEqual(["psess-one", "psess-two"]));
+    expect(rooms.join("A2BC")?.size).toBe(0);
+    await Promise.all([closeClient(first), closeClient(second)]);
+    await app.close();
+  });
+
   it("removes a disconnected non-redeploying reservation as soon as the arena reopens", async () => {
     process.env.NODE_ENV = "test";
     let now = 0;
@@ -792,6 +994,13 @@ async function connect(url: string): Promise<WebSocket> {
     ws.once("error", reject);
   });
   return ws;
+}
+
+async function closeClient(ws: WebSocket): Promise<void> {
+  if (ws.readyState === WebSocket.CLOSED) return;
+  const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+  ws.close();
+  await closed;
 }
 
 async function waitForMessage<T extends ServerMessage["type"]>(ws: WebSocket, type: T): Promise<Extract<ServerMessage, { type: T }>> {

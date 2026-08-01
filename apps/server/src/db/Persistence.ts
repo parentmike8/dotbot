@@ -5,6 +5,21 @@ import type { BaseTutorialAction, BaseTutorialState } from "@dotbot/game/baseTut
 
 export class PersistenceConflictError extends Error {}
 
+export type PartyConflictCode =
+  | "party_full"
+  | "party_queued"
+  | "party_version_stale"
+  | "party_leader_required"
+  | "party_link_required"
+  | "party_membership_conflict"
+  | "party_invite_invalid";
+
+export class PartyConflictError extends PersistenceConflictError {
+  constructor(readonly code: PartyConflictCode, message: string) {
+    super(message);
+  }
+}
+
 export type PlayerIdentity = {
   /** Cloud SQL authority key. Never serialize this value to a public client. */
   playerId: string;
@@ -55,6 +70,35 @@ export type PartyInviteAcceptance = {
   inviter: PublicPlayer;
   durable: boolean;
   expiresAt: string;
+  party?: PartySummary;
+  replayed?: boolean;
+};
+
+export type PartyMemberSummary = PublicPlayer & {
+  leader: boolean;
+};
+
+export type PartySummary = {
+  version: number;
+  members: PartyMemberSummary[];
+  canInvite: boolean;
+};
+
+export type DurablePartyInvite = {
+  code: string;
+  expiresAt: string;
+  party: PartySummary;
+};
+
+export type PartyQueueClaim = {
+  claimId: string;
+  partyId: string;
+  version: number;
+  leaderPlayerId: string;
+  requestingPlayerId: string;
+  buildId: string;
+  region: string;
+  members: Array<{ playerId: string; name: string }>;
 };
 
 export type RunManifest = {
@@ -132,6 +176,16 @@ export interface Persistence {
   acceptFriend(token: string, publicPlayerId: string): Promise<FriendEntry | null>;
   createPartyInvite(token: string): Promise<{ code: string; expiresAt: string } | null>;
   acceptPartyInvite(token: string, code: string): Promise<PartyInviteAcceptance | null>;
+  getParty(token: string): Promise<PartySummary | null>;
+  createDurablePartyInvite(token: string): Promise<DurablePartyInvite | null>;
+  revokeDurablePartyInvites(token: string): Promise<PartySummary | null>;
+  acceptDurablePartyInvite(token: string, code: string): Promise<PartyInviteAcceptance | null>;
+  leaveParty(token: string, expectedVersion?: number): Promise<PartySummary | null>;
+  disbandParty(token: string, expectedVersion?: number): Promise<boolean>;
+  transferPartyLeader(token: string, publicPlayerId: string, expectedVersion?: number): Promise<PartySummary | null>;
+  claimPartyQueue(token: string, input: { requestId: string; buildId: string; region: string }): Promise<PartyQueueClaim>;
+  cancelPartyQueue(token: string, claimId: string): Promise<PartyQueueClaim | null>;
+  completePartyQueueCancellation(token: string, claimId: string): Promise<boolean>;
   getProfile(token: string): Promise<PlayerProfile | null>;
   getBase(token: string): Promise<PlayerBase | null>;
   getBaseTutorialForPlayer(playerId: string): Promise<BaseTutorialState | null>;

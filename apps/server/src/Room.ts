@@ -100,6 +100,23 @@ export type PublicPartyAdmissionDecision =
 
 type PublicJoinRejection = Exclude<PublicPartyAdmissionDecision, { accepted: true }>;
 
+export type PublicPartyJoinInput = {
+  peer: RoomPeer;
+  token: string;
+  name: string;
+  playerId: string;
+  persistencePlayerId: string;
+  partyId: string;
+  reservationPlayerId: string;
+  previousPlayerIds: string[];
+  previousPersistencePlayerIds: string[];
+};
+
+export type PublicPartyJoinResult = PublicJoinRejection | {
+  accepted: true;
+  bindings: Array<{ peerId: string; playerId: string }>;
+};
+
 type PendingPersistenceSettlement = {
   matchId: string;
   settle: () => Promise<void>;
@@ -288,14 +305,20 @@ export class Room {
     else await Promise.allSettled([...this.pendingPersistence]);
   }
 
-  evaluatePublicPartyAdmission(party: readonly PublicHuman[]): PublicPartyAdmissionDecision {
+  evaluatePublicPartyAdmission(
+    party: readonly (PublicHuman & { persistencePlayerId?: string })[],
+  ): PublicPartyAdmissionDecision {
     if (!this.hotArena || this.retiring || this.matchStartPromise
       || (this.phase !== "assembling" && this.phase !== "countdown" && this.phase !== "results")) {
       return { accepted: false, code: "arena_capacity", retryable: true };
     }
+    const currentMembers = [...this.members.values()];
     if (party.length < 1 || party.length > 3 || new Set(party.map((member) => member.partyId)).size !== 1
       || new Set(party.map((member) => member.playerId)).size !== party.length
-      || party.some((member) => this.members.has(member.playerId))) {
+      || new Set(party.map((member) => member.persistencePlayerId ?? member.playerId)).size !== party.length
+      || party.some((member) => currentMembers.some((existing) => member.persistencePlayerId
+        ? existing.playerId === member.playerId || existing.persistencePlayerId === member.persistencePlayerId
+        : existing.persistencePlayerId === member.playerId))) {
       return { accepted: false, code: "party_invalid", retryable: false };
     }
     if (this.members.size + party.length > PUBLIC_EXTRACTION_ROLE_COUNT) return { accepted: false, code: "party_composition_full", retryable: true };
@@ -307,6 +330,107 @@ export class Room {
       return { accepted: true };
     } catch {
       return { accepted: false, code: "party_composition_full", retryable: true };
+    }
+  }
+
+  /** Commits one already inspected and batch-accepted GameLift party in one
+   * synchronous Room mutation. Every duplicate, alias, capacity, and role
+   * check runs before the first member is added. */
+  joinPublicParty(party: readonly PublicPartyJoinInput[]): PublicPartyJoinResult {
+    if (!this.hotArena || this.disposed || party.length < 1 || party.length > 3
+      || new Set(party.map((entry) => entry.partyId)).size !== 1
+      || new Set(party.map((entry) => entry.token)).size !== party.length
+      || party.some((entry) => entry.peer.isOpen?.() === false)) {
+      return { accepted: false, code: "party_invalid", retryable: false };
+    }
+    const publicIdentities = new Set<string>();
+    const persistenceIdentities = new Set<string>();
+    for (const entry of party) {
+      if (!entry.playerId || !entry.persistencePlayerId || !entry.reservationPlayerId
+        || this.memberByToken.has(entry.token)) {
+        return { accepted: false, code: "party_invalid", retryable: false };
+      }
+      for (const playerId of [entry.playerId, ...entry.previousPlayerIds]) {
+        if (publicIdentities.has(playerId)) return { accepted: false, code: "party_invalid", retryable: false };
+        publicIdentities.add(playerId);
+      }
+      for (const playerId of [entry.persistencePlayerId, ...entry.previousPersistencePlayerIds]) {
+        if (persistenceIdentities.has(playerId)) return { accepted: false, code: "party_invalid", retryable: false };
+        persistenceIdentities.add(playerId);
+      }
+    }
+    if ([...this.members.values()].some((member) => publicIdentities.has(member.playerId)
+      || persistenceIdentities.has(member.persistencePlayerId))) {
+      return { accepted: false, code: "party_invalid", retryable: false };
+    }
+    const partyId = sanitizePartyId(party[0].partyId, party[0].playerId);
+    const decision = this.evaluatePublicPartyAdmission(party.map((entry) => ({
+      playerId: entry.playerId,
+      persistencePlayerId: entry.persistencePlayerId,
+      name: entry.name,
+      partyId,
+    })));
+    if (!decision.accepted) return decision;
+
+    const members = party.map((entry): Member => ({
+      playerId: entry.playerId,
+      persistencePlayerId: entry.persistencePlayerId,
+      token: entry.token,
+      name: sanitizeName(entry.name),
+      squadId: "alpha",
+      peer: entry.peer,
+      botId: null,
+      inputQueue: [],
+      heldInput: { move: { x: 0, y: 0 }, dash: false },
+      lastAppliedSeq: 0,
+      inputStarved: true,
+      starveHoldTicks: 0,
+      backlogWindowMinDepth: Number.POSITIVE_INFINITY,
+      backlogWindowTicks: 0,
+      queueDepthEma: 0,
+      handoffTimer: null,
+      disconnectedAt: null,
+      inRun: false,
+      streaming: true,
+      runOver: null,
+      persistenceEligible: true,
+      persistedOutcome: null,
+      insertionName: null,
+      dotContexts: new Set(),
+      dotState: new Map(),
+      lastKillCam: null,
+      activeKillCamId: null,
+      partyId,
+      publicReservationPlayerId: entry.reservationPlayerId,
+      queuedForNextRun: true,
+    }));
+    for (const member of members) {
+      this.members.set(member.playerId, member);
+      this.memberByToken.set(member.token, member);
+    }
+    for (const member of members) this.sendWelcome(member);
+    this.broadcastLobby();
+    this.beginPublicAssemblyIfNeeded();
+    return { accepted: true, bindings: members.map((member) => ({ peerId: member.peer!.id, playerId: member.playerId })) };
+  }
+
+  /** A signed control-plane cancellation may race clients that already opened
+   * their sockets. Remove every in-Room member of any matching pre-run party;
+   * the existing release callback closes peers and reconciles GameLift. */
+  releasePublicReservations(reservationPlayerIds: ReadonlySet<string>): void {
+    if (!this.hotArena || reservationPlayerIds.size === 0) return;
+    const partyIds = new Set(
+      [...this.members.values()]
+        .filter((member) => member.publicReservationPlayerId !== null
+          && reservationPlayerIds.has(member.publicReservationPlayerId))
+        .map((member) => member.partyId),
+    );
+    for (const partyId of partyIds) {
+      this.releasePublicParty(
+        partyId,
+        "party_cancelled",
+        "Quick play was cancelled. Re-enter together when ready.",
+      );
     }
   }
 

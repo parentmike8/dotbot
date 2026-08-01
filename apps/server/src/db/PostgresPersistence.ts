@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { itemToCode, PUBLIC_EXTRACTION_ROLE_COUNT, type WireItemCode } from "@dotbot/protocol";
 import { BASE_SLOT_DEFS, DEFAULT_BASE_SHELL, isObjectAllowedInSlot, starterBaseLayout, validateBaseLayout } from "@dotbot/game/content/base";
 import { recipeById, SECOND_FLOOR_UPGRADE_ID } from "@dotbot/game/content/recipes";
@@ -18,9 +18,12 @@ import type {
   Persistence,
   AccountSummary,
   FriendEntry,
+  DurablePartyInvite,
   IdentityProviderKind,
   LinkAccountResult,
   PartyInviteAcceptance,
+  PartyQueueClaim,
+  PartySummary,
   PlayerIdentity,
   PlayerProfile,
   PublicPlayer,
@@ -29,7 +32,7 @@ import type {
   MatchStartResult,
   VerifiedExternalIdentity,
 } from "./Persistence";
-import { PersistenceConflictError } from "./Persistence";
+import { PartyConflictError, PersistenceConflictError } from "./Persistence";
 import {
   baseLayouts,
   baseUpgrades,
@@ -43,6 +46,9 @@ import {
   matchResults,
   partyInviteAcceptances,
   partyInvites,
+  partyMembers,
+  partyQueueClaims,
+  parties,
   playerAliases,
   playerBlocks,
   playerDevices,
@@ -194,6 +200,14 @@ export class PostgresPersistence implements Persistence {
         await this.mergeGuestTransaction(tx, sourcePlayer, targetPlayer, identity);
         merged = true;
       }
+      if (!merged) {
+        // Linking the same canonical player promotes device-scoped guest
+        // membership to account ownership without changing roster identity or
+        // its membership version.
+        await tx.update(partyMembers).set({ guestDeviceId: null }).where(eq(partyMembers.playerId, targetPlayerId));
+        await tx.update(partyInviteAcceptances).set({ guestDeviceId: null, durable: true })
+          .where(eq(partyInviteAcceptances.playerId, targetPlayerId));
+      }
       await tx.insert(identityProviders).values({ externalIdentityId: external.id, provider: identity.provider })
         .onConflictDoUpdate({
           target: [identityProviders.externalIdentityId, identityProviders.provider],
@@ -272,6 +286,7 @@ export class PostgresPersistence implements Persistence {
           summary: sql`jsonb_build_object('reason', coalesce(${matchResults.summary}->>'reason', 'redacted'), 'redacted', true)`,
         }).where(inArray(matchResults.id, participantMatches.map((row) => row.matchId)));
       }
+      await this.removePartyMembershipForDeletion(tx, actor.id);
       // Deletion retires the current public ID as well as every ID from prior
       // guest merges. Share the allocator's candidate lock so an old or new
       // writer cannot slip the ID into a fresh row between delete and tombstone.
@@ -415,6 +430,356 @@ export class PostgresPersistence implements Persistence {
         await tx.insert(partyInviteAcceptances).values({ inviteId: invite.id, playerId: actor.playerId }).onConflictDoNothing();
       }
       return { inviter, durable: Boolean(linked), expiresAt: invite.expiresAt.toISOString() };
+    });
+  }
+
+  async getParty(token: string): Promise<PartySummary | null> {
+    const actor = await this.helloPlayer(token);
+    return actor ? this.partySummaryForPlayer(actor.playerId) : null;
+  }
+
+  async createDurablePartyInvite(token: string): Promise<DurablePartyInvite | null> {
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return null;
+      if (!actor.linked) throw new PartyConflictError("party_link_required", "Link an account to create a durable party invitation.");
+      let [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+        .where(eq(partyMembers.playerId, actor.playerId));
+      if (!membership) {
+        const [created] = await tx.insert(parties).values({
+          matchmakingKey: `party-${randomBytes(16).toString("hex")}`,
+          leaderPlayerId: actor.playerId,
+        }).returning({ id: parties.id });
+        await tx.insert(partyMembers).values({ partyId: created.id, playerId: actor.playerId });
+        membership = { partyId: created.id };
+      }
+      const party = await this.lockParty(tx, membership.partyId);
+      if (!party || party.leaderPlayerId !== actor.playerId) {
+        throw new PartyConflictError("party_leader_required", "Only the linked party leader can create an invitation.");
+      }
+      if (!await this.isPartyMember(tx, party.id, actor.playerId)) {
+        throw new PartyConflictError("party_membership_conflict", "Party membership changed before the invitation was created.");
+      }
+      await this.assertPartyNotQueued(tx, party.id);
+      const members = await this.readPartyMembers(tx, party.id);
+      if (members.length >= 3) throw new PartyConflictError("party_full", "A three-player party cannot create another invitation.");
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const code = randomBytes(24).toString("base64url");
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60_000);
+        const inserted = await tx.insert(partyInvites).values({
+          ownerPlayerId: actor.playerId,
+          partyId: party.id,
+          rosterVersion: party.version,
+          tokenHash: hashToken(code),
+          expiresAt,
+        }).onConflictDoNothing().returning({ id: partyInvites.id });
+        if (inserted.length === 1) {
+          return {
+            code,
+            expiresAt: expiresAt.toISOString(),
+            party: await this.partySummaryById(tx, party.id, actor.playerId),
+          };
+        }
+      }
+      throw new Error("Could not allocate a durable party invite.");
+    });
+  }
+
+  async revokeDurablePartyInvites(token: string): Promise<PartySummary | null> {
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return null;
+      if (!actor.linked) throw new PartyConflictError("party_link_required", "Link an account to revoke durable party invitations.");
+      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+        .where(eq(partyMembers.playerId, actor.playerId));
+      if (!membership) return null;
+      const party = await this.lockParty(tx, membership.partyId);
+      if (!party || party.leaderPlayerId !== actor.playerId) {
+        throw new PartyConflictError("party_leader_required", "Only the linked party leader can revoke invitations.");
+      }
+      if (!await this.isPartyMember(tx, party.id, actor.playerId)) return null;
+      await tx.update(partyInvites).set({ revoked: true }).where(eq(partyInvites.partyId, party.id));
+      return this.partySummaryById(tx, party.id, actor.playerId);
+    });
+  }
+
+  async acceptDurablePartyInvite(token: string, code: string): Promise<PartyInviteAcceptance | null> {
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return null;
+      const [current] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+        .where(eq(partyMembers.playerId, actor.playerId));
+      const tokenHash = hashToken(code);
+      const [inviteHint] = await tx.select({ partyId: partyInvites.partyId })
+        .from(partyInvites).where(eq(partyInvites.tokenHash, tokenHash)).limit(1);
+      if (!inviteHint?.partyId) return null;
+      if (current && current.partyId !== inviteHint.partyId) {
+        throw new PartyConflictError("party_membership_conflict", "Leave the current party before accepting another invitation.");
+      }
+      const party = await this.lockParty(tx, inviteHint.partyId);
+      if (!party) return null;
+      const currentPartyId = await this.partyIdForPlayer(tx, actor.playerId);
+      if (currentPartyId && currentPartyId !== party.id) {
+        throw new PartyConflictError("party_membership_conflict", "Leave the current party before accepting another invitation.");
+      }
+      const [invite] = await tx.select({
+        id: partyInvites.id,
+        ownerPlayerId: partyInvites.ownerPlayerId,
+        partyId: partyInvites.partyId,
+        expiresAt: partyInvites.expiresAt,
+        revoked: partyInvites.revoked,
+      }).from(partyInvites).where(and(eq(partyInvites.tokenHash, tokenHash), eq(partyInvites.partyId, party.id))).for("update");
+      if (!invite?.partyId || invite.revoked || invite.expiresAt <= new Date()) return null;
+      const [inviter] = await tx.select({ publicPlayerId: players.publicPlayerId, displayName: players.displayName })
+        .from(players).where(eq(players.id, invite.ownerPlayerId)).limit(1);
+      if (!inviter) return null;
+      if (currentPartyId === party.id) {
+        const acceptance = tx.insert(partyInviteAcceptances).values({
+          inviteId: invite.id,
+          playerId: actor.playerId,
+          guestDeviceId: actor.linked ? null : actor.deviceId,
+          durable: actor.linked,
+        });
+        if (actor.linked) {
+          await acceptance.onConflictDoUpdate({
+            target: [partyInviteAcceptances.inviteId, partyInviteAcceptances.playerId],
+            set: { guestDeviceId: null, durable: true },
+          });
+        } else {
+          await acceptance.onConflictDoNothing();
+        }
+        return {
+          inviter,
+          durable: actor.linked,
+          expiresAt: invite.expiresAt.toISOString(),
+          party: await this.partySummaryById(tx, party.id, actor.playerId),
+          replayed: true,
+        };
+      }
+      await this.assertPlayerNotQueuedSolo(tx, actor.playerId);
+      await this.assertPartyNotQueued(tx, party.id);
+      const members = await this.readPartyMembers(tx, party.id);
+      if (members.length >= 3) throw new PartyConflictError("party_full", "That party already has three members.");
+      await tx.insert(partyMembers).values({
+        partyId: party.id,
+        playerId: actor.playerId,
+        guestDeviceId: actor.linked ? null : actor.deviceId,
+      });
+      await tx.update(parties).set({ version: party.version + 1, updatedAt: new Date() }).where(eq(parties.id, party.id));
+      const acceptance = tx.insert(partyInviteAcceptances).values({
+        inviteId: invite.id,
+        playerId: actor.playerId,
+        guestDeviceId: actor.linked ? null : actor.deviceId,
+        durable: actor.linked,
+      });
+      if (actor.linked) {
+        await acceptance.onConflictDoUpdate({
+          target: [partyInviteAcceptances.inviteId, partyInviteAcceptances.playerId],
+          set: { guestDeviceId: null, durable: true },
+        });
+      } else {
+        await acceptance.onConflictDoNothing();
+      }
+      return {
+        inviter,
+        durable: actor.linked,
+        expiresAt: invite.expiresAt.toISOString(),
+        party: await this.partySummaryById(tx, party.id, actor.playerId),
+        replayed: false,
+      };
+    });
+  }
+
+  async leaveParty(token: string, expectedVersion?: number): Promise<PartySummary | null> {
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return null;
+      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+        .where(eq(partyMembers.playerId, actor.playerId));
+      if (!membership) return null;
+      const [authorityHint] = await tx.select({ leaderPlayerId: parties.leaderPlayerId }).from(parties)
+        .where(eq(parties.id, membership.partyId)).limit(1);
+      if (authorityHint?.leaderPlayerId === actor.playerId) {
+        // A leader leave may write a successor FK. Lock every possible
+        // successor before the party so another member cannot hold its player
+        // row while waiting on the party row in the opposite order.
+        await this.lockPotentialPartySuccessors(tx, membership.partyId, actor.playerId);
+      }
+      const party = await this.lockParty(tx, membership.partyId);
+      if (!party) return null;
+      if (!await this.isPartyMember(tx, party.id, actor.playerId)) return null;
+      assertPartyVersion(party.version, expectedVersion);
+      await this.assertPartyNotQueued(tx, party.id);
+      await this.removePartyMember(tx, party, actor.playerId);
+      return null;
+    });
+  }
+
+  async disbandParty(token: string, expectedVersion?: number): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return false;
+      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+        .where(eq(partyMembers.playerId, actor.playerId));
+      if (!membership) return false;
+      const party = await this.lockParty(tx, membership.partyId);
+      if (!party) return false;
+      if (!await this.isPartyMember(tx, party.id, actor.playerId)) return false;
+      assertPartyVersion(party.version, expectedVersion);
+      if (party.leaderPlayerId !== actor.playerId) throw new PartyConflictError("party_leader_required", "Only the party leader can disband the party.");
+      await this.assertPartyNotQueued(tx, party.id);
+      await tx.delete(parties).where(eq(parties.id, party.id));
+      return true;
+    });
+  }
+
+  async transferPartyLeader(token: string, requestedId: string, expectedVersion?: number): Promise<PartySummary | null> {
+    const normalized = normalizePublicPlayerId(requestedId);
+    if (!normalized) return null;
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return null;
+      const [membershipHint] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+        .where(eq(partyMembers.playerId, actor.playerId)).limit(1);
+      if (!membershipHint) return null;
+      const [authorityHint] = await tx.select({ leaderPlayerId: parties.leaderPlayerId }).from(parties)
+        .where(eq(parties.id, membershipHint.partyId)).limit(1);
+      if (!authorityHint) return null;
+      if (authorityHint.leaderPlayerId !== actor.playerId) {
+        throw new PartyConflictError("party_leader_required", "Only the party leader can transfer leadership.");
+      }
+      // Lock the proposed leader before the party row. Updating the leader FK
+      // otherwise waits on a concurrent operation by that player while that
+      // operation waits on this party row.
+      const [target] = await tx.select({ id: players.id }).from(players)
+        .innerJoin(partyMembers, and(eq(partyMembers.playerId, players.id), eq(partyMembers.partyId, membershipHint.partyId)))
+        .where(eq(players.publicPlayerId, normalized))
+        .for("update", { of: players });
+      if (!target) return null;
+      const party = await this.lockParty(tx, membershipHint.partyId);
+      if (!party) return null;
+      if (!await this.isPartyMember(tx, party.id, actor.playerId)) return null;
+      assertPartyVersion(party.version, expectedVersion);
+      if (party.leaderPlayerId !== actor.playerId) throw new PartyConflictError("party_leader_required", "Only the party leader can transfer leadership.");
+      await this.assertPartyNotQueued(tx, party.id);
+      if (!await this.isPartyMember(tx, party.id, target.id)) return null;
+      if (target.id !== actor.playerId) {
+        await tx.update(parties).set({ leaderPlayerId: target.id, version: party.version + 1, updatedAt: new Date() })
+          .where(eq(parties.id, party.id));
+      }
+      return this.partySummaryById(tx, party.id, actor.playerId);
+    });
+  }
+
+  async claimPartyQueue(token: string, input: { requestId: string; buildId: string; region: string }): Promise<PartyQueueClaim> {
+    if (!isUuid(input.requestId) || !safeInternalMetadata(input.buildId, 64) || !safeInternalMetadata(input.region, 64)) {
+      throw new PartyConflictError("party_membership_conflict", "Invalid party queue claim metadata.");
+    }
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) throw new PartyConflictError("party_membership_conflict", "Unknown device token.");
+      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+        .where(eq(partyMembers.playerId, actor.playerId));
+      if (!membership) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`dotbot-solo-party:${actor.playerId}`}, 0))`);
+        const [existing] = await tx.select().from(partyQueueClaims).where(and(
+          isNull(partyQueueClaims.partyId),
+          eq(partyQueueClaims.requestingPlayerId, actor.playerId),
+          eq(partyQueueClaims.status, "active"),
+          gt(partyQueueClaims.expiresAt, new Date()),
+        )).for("update");
+        if (existing) {
+          assertQueueCompatibility(existing, input);
+          return this.soloQueueClaim(existing.id, actor, input.buildId, input.region);
+        }
+        await tx.insert(partyQueueClaims).values({
+          id: input.requestId,
+          requestingPlayerId: actor.playerId,
+          partyVersion: 1,
+          buildId: input.buildId,
+          region: input.region,
+          expiresAt: new Date(Date.now() + 6 * 60 * 60_000),
+        });
+        return this.soloQueueClaim(input.requestId, actor, input.buildId, input.region);
+      }
+      const party = await this.lockParty(tx, membership.partyId);
+      if (!party) throw new PartyConflictError("party_membership_conflict", "Party no longer exists.");
+      if (!await this.isPartyMember(tx, party.id, actor.playerId)) {
+        throw new PartyConflictError("party_membership_conflict", "Party membership changed before queue entry.");
+      }
+      const [existing] = await tx.select().from(partyQueueClaims).where(and(
+        eq(partyQueueClaims.partyId, party.id),
+        eq(partyQueueClaims.status, "active"),
+        gt(partyQueueClaims.expiresAt, new Date()),
+      )).for("update");
+      if (existing) {
+        assertQueueCompatibility(existing, input);
+        if (existing.partyVersion !== party.version) {
+          throw new PartyConflictError("party_version_stale", "The queued party roster is stale. Cancel before retrying.");
+        }
+        return this.partyQueueClaimById(tx, existing.id, party, actor.playerId, input.buildId, input.region);
+      }
+      if (party.leaderPlayerId !== actor.playerId) throw new PartyConflictError("party_leader_required", "Only the party leader can start queueing.");
+      await tx.insert(partyQueueClaims).values({
+        id: input.requestId,
+        partyId: party.id,
+        requestingPlayerId: actor.playerId,
+        partyVersion: party.version,
+        buildId: input.buildId,
+        region: input.region,
+        expiresAt: new Date(Date.now() + 6 * 60 * 60_000),
+      });
+      return this.partyQueueClaimById(tx, input.requestId, party, actor.playerId, input.buildId, input.region);
+    });
+  }
+
+  async cancelPartyQueue(token: string, claimId: string): Promise<PartyQueueClaim | null> {
+    if (!isUuid(claimId)) return null;
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return null;
+      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+        .where(eq(partyMembers.playerId, actor.playerId));
+      if (membership) {
+        const party = await this.lockParty(tx, membership.partyId);
+        if (!party) return null;
+        if (!await this.isPartyMember(tx, party.id, actor.playerId)) return null;
+        const [claim] = await tx.select().from(partyQueueClaims).where(eq(partyQueueClaims.id, claimId)).for("update");
+        if (!claim || claim.partyId !== party.id || (claim.status !== "active" && claim.status !== "cancelled")
+          || (claim.status === "active" && claim.expiresAt <= new Date())) return null;
+        return this.partyQueueClaimById(tx, claim.id, party, actor.playerId, claim.buildId, claim.region);
+      }
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`dotbot-solo-party:${actor.playerId}`}, 0))`);
+      const [claim] = await tx.select().from(partyQueueClaims).where(eq(partyQueueClaims.id, claimId)).for("update");
+      if (!claim || claim.partyId !== null || claim.requestingPlayerId !== actor.playerId
+        || (claim.status !== "active" && claim.status !== "cancelled")
+        || (claim.status === "active" && claim.expiresAt <= new Date())) return null;
+      return this.soloQueueClaim(claim.id, actor, claim.buildId, claim.region);
+    });
+  }
+
+  async completePartyQueueCancellation(token: string, claimId: string): Promise<boolean> {
+    if (!isUuid(claimId)) return false;
+    return this.db.transaction(async (tx) => {
+      const actor = await this.partyActor(tx, token);
+      if (!actor) return false;
+      const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+        .where(eq(partyMembers.playerId, actor.playerId));
+      if (membership) {
+        const party = await this.lockParty(tx, membership.partyId);
+        if (!party) return false;
+        if (!await this.isPartyMember(tx, party.id, actor.playerId)) return false;
+      } else {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`dotbot-solo-party:${actor.playerId}`}, 0))`);
+      }
+      const [claim] = await tx.select().from(partyQueueClaims).where(eq(partyQueueClaims.id, claimId)).for("update");
+      if (!claim || (claim.partyId ? claim.partyId !== membership?.partyId : claim.requestingPlayerId !== actor.playerId)) return false;
+      if (claim.status === "cancelled") return true;
+      if (claim.status !== "active") return false;
+      const updated = await tx.update(partyQueueClaims).set({ status: "cancelled", updatedAt: new Date() })
+        .where(and(eq(partyQueueClaims.id, claim.id), eq(partyQueueClaims.status, "active")))
+        .returning({ id: partyQueueClaims.id });
+      return updated.length === 1;
     });
   }
 
@@ -992,6 +1357,332 @@ export class PostgresPersistence implements Persistence {
     await this.client.end({ timeout: 2 });
   }
 
+  private async partyActor(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    token: string,
+  ): Promise<{ playerId: string; publicPlayerId: string; name: string; deviceId: string; linked: boolean } | null> {
+    const tokenHash = hashToken(token);
+    let [device] = await tx.select({
+      deviceId: playerDevices.id,
+      playerId: players.id,
+      publicPlayerId: players.publicPlayerId,
+      name: players.displayName,
+    }).from(playerDevices)
+      .innerJoin(players, eq(players.id, playerDevices.playerId))
+      .where(eq(playerDevices.tokenHash, tokenHash))
+      .for("update");
+    if (!device) {
+      const [legacy] = await tx.select({
+        playerId: players.id,
+        publicPlayerId: players.publicPlayerId,
+        name: players.displayName,
+      }).from(players).where(eq(players.deviceTokenHash, tokenHash)).for("update");
+      if (!legacy) return null;
+      const [inserted] = await tx.insert(playerDevices).values({ playerId: legacy.playerId, tokenHash })
+        .onConflictDoNothing()
+        .returning({ deviceId: playerDevices.id });
+      if (inserted) device = { ...legacy, deviceId: inserted.deviceId };
+      else {
+        [device] = await tx.select({
+          deviceId: playerDevices.id,
+          playerId: players.id,
+          publicPlayerId: players.publicPlayerId,
+          name: players.displayName,
+        }).from(playerDevices)
+          .innerJoin(players, eq(players.id, playerDevices.playerId))
+          .where(eq(playerDevices.tokenHash, tokenHash))
+          .for("update");
+      }
+    }
+    if (!device) return null;
+    const [linked] = await tx.select({ id: externalIdentities.id }).from(externalIdentities)
+      .where(eq(externalIdentities.playerId, device.playerId)).limit(1);
+    return { ...device, linked: Boolean(linked) };
+  }
+
+  private async lockParty(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    partyId: string,
+  ): Promise<{ id: string; matchmakingKey: string; version: number; leaderPlayerId: string } | undefined> {
+    const [party] = await tx.select({
+      id: parties.id,
+      matchmakingKey: parties.matchmakingKey,
+      version: parties.version,
+      leaderPlayerId: parties.leaderPlayerId,
+    }).from(parties).where(eq(parties.id, partyId)).for("update");
+    return party;
+  }
+
+  private async readPartyMembers(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    partyId: string,
+  ) {
+    // Call only after lockParty(). The party row is the canonical membership
+    // lock, which avoids opposite members deadlocking while each holds its own
+    // membership row and waits for the other.
+    return tx.select({
+      playerId: partyMembers.playerId,
+      guestDeviceId: partyMembers.guestDeviceId,
+      joinedAt: partyMembers.joinedAt,
+    }).from(partyMembers).where(eq(partyMembers.partyId, partyId)).orderBy(asc(partyMembers.joinedAt), asc(partyMembers.playerId));
+  }
+
+  private async partyIdForPlayer(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    playerId: string,
+  ): Promise<string | null> {
+    const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+      .where(eq(partyMembers.playerId, playerId)).limit(1);
+    return membership?.partyId ?? null;
+  }
+
+  private async isPartyMember(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    partyId: string,
+    playerId: string,
+  ): Promise<boolean> {
+    return await this.partyIdForPlayer(tx, playerId) === partyId;
+  }
+
+  private async lockPotentialPartySuccessors(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    partyId: string,
+    leavingPlayerId: string,
+  ): Promise<void> {
+    await tx.select({ id: players.id }).from(players)
+      .innerJoin(partyMembers, and(eq(partyMembers.playerId, players.id), eq(partyMembers.partyId, partyId)))
+      .where(ne(players.id, leavingPlayerId))
+      .orderBy(asc(players.id))
+      .for("update", { of: players });
+  }
+
+  private async partySummaryForPlayer(playerId: string): Promise<PartySummary | null> {
+    const [membership] = await this.db.select({ partyId: partyMembers.partyId }).from(partyMembers)
+      .where(eq(partyMembers.playerId, playerId)).limit(1);
+    return membership ? this.partySummaryById(this.db, membership.partyId, playerId) : null;
+  }
+
+  private async partySummaryById(
+    db: PostgresJsDatabase | Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    partyId: string,
+    actorPlayerId: string,
+  ): Promise<PartySummary> {
+    const [party] = await db.select({ version: parties.version, leaderPlayerId: parties.leaderPlayerId })
+      .from(parties).where(eq(parties.id, partyId)).limit(1);
+    if (!party) throw new PartyConflictError("party_membership_conflict", "Party no longer exists.");
+    const members = await db.select({
+      playerId: players.id,
+      publicPlayerId: players.publicPlayerId,
+      displayName: players.displayName,
+      joinedAt: partyMembers.joinedAt,
+    }).from(partyMembers)
+      .innerJoin(players, eq(players.id, partyMembers.playerId))
+      .where(eq(partyMembers.partyId, partyId))
+      .orderBy(asc(partyMembers.joinedAt), asc(partyMembers.playerId));
+    const [linkedActor] = await db.select({ id: externalIdentities.id }).from(externalIdentities)
+      .where(eq(externalIdentities.playerId, actorPlayerId)).limit(1);
+    return {
+      version: party.version,
+      members: members.map((member) => ({
+        publicPlayerId: member.publicPlayerId,
+        displayName: member.displayName,
+        leader: member.playerId === party.leaderPlayerId,
+      })),
+      canInvite: party.leaderPlayerId === actorPlayerId && Boolean(linkedActor) && members.length < 3,
+    };
+  }
+
+  private async assertPartyNotQueued(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    partyId: string,
+  ): Promise<void> {
+    const [claim] = await tx.select({ id: partyQueueClaims.id }).from(partyQueueClaims).where(and(
+      eq(partyQueueClaims.partyId, partyId),
+      eq(partyQueueClaims.status, "active"),
+      gt(partyQueueClaims.expiresAt, new Date()),
+    )).limit(1).for("update");
+    if (claim) throw new PartyConflictError("party_queued", "Cancel public queueing before changing party membership.");
+  }
+
+  private async assertPlayerNotQueuedSolo(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    playerId: string,
+  ): Promise<void> {
+    const [claim] = await tx.select({ id: partyQueueClaims.id }).from(partyQueueClaims).where(and(
+      isNull(partyQueueClaims.partyId),
+      eq(partyQueueClaims.requestingPlayerId, playerId),
+      eq(partyQueueClaims.status, "active"),
+      gt(partyQueueClaims.expiresAt, new Date()),
+    )).limit(1).for("update");
+    if (claim) throw new PartyConflictError("party_queued", "Cancel public queueing before joining a party.");
+  }
+
+  private async removePartyMember(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    party: { id: string; version: number; leaderPlayerId: string },
+    playerId: string,
+  ): Promise<void> {
+    await tx.delete(partyMembers).where(and(eq(partyMembers.partyId, party.id), eq(partyMembers.playerId, playerId)));
+    const remaining = await tx.select({
+      playerId: partyMembers.playerId,
+      joinedAt: partyMembers.joinedAt,
+      linked: sql<boolean>`${externalIdentities.id} is not null`,
+    }).from(partyMembers)
+      .leftJoin(externalIdentities, eq(externalIdentities.playerId, partyMembers.playerId))
+      .where(eq(partyMembers.partyId, party.id))
+      .orderBy(desc(sql`${externalIdentities.id} is not null`), asc(partyMembers.joinedAt), asc(partyMembers.playerId));
+    if (remaining.length === 0) {
+      await tx.delete(parties).where(eq(parties.id, party.id));
+      return;
+    }
+    const leaderPlayerId = party.leaderPlayerId === playerId ? remaining[0].playerId : party.leaderPlayerId;
+    await tx.update(parties).set({ leaderPlayerId, version: party.version + 1, updatedAt: new Date() })
+      .where(eq(parties.id, party.id));
+  }
+
+  private async partyQueueClaimById(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    claimId: string,
+    party: { id: string; matchmakingKey: string; version: number; leaderPlayerId: string },
+    requestingPlayerId: string,
+    buildId: string,
+    region: string,
+  ): Promise<PartyQueueClaim> {
+    const members = await tx.select({ playerId: players.id, name: players.displayName })
+      .from(partyMembers)
+      .innerJoin(players, eq(players.id, partyMembers.playerId))
+      .where(eq(partyMembers.partyId, party.id))
+      .orderBy(asc(partyMembers.joinedAt), asc(partyMembers.playerId));
+    if (members.length < 1 || members.length > 3 || !members.some((member) => member.playerId === requestingPlayerId)) {
+      throw new PartyConflictError("party_membership_conflict", "Canonical party roster is invalid.");
+    }
+    return {
+      claimId,
+      partyId: party.matchmakingKey,
+      version: party.version,
+      leaderPlayerId: party.leaderPlayerId,
+      requestingPlayerId,
+      buildId,
+      region,
+      members,
+    };
+  }
+
+  private soloQueueClaim(
+    claimId: string,
+    actor: { playerId: string; name: string },
+    buildId: string,
+    region: string,
+  ): PartyQueueClaim {
+    return {
+      claimId,
+      partyId: `solo-${createHash("sha256").update(actor.playerId).digest("hex").slice(0, 24)}`,
+      version: 1,
+      leaderPlayerId: actor.playerId,
+      requestingPlayerId: actor.playerId,
+      buildId,
+      region,
+      members: [{ playerId: actor.playerId, name: actor.name }],
+    };
+  }
+
+  private async removePartyMembershipForDeletion(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    playerId: string,
+  ): Promise<void> {
+    const [membership] = await tx.select({ partyId: partyMembers.partyId }).from(partyMembers)
+      .where(eq(partyMembers.playerId, playerId));
+    if (!membership) {
+      await this.assertPlayerNotQueuedSolo(tx, playerId);
+      return;
+    }
+    const [authorityHint] = await tx.select({ leaderPlayerId: parties.leaderPlayerId }).from(parties)
+      .where(eq(parties.id, membership.partyId)).limit(1);
+    if (authorityHint?.leaderPlayerId === playerId) {
+      await this.lockPotentialPartySuccessors(tx, membership.partyId, playerId);
+    }
+    const party = await this.lockParty(tx, membership.partyId);
+    if (!party) return;
+    if (!await this.isPartyMember(tx, party.id, playerId)) return;
+    await this.assertPartyNotQueued(tx, party.id);
+    await this.removePartyMember(tx, party, playerId);
+  }
+
+  private async mergePartyMembership(
+    tx: Parameters<Parameters<PostgresJsDatabase["transaction"]>[0]>[0],
+    sourcePlayerId: string,
+    targetPlayerId: string,
+  ): Promise<void> {
+    const membershipHints = await tx.select({ partyId: partyMembers.partyId, playerId: partyMembers.playerId })
+      .from(partyMembers)
+      .where(inArray(partyMembers.playerId, [sourcePlayerId, targetPlayerId]))
+      .orderBy(asc(partyMembers.partyId));
+    const sourceMembershipHint = membershipHints.find((membership) => membership.playerId === sourcePlayerId);
+    const targetMembershipHint = membershipHints.find((membership) => membership.playerId === targetPlayerId);
+    if (sourceMembershipHint && targetMembershipHint?.partyId !== sourceMembershipHint.partyId) {
+      const [sourceAuthorityHint] = await tx.select({ leaderPlayerId: parties.leaderPlayerId }).from(parties)
+        .where(eq(parties.id, sourceMembershipHint.partyId)).limit(1);
+      if (sourceAuthorityHint?.leaderPlayerId === sourcePlayerId) {
+        await this.lockPotentialPartySuccessors(tx, sourceMembershipHint.partyId, sourcePlayerId);
+      }
+    }
+    const partyIds = [...new Set(membershipHints.map((membership) => membership.partyId))].sort();
+    const lockedParties = new Map<string, { id: string; matchmakingKey: string; version: number; leaderPlayerId: string }>();
+    for (const partyId of partyIds) {
+      const party = await this.lockParty(tx, partyId);
+      if (party) {
+        await this.assertPartyNotQueued(tx, party.id);
+        lockedParties.set(party.id, party);
+      }
+    }
+    // Membership can disappear while party locks are pending (for example, a
+    // different leader can disband). Re-read only after every involved party
+    // is locked, then perform all roster changes under those locks.
+    const memberships = await tx.select({ partyId: partyMembers.partyId, playerId: partyMembers.playerId })
+      .from(partyMembers)
+      .where(inArray(partyMembers.playerId, [sourcePlayerId, targetPlayerId]))
+      .orderBy(asc(partyMembers.partyId));
+    const sourceMembership = memberships.find((membership) => membership.playerId === sourcePlayerId);
+    const targetMembership = memberships.find((membership) => membership.playerId === targetPlayerId);
+    if (!sourceMembership) {
+      await this.assertPlayerNotQueuedSolo(tx, sourcePlayerId);
+      await tx.update(partyInvites).set({ ownerPlayerId: targetPlayerId }).where(eq(partyInvites.ownerPlayerId, sourcePlayerId));
+      return;
+    }
+    if (!targetMembership) await this.assertPlayerNotQueuedSolo(tx, targetPlayerId);
+    const sourceParty = lockedParties.get(sourceMembership.partyId);
+    if (!sourceParty) return;
+
+    if (!targetMembership) {
+      await tx.update(partyMembers).set({ playerId: targetPlayerId, guestDeviceId: null })
+        .where(and(eq(partyMembers.partyId, sourceParty.id), eq(partyMembers.playerId, sourcePlayerId)));
+      await tx.update(parties).set({
+        leaderPlayerId: sourceParty.leaderPlayerId === sourcePlayerId ? targetPlayerId : sourceParty.leaderPlayerId,
+        version: sourceParty.version + 1,
+        updatedAt: new Date(),
+      }).where(eq(parties.id, sourceParty.id));
+      await tx.update(partyInvites).set({ ownerPlayerId: targetPlayerId }).where(eq(partyInvites.ownerPlayerId, sourcePlayerId));
+      return;
+    }
+
+    if (targetMembership.partyId === sourceParty.id) {
+      await tx.delete(partyMembers).where(and(eq(partyMembers.partyId, sourceParty.id), eq(partyMembers.playerId, sourcePlayerId)));
+      await tx.update(parties).set({
+        leaderPlayerId: sourceParty.leaderPlayerId === sourcePlayerId ? targetPlayerId : sourceParty.leaderPlayerId,
+        version: sourceParty.version + 1,
+        updatedAt: new Date(),
+      }).where(eq(parties.id, sourceParty.id));
+      await tx.update(partyInvites).set({ ownerPlayerId: targetPlayerId }).where(eq(partyInvites.ownerPlayerId, sourcePlayerId));
+      return;
+    }
+
+    // An established linked account's durable party wins. The guest leaves
+    // its source party atomically; its old invite authority is revoked rather
+    // than being transferred into an unrelated roster.
+    await tx.update(partyInvites).set({ revoked: true }).where(eq(partyInvites.ownerPlayerId, sourcePlayerId));
+    await this.removePartyMember(tx, sourceParty, sourcePlayerId);
+  }
+
   private async createGuest(name: string, token: string): Promise<PlayerIdentity> {
     const tokenHash = hashToken(token);
     return allocateUniquePublicPlayerId(async (candidate) => {
@@ -1092,6 +1783,7 @@ export class PostgresPersistence implements Persistence {
     if (targetOverlaps.some((match) => match.outcome === "active" || sourceOutcomeByMatch.get(match.matchId) === "active")) {
       throw new PersistenceConflictError("Account linking must wait until the overlapping active match ends.");
     }
+    await this.mergePartyMembership(tx, source.id, target.id);
     const conflicts = {
       source: {
         displayName: source.name,
@@ -1207,11 +1899,22 @@ export class PostgresPersistence implements Persistence {
       await tx.insert(playerBlocks).values({ blockerPlayerId: blocker, blockedPlayerId: blocked, createdAt: block.createdAt }).onConflictDoNothing();
     }
 
-    await tx.update(partyInvites).set({ ownerPlayerId: target.id }).where(eq(partyInvites.ownerPlayerId, source.id));
-    const sourceAcceptances = await tx.select({ inviteId: partyInviteAcceptances.inviteId, acceptedAt: partyInviteAcceptances.acceptedAt })
+    const sourceAcceptances = await tx.select({
+      inviteId: partyInviteAcceptances.inviteId,
+      acceptedAt: partyInviteAcceptances.acceptedAt,
+      durable: partyInviteAcceptances.durable,
+    })
       .from(partyInviteAcceptances).where(eq(partyInviteAcceptances.playerId, source.id));
     for (const acceptance of sourceAcceptances) {
-      await tx.insert(partyInviteAcceptances).values({ inviteId: acceptance.inviteId, playerId: target.id, acceptedAt: acceptance.acceptedAt }).onConflictDoNothing();
+      await tx.insert(partyInviteAcceptances).values({
+        inviteId: acceptance.inviteId,
+        playerId: target.id,
+        acceptedAt: acceptance.acceptedAt,
+        durable: true,
+      }).onConflictDoUpdate({
+        target: [partyInviteAcceptances.inviteId, partyInviteAcceptances.playerId],
+        set: { durable: true, guestDeviceId: null },
+      });
     }
     await tx.delete(partyInviteAcceptances).where(eq(partyInviteAcceptances.playerId, source.id));
     const targetInviteRows = await tx.select({ id: partyInvites.id }).from(partyInvites)
@@ -1286,6 +1989,29 @@ export async function connectPostgres(databaseUrl: string): Promise<PostgresPers
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function assertPartyVersion(actual: number, expected: number | undefined): void {
+  if (expected !== undefined && (!Number.isInteger(expected) || expected !== actual)) {
+    throw new PartyConflictError("party_version_stale", "Party membership changed. Refresh before retrying.");
+  }
+}
+
+function assertQueueCompatibility(
+  claim: { buildId: string; region: string },
+  input: { buildId: string; region: string },
+): void {
+  if (claim.buildId !== input.buildId || claim.region !== input.region) {
+    throw new PartyConflictError("party_queued", "This party is already queued for another compatible build or region.");
+  }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function safeInternalMetadata(value: string, maxLength: number): boolean {
+  return value.length > 0 && value.length <= maxLength && /^[a-zA-Z0-9._:-]+$/.test(value);
 }
 
 function externalIdentityLockKey(identity: VerifiedExternalIdentity): string {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,28 +105,49 @@ func (s *sessionState) gameSessionID() string {
 }
 
 type lifecycle struct {
-	api            gameLiftAPI
-	state          *sessionState
-	runtime        *runtimeState
-	httpMu         sync.RWMutex
-	httpClient     *http.Client
-	healthURL      string
-	drainURL       string
-	drainStatusURL string
-	terminating    chan struct{}
-	terminate      sync.Once
-	servingReady   chan struct{}
-	ready          sync.Once
-	ending         sync.Once
-	endingErr      error
-	playerSessions sync.Map
+	api              gameLiftAPI
+	state            *sessionState
+	runtime          *runtimeState
+	httpMu           sync.RWMutex
+	httpClient       *http.Client
+	healthURL        string
+	drainURL         string
+	drainStatusURL   string
+	terminating      chan struct{}
+	terminate        sync.Once
+	servingReady     chan struct{}
+	ready            sync.Once
+	ending           sync.Once
+	endingErr        error
+	playerSessionsMu sync.Mutex
+	playerSessions   map[string]*playerSessionLock
+}
+
+type playerSessionLock struct {
+	mutex sync.Mutex
+	refs  int
 }
 
 func (l *lifecycle) lockPlayerSession(playerSessionID string) func() {
-	value, _ := l.playerSessions.LoadOrStore(playerSessionID, &sync.Mutex{})
-	mutex := value.(*sync.Mutex)
-	mutex.Lock()
-	return mutex.Unlock
+	l.playerSessionsMu.Lock()
+	entry := l.playerSessions[playerSessionID]
+	if entry == nil {
+		entry = &playerSessionLock{}
+		l.playerSessions[playerSessionID] = entry
+	}
+	entry.refs++
+	l.playerSessionsMu.Unlock()
+
+	entry.mutex.Lock()
+	return func() {
+		entry.mutex.Unlock()
+		l.playerSessionsMu.Lock()
+		entry.refs--
+		if entry.refs == 0 && l.playerSessions[playerSessionID] == entry {
+			delete(l.playerSessions, playerSessionID)
+		}
+		l.playerSessionsMu.Unlock()
+	}
 }
 
 func newLifecycle(api gameLiftAPI, healthURL, drainURL string) *lifecycle {
@@ -139,6 +161,7 @@ func newLifecycle(api gameLiftAPI, healthURL, drainURL string) *lifecycle {
 		drainStatusURL: drainStatusURL(drainURL),
 		terminating:    make(chan struct{}),
 		servingReady:   make(chan struct{}),
+		playerSessions: make(map[string]*playerSessionLock),
 	}
 }
 
@@ -315,6 +338,16 @@ type playerSessionRequest struct {
 	PlayerSessionID string `json:"playerSessionId"`
 }
 
+type partyPlayerSessionsRequest struct {
+	PlayerSessionIDs []string `json:"playerSessionIds"`
+}
+
+type trustedPlayerSession struct {
+	PlayerSessionID string `json:"playerSessionId"`
+	PlayerID        string `json:"playerId"`
+	PlayerData      string `json:"playerData"`
+}
+
 func (l *lifecycle) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/session", func(response http.ResponseWriter, _ *http.Request) {
@@ -335,7 +368,9 @@ func (l *lifecycle) handler() http.Handler {
 			"computeName":     computeName,
 		})
 	})
+	mux.HandleFunc("POST /v1/player-sessions/inspect", l.inspectPlayerSessionHandler)
 	mux.HandleFunc("POST /v1/player-sessions/accept", l.acceptPlayerSessionHandler)
+	mux.HandleFunc("POST /v1/player-sessions/accept-party", l.acceptPartyPlayerSessionsHandler)
 	mux.HandleFunc("POST /v1/player-sessions/remove", l.removePlayerSessionHandler)
 	mux.HandleFunc("POST /v1/process/end", func(response http.ResponseWriter, _ *http.Request) {
 		if err := l.endProcess(); err != nil {
@@ -354,6 +389,21 @@ func (l *lifecycle) handler() http.Handler {
 	return mux
 }
 
+func (l *lifecycle) inspectPlayerSessionHandler(response http.ResponseWriter, requestValue *http.Request) {
+	playerSessionID, ok := decodePlayerSessionRequest(response, requestValue)
+	if !ok {
+		return
+	}
+	unlock := l.lockPlayerSession(playerSessionID)
+	defer unlock()
+	playerSession, err := l.describeReservedPlayerSession(playerSessionID)
+	if err != nil {
+		http.Error(response, "player session rejected", http.StatusUnauthorized)
+		return
+	}
+	writeTrustedPlayerSession(response, playerSession)
+}
+
 func (l *lifecycle) acceptPlayerSessionHandler(response http.ResponseWriter, requestValue *http.Request) {
 	playerSessionID, ok := decodePlayerSessionRequest(response, requestValue)
 	if !ok {
@@ -361,16 +411,8 @@ func (l *lifecycle) acceptPlayerSessionHandler(response http.ResponseWriter, req
 	}
 	unlock := l.lockPlayerSession(playerSessionID)
 	defer unlock()
-	describeRequest := request.NewDescribePlayerSessions()
-	describeRequest.PlayerSessionID = playerSessionID
-	described, err := l.api.DescribePlayerSessions(describeRequest)
-	if err != nil || len(described.PlayerSessions) != 1 {
-		http.Error(response, "player session rejected", http.StatusUnauthorized)
-		return
-	}
-	playerSession := described.PlayerSessions[0]
-	if playerSession.PlayerSessionID != playerSessionID || playerSession.GameSessionID != l.state.gameSessionID() ||
-		playerSession.PlayerID == "" || playerSession.Status == nil || playerSession.GetStatus() != model.PlayerReserved {
+	playerSession, err := l.describeReservedPlayerSession(playerSessionID)
+	if err != nil {
 		http.Error(response, "player session rejected", http.StatusUnauthorized)
 		return
 	}
@@ -378,11 +420,53 @@ func (l *lifecycle) acceptPlayerSessionHandler(response http.ResponseWriter, req
 		http.Error(response, "player session rejected", http.StatusUnauthorized)
 		return
 	}
+	writeTrustedPlayerSession(response, playerSession)
+}
+
+func (l *lifecycle) acceptPartyPlayerSessionsHandler(response http.ResponseWriter, requestValue *http.Request) {
+	playerSessionIDs, ok := decodePartyPlayerSessionsRequest(response, requestValue)
+	if !ok {
+		return
+	}
+	orderedIDs := append([]string(nil), playerSessionIDs...)
+	sort.Strings(orderedIDs)
+	unlockers := make([]func(), 0, len(orderedIDs))
+	for _, playerSessionID := range orderedIDs {
+		unlockers = append(unlockers, l.lockPlayerSession(playerSessionID))
+	}
+	defer func() {
+		for index := len(unlockers) - 1; index >= 0; index-- {
+			unlockers[index]()
+		}
+	}()
+
+	described := make([]model.PlayerSession, 0, len(playerSessionIDs))
+	for _, playerSessionID := range playerSessionIDs {
+		playerSession, err := l.describeReservedPlayerSession(playerSessionID)
+		if err != nil {
+			l.releasePartyPlayerSessions(playerSessionIDs)
+			http.Error(response, "party player sessions rejected", http.StatusServiceUnavailable)
+			return
+		}
+		described = append(described, playerSession)
+	}
+	for _, playerSession := range described {
+		if err := l.api.AcceptPlayerSession(playerSession.PlayerSessionID); err != nil {
+			l.releasePartyPlayerSessions(playerSessionIDs)
+			http.Error(response, "party player sessions rejected", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	response.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(response).Encode(map[string]string{
-		"playerId":   playerSession.PlayerID,
-		"playerData": playerSession.PlayerData,
-	})
+	trusted := make([]trustedPlayerSession, 0, len(described))
+	for _, playerSession := range described {
+		trusted = append(trusted, trustedPlayerSession{
+			PlayerSessionID: playerSession.PlayerSessionID,
+			PlayerID:        playerSession.PlayerID,
+			PlayerData:      playerSession.PlayerData,
+		})
+	}
+	_ = json.NewEncoder(response).Encode(map[string]any{"playerSessions": trusted})
 }
 
 func (l *lifecycle) removePlayerSessionHandler(response http.ResponseWriter, requestValue *http.Request) {
@@ -437,6 +521,61 @@ func decodePlayerSessionRequest(response http.ResponseWriter, requestValue *http
 		return "", false
 	}
 	return strings.TrimSpace(payload.PlayerSessionID), true
+}
+
+func decodePartyPlayerSessionsRequest(response http.ResponseWriter, requestValue *http.Request) ([]string, bool) {
+	requestValue.Body = http.MaxBytesReader(response, requestValue.Body, 8192)
+	var payload partyPlayerSessionsRequest
+	if err := json.NewDecoder(requestValue.Body).Decode(&payload); err != nil || len(payload.PlayerSessionIDs) < 1 || len(payload.PlayerSessionIDs) > 3 {
+		http.Error(response, "one to three playerSessionIds are required", http.StatusBadRequest)
+		return nil, false
+	}
+	result := make([]string, 0, len(payload.PlayerSessionIDs))
+	seen := make(map[string]struct{}, len(payload.PlayerSessionIDs))
+	for _, raw := range payload.PlayerSessionIDs {
+		playerSessionID := strings.TrimSpace(raw)
+		if playerSessionID == "" || len(playerSessionID) > 2048 {
+			http.Error(response, "invalid playerSessionId", http.StatusBadRequest)
+			return nil, false
+		}
+		if _, duplicate := seen[playerSessionID]; duplicate {
+			http.Error(response, "duplicate playerSessionId", http.StatusBadRequest)
+			return nil, false
+		}
+		seen[playerSessionID] = struct{}{}
+		result = append(result, playerSessionID)
+	}
+	return result, true
+}
+
+func (l *lifecycle) describeReservedPlayerSession(playerSessionID string) (model.PlayerSession, error) {
+	describeRequest := request.NewDescribePlayerSessions()
+	describeRequest.PlayerSessionID = playerSessionID
+	described, err := l.api.DescribePlayerSessions(describeRequest)
+	if err != nil || len(described.PlayerSessions) != 1 {
+		return model.PlayerSession{}, errors.New("player session unavailable")
+	}
+	playerSession := described.PlayerSessions[0]
+	if playerSession.PlayerSessionID != playerSessionID || playerSession.GameSessionID != l.state.gameSessionID() ||
+		playerSession.PlayerID == "" || playerSession.Status == nil || playerSession.GetStatus() != model.PlayerReserved {
+		return model.PlayerSession{}, errors.New("player session unavailable")
+	}
+	return playerSession, nil
+}
+
+func (l *lifecycle) releasePartyPlayerSessions(playerSessionIDs []string) {
+	for _, playerSessionID := range playerSessionIDs {
+		_ = l.api.RemovePlayerSession(playerSessionID)
+	}
+}
+
+func writeTrustedPlayerSession(response http.ResponseWriter, playerSession model.PlayerSession) {
+	response.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(response).Encode(trustedPlayerSession{
+		PlayerSessionID: playerSession.PlayerSessionID,
+		PlayerID:        playerSession.PlayerID,
+		PlayerData:      playerSession.PlayerData,
+	})
 }
 
 func waitForHealthy(ctx context.Context, client *http.Client, healthURL string) error {

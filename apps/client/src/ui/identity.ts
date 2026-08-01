@@ -9,6 +9,18 @@ export type AccountState = {
   storageAvailable: boolean;
 };
 
+export type PartyState = {
+  version: number;
+  members: Array<{ publicPlayerId: string; displayName: string; leader: boolean }>;
+  canInvite: boolean;
+};
+
+export type DurablePartyInvite = {
+  code: string;
+  expiresAt: string;
+  party: PartyState;
+};
+
 let accountTokenInFlight: Promise<string> | null = null;
 
 export async function ensureAccountToken(name: string): Promise<string> {
@@ -140,7 +152,13 @@ export async function createLinkedDeviceSession(firebaseIdToken: string): Promis
   };
 }
 
-export async function acceptPartyInvite(code: string): Promise<{ inviter: { publicPlayerId: string; displayName: string }; durable: boolean }> {
+export async function acceptPartyInvite(code: string): Promise<{
+  inviter: { publicPlayerId: string; displayName: string };
+  durable: boolean;
+  expiresAt?: string;
+  party?: PartyState;
+  replayed?: boolean;
+}> {
   const token = localStorage.getItem(deviceTokenKey);
   if (!token) throw new Error("Choose a display name before accepting an invitation.");
   const response = await fetch("/api/social/party-invites/accept", {
@@ -148,9 +166,89 @@ export async function acceptPartyInvite(code: string): Promise<{ inviter: { publ
     headers: { "content-type": "application/json", "x-device-token": token },
     body: JSON.stringify({ code }),
   });
-  const payload = await response.json() as { inviter?: { publicPlayerId: string; displayName: string }; durable?: boolean; error?: string };
+  const payload = await response.json() as {
+    inviter?: { publicPlayerId: string; displayName: string };
+    durable?: boolean;
+    expiresAt?: string;
+    party?: PartyState;
+    replayed?: boolean;
+    error?: string;
+  };
   if (!response.ok || !payload.inviter) throw new Error(payload.error ?? "Party invitation could not be accepted.");
-  return { inviter: payload.inviter, durable: payload.durable === true };
+  return {
+    inviter: payload.inviter,
+    durable: payload.durable === true,
+    ...(payload.expiresAt ? { expiresAt: payload.expiresAt } : {}),
+    ...(payload.party ? { party: payload.party } : {}),
+    ...(payload.replayed === undefined ? {} : { replayed: payload.replayed }),
+  };
+}
+
+export async function fetchPartyState(): Promise<PartyState | null> {
+  const response = await partyRequest("/api/social/party", { method: "GET" });
+  const payload = await response.json() as { party?: PartyState | null; error?: string };
+  if (!response.ok) throw new Error(payload.error ?? "Party state could not be loaded.");
+  return payload.party ?? null;
+}
+
+export async function createDurablePartyInvite(): Promise<DurablePartyInvite> {
+  const response = await partyRequest("/api/social/party-invites", { method: "POST" });
+  const payload = await response.json() as Partial<DurablePartyInvite> & { error?: string };
+  if (!response.ok || !payload.code || !payload.expiresAt || !payload.party) {
+    throw new Error(payload.error ?? "Party invitation could not be created.");
+  }
+  return { code: payload.code, expiresAt: payload.expiresAt, party: payload.party };
+}
+
+export async function revokeDurablePartyInvites(): Promise<PartyState> {
+  return partyMutation("/api/social/party-invites", "DELETE", {});
+}
+
+export async function leaveDurableParty(version: number): Promise<null> {
+  await partyMutation("/api/social/party/leave", "POST", { version }, true);
+  return null;
+}
+
+export async function disbandDurableParty(version: number): Promise<null> {
+  await partyMutation("/api/social/party/disband", "POST", { version }, true);
+  return null;
+}
+
+export async function transferDurablePartyLeader(version: number, publicPlayerId: string): Promise<PartyState> {
+  return partyMutation("/api/social/party/leader", "POST", { version, publicPlayerId });
+}
+
+async function partyMutation(
+  url: string,
+  method: "POST" | "DELETE",
+  body: Record<string, unknown>,
+  allowNull?: false,
+): Promise<PartyState>;
+async function partyMutation(
+  url: string,
+  method: "POST" | "DELETE",
+  body: Record<string, unknown>,
+  allowNull: true,
+): Promise<PartyState | null>;
+async function partyMutation(
+  url: string,
+  method: "POST" | "DELETE",
+  body: Record<string, unknown>,
+  allowNull = false,
+): Promise<PartyState | null> {
+  const response = await partyRequest(url, { method, body: JSON.stringify(body) });
+  const payload = await response.json() as { party?: PartyState | null; error?: string };
+  if (!response.ok || (!allowNull && !payload.party)) throw new Error(payload.error ?? "Party could not be changed.");
+  return payload.party ?? null;
+}
+
+async function partyRequest(url: string, init: RequestInit): Promise<Response> {
+  const token = localStorage.getItem(deviceTokenKey);
+  if (!token) throw new Error("A device session is required for party actions.");
+  return fetch(url, {
+    ...init,
+    headers: { "content-type": "application/json", "x-device-token": token, ...init.headers },
+  });
 }
 
 export function partyInviteCodeFromHash(hash: string): string | null {

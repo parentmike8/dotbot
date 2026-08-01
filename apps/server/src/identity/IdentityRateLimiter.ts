@@ -1,4 +1,4 @@
-export type IdentityRateLimitAction = "register" | "verify" | "social_lookup" | "social_write";
+export type IdentityRateLimitAction = "register" | "verify" | "social_lookup" | "social_write" | "arena_internal";
 
 export type IdentityRateLimitDecision = { allowed: true } | { allowed: false; retryAfterSeconds: number };
 
@@ -11,16 +11,20 @@ const defaults: Record<IdentityRateLimitAction, { limit: number; windowMs: numbe
   verify: { limit: 60, windowMs: 10 * 60_000 },
   social_lookup: { limit: 120, windowMs: 60_000 },
   social_write: { limit: 60, windowMs: 60_000 },
+  arena_internal: { limit: 180, windowMs: 60_000 },
 };
 
 export class MemoryIdentityRateLimiter implements IdentityRateLimiter {
   private readonly buckets = new Map<string, number[]>();
+  private readonly policy: Record<IdentityRateLimitAction, { limit: number; windowMs: number }>;
 
   constructor(
-    private readonly policy = defaults,
+    policy: Partial<Record<IdentityRateLimitAction, { limit: number; windowMs: number }>> = defaults,
     private readonly now: () => number = Date.now,
     private readonly maxBuckets = 10_000,
-  ) {}
+  ) {
+    this.policy = { ...defaults, ...policy };
+  }
 
   consume(action: IdentityRateLimitAction, key: string): IdentityRateLimitDecision {
     const policy = this.policy[action];

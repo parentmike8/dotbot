@@ -21,7 +21,10 @@ type fakeGameLift struct {
 	accepted      []string
 	removed       []string
 	described     *model.PlayerSession
+	describedByID map[string]model.PlayerSession
 	err           error
+	acceptErrByID map[string]error
+	removeErrByID map[string]error
 	removeErr     error
 	acceptEntered chan struct{}
 	acceptGate    chan struct{}
@@ -45,6 +48,9 @@ func (f *fakeGameLift) AcceptPlayerSession(id string) error {
 		<-f.acceptGate
 	}
 	f.accepted = append(f.accepted, id)
+	if err := f.acceptErrByID[id]; err != nil {
+		return err
+	}
 	return f.err
 }
 func (f *fakeGameLift) RemovePlayerSession(id string) error {
@@ -52,6 +58,9 @@ func (f *fakeGameLift) RemovePlayerSession(id string) error {
 		f.removeOnce.Do(func() { close(f.removeEntered) })
 	}
 	f.removed = append(f.removed, id)
+	if err := f.removeErrByID[id]; err != nil {
+		return err
+	}
 	if f.removeErr != nil {
 		return f.removeErr
 	}
@@ -63,6 +72,9 @@ func (f *fakeGameLift) DescribePlayerSessions(value request.DescribePlayerSessio
 	}
 	if f.described != nil {
 		return result.DescribePlayerSessionsResult{PlayerSessions: []model.PlayerSession{*f.described}}, nil
+	}
+	if described, ok := f.describedByID[value.PlayerSessionID]; ok {
+		return result.DescribePlayerSessionsResult{PlayerSessions: []model.PlayerSession{described}}, nil
 	}
 	return result.DescribePlayerSessionsResult{PlayerSessions: []model.PlayerSession{
 		(model.PlayerSession{
@@ -107,6 +119,119 @@ func TestAcceptedPlayerSessionReturnsTrustedPlayerData(t *testing.T) {
 
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"playerData"`) || !strings.Contains(response.Body.String(), `public-hot-arena`) {
 		t.Fatalf("unexpected admission response status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestInspectPlayerSessionDoesNotAcceptIt(t *testing.T) {
+	described := (model.PlayerSession{
+		PlayerSessionID: "player-session-1",
+		PlayerID:        "player-1",
+		PlayerData:      `{"mode":"public-hot-arena"}`,
+		GameSessionID:   "session-1",
+	}).WithStatus(model.PlayerReserved)
+	fake := &fakeGameLift{described: &described}
+	process := newLifecycle(fake, "http://unused", "")
+	process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+	requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/inspect", strings.NewReader(`{"playerSessionId":"player-session-1"}`))
+	response := httptest.NewRecorder()
+
+	process.handler().ServeHTTP(response, requestValue)
+
+	if response.Code != http.StatusOK || len(fake.accepted) != 0 || !strings.Contains(response.Body.String(), `"playerSessionId":"player-session-1"`) {
+		t.Fatalf("inspect mutated GameLift status=%d accepted=%#v body=%s", response.Code, fake.accepted, response.Body.String())
+	}
+}
+
+func TestPlayerSessionLocksAreReleasedAfterUse(t *testing.T) {
+	process := newLifecycle(&fakeGameLift{}, "http://unused", "")
+	unlock := process.lockPlayerSession("player-session-1")
+	unlock()
+
+	process.playerSessionsMu.Lock()
+	defer process.playerSessionsMu.Unlock()
+	if len(process.playerSessions) != 0 {
+		t.Fatalf("completed player-session lock was retained: %#v", process.playerSessions)
+	}
+}
+
+func TestPartyAcceptsOnlyAfterEveryReservationIsValidated(t *testing.T) {
+	describedByID := map[string]model.PlayerSession{}
+	for index, id := range []string{"player-session-1", "player-session-2", "player-session-3"} {
+		describedByID[id] = (model.PlayerSession{
+			PlayerSessionID: id,
+			PlayerID:        "player-" + string(rune('1'+index)),
+			PlayerData:      `{"mode":"public-hot-arena"}`,
+			GameSessionID:   "session-1",
+		}).WithStatus(model.PlayerReserved)
+	}
+	fake := &fakeGameLift{describedByID: describedByID}
+	process := newLifecycle(fake, "http://unused", "")
+	process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+	requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/accept-party", strings.NewReader(
+		`{"playerSessionIds":["player-session-1","player-session-2","player-session-3"]}`,
+	))
+	response := httptest.NewRecorder()
+
+	process.handler().ServeHTTP(response, requestValue)
+
+	if response.Code != http.StatusOK || strings.Join(fake.accepted, ",") != "player-session-1,player-session-2,player-session-3" || len(fake.removed) != 0 {
+		t.Fatalf("unexpected whole-party admission status=%d accepted=%#v removed=%#v body=%s", response.Code, fake.accepted, fake.removed, response.Body.String())
+	}
+}
+
+func TestPartialPartyAcceptFailureReleasesEveryReservation(t *testing.T) {
+	describedByID := map[string]model.PlayerSession{}
+	for index, id := range []string{"player-session-1", "player-session-2", "player-session-3"} {
+		describedByID[id] = (model.PlayerSession{
+			PlayerSessionID: id,
+			PlayerID:        "player-" + string(rune('1'+index)),
+			GameSessionID:   "session-1",
+		}).WithStatus(model.PlayerReserved)
+	}
+	fake := &fakeGameLift{
+		describedByID: describedByID,
+		acceptErrByID: map[string]error{"player-session-2": errors.New("partial accept failure")},
+	}
+	process := newLifecycle(fake, "http://unused", "")
+	process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+	requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/accept-party", strings.NewReader(
+		`{"playerSessionIds":["player-session-1","player-session-2","player-session-3"]}`,
+	))
+	response := httptest.NewRecorder()
+
+	process.handler().ServeHTTP(response, requestValue)
+
+	if response.Code != http.StatusServiceUnavailable || strings.Join(fake.accepted, ",") != "player-session-1,player-session-2" ||
+		strings.Join(fake.removed, ",") != "player-session-1,player-session-2,player-session-3" {
+		t.Fatalf("partial accept was not fully compensated status=%d accepted=%#v removed=%#v", response.Code, fake.accepted, fake.removed)
+	}
+}
+
+func TestPartialPartyAcceptCleanupAttemptsEveryRemovalAfterOneFails(t *testing.T) {
+	describedByID := map[string]model.PlayerSession{}
+	for index, id := range []string{"player-session-1", "player-session-2", "player-session-3"} {
+		describedByID[id] = (model.PlayerSession{
+			PlayerSessionID: id,
+			PlayerID:        "player-" + string(rune('1'+index)),
+			GameSessionID:   "session-1",
+		}).WithStatus(model.PlayerReserved)
+	}
+	fake := &fakeGameLift{
+		describedByID: describedByID,
+		acceptErrByID: map[string]error{"player-session-2": errors.New("partial accept failure")},
+		removeErrByID: map[string]error{"player-session-1": errors.New("first cleanup failed")},
+	}
+	process := newLifecycle(fake, "http://unused", "")
+	process.state.setSession(model.GameSession{GameSessionID: "session-1"})
+	requestValue := httptest.NewRequest(http.MethodPost, "/v1/player-sessions/accept-party", strings.NewReader(
+		`{"playerSessionIds":["player-session-1","player-session-2","player-session-3"]}`,
+	))
+	response := httptest.NewRecorder()
+
+	process.handler().ServeHTTP(response, requestValue)
+
+	if response.Code != http.StatusServiceUnavailable || strings.Join(fake.removed, ",") != "player-session-1,player-session-2,player-session-3" {
+		t.Fatalf("partial cleanup stopped early status=%d removed=%#v", response.Code, fake.removed)
 	}
 }
 

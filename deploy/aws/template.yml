@@ -18,6 +18,12 @@ Parameters:
     AllowedValues:
       - "true"
       - "false"
+  AtomicPartyAllocationEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
   QuickPlayBuildId:
     Type: String
     Default: disabled
@@ -79,7 +85,7 @@ Resources:
       CodeUri: ../../apps/matchmaker/dist
       Role: arn:aws:iam::380314682423:role/DotBotMatchmakerRole
       MemorySize: 256
-      Timeout: 10
+      Timeout: 30
       Environment:
         Variables:
           TABLE_NAME: !Ref SessionsTable
@@ -88,6 +94,7 @@ Resources:
           CONTROL_PLANE_URL: !Ref ControlPlaneUrl
           RELAY_SECRET_ARN: !Ref RelaySecretArn
           DOTBOT_PUBLIC_QUICK_PLAY: !Ref PublicQuickPlayEnabled
+          DOTBOT_ATOMIC_PARTY_ALLOCATION: !Ref AtomicPartyAllocationEnabled
           QUICK_PLAY_BUILD_ID: !Ref QuickPlayBuildId
       Events:
         Health:
@@ -107,6 +114,12 @@ Resources:
           Properties:
             ApiId: !Ref MatchmakerApi
             Path: /quick-play
+            Method: POST
+        CancelQuickPlay:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref MatchmakerApi
+            Path: /quick-play/cancel
             Method: POST
         JoinRoom:
           Type: HttpApi
