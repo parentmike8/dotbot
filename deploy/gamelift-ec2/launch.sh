@@ -36,6 +36,11 @@ export AWS_DEFAULT_REGION="$AWS_REGION"
 export AWS_SHARED_CREDENTIALS_FILE="/local/credentials/credentials"
 export AWS_PROFILE="FleetRoleCredentials"
 export DOTBOT_MATCHMAKER_FUNCTION="dotbot-production-matchmaker"
+export DOTBOT_PUBLIC_QUICK_PLAY="true"
+export DOTBOT_DURABLE_PARTIES="true"
+export DOTBOT_ATOMIC_PARTY_ALLOCATION="true"
+export QUICK_PLAY_BUILD_ID="__DOTBOT_BUILD_ID__"
+export QUICK_PLAY_REGIONS="ca-central-1"
 # Omit lifecycle URLs so the adapter can switch them to verified loopback TLS
 # after GameLift supplies the generated certificate and DNS identity.
 unset GAME_HEALTH_URL GAME_DRAIN_URL

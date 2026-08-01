@@ -73,6 +73,12 @@ jobs:
           cp apps/server/dist/index.js "$build_root/server/index.js"
           cp dist-gamelift/gamelift-adapter "$build_root/gamelift-adapter"
           cp deploy/gamelift-ec2/launch.sh "$build_root/launch.sh"
+          sed -i "s/__DOTBOT_BUILD_ID__/${GITHUB_SHA}/g" "$build_root/launch.sh"
+          grep -Fq "QUICK_PLAY_BUILD_ID=\"${GITHUB_SHA}\"" "$build_root/launch.sh"
+          if grep -Fq '__DOTBOT_BUILD_ID__' "$build_root/launch.sh"; then
+            echo "GameLift launch script still contains the build-id placeholder." >&2
+            exit 1
+          fi
           chmod 0555 "$build_root/launch.sh" "$build_root/gamelift-adapter"
 
           node_archive="node-v${NODE_VERSION}-linux-arm64.tar.xz"
