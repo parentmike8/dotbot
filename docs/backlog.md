@@ -529,8 +529,8 @@ must include:
   routing, Firebase Auth, the game client, accessibility, and performance
   requirements.
 
-- [ ] Capture and curate the screenshot set with Sound off before every live
-      game session.
+- [ ] Capture and curate the screenshot set from representative live game
+      sessions.
 - [ ] Prepare the Claude Design brief and exact page-content requirements.
 - [ ] Receive the design/HTML, then integrate it without allowing marketing
       styles to fork the in-game visual system accidentally.
@@ -685,7 +685,7 @@ public production path:
 - Current desktop browsers, iPhone Safari, Android Chrome, and the selected
   older-device floor all pass the same core loop.
 - World changes pass overlays-off review, collision/navigation audits, and
-  full-size production-renderer traversal with Sound disabled during testing.
+  full-size production-renderer traversal.
 
 ### Existing full-world traversal proof still owed
 
