@@ -109,4 +109,10 @@ describe("GameLiftSessionGate", () => {
       region: "ca-central-1",
     });
   });
+
+  it("rejects a whitespace-only reservation identity", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ playerId: "   " }), { status: 200 }));
+    const gate = new GameLiftSessionGate({ fetch: request });
+    await expect(gate.acceptPlayerSession("psess-1")).rejects.toThrow("invalid player identity");
+  });
 });

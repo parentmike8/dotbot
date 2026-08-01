@@ -150,7 +150,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     app.post<{ Headers: { "x-dotbot-timestamp"?: string; "x-dotbot-request-id"?: string; "x-dotbot-signature"?: string }; Body: { token?: unknown } }>("/api/internal/matchmaker-auth", async (request, reply) => {
       const body = JSON.stringify(request.body);
       const requestId = request.headers["x-dotbot-request-id"];
-      if (!validRelaySignature(relaySecret, request.headers["x-dotbot-timestamp"], requestId, request.headers["x-dotbot-signature"], body)) {
+      if (!validRelaySignature(relaySecret, "matchmaker-auth", request.headers["x-dotbot-timestamp"], requestId, request.headers["x-dotbot-signature"], body)) {
         return reply.code(401).send({ error: "Invalid matchmaker signature." });
       }
       const token = typeof request.body?.token === "string" ? request.body.token : "";
@@ -164,7 +164,7 @@ export async function createServer(options: CreateServerOptions = {}) {
         // boundary so mixed GameLift revisions retain their established key.
         return { playerId: identity.playerId, name: identity.name };
       } catch (error) {
-        request.log.warn({ err: error }, "matchmaker authentication failed");
+        request.log.warn({ errorName: error instanceof Error ? error.name : "UnknownError" }, "matchmaker authentication failed");
         return reply.code(503).send({ error: "Authoritative persistence is temporarily unavailable." });
       }
     });
@@ -172,7 +172,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     app.post<{ Headers: { "x-dotbot-timestamp"?: string; "x-dotbot-request-id"?: string; "x-dotbot-signature"?: string }; Body: unknown }>("/api/internal/game-persistence", async (request, reply) => {
       const body = JSON.stringify(request.body);
       const requestId = request.headers["x-dotbot-request-id"];
-      if (!validRelaySignature(relaySecret, request.headers["x-dotbot-timestamp"], requestId, request.headers["x-dotbot-signature"], body)) {
+      if (!validRelaySignature(relaySecret, "game-persistence", request.headers["x-dotbot-timestamp"], requestId, request.headers["x-dotbot-signature"], body)) {
         return reply.code(401).send({ error: "Invalid persistence relay signature." });
       }
       try {
@@ -180,7 +180,7 @@ export async function createServer(options: CreateServerOptions = {}) {
         if (!claimed) return reply.code(409).send({ error: "Persistence relay request was already processed." });
         return { result: await dispatchPersistenceRelay(persistence, request.body) };
       } catch (error) {
-        request.log.warn({ err: error }, "persistence relay operation failed");
+        request.log.warn({ errorName: error instanceof Error ? error.name : "UnknownError" }, "persistence relay operation failed");
         return reply.code(error instanceof RelayPayloadError ? 400 : 503).send({
           error: error instanceof RelayPayloadError ? error.message : "Authoritative persistence is temporarily unavailable.",
         });
@@ -348,13 +348,16 @@ export async function createServer(options: CreateServerOptions = {}) {
     return reply.code(201).send(invite);
   });
 
-  app.post<{ Headers: { "x-device-token"?: string }; Params: { code: string } }>("/api/social/party-invites/:code/accept", async (request, reply) => {
+  app.post<{ Headers: { "x-device-token"?: string }; Body: { code?: unknown } }>("/api/social/party-invites/accept", async (request, reply) => {
     if (!allowIdentityRequest(identityRateLimiter, "social_write", request.ip, reply)) return;
     const token = request.headers["x-device-token"];
+    const code = typeof request.body?.code === "string" ? request.body.code : "";
     if (!token) return reply.code(400).send({ error: "A device token header is required." });
     if (!persistence.live) return reply.code(503).send({ error: "Authoritative storage is unavailable." });
-    if (!/^[A-Za-z0-9_-]{16,128}$/.test(request.params.code)) return reply.code(400).send({ error: "Invalid party invitation code." });
-    const accepted = await persistence.acceptPartyInvite(token, request.params.code);
+    // Invite codes are bearer credentials. Keep them in the request body so
+    // access logs and reverse-proxy URL logs never capture the raw value.
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(code)) return reply.code(400).send({ error: "Invalid party invitation code." });
+    const accepted = await persistence.acceptPartyInvite(token, code);
     if (!accepted) return reply.code(404).send({ error: "Party invitation is invalid or expired." });
     return { inviter: publicPlayer(accepted.inviter), durable: accepted.durable, expiresAt: accepted.expiresAt };
   });
@@ -582,7 +585,7 @@ export async function createServer(options: CreateServerOptions = {}) {
           entry.removing = false;
           void finishPlayerSessionRemoval(playerSessionId);
         }, playerSessionRemovalRecoveryMs);
-        app.log.error({ err: error }, "failed to remove GameLift player session after retries; admission paused pending reconciliation");
+        app.log.error({ errorName: error instanceof Error ? error.name : "UnknownError" }, "failed to remove GameLift player session after retries; admission paused pending reconciliation");
       }
     }
   };
@@ -629,6 +632,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     let connectionMode: "base" | "game" | null = null;
     const peer = {
       id: randomUUID(),
+      isOpen: () => ws.readyState === ws.OPEN,
       send(
         message: ServerMessage,
         _delivery?: import("@dotbot/protocol").DeliveryClass,
@@ -880,11 +884,18 @@ function isLoopback(ip: string): boolean {
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }
 
-function validRelaySignature(secret: string, timestamp: string | undefined, requestId: string | undefined, signature: string | undefined, body: string): boolean {
+function validRelaySignature(
+  secret: string,
+  scope: "matchmaker-auth" | "game-persistence",
+  timestamp: string | undefined,
+  requestId: string | undefined,
+  signature: string | undefined,
+  body: string,
+): boolean {
   if (!timestamp || !isUuid(requestId) || !signature || !/^\d{10,13}$/.test(timestamp) || !/^[a-f0-9]{64}$/i.test(signature)) return false;
   const timestampMs = timestamp.length === 10 ? Number(timestamp) * 1000 : Number(timestamp);
   if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > 30_000) return false;
-  const expected = createHmac("sha256", secret).update(`${timestamp}.${requestId}.${body}`).digest();
+  const expected = createHmac("sha256", secret).update(`${scope}.${timestamp}.${requestId}.${body}`).digest();
   const received = Buffer.from(signature, "hex");
   return received.length === expected.length && timingSafeEqual(received, expected);
 }

@@ -131,6 +131,7 @@ export class RoomManager {
       peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
       return false;
     }
+    if (!isPeerActive() || peer.isOpen?.() === false) return false;
     if (!matchesReservedPlayerIdentity(identity, expectedPlayerId)) {
       peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
       return false;
@@ -143,6 +144,7 @@ export class RoomManager {
       peer.send({ type: "err", code: "storage_unavailable", msg: "Base progress could not be verified. Try again." });
       return false;
     }
+    if (!isPeerActive() || peer.isOpen?.() === false) return false;
     if (!tutorial || !isBaseTutorialComplete(tutorial)) {
       peer.send({
         type: "err",
@@ -151,9 +153,9 @@ export class RoomManager {
       });
       return false;
     }
-    if (!isPeerActive()) return false;
+    if (!isPeerActive() || peer.isOpen?.() === false) return false;
     const assignedCode = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : undefined;
-    if (!isPeerActive()) return false;
+    if (!isPeerActive() || peer.isOpen?.() === false) return false;
     if (assignedCode && message.roomCode && message.roomCode.trim().toUpperCase() !== assignedCode) {
       peer.send({ type: "err", code: "room_not_found", msg: "That room is hosted by a different game session." });
       return false;
@@ -203,10 +205,13 @@ export class RoomManager {
     try {
       identity = await this.persistence.resolveOrRegisterPlayer(message.token, message.name);
     } catch (error) {
-      console.warn(`[persistence] identity lookup failed; rejecting public admission. ${errorMessage(error)}`);
+      console.warn("[persistence] identity lookup failed; rejecting public admission.", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
       peer.send({ type: "err", code: "storage_unavailable", msg: "Player identity could not be verified. Try again." });
       return false;
     }
+    if (!isPeerActive() || peer.isOpen?.() === false) return false;
     if (!matchesReservedPlayerIdentity(identity, admission?.playerId)) {
       peer.send({ type: "err", code: "player_identity_mismatch", msg: "This player session belongs to a different account." });
       return false;
@@ -218,13 +223,15 @@ export class RoomManager {
         return false;
       }
     } catch (error) {
-      console.warn(`[persistence] tutorial lookup failed; rejecting public admission. ${errorMessage(error)}`);
+      console.warn("[persistence] tutorial lookup failed; rejecting public admission.", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
       peer.send({ type: "err", code: "storage_unavailable", msg: "Base progress could not be verified. Try again." });
       return false;
     }
-    if (!isPeerActive()) return false;
+    if (!isPeerActive() || peer.isOpen?.() === false) return false;
     const assignedArenaId = this.options.sessionRoomCode ? await this.options.sessionRoomCode() : undefined;
-    if (!isPeerActive()) return false;
+    if (!isPeerActive() || peer.isOpen?.() === false) return false;
     if (admission && assignedArenaId && admission.arenaId !== assignedArenaId) {
       peer.send({ type: "err", code: "arena_mismatch", msg: "This reservation belongs to a different arena." });
       return false;
@@ -308,7 +315,9 @@ export class RoomManager {
         if (this.options.sessionRoomCode) {
           this.sessionEnding = true;
           Promise.resolve(this.options.onRoomExpired?.()).catch((error) => {
-            console.error(`[gamelift] failed to end expired room process: ${errorMessage(error)}`);
+            console.error("[gamelift] failed to end expired room process.", {
+              errorName: error instanceof Error ? error.name : "UnknownError",
+            });
           });
         }
       }
@@ -334,23 +343,23 @@ export class RoomManager {
   }
 }
 
-/** The GameLift reservation remains authoritative. A current canonical
- * identity may satisfy it only when live persistence explicitly returned the
- * reserved UUID as one of that account's retired internal aliases. */
-export function matchesReservedPlayerIdentity(identity: PlayerIdentity, expectedPlayerId: string | undefined): boolean {
+function formatPublicPlayerId(value: string): string {
+  return `${value.slice(0, 4)}-${value.slice(4)}`;
+}
+
+/** The GameLift reservation remains authoritative. Canonical and retired
+ * internal aliases are server-only; public IDs are accepted only for rolling
+ * compatibility and never become persistence or directory identity. */
+export function matchesReservedPlayerIdentity(
+  identity: PlayerIdentity,
+  expectedPlayerId: string | undefined,
+): boolean {
   if (expectedPlayerId === undefined) return true;
-  const expectedRaw = expectedPlayerId.toUpperCase();
+  const expectedRaw = expectedPlayerId.trim().toUpperCase();
+  if (!expectedRaw) return false;
   const expectedPublic = expectedRaw.replace(/-/g, "");
   return identity.playerId.toUpperCase() === expectedRaw
     || identity.previousPlayerIds?.some((playerId) => playerId.toUpperCase() === expectedRaw) === true
     || identity.publicPlayerId.toUpperCase() === expectedPublic
     || identity.previousPublicPlayerIds?.some((playerId) => playerId.toUpperCase() === expectedPublic) === true;
-}
-
-function formatPublicPlayerId(value: string): string {
-  return `${value.slice(0, 4)}-${value.slice(4)}`;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

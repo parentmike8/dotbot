@@ -143,9 +143,10 @@ export async function createLinkedDeviceSession(firebaseIdToken: string): Promis
 export async function acceptPartyInvite(code: string): Promise<{ inviter: { publicPlayerId: string; displayName: string }; durable: boolean }> {
   const token = localStorage.getItem(deviceTokenKey);
   if (!token) throw new Error("Choose a display name before accepting an invitation.");
-  const response = await fetch(`/api/social/party-invites/${encodeURIComponent(code)}/accept`, {
+  const response = await fetch("/api/social/party-invites/accept", {
     method: "POST",
-    headers: { "x-device-token": token },
+    headers: { "content-type": "application/json", "x-device-token": token },
+    body: JSON.stringify({ code }),
   });
   const payload = await response.json() as { inviter?: { publicPlayerId: string; displayName: string }; durable?: boolean; error?: string };
   if (!response.ok || !payload.inviter) throw new Error(payload.error ?? "Party invitation could not be accepted.");

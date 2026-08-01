@@ -80,8 +80,12 @@ export function LobbyApp({ embedded = false, onReturnToBase }: LobbyAppProps = {
     }
     localStorage.setItem(nameKey, cleanName);
     const token = await ensureAccountToken(cleanName);
-    await updateDisplayName(cleanName).catch(() => undefined);
-    await Promise.all([refreshProfile(token), refreshAccount()]);
+    // Profile/account sidecars may refine the lobby and post-run UI, but they
+    // are never part of game admission. A stalled identity request must not
+    // delay allocation or deployment.
+    void updateDisplayName(cleanName).catch(() => undefined);
+    void refreshProfile(token);
+    void refreshAccount();
     session?.dispose();
     setError("");
     let allocation: MatchAllocation | null;

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  acceptPartyInvite,
   deviceTokenKey,
   ensureAccountToken,
   fetchAccountState,
@@ -127,5 +128,23 @@ describe("identity bootstrap", () => {
     expect(localStorage.getItem(playerNameKey)).toBe("New Pilot");
     expect(partyInviteCodeFromHash("#/party/abcdefghijklmnop")).toBe("abcdefghijklmnop");
     expect(partyInviteCodeFromHash("#/party/short")).toBeNull();
+  });
+
+  it("submits a party invite bearer in the body rather than a logged URL path", async () => {
+    localStorage.setItem(deviceTokenKey, "2".repeat(32));
+    const code = "inviteBearerCode1234567890";
+    const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(input).toBe("/api/social/party-invites/accept");
+      expect(String(input)).not.toContain(code);
+      expect(init?.body).toBe(JSON.stringify({ code }));
+      return new Response(JSON.stringify({
+        inviter: { publicPlayerId: "ABCD-EFGH", displayName: "Inviter" },
+        durable: false,
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", request);
+
+    await expect(acceptPartyInvite(code)).resolves.toMatchObject({ durable: false });
+    expect(request).toHaveBeenCalledOnce();
   });
 });

@@ -71,6 +71,7 @@ describe.skipIf(!databaseAvailable)("Postgres identity and social transactions",
     expect(merged.account.providers.sort()).toEqual(["email_link", "phone"]);
     expect(await persistence.helloPlayer(source.token)).toMatchObject({
       playerId: target.playerId,
+      previousPlayerIds: [source.playerId],
       previousPublicPlayerIds: [source.publicPlayerId],
     });
     expect((await persistence.helloPlayer(target.token))?.playerId).toBe(target.playerId);
@@ -144,6 +145,172 @@ describe.skipIf(!databaseAvailable)("Postgres identity and social transactions",
     expect((await persistence.helloPlayer(first.token))?.playerId).toBe(canonicalBefore);
   });
 
+  it("issues independent hashed device sessions without rotating existing devices", async () => {
+    const persistence = new PostgresPersistence(sql!, () => "Y2345678");
+    const account = await persistence.registerPlayer("Cross-device account");
+    const external = firebaseIdentity("cross-device-account");
+    await persistence.linkAccount(account.token, external);
+
+    const [second, third] = await Promise.all([
+      persistence.createLinkedSession({ ...external, provider: "phone" }),
+      persistence.createLinkedSession(external),
+    ]);
+    expect(second).not.toBeNull();
+    expect(third).not.toBeNull();
+    for (const token of [account.token, second!.token, third!.token]) {
+      expect((await persistence.helloPlayer(token))?.playerId).toBe(account.playerId);
+    }
+    const deviceHashes = await sql!<Array<{ tokenHash: string }>>`
+      select token_hash as "tokenHash" from player_devices where player_id = ${account.playerId}
+    `;
+    expect(deviceHashes).toHaveLength(3);
+    expect(deviceHashes.every((row) => /^[a-f0-9]{64}$/.test(row.tokenHash))).toBe(true);
+    for (const rawToken of [account.token, second!.token, third!.token]) {
+      expect(deviceHashes.some((row) => row.tokenHash === rawToken)).toBe(false);
+    }
+  });
+
+  it("does not create a guest through the WebSocket/dedicated admission resolver", async () => {
+    const persistence = new PostgresPersistence(sql!, () => "L2345678");
+    const [{ count: before }] = await sql!<Array<{ count: number }>>`select count(*)::int as count from players`;
+
+    await expect(persistence.resolveOrRegisterPlayer("unknown-admission-token", "Bypass guest"))
+      .rejects.toThrow("Unknown device token");
+
+    const [{ count: after }] = await sql!<Array<{ count: number }>>`select count(*)::int as count from players`;
+    expect(after).toBe(before);
+  });
+
+  it("serializes cross-device issuance with deletion so no returned bearer survives the delete", async () => {
+    const persistence = new PostgresPersistence(sql!, () => "Z2345678");
+    const account = await persistence.registerPlayer("Deletion race account");
+    const external = firebaseIdentity("deletion-race-account");
+    await persistence.linkAccount(account.token, external);
+
+    const [session, deleted] = await Promise.all([
+      persistence.createLinkedSession(external),
+      persistence.deleteLinkedAccount(account.token, external),
+    ]);
+
+    expect(deleted).toBe(true);
+    expect(await persistence.helloPlayer(account.token)).toBeNull();
+    if (session) expect(await persistence.helloPlayer(session.token)).toBeNull();
+  });
+
+  it("rolls back every guest move when a late merge write fails", async () => {
+    const candidates = ["W2345678", "X2345678"];
+    const persistence = new PostgresPersistence(sql!, () => candidates.shift() ?? "Z2345678");
+    const target = await persistence.registerPlayer("Rollback target");
+    const source = await persistence.registerPlayer("Rollback source");
+    const external = firebaseIdentity("rollback-account");
+    await persistence.linkAccount(target.token, external);
+    await sql!`insert into hold_items (player_id, item_type, qty) values (${target.playerId}, 'h', 2), (${source.playerId}, 'r', 3)`;
+    // Corrupt the cross-table invariant deliberately so the final alias insert
+    // fails after the merge has already attempted inventory/social moves.
+    await sql!`insert into player_aliases (source_player_id, source_public_player_id, target_player_id)
+      values ('00000000-0000-4000-8000-000000000999', ${source.publicPlayerId}, null)`;
+
+    await expect(persistence.linkAccount(source.token, external)).rejects.toThrow();
+
+    expect((await persistence.helloPlayer(source.token))?.playerId).toBe(source.playerId);
+    expect((await persistence.helloPlayer(target.token))?.playerId).toBe(target.playerId);
+    const quantities = await sql!<Array<{ playerId: string; itemType: string; qty: number }>>`
+      select player_id as "playerId", item_type as "itemType", sum(qty)::int as qty
+      from hold_items where player_id in (${source.playerId}, ${target.playerId})
+      group by player_id, item_type order by item_type
+    `;
+    expect(quantities).toEqual([
+      { playerId: target.playerId, itemType: "h", qty: 2 },
+      { playerId: source.playerId, itemType: "r", qty: 3 },
+    ]);
+    expect((await sql!<Array<{ count: number }>>`
+      select count(*)::int as count from identity_merge_receipts where source_player_id = ${source.playerId}
+    `)[0].count).toBe(0);
+  });
+
+  it("accepts reciprocal pending friendships and removes self-owned invite acceptances during a guest merge", async () => {
+    const candidates = ["Q2345678", "R2345678", "S2345678"];
+    const persistence = new PostgresPersistence(sql!, () => candidates.shift() ?? "T2345678");
+    const target = await persistence.registerPlayer("Friend merge target");
+    const source = await persistence.registerPlayer("Friend merge source");
+    const other = await persistence.registerPlayer("Friend merge other");
+    await persistence.linkAccount(target.token, firebaseIdentity("friend-merge-target"));
+    await persistence.linkAccount(other.token, firebaseIdentity("friend-merge-other"));
+
+    await sql!`
+      insert into friendships (player_low_id, player_high_id, requested_by_id, status)
+      values
+        (least(${target.playerId}::uuid, ${other.playerId}::uuid), greatest(${target.playerId}::uuid, ${other.playerId}::uuid), ${target.playerId}, 'pending'),
+        (least(${source.playerId}::uuid, ${other.playerId}::uuid), greatest(${source.playerId}::uuid, ${other.playerId}::uuid), ${other.playerId}, 'pending')
+    `;
+    const [targetInvite] = await sql!<Array<{ id: string }>>`
+      insert into party_invites (token_hash, owner_player_id, expires_at)
+      values ('friend-merge-target-invite', ${target.playerId}, now() + interval '1 day')
+      returning id
+    `;
+    const [sourceInvite] = await sql!<Array<{ id: string }>>`
+      insert into party_invites (token_hash, owner_player_id, expires_at)
+      values ('friend-merge-source-invite', ${source.playerId}, now() + interval '1 day')
+      returning id
+    `;
+    await sql!`insert into party_invite_acceptances (invite_id, player_id) values
+      (${targetInvite.id}, ${source.playerId}), (${sourceInvite.id}, ${target.playerId})`;
+
+    await persistence.linkAccount(source.token, firebaseIdentity("friend-merge-target"));
+
+    const mergedFriendships = await sql!<Array<{ status: string }>>`
+      select status from friendships
+      where player_low_id = least(${target.playerId}::uuid, ${other.playerId}::uuid)
+        and player_high_id = greatest(${target.playerId}::uuid, ${other.playerId}::uuid)
+    `;
+    expect(mergedFriendships).toEqual([{ status: "accepted" }]);
+    expect((await sql!<Array<{ count: number }>>`
+      select count(*)::int as count
+      from party_invite_acceptances as acceptance
+      join party_invites as invite on invite.id = acceptance.invite_id
+      where acceptance.player_id = invite.owner_player_id
+    `)[0].count).toBe(0);
+  });
+
+  it("retains every public ID as a tombstone after canonical account deletion", async () => {
+    const candidates = ["M2345678", "N2345678", "M2345678", "N2345678", "P2345678"];
+    const persistence = new PostgresPersistence(sql!, () => candidates.shift() ?? "V2345678");
+    const target = await persistence.registerPlayer("Deleted target");
+    const source = await persistence.registerPlayer("Deleted source");
+    const external = firebaseIdentity("deleted-tombstone-account");
+    await persistence.linkAccount(target.token, external);
+    await persistence.linkAccount(source.token, external);
+
+    expect(await persistence.deleteLinkedAccount(target.token, external)).toBe(true);
+    const tombstones = await sql!<Array<{ publicPlayerId: string; targetPlayerId: string | null }>>`
+      select source_public_player_id as "publicPlayerId", target_player_id as "targetPlayerId"
+      from player_aliases
+      where source_public_player_id in (${target.publicPlayerId}, ${source.publicPlayerId})
+      order by source_public_player_id
+    `;
+    expect(tombstones).toEqual([
+      { publicPlayerId: target.publicPlayerId, targetPlayerId: null },
+      { publicPlayerId: source.publicPlayerId, targetPlayerId: null },
+    ]);
+
+    const replacement = await persistence.registerPlayer("Replacement");
+    expect(replacement.publicPlayerId).toBe("P2345678");
+  });
+
+  it("tombstones a raw old-writer player deletion before its public ID can be reused", async () => {
+    const candidates = ["U2345678", "U2345678", "V2345678"];
+    const persistence = new PostgresPersistence(sql!, () => candidates.shift() ?? "X2345678");
+    const deleted = await persistence.registerPlayer("Old writer deletion");
+
+    await sql!`delete from players where id = ${deleted.playerId}`;
+
+    expect(await sql!<Array<{ publicPlayerId: string; targetPlayerId: string | null }>>`
+      select source_public_player_id as "publicPlayerId", target_player_id as "targetPlayerId"
+      from player_aliases where source_player_id = ${deleted.playerId}
+    `).toEqual([{ publicPlayerId: deleted.publicPlayerId, targetPlayerId: null }]);
+    expect((await persistence.registerPlayer("After old writer")).publicPlayerId).toBe("V2345678");
+  });
+
   it("rejects a merge when both profiles are still active in the same match", async () => {
     const candidates = ["A2345678", "B2345678"];
     const persistence = new PostgresPersistence(sql!, () => candidates.shift() ?? "C2345678");
@@ -198,8 +365,14 @@ describe.skipIf(!databaseAvailable)("Postgres identity and social transactions",
     expect(invite?.code).toHaveLength(32);
     expect(await persistence.acceptPartyInvite(owner.token, invite!.code)).toBeNull();
     expect(await persistence.acceptPartyInvite(guest.token, invite!.code)).toMatchObject({ durable: false });
-    expect(await persistence.acceptPartyInvite(friend.token, invite!.code)).toMatchObject({ durable: true });
-    expect(await persistence.acceptPartyInvite(friend.token, invite!.code)).toMatchObject({ durable: true });
+    const inviteReplays = await Promise.all([
+      persistence.acceptPartyInvite(friend.token, invite!.code),
+      persistence.acceptPartyInvite(friend.token, invite!.code),
+    ]);
+    expect(inviteReplays).toEqual([
+      expect.objectContaining({ durable: true }),
+      expect.objectContaining({ durable: true }),
+    ]);
     expect(Number((await sql!<Array<{ count: number }>>`
       select count(*)::int as count from party_invite_acceptances where player_id = ${friend.playerId}
     `)[0].count)).toBe(1);

@@ -46,7 +46,7 @@ describe("authoritative persistence relay", () => {
         outcome: "died",
       },
     };
-    const headers = signedHeaders(body);
+    const headers = signedHeaders(body, "game-persistence");
 
     const accepted = await app.inject({ method: "POST", url: "/api/internal/game-persistence", headers, payload: body });
     expect(accepted.statusCode).toBe(200);
@@ -89,7 +89,7 @@ describe("authoritative persistence relay", () => {
     const accepted = await app.inject({
       method: "POST",
       url: "/api/internal/game-persistence",
-      headers: signedHeaders(validBody),
+      headers: signedHeaders(validBody, "game-persistence"),
       payload: validBody,
     });
     expect(accepted.statusCode).toBe(200);
@@ -106,7 +106,7 @@ describe("authoritative persistence relay", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/internal/game-persistence",
-      headers: signedHeaders(invalidBody),
+      headers: signedHeaders(invalidBody, "game-persistence"),
       payload: invalidBody,
     });
     expect(response.statusCode).toBe(400);
@@ -134,7 +134,7 @@ describe("authoritative persistence relay", () => {
     const accepted = await app.inject({
       method: "POST",
       url: "/api/internal/game-persistence",
-      headers: signedHeaders(body),
+      headers: signedHeaders(body, "game-persistence"),
       payload: body,
     });
     expect(accepted.statusCode).toBe(200);
@@ -144,7 +144,7 @@ describe("authoritative persistence relay", () => {
     const rejected = await app.inject({
       method: "POST",
       url: "/api/internal/game-persistence",
-      headers: signedHeaders(oversized),
+      headers: signedHeaders(oversized, "game-persistence"),
       payload: oversized,
     });
     expect(rejected.statusCode).toBe(400);
@@ -162,7 +162,7 @@ describe("authoritative persistence relay", () => {
       const response = await app.inject({
         method: "POST",
         url: "/api/internal/game-persistence",
-        headers: signedHeaders(body),
+        headers: signedHeaders(body, "game-persistence"),
         payload: body,
       });
       expect(response.statusCode).toBe(400);
@@ -177,7 +177,7 @@ describe("authoritative persistence relay", () => {
     const persistence = new RelayTestPersistence();
     const { app } = await createServer({ persistence });
     const body = { token: "matchmaker-device-token" };
-    const headers = signedHeaders(body);
+    const headers = signedHeaders(body, "matchmaker-auth");
     const accepted = await app.inject({ method: "POST", url: "/api/internal/matchmaker-auth", headers, payload: body });
     expect(accepted.statusCode).toBe(200);
     expect(accepted.json<{ playerId: string }>().playerId).toBeTruthy();
@@ -185,9 +185,26 @@ describe("authoritative persistence relay", () => {
     expect((await app.inject({ method: "POST", url: "/api/internal/matchmaker-auth", payload: body })).statusCode).toBe(401);
     await app.close();
   });
+
+  it("separates matchmaker authentication from persistence signature domains", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.DOTBOT_RELAY_SECRET = relaySecret;
+    const persistence = new RelayTestPersistence();
+    const { app } = await createServer({ persistence });
+    const body = { token: "matchmaker-device-token" };
+    const headers = signedHeaders(body, "matchmaker-auth");
+
+    const confused = await app.inject({ method: "POST", url: "/api/internal/game-persistence", headers, payload: body });
+    expect(confused.statusCode).toBe(401);
+    expect(persistence.claims).not.toContain(headers["x-dotbot-request-id"]);
+
+    const correctlyScoped = await app.inject({ method: "POST", url: "/api/internal/matchmaker-auth", headers, payload: body });
+    expect(correctlyScoped.statusCode).toBe(200);
+    await app.close();
+  });
 });
 
-function signedHeaders(body: unknown) {
+function signedHeaders(body: unknown, scope: "matchmaker-auth" | "game-persistence") {
   const timestamp = Date.now().toString();
   const requestId = randomUUID();
   const serialized = JSON.stringify(body);
@@ -195,6 +212,6 @@ function signedHeaders(body: unknown) {
     "content-type": "application/json",
     "x-dotbot-timestamp": timestamp,
     "x-dotbot-request-id": requestId,
-    "x-dotbot-signature": createHmac("sha256", relaySecret).update(`${timestamp}.${requestId}.${serialized}`).digest("hex"),
+    "x-dotbot-signature": createHmac("sha256", relaySecret).update(`${scope}.${timestamp}.${requestId}.${serialized}`).digest("hex"),
   };
 }

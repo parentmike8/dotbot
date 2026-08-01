@@ -88,10 +88,11 @@ export class GameLiftSessionGate {
     const response = await this.playerSessionAction("accept", playerSessionId);
     try {
       const payload = await response.json().catch(() => null) as { playerId?: unknown } | null;
-      if (!payload || typeof payload.playerId !== "string" || !payload.playerId || payload.playerId.length > 1024) {
+      const playerId = typeof payload?.playerId === "string" ? payload.playerId.trim() : "";
+      if (!playerId || playerId.length > 1024) {
         throw new Error("GameLift returned an invalid player identity.");
       }
-      return payload.playerId;
+      return playerId;
     } catch (error) {
       throw removalRequiredError(error);
     }
@@ -101,7 +102,8 @@ export class GameLiftSessionGate {
     const response = await this.playerSessionAction("accept", playerSessionId);
     try {
       const payload = await response.json().catch(() => null) as { playerId?: unknown; playerData?: unknown } | null;
-      if (!payload || typeof payload.playerId !== "string" || !payload.playerId || payload.playerId.length > 1024) {
+      const playerId = typeof payload?.playerId === "string" ? payload.playerId.trim() : "";
+      if (!playerId || playerId.length > 1024) {
         throw new Error("GameLift returned an invalid player identity.");
       }
       let playerData: unknown = payload.playerData;
@@ -128,7 +130,7 @@ export class GameLiftSessionGate {
       if (session.arenaId !== arenaId || session.buildId !== buildId || session.region !== region) {
         throw new Error("GameLift public player metadata does not match the assigned game session.");
       }
-      return { playerId: payload.playerId, arenaId, partyId, buildId, region };
+      return { playerId, arenaId, partyId, buildId, region };
     } catch (error) {
       throw removalRequiredError(error);
     }

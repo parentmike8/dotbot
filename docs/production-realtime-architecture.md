@@ -71,7 +71,7 @@ network handoff keeps the reservation and player-controlled bot available for
 
 GameLift processes use short-lived fleet-role credentials to invoke only the
 matchmaker Lambda. The Lambda signs a narrow, allow-listed persistence request
-to Cloud Run. Cloud Run verifies timestamp, request ID, signature, replay
+to Cloud Run. Cloud Run verifies timestamp, request ID, endpoint-scoped signature, replay
 claim, operation, and payload before touching Cloud SQL. Database credentials
 and the relay secret are not present on the fleet.
 

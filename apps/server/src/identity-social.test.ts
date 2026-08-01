@@ -166,7 +166,12 @@ describe("identity and social control-plane routes", () => {
     expect((await app.inject({ method: "GET", url: "/api/social/friends", headers: { "x-device-token": "guest-token" } })).statusCode).toBe(403);
     expect((await app.inject({ method: "POST", url: "/api/social/party-invites", headers: { "x-device-token": "guest-token" } })).statusCode).toBe(403);
 
-    const guestAcceptance = await app.inject({ method: "POST", url: "/api/social/party-invites/high-entropy-code/accept", headers: { "x-device-token": "guest-token" } });
+    const guestAcceptance = await app.inject({
+      method: "POST",
+      url: "/api/social/party-invites/accept",
+      headers: { "x-device-token": "guest-token" },
+      payload: { code: "high-entropy-code" },
+    });
     expect(guestAcceptance.json()).toMatchObject({ inviter: { publicPlayerId: "JKLM-NPQR", displayName: "Friend" }, durable: false });
 
     await persistence.linkAccount("guest-token", identity);
@@ -207,23 +212,56 @@ describe("identity and social control-plane routes", () => {
     expect((await app.inject({ method: "GET", url: "/api/account", headers: { "x-device-token": token } })).statusCode).toBe(503);
     expect((await app.inject({ method: "POST", url: "/api/auth/link", headers: { "x-device-token": token, authorization: "Bearer firebase" } })).statusCode).toBe(503);
     expect((await app.inject({ method: "GET", url: "/api/social/friends", headers: { "x-device-token": token } })).statusCode).toBe(503);
-    expect((await app.inject({ method: "POST", url: "/api/social/party-invites/code/accept", headers: { "x-device-token": token } })).statusCode).toBe(503);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/social/party-invites/accept",
+      headers: { "x-device-token": token },
+      payload: { code: "abcdefghijklmnop" },
+    })).statusCode).toBe(503);
     expect((await app.inject({ method: "GET", url: "/api/social/players/ABCD-EFGH", headers: { "x-device-token": token } })).statusCode).toBe(503);
     expect((await app.inject({ method: "DELETE", url: "/api/account", headers: { "x-device-token": token, authorization: "Bearer firebase" } })).statusCode).toBe(503);
     await app.close();
   });
 
-  it("rejects malformed invite codes before hashing or persistence lookup", async () => {
+  it("keeps invite bearer codes out of the request URL and rejects malformed codes before persistence lookup", async () => {
     const persistence = new IdentityTestPersistence();
     const accept = vi.spyOn(persistence, "acceptPartyInvite");
     const { app } = await createServer({ persistence, firebaseIdentityVerifier: verifier() });
     const response = await app.inject({
       method: "POST",
-      url: `/api/social/party-invites/${"x".repeat(15)}/accept`,
+      url: "/api/social/party-invites/accept",
       headers: { "x-device-token": "guest-token" },
+      payload: { code: "x".repeat(15) },
     });
     expect(response.statusCode).toBe(400);
     expect(accept).not.toHaveBeenCalled();
+    expect(app.printRoutes()).not.toContain(":code");
+    await app.close();
+  });
+
+  it("never serializes retired internal reservation aliases in public identity responses", async () => {
+    class AliasedPersistence extends IdentityTestPersistence {
+      override async getAccount() {
+        return {
+          playerId: "00000000-0000-4000-8000-000000000001",
+          previousPlayerIds: ["00000000-0000-4000-8000-000000000099"],
+          publicPlayerId: "ABCDEFGH",
+          displayName: "Guest Pilot",
+          linked: true,
+          providers: ["email_link"],
+        } as AccountSummary;
+      }
+    }
+    const { app } = await createServer({ persistence: new AliasedPersistence(), firebaseIdentityVerifier: verifier() });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/auth/hello",
+      payload: { token: "guest-token" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain("00000000-0000-4000-8000-000000000001");
+    expect(response.body).not.toContain("00000000-0000-4000-8000-000000000099");
+    expect(response.json()).toMatchObject({ playerId: "ABCD-EFGH", publicPlayerId: "ABCD-EFGH" });
     await app.close();
   });
 

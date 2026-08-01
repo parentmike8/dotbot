@@ -85,6 +85,13 @@
       "when": 1785559780122,
       "tag": "0011_retired_public_id_tombstones",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785561707516,
+      "tag": "0012_preserve_deleted_public_ids",
+      "breakpoints": true
     }
   ]
 }

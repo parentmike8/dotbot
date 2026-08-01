@@ -24,6 +24,31 @@ const peer = (messages: ServerMessage[], id = "peer-1"): RoomPeer => ({
   },
 });
 
+describe("RoomManager reservation identity comparison", () => {
+  const identity = {
+    playerId: "00000000-0000-4000-8000-000000000001",
+    previousPlayerIds: ["00000000-0000-4000-8000-000000000099"],
+    publicPlayerId: "WXYZ2345",
+    previousPublicPlayerIds: ["ABCDEFGH"],
+    name: "Merged player",
+  };
+
+  it.each([
+    undefined,
+    "00000000-0000-4000-8000-000000000001",
+    "00000000-0000-4000-8000-000000000099",
+    "WXYZ-2345",
+    "ABCD-EFGH",
+  ])("accepts canonical and retired reservation identity %s", (expectedPlayerId) => {
+    expect(matchesReservedPlayerIdentity(identity, expectedPlayerId)).toBe(true);
+  });
+
+  it("rejects a reservation for another identity", () => {
+    expect(matchesReservedPlayerIdentity(identity, "00000000-0000-4000-8000-000000000002")).toBe(false);
+    expect(matchesReservedPlayerIdentity(identity, "   ")).toBe(false);
+  });
+});
+
 describe("RoomManager tutorial admission", () => {
   it("starts a bounded idle clock for an assigned GameLift arena even if no player opens a socket", async () => {
     let now = 0;
@@ -151,11 +176,39 @@ describe("RoomManager tutorial admission", () => {
     }, "spoofed-player")).toBe(false);
   });
 
+  it("does not admit a peer whose connection closes during identity-dependent progress lookup", async () => {
+    let releaseLookup!: () => void;
+    class SlowPersistence extends TutorialPersistence {
+      override async getBaseTutorialForPlayer() {
+        await new Promise<void>((resolve) => { releaseLookup = resolve; });
+        return completedBaseTutorialState;
+      }
+    }
+    let open = true;
+    const messages: ServerMessage[] = [];
+    const slowPeer = { ...peer(messages), isOpen: () => open };
+    const manager = new RoomManager({ persistence: new SlowPersistence(true) });
+    const admission = manager.handleHello(slowPeer, {
+      type: "hello",
+      token: "closing-token-1234",
+      name: "Closing player",
+      roomCode: "",
+    });
+    await vi.waitFor(() => expect(releaseLookup).toBeTypeOf("function"));
+    open = false;
+    releaseLookup();
+
+    await expect(admission).resolves.toBe(false);
+    expect(manager.rooms).toBe(0);
+    await manager.stop();
+  });
+
   it("accepts a retired public reservation after merge and rejects a second device for that account", async () => {
     class MergedPersistence extends TutorialPersistence {
       override async resolveOrRegisterPlayer() {
         return {
           playerId: "00000000-0000-4000-8000-000000000001",
+          previousPlayerIds: ["00000000-0000-4000-8000-000000000099"],
           publicPlayerId: "WXYZ2345",
           previousPublicPlayerIds: ["ABCDEFGH"],
           name: "Merged player",
@@ -169,7 +222,7 @@ describe("RoomManager tutorial admission", () => {
       token: "merged-device-token-1",
       name: "Merged player",
       roomCode: "",
-    }, "ABCD-EFGH")).toBe(true);
+    }, "00000000-0000-4000-8000-000000000099")).toBe(true);
     const roomCode = firstMessages.find((message) => message.type === "welcome")?.roomCode;
     expect(roomCode).toBeTruthy();
 

@@ -46,7 +46,7 @@ export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Pr
         ? await updateArenaAdmission(event.args)
         : await relayPersistence(event.operation, event.args) };
     } catch (error) {
-      console.error("game-server internal operation failed", error);
+      console.error("game-server internal operation failed", { errorName: safeErrorName(error) });
       return { error: event.source === "dotbot-arena-server"
         ? "Arena availability could not be updated."
         : "Authoritative persistence is temporarily unavailable." };
@@ -76,7 +76,7 @@ export async function handler(event: APIGatewayProxyEventV2 | InternalEvent): Pr
     return response(404, { error: "Route not found." });
   } catch (error) {
     const status = error instanceof MatchmakerError ? error.status : 500;
-    if (status >= 500) console.error("matchmaker request failed", error);
+    if (status >= 500) console.error("matchmaker request failed", { errorName: safeErrorName(error) });
     return response(status, {
       error: error instanceof MatchmakerError ? error.message : "Matchmaking is temporarily unavailable.",
       retryable: error instanceof MatchmakerError && error.retryable,
@@ -410,7 +410,7 @@ async function createRoom(identity: Identity): Promise<ConnectionAllocation> {
       await gameLift.send(new TerminateGameSessionCommand({
         GameSessionId: gameSessionId,
         TerminationMode: "TRIGGER_ON_PROCESS_TERMINATE",
-      })).catch((cleanupError) => console.error("failed to terminate orphaned game session", cleanupError));
+      })).catch((cleanupError) => console.error("failed to terminate orphaned game session", { errorName: safeErrorName(cleanupError) }));
     }
     if (isFleetWakingError(error)) {
       throw new MatchmakerError(503, "Dedicated game server is waking up. This can take about a minute.", true);
@@ -460,7 +460,7 @@ async function authenticate(token: unknown): Promise<Identity> {
   const body = JSON.stringify({ token });
   const timestamp = Date.now().toString();
   const requestId = randomUUID();
-  const signedHeaders = signControlPlaneRequest(await relaySecret(), body, timestamp, requestId);
+  const signedHeaders = signControlPlaneRequest(await relaySecret(), body, timestamp, requestId, "matchmaker-auth");
   let responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/matchmaker-auth`, {
     method: "POST",
     headers: {
@@ -493,14 +493,12 @@ async function relayPersistence(operation: string, args: unknown): Promise<unkno
   const body = JSON.stringify({ operation, args });
   const timestamp = Date.now().toString();
   const requestId = randomUUID();
-  const signature = createHmac("sha256", await relaySecret()).update(`${timestamp}.${requestId}.${body}`).digest("hex");
+  const signedHeaders = signControlPlaneRequest(await relaySecret(), body, timestamp, requestId, "game-persistence");
   const responseValue = await fetch(`${requiredEnv("CONTROL_PLANE_URL").replace(/\/$/, "")}/api/internal/game-persistence`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-dotbot-timestamp": timestamp,
-      "x-dotbot-request-id": requestId,
-      "x-dotbot-signature": signature,
+      ...signedHeaders,
     },
     body,
     signal: AbortSignal.timeout(5000),
@@ -525,11 +523,17 @@ export function secureWebSocketUrl(host: string, port: number): string {
   return `wss://${host}:${port}/ws`;
 }
 
-export function signControlPlaneRequest(secret: string, body: string, timestamp: string, requestId: string) {
+export function signControlPlaneRequest(
+  secret: string,
+  body: string,
+  timestamp: string,
+  requestId: string,
+  scope: "matchmaker-auth" | "game-persistence" = "matchmaker-auth",
+) {
   return {
     "x-dotbot-timestamp": timestamp,
     "x-dotbot-request-id": requestId,
-    "x-dotbot-signature": createHmac("sha256", secret).update(`${timestamp}.${requestId}.${body}`).digest("hex"),
+    "x-dotbot-signature": createHmac("sha256", secret).update(`${scope}.${timestamp}.${requestId}.${body}`).digest("hex"),
   };
 }
 
@@ -555,6 +559,10 @@ export function isFullGameSessionError(error: unknown): boolean {
 
 function awsErrorName(error: unknown): string {
   return error && typeof error === "object" && "name" in error && typeof error.name === "string" ? error.name : "";
+}
+
+function safeErrorName(error: unknown): string {
+  return awsErrorName(error) || (error instanceof Error ? error.name : "UnknownError");
 }
 
 function normalizeRoomCode(value: string | undefined): string {

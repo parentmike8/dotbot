@@ -102,6 +102,14 @@ export function BaseApp() {
     ? []
     : Object.keys(readLocalLayout()).map((slotId) => `base-object-${slotId}`));
 
+  useEffect(() => {
+    // Fragments never reach the server, but the invite is still a bearer. Drop
+    // it from the visible URL/history entry after capturing it for one attempt.
+    if (pendingPartyInvite.current) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    }
+  }, []);
+
   const refreshBase = useCallback(async () => {
     const token = localStorage.getItem(deviceTokenKey);
     if (!token) return;
@@ -148,7 +156,9 @@ export function BaseApp() {
     if (!identityReady) return;
     const storedName = localStorage.getItem(playerNameKey) ?? name;
     void ensureAccountToken(storedName).then(async () => {
-      await refreshBase();
+      // The invite is an independent bootstrap sidecar. Start the base refresh
+      // without making a slow account/base read delay invite acceptance.
+      void refreshBase();
       const code = pendingPartyInvite.current;
       if (!code) return;
       pendingPartyInvite.current = null;

@@ -37,7 +37,7 @@ export const playerDevices = pgTable("player_devices", {
 export const playerAliases = pgTable("player_aliases", {
   sourcePlayerId: uuid("source_player_id").primaryKey(),
   sourcePublicPlayerId: text("source_public_player_id").notNull(),
-  targetPlayerId: uuid("target_player_id").notNull().references(() => players.id, { onDelete: "cascade" }),
+  targetPlayerId: uuid("target_player_id").references(() => players.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex("player_aliases_source_public_player_id_unique").on(table.sourcePublicPlayerId)]);
 

@@ -6,15 +6,13 @@ import type { BaseTutorialAction, BaseTutorialState } from "@dotbot/game/baseTut
 export type PlayerIdentity = {
   /** Cloud SQL authority key. Never serialize this value to a public client. */
   playerId: string;
+  /** Retired Cloud SQL keys accepted only at signed reservation/persistence boundaries. */
+  previousPlayerIds?: string[];
   /** Immutable eight-character lookup id, stored without its display hyphen. */
   publicPlayerId: string;
   /** Retired public IDs accepted only for in-flight reservation reconciliation. */
   previousPublicPlayerIds?: string[];
   name: string;
-  /** Retired internal UUIDs that resolve to this canonical player. This field
-   * is for signed server-to-server admission only and must never be included
-   * in a public identity response. */
-  previousPlayerIds?: string[];
 };
 
 export type RegisteredPlayer = PlayerIdentity & {

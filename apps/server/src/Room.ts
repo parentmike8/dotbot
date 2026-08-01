@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { defaultGameConfig } from "@dotbot/game/config";
 import { downtownMap } from "@dotbot/game/content/downtown";
 import { buildingContaining, buildingOfFloor, physicsFloorId } from "@dotbot/game/mapModel";
@@ -16,6 +16,8 @@ import { assignPublicPlayerRoles, type PublicHuman } from "./hotArena";
 
 export interface RoomPeer {
   readonly id: string;
+  /** Async admission must not add a peer after its transport has closed. */
+  isOpen?: () => boolean;
   /**
    * `encoded` is the exact JSON payload already measured by the room.
    *
@@ -357,10 +359,10 @@ export class Room {
       return null;
     }
 
-    const index = this.members.size;
+    const fallbackPlayerId = `p-${createHash("sha256").update(token).digest("hex").slice(0, 24)}`;
     const member: Member = {
-      playerId: resolvedPlayerId ?? `p-${token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || index}`,
-      persistencePlayerId: persistencePlayerId ?? resolvedPlayerId ?? `p-${token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || index}`,
+      playerId: resolvedPlayerId ?? fallbackPlayerId,
+      persistencePlayerId: persistencePlayerId ?? resolvedPlayerId ?? fallbackPlayerId,
       token,
       name: sanitizeName(requestedName),
       squadId: this.hotArena ? "alpha" : this.availableSquad(preferredSquad),
@@ -922,7 +924,11 @@ export class Room {
     const retirementInterruptedStart = error instanceof PublicStartRetiredError;
     console.error(`[arena ${this.code}] public run ${retirementInterruptedStart ? "was interrupted by retirement" : "failed before live"}; retiring arena. ${errorMessage(error)}`);
     const failedMatchId = this.matchId;
-    const failedPlayerIds = this.currentRoles.flatMap((role) => role.playerId ? [role.playerId] : []);
+    const failedMembers = this.currentRoles.flatMap((role) => {
+      if (!role.playerId) return [];
+      const member = this.members.get(role.playerId);
+      return member?.persistenceEligible ? [member] : [];
+    });
     const endedAt = this.now();
     this.simulation?.dispose();
     this.simulation = null;
@@ -937,15 +943,15 @@ export class Room {
       : { type: "err", code: "arena_configuration_invalid", msg: "This arena could not start safely. Re-enter quick play." });
     this.broadcastLobby();
     if (!failedMatchId) return;
-    for (const playerId of failedPlayerIds) {
-      this.matchOutcomes.set(playerId, "disconnected");
+    for (const member of failedMembers) {
+      this.matchOutcomes.set(member.playerId, "disconnected");
       const recovery = this.persistence.recordOutcome({
         matchId: failedMatchId,
-        playerId,
+        playerId: member.persistencePlayerId,
         outcome: "disconnected",
       }).catch((outcomeError) => {
         this.runPersistenceFailed = true;
-        console.warn(`[persistence] failed to settle aborted start for ${playerId}. ${errorMessage(outcomeError)}`);
+        console.warn(`[persistence] failed to settle aborted start for ${member.playerId}. ${errorMessage(outcomeError)}`);
       });
       this.trackPersistence(recovery);
     }
@@ -956,7 +962,8 @@ export class Room {
         endedAt: new Date(endedAt),
         summary: {
           reason: retirementInterruptedStart ? "retirement_before_live" : "configuration_failure",
-          participants: failedPlayerIds.map((playerId) => ({ playerId, outcome: "disconnected" })),
+          participantCount: failedMembers.length,
+          outcomes: failedMembers.length > 0 ? { disconnected: failedMembers.length } : {},
         },
       });
     }).catch((finishError) => {
@@ -1442,7 +1449,11 @@ export class Room {
           endedAt: new Date(this.endedAt ?? this.now()),
           summary: {
             reason,
-            participants: [...this.matchOutcomes].map(([playerId, outcome]) => ({ playerId, outcome })),
+            participantCount: this.matchOutcomes.size,
+            outcomes: [...this.matchOutcomes.values()].reduce<Record<string, number>>((counts, outcome) => {
+              counts[outcome] = (counts[outcome] ?? 0) + 1;
+              return counts;
+            }, {}),
           },
         });
       } catch (error) {

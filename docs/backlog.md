@@ -234,8 +234,9 @@ account experience.
 - [ ] After the first run, offer a prominent non-blocking `SAVE YOUR PROGRESS`
       account step; make clear that unlinked progress is device-bound and
       cannot be safely recovered elsewhere.
-- [ ] Use Firebase Auth as the external identity provider for email/password,
-      passwordless email link, and phone/SMS-code access while Cloud
+- [ ] Use a dedicated Firebase Identity Platform tenant as the external
+      identity provider for passwordless email link and phone/SMS-code access;
+      enforce its tenant ID and email-link-only configuration server-side while Cloud
       SQL/Postgres remains the game-progress authority.
 - [ ] Merge the provisional guest identity and all progress into the linked
       account rather than creating a second game profile.
@@ -629,7 +630,7 @@ traversal under the map-building contract.
 - Exact party invitation, friend-request, blocking, and abuse-reporting UX.
 - The format and collision policy for the short public player ID.
 - Whether phone/SMS access ships in the first account increment or immediately
-  after email/password and email-link access, given consent, anti-abuse, and
+  after passwordless email-link access, given consent, anti-abuse, and
   operating-cost requirements.
 - Exact post-run `SAVE YOUR PROGRESS`, loadout, and `DEPLOY AGAIN` flow; visual
   design goes to Claude Design.

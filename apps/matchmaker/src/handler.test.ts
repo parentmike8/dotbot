@@ -153,7 +153,7 @@ describe("matchmaker endpoint helpers", () => {
     expect(signControlPlaneRequest(secret, body, timestamp, requestId)).toEqual({
       "x-dotbot-timestamp": timestamp,
       "x-dotbot-request-id": requestId,
-      "x-dotbot-signature": createHmac("sha256", secret).update(`${timestamp}.${requestId}.${body}`).digest("hex"),
+      "x-dotbot-signature": createHmac("sha256", secret).update(`matchmaker-auth.${timestamp}.${requestId}.${body}`).digest("hex"),
     });
   });
 });

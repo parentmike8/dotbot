@@ -85,27 +85,31 @@ export class PostgresPersistence implements Persistence {
       name: players.displayName,
     }).from(players).where(eq(players.id, device.playerId)).limit(1);
     if (!player) return null;
-    const aliases = await this.db.select({ sourcePublicPlayerId: playerAliases.sourcePublicPlayerId }).from(playerAliases)
+    const aliases = await this.db.select({
+      sourcePlayerId: playerAliases.sourcePlayerId,
+      sourcePublicPlayerId: playerAliases.sourcePublicPlayerId,
+    }).from(playerAliases)
       .where(eq(playerAliases.targetPlayerId, player.id));
+    const previousPlayerIds = aliases.map((alias) => alias.sourcePlayerId);
     const previousPublicPlayerIds = aliases.map((alias) => alias.sourcePublicPlayerId);
     return {
       playerId: player.id,
+      ...(previousPlayerIds.length > 0 ? { previousPlayerIds } : {}),
       publicPlayerId: player.publicPlayerId,
       ...(previousPublicPlayerIds.length > 0 ? { previousPublicPlayerIds } : {}),
       name: player.name,
     };
   }
 
-  async resolveOrRegisterPlayer(token: string, offeredName: string): Promise<PlayerIdentity> {
+  async resolveOrRegisterPlayer(token: string, _offeredName: string): Promise<PlayerIdentity> {
     const existing = await this.helloPlayer(token);
     if (existing) return existing;
-    try {
-      return await this.createGuest(offeredName, token);
-    } catch (error) {
-      const raced = await this.helloPlayer(token);
-      if (raced) return raced;
-      throw error;
-    }
+    // Keep this legacy method name for mixed dedicated-server revisions, but
+    // never let WebSocket/Lambda admission bypass the rate-limited register
+    // endpoint. A second lookup also closes the narrow guest-merge handoff race.
+    const raced = await this.helloPlayer(token);
+    if (raced) return raced;
+    throw new Error("Unknown device token.");
   }
 
   async getAccount(token: string): Promise<AccountSummary | null> {
@@ -119,7 +123,7 @@ export class PostgresPersistence implements Persistence {
       // Serialize every first-link and merge for one verified Firebase account
       // before locking either player. This closes the unique-insert race and
       // keeps opposite device replays from deadlocking on player rows.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${identity.issuer.length}:${identity.issuer}${identity.subject}`}, 0))`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${externalIdentityLockKey(identity)}, 0))`);
       // Resolve the device only after the Firebase-account lock. A winning
       // concurrent merge may have moved this token while a replay was waiting.
       let [currentDevice] = await tx.select({ playerId: playerDevices.playerId }).from(playerDevices)
@@ -201,24 +205,25 @@ export class PostgresPersistence implements Persistence {
   }
 
   async createLinkedSession(identity: VerifiedExternalIdentity): Promise<RegisteredPlayer | null> {
-    const [external] = await this.db.select({ playerId: externalIdentities.playerId })
-      .from(externalIdentities)
-      .where(and(eq(externalIdentities.issuer, identity.issuer), eq(externalIdentities.subject, identity.subject)))
-      .limit(1);
-    if (!external) return null;
     const token = randomBytes(16).toString("hex");
-    await this.db.transaction(async (tx) => {
-      await tx.insert(playerDevices).values({ playerId: external.playerId, tokenHash: hashToken(token) });
-      const [identityRow] = await tx.select({ id: externalIdentities.id }).from(externalIdentities)
-        .where(and(eq(externalIdentities.playerId, external.playerId), eq(externalIdentities.issuer, identity.issuer), eq(externalIdentities.subject, identity.subject)))
+    return this.db.transaction(async (tx) => {
+      // Serialize cross-device issuance with link and deletion for this
+      // external account. The outcome is linear: either the account exists
+      // and owns the new device, or no bearer is returned.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${externalIdentityLockKey(identity)}, 0))`);
+      const [external] = await tx.select({ id: externalIdentities.id, playerId: externalIdentities.playerId })
+        .from(externalIdentities)
+        .where(and(eq(externalIdentities.issuer, identity.issuer), eq(externalIdentities.subject, identity.subject)))
         .for("update");
-      if (!identityRow) throw new Error("Linked account is unavailable.");
-      await tx.insert(identityProviders).values({ externalIdentityId: identityRow.id, provider: identity.provider })
+      if (!external) return null;
+      const [player] = await tx.select({ id: players.id, publicPlayerId: players.publicPlayerId, name: players.displayName })
+        .from(players).where(eq(players.id, external.playerId)).for("update");
+      if (!player) return null;
+      await tx.insert(playerDevices).values({ playerId: external.playerId, tokenHash: hashToken(token) });
+      await tx.insert(identityProviders).values({ externalIdentityId: external.id, provider: identity.provider })
         .onConflictDoUpdate({ target: [identityProviders.externalIdentityId, identityProviders.provider], set: { lastVerifiedAt: new Date() } });
+      return { playerId: player.id, publicPlayerId: player.publicPlayerId, name: player.name, token };
     });
-    const [player] = await this.db.select({ id: players.id, publicPlayerId: players.publicPlayerId, name: players.displayName })
-      .from(players).where(eq(players.id, external.playerId)).limit(1);
-    return player ? { playerId: player.id, publicPlayerId: player.publicPlayerId, name: player.name, token } : null;
   }
 
   async updateDisplayName(token: string, displayName: string): Promise<AccountSummary | null> {
@@ -236,18 +241,28 @@ export class PostgresPersistence implements Persistence {
   }
 
   async deleteLinkedAccount(token: string, identity: VerifiedExternalIdentity): Promise<boolean> {
-    const actor = await this.helloPlayer(token);
-    if (!actor) return false;
+    const tokenHash = hashToken(token);
     return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${externalIdentityLockKey(identity)}, 0))`);
+      let [device] = await tx.select({ playerId: playerDevices.playerId }).from(playerDevices)
+        .where(eq(playerDevices.tokenHash, tokenHash)).limit(1);
+      if (!device) {
+        [device] = await tx.select({ playerId: players.id }).from(players)
+          .where(eq(players.deviceTokenHash, tokenHash)).limit(1);
+      }
+      if (!device) return false;
+      const [actor] = await tx.select({ id: players.id, publicPlayerId: players.publicPlayerId }).from(players)
+        .where(eq(players.id, device.playerId)).for("update");
+      if (!actor) return false;
       const [external] = await tx.select({ id: externalIdentities.id }).from(externalIdentities)
         .where(and(
-          eq(externalIdentities.playerId, actor.playerId),
+          eq(externalIdentities.playerId, actor.id),
           eq(externalIdentities.issuer, identity.issuer),
           eq(externalIdentities.subject, identity.subject),
       )).for("update");
       if (!external) throw new Error("Verified identity does not own this DotBot account.");
       const participantMatches = await tx.select({ matchId: matchParticipants.matchId }).from(matchParticipants)
-        .where(eq(matchParticipants.playerId, actor.playerId));
+        .where(eq(matchParticipants.playerId, actor.id));
       if (participantMatches.length > 0) {
         await tx.update(matchResults).set({
           // Historical summaries used public IDs. Once any participant invokes
@@ -255,7 +270,19 @@ export class PostgresPersistence implements Persistence {
           summary: sql`jsonb_build_object('reason', coalesce(${matchResults.summary}->>'reason', 'redacted'), 'redacted', true)`,
         }).where(inArray(matchResults.id, participantMatches.map((row) => row.matchId)));
       }
-      const deleted = await tx.delete(players).where(eq(players.id, actor.playerId)).returning({ id: players.id });
+      // Deletion retires the current public ID as well as every ID from prior
+      // guest merges. Share the allocator's candidate lock so an old or new
+      // writer cannot slip the ID into a fresh row between delete and tombstone.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`dotbot-public-player-id:${actor.publicPlayerId}`}, 0))`);
+      await tx.insert(playerAliases).values({
+        sourcePlayerId: actor.id,
+        sourcePublicPlayerId: actor.publicPlayerId,
+        targetPlayerId: null,
+      }).onConflictDoUpdate({
+        target: playerAliases.sourcePlayerId,
+        set: { sourcePublicPlayerId: actor.publicPlayerId, targetPlayerId: null },
+      });
+      const deleted = await tx.delete(players).where(eq(players.id, actor.id)).returning({ id: players.id });
       return deleted.length === 1;
     });
   }
@@ -1151,8 +1178,17 @@ export class PostgresPersistence implements Persistence {
       }).onConflictDoUpdate({
         target: [friendships.playerLowId, friendships.playerHighId],
         set: {
-          status: sql`case when ${friendships.status} = 'accepted' or excluded.status = 'accepted' then 'accepted' else 'pending' end`,
-          acceptedAt: sql`coalesce(${friendships.acceptedAt}, excluded.accepted_at)`,
+          status: sql`case
+            when ${friendships.status} = 'accepted'
+              or excluded.status = 'accepted'
+              or ${friendships.requestedById} <> excluded.requested_by_id
+            then 'accepted' else 'pending' end`,
+          acceptedAt: sql`case
+            when ${friendships.status} = 'accepted'
+              or excluded.status = 'accepted'
+              or ${friendships.requestedById} <> excluded.requested_by_id
+            then coalesce(${friendships.acceptedAt}, excluded.accepted_at, now())
+            else null end`,
           createdAt: sql`least(${friendships.createdAt}, excluded.created_at)`,
         },
       });
@@ -1175,6 +1211,14 @@ export class PostgresPersistence implements Persistence {
       await tx.insert(partyInviteAcceptances).values({ inviteId: acceptance.inviteId, playerId: target.id, acceptedAt: acceptance.acceptedAt }).onConflictDoNothing();
     }
     await tx.delete(partyInviteAcceptances).where(eq(partyInviteAcceptances.playerId, source.id));
+    const targetInviteRows = await tx.select({ id: partyInvites.id }).from(partyInvites)
+      .where(eq(partyInvites.ownerPlayerId, target.id));
+    if (targetInviteRows.length > 0) {
+      await tx.delete(partyInviteAcceptances).where(and(
+        eq(partyInviteAcceptances.playerId, target.id),
+        inArray(partyInviteAcceptances.inviteId, targetInviteRows.map((invite) => invite.id)),
+      ));
+    }
 
     await tx.update(playerDevices).set({ playerId: target.id }).where(eq(playerDevices.playerId, source.id));
     await tx.update(players).set({
@@ -1239,6 +1283,10 @@ export async function connectPostgres(databaseUrl: string): Promise<PostgresPers
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function externalIdentityLockKey(identity: VerifiedExternalIdentity): string {
+  return `${identity.issuer.length}:${identity.issuer}${identity.subject}`;
 }
 
 function isRunManifest(value: unknown): value is RunManifest {

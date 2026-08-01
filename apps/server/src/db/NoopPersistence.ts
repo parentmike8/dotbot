@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { AccountSummary, FriendEntry, LinkAccountResult, PartyInviteAcceptance, Persistence, PlayerIdentity, PlayerProfile, PublicPlayer, RegisteredPlayer, VerifiedExternalIdentity } from "./Persistence";
 import { DEFAULT_BASE_SHELL, starterBaseLayout } from "@dotbot/game/content/base";
 import type { BaseLayout, BaseObjectKind } from "@dotbot/game/types";
@@ -103,10 +103,10 @@ export class NoopPersistence implements Persistence {
 }
 
 function fallbackIdentity(token: string, name: string): PlayerIdentity {
-  const safeToken = token.slice(0, 12).replace(/[^a-zA-Z0-9_-]/g, "") || "anonymous";
+  const digest = createHash("sha256").update(token).digest();
   let publicPlayerId = "";
   for (let index = 0; index < 8; index += 1) {
-    publicPlayerId += PUBLIC_PLAYER_ID_ALPHABET[(token.charCodeAt(index % token.length) || index) % PUBLIC_PLAYER_ID_ALPHABET.length];
+    publicPlayerId += PUBLIC_PLAYER_ID_ALPHABET[digest[index] % PUBLIC_PLAYER_ID_ALPHABET.length];
   }
-  return { playerId: `p-${safeToken}`, publicPlayerId, name };
+  return { playerId: `p-${digest.toString("hex").slice(0, 24)}`, publicPlayerId, name };
 }
