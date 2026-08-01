@@ -20,10 +20,11 @@ import {
 import { contactReach } from "@dotbot/game/shields";
 import { buildContactShape, contactDistance, contactingPlate, makeContactShape } from "@dotbot/game/bodyContact";
 import type { DoorEntity, DotBotEntity, GameConfig, InputCommand, MapDocument, Solid, Vec2 } from "@dotbot/game";
+import type { Item } from "@dotbot/game/types";
 
 export type PredictedOwnBot = Pick<
   DotBotEntity,
-  "id" | "position" | "radius" | "floorId" | "facing" | "dashCooldownMs" | "dashActiveMs" | "shieldSegments" | "moving"
+  "id" | "position" | "radius" | "floorId" | "facing" | "bays" | "hold" | "inventoryRevision" | "dashCooldownMs" | "dashActiveMs" | "dashOverchargeMs" | "shieldSegments" | "moving"
 >;
 
 export type PredictedDashContact = {
@@ -122,7 +123,44 @@ const cloneState = (bot: PredictedOwnBot): PredictedOwnBot => ({
   // and a plate array shared across the prediction boundary is a mutation waiting
   // to be blamed on the netcode.
   shieldSegments: [...bot.shieldSegments],
+  bays: bot.bays.map((item) => item && { ...item }),
+  hold: bot.hold.map((item) => ({ ...item })),
 });
+
+function samePredictedItem(left: Item, right: Item): boolean {
+  if (left.kind !== right.kind || left.sourceBuildingId !== right.sourceBuildingId) return false;
+  if (left.kind === "powerup") return right.kind === "powerup" && left.type === right.type;
+  if (left.kind === "blueprint") return right.kind === "blueprint" && left.blueprintId === right.blueprintId;
+  return right.kind === "mine";
+}
+
+/** Mirror the server's authoritative drop validation before any same-frame bay
+ * activation. Prediction owns no world drop; it only needs the inventory result
+ * that decides whether the activation and dash are allowed this tick. */
+function applyPredictedDrop(state: PredictedOwnBot, request: NonNullable<InputCommand["drop"]>): boolean {
+  if (
+    !Number.isInteger(request.index)
+    || request.index < 0
+    || !Number.isInteger(request.revision)
+    || request.revision !== (state.inventoryRevision ?? 0)
+  ) return false;
+
+  if (request.from === "bay") {
+    if (request.index >= state.bays.length) return false;
+    const item = state.bays[request.index];
+    if (!item || !samePredictedItem(item, request.expected)) return false;
+    state.bays[request.index] = null;
+  } else if (request.from === "hold") {
+    if (request.index >= state.hold.length) return false;
+    const item = state.hold[request.index];
+    if (!item || !samePredictedItem(item, request.expected)) return false;
+    state.hold.splice(request.index, 1);
+  } else {
+    return false;
+  }
+  state.inventoryRevision = (state.inventoryRevision ?? 0) + 1;
+  return true;
+}
 
 /**
  * Fixed-step prediction for the local bot's movement state only. Integration
@@ -267,17 +305,48 @@ export class LitePredictor {
       },
       dashCooldownMs: this.state.dashCooldownMs + (next.dashCooldownMs - this.state.dashCooldownMs) * alpha,
       dashActiveMs: this.state.dashActiveMs + (next.dashActiveMs - this.state.dashActiveMs) * alpha,
+      dashOverchargeMs: this.state.dashOverchargeMs + (next.dashOverchargeMs - this.state.dashOverchargeMs) * alpha,
     };
   }
 
   private advance(state: PredictedOwnBot, input: InputCommand, elapsedMs: number, consumeDash: boolean): PredictedOwnBot {
     const move = clampInputVector(input.move);
-    state.dashCooldownMs = Math.max(0, state.dashCooldownMs - elapsedMs);
+    state.dashOverchargeMs = Math.max(0, state.dashOverchargeMs - elapsedMs);
+    state.dashCooldownMs = state.dashOverchargeMs > 0
+      ? 0
+      : Math.max(0, state.dashCooldownMs - elapsedMs);
     state.dashActiveMs = Math.max(0, state.dashActiveMs - elapsedMs);
 
-    if (consumeDash && input.dash && state.dashCooldownMs <= 0 && state.dashActiveMs <= 0) {
+    const dropped = Boolean(consumeDash && input.drop && applyPredictedDrop(state, input.drop));
+    if (
+      consumeDash
+      && !dropped
+      && input.useBay !== undefined
+      && Number.isInteger(input.useBay)
+      && input.useBay >= 0
+      && input.useBay < state.bays.length
+    ) {
+      const item = state.bays[input.useBay];
+      // The authoritative simulation consumes every non-Blueprint bay item,
+      // even health at full Plates. Only overcharge changes predicted movement.
+      if (item && item.kind !== "blueprint") {
+        state.bays[input.useBay] = null;
+        state.inventoryRevision = (state.inventoryRevision ?? 0) + 1;
+        if (item.kind === "powerup" && item.type === "dashOvercharge") {
+          state.dashOverchargeMs = this.config.dashOverchargeDurationMs;
+          state.dashCooldownMs = 0;
+        }
+      }
+    }
+
+    if (
+      consumeDash
+      && input.dash
+      && (state.dashOverchargeMs > 0 || state.dashCooldownMs <= 0)
+      && state.dashActiveMs <= 0
+    ) {
       state.dashActiveMs = this.config.dashDurationMs;
-      state.dashCooldownMs = this.config.dashCooldownMs;
+      state.dashCooldownMs = state.dashOverchargeMs > 0 ? 0 : this.config.dashCooldownMs;
       this.dashBlockedTargets.clear();
       for (const [targetId, ticks] of this.contactDwell) {
         if (ticks >= DASH_CLINCH_TICKS) this.dashBlockedTargets.add(targetId);

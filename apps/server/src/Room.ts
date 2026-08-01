@@ -62,6 +62,10 @@ type Member = Omit<LobbyMember, "squadId"> & {
   disconnectedAt: number | null;
   inRun: boolean;
   streaming: boolean;
+  /** Last viewer-filtered start envelope for this run. Retained through the
+   * results phase so a refreshed NetSession can initialize map/config before
+   * consuming the cached authoritative outcome after simulation disposal. */
+  matchStart: Extract<ServerMessage, { type: "matchStart" }> | null;
   runOver: Extract<ServerMessage, { type: "runOver" }> | null;
   persistenceEligible: boolean;
   persistedOutcome: string | null;
@@ -400,6 +404,7 @@ export class Room {
       dotState: new Map(),
       lastKillCam: null,
       activeKillCamId: null,
+      matchStart: null,
       partyId,
       publicReservationPlayerId: entry.reservationPlayerId,
       queuedForNextRun: true,
@@ -489,6 +494,17 @@ export class Room {
       this.sendWelcome(existing);
       if (this.phase === "live") {
         this.sendMatchStart(existing);
+      } else if (this.phase === "results") {
+        // Replay the run baseline before the cached outcome so both a reused
+        // NetSession and a full-page refresh can initialize and scrub private
+        // transport state. While settlement still owns the simulation, refresh
+        // the envelope from current authority; afterward use the retained
+        // viewer-filtered start envelope from this exact run.
+        if (this.simulation && existing.botId) this.sendMatchStart(existing);
+        else {
+          if (existing.matchStart) existing.peer?.send(existing.matchStart);
+          if (existing.runOver) existing.peer?.send(existing.runOver);
+        }
       }
       return existing;
     }
@@ -531,6 +547,7 @@ export class Room {
       disconnectedAt: null,
       inRun: false,
       streaming: true,
+      matchStart: null,
       runOver: null,
       persistenceEligible: true,
       persistedOutcome: null,
@@ -1297,6 +1314,7 @@ export class Room {
       member.queueDepthEma = 0;
       member.inRun = true;
       member.streaming = true;
+      member.matchStart = null;
       member.runOver = null;
       member.persistenceEligible = true;
       member.persistedOutcome = null;
@@ -1433,7 +1451,7 @@ export class Room {
     const context = this.viewerContext(member, snapshot);
     const filtered = filterForViewer(wire, snapshot.bots.map(toEntityMeta), context);
     this.resetDotState(member, filtered.dots, visiblePhysicsFloors(wire, context));
-    member.peer?.send({
+    const message: Extract<ServerMessage, { type: "matchStart" }> = {
       type: "matchStart",
       map: downtownMap,
       config: this.simulation.config,
@@ -1445,7 +1463,9 @@ export class Room {
       dotBaseline: filtered.dots,
       intel: this.matchIntel.get(member.playerId),
       ...(this.hotArena && this.matchId ? { matchId: this.matchId, roles: this.currentRoles } : {}),
-    });
+    };
+    member.matchStart = message;
+    member.peer?.send(message);
     const own = snapshot.bots.find((bot) => bot.id === member.botId);
     if (own?.state === "downed" && member.lastKillCam && member.activeKillCamId === member.lastKillCam.id) {
       this.sendStream(member, { type: "killCam", clip: toWireKillCamClip(member.lastKillCam) });
@@ -1620,7 +1640,6 @@ export class Room {
         member.botId = null;
         member.inRun = false;
         member.streaming = false;
-        member.runOver = null;
         member.lastKillCam = null;
         member.activeKillCamId = null;
         if (!member.peer && !member.handoffTimer) {
@@ -1646,9 +1665,13 @@ export class Room {
     for (const member of this.members.values()) {
       if (!member.streaming || !member.peer) continue;
       const includedBotIds = this.includedBotIds(member, snapshot);
+      const visibleEvents = filterEventsForViewer(events, meta, includedBotIds, member.squadId);
+      // An empty reliable packet is still information: its timing tells a rival
+      // that a hidden squad just produced a private event (notably mine sensors).
+      if (visibleEvents.length === 0) continue;
       this.sendStream(member, {
         type: "ev",
-        events: filterEventsForViewer(events, meta, includedBotIds, member.squadId).map(toWireEvent),
+        events: visibleEvents.map(toWireEvent),
       });
     }
   }
@@ -1680,15 +1703,13 @@ export class Room {
   }
 
   private includedBotIds(member: Member, snapshot: GameSnapshot): Set<string> {
-    const own = snapshot.bots.find((bot) => bot.id === member.botId);
-    // Downed is when a member starts watching their squad instead of themselves.
-    const spectator = !own || own.state === "downed";
-    const floors = spectator
-      ? this.squadPhysicsFloorIds(member, snapshot)
-      : new Set([physicsFloorId(downtownMap, own.floorId)]);
-    return new Set(snapshot.bots
-      .filter((bot) => bot.squadId === member.squadId || floors.has(physicsFloorId(downtownMap, bot.floorId)))
-      .map((bot) => bot.id));
+    const wire = toWireSnapshot(snapshot);
+    const filtered = filterForViewer(
+      wire,
+      snapshot.bots.map(toEntityMeta),
+      this.viewerContext(member, snapshot),
+    );
+    return new Set(filtered.bots.map((bot) => bot.i));
   }
 
   private sendStream(member: Member, message: ServerMessage, delivery: DeliveryClass = "reliable"): void {

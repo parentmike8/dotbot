@@ -1,5 +1,8 @@
-import { classifyNoise, physicsFloorId } from "@dotbot/game/mapModel";
+import { classifyNoise, contextKey, doorEntityCollisionRect, physicsFloorId } from "@dotbot/game/mapModel";
+import { distance } from "@dotbot/game/math";
+import { bodiesTouching } from "@dotbot/game/bodyContact";
 import type { MapDocument, SimEvent, Vec2 } from "@dotbot/game/types";
+import { hasLineOfSight, OUTDOOR_SIGHT, seesOutdoors } from "@dotbot/game/visibility";
 import type { EntityMeta, FullWireSnapshot, MatchIntel, WireBot } from "./messages";
 
 export type ViewerContext = {
@@ -39,10 +42,24 @@ export function filterForViewer(
   const observer = isSpectating ? spectatedBot : ownBot;
   const visibleFloors = visiblePhysicsFloors(wire, viewerCtx);
 
-  const bots = wire.bots.filter((bot) =>
-    metaById.get(bot.i)?.squadId === viewerCtx.squadId
-      || visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor")),
-  ).map((bot) => {
+  const rivalsAlive = wire.bots.filter((bot) => {
+    const botMeta = metaById.get(bot.i);
+    return botMeta
+      && !botMeta.isAmbient
+      && botMeta.squadId !== viewerCtx.squadId
+      && (bot.s ?? "alive") === "alive";
+  }).length;
+  const bots = wire.bots.filter((bot) => {
+    const botMeta = metaById.get(bot.i);
+    if (botMeta?.squadId === viewerCtx.squadId) return true;
+    if (!observer || !visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor"))) return false;
+    if ((bot.ic ?? 0) > 0) {
+      const observerMeta = metaById.get(observer.i);
+      return physicsFloorId(viewerCtx.map, observer.fl ?? "outdoor") === physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor")
+        && Boolean(observerMeta && botMeta && botsPhysicallyTouch(observer, observerMeta, bot, botMeta));
+    }
+    return ordinarilyVisible(wire, viewerCtx.map, observer, wirePosition(bot), bot.fl ?? "outdoor");
+  }).map((bot) => {
     /**
      * What a rival carries is private right up until their body is searched.
      *
@@ -60,12 +77,20 @@ export function filterForViewer(
       hs: inventoryVisible ? bot.hs : undefined,
       ir: inventoryVisible ? bot.ir : undefined,
       r: bot.i === viewerCtx.viewerBotId ? bot.r : undefined,
+      o: bot.i === viewerCtx.viewerBotId ? bot.o : undefined,
+      ic: bot.i === viewerCtx.viewerBotId ? bot.ic : undefined,
     };
   });
   const includedBotIds = new Set(bots.map((bot) => bot.i));
+  const allBotIds = new Set(wire.bots.map((bot) => bot.i));
   const dots = wire.dots.filter((dot) => visibleFloors.has(physicsFloorId(viewerCtx.map, dot.floorId)));
   const mines = wire.mines
-    .filter((mine) => visibleFloors.has(physicsFloorId(viewerCtx.map, mine.floorId)))
+    .filter((mine) => {
+      if (!visibleFloors.has(physicsFloorId(viewerCtx.map, mine.floorId))) return false;
+      if (mine.squadId === viewerCtx.squadId) return true;
+      if (viewerCtx.viewerBotId && mine.revealedToBotIds?.includes(viewerCtx.viewerBotId)) return true;
+      return Boolean(observer && ordinarilyVisible(wire, viewerCtx.map, observer, mine.position, mine.floorId));
+    })
     .map((mine) => {
       const squadMine = mine.squadId === viewerCtx.squadId;
       const radarRevealed = Boolean(viewerCtx.viewerBotId && mine.revealedToBotIds?.includes(viewerCtx.viewerBotId));
@@ -74,17 +99,26 @@ export function filterForViewer(
         position: mine.position,
         radius: mine.radius,
         floorId: mine.floorId,
-        placedAtMs: mine.placedAtMs,
+        // Exact placement time is server bookkeeping for owner rotation. A
+        // rival does not need a correlation handle back to the placer.
+        placedAtMs: squadMine ? mine.placedAtMs : 0,
         ...(squadMine ? { placedByBotId: mine.placedByBotId, squadId: mine.squadId } : {}),
         presentation: squadMine ? "squad" as const : radarRevealed ? "revealed" as const : "disguised" as const,
         ...(!squadMine ? { disguise: deterministicMineDisguise(mine.id) } : {}),
         ...(!squadMine && !radarRevealed ? { seam: true as const } : {}),
       };
-    });
+    })
+    // Map insertion order is placement order. Once owner and timestamp are
+    // redacted, preserving it would still reveal which opaque mine came first.
+    // Opaque IDs provide a stable presentation order with no placement signal.
+    .sort((left, right) => left.id.localeCompare(right.id));
   const coverages = wire.coverages.filter((coverage) =>
-    visibleFloors.has(physicsFloorForBot(wire.bots, viewerCtx.map, coverage.actorId))
-      || includedBotIds.has(coverage.actorId)
-      || includedBotIds.has(coverage.targetId),
+    // A channel is actor state. Never disclose a hidden actor merely because
+    // its target is visible; likewise, a bot target must independently be in
+    // this viewer's interest set. Dot/extraction/hold-index targets are not bot
+    // identities and remain useful once their actor is authorized.
+    includedBotIds.has(coverage.actorId)
+      && (!allBotIds.has(coverage.targetId) || includedBotIds.has(coverage.targetId)),
   );
   const listeners = isSpectating
     ? squadBots.filter((bot) => (bot.s ?? "alive") === "alive" && visibleFloors.has(physicsFloorId(viewerCtx.map, bot.fl ?? "outdoor")))
@@ -100,7 +134,7 @@ export function filterForViewer(
     ) !== null,
   ));
 
-  return { ...wire, bots, dots, mines, coverages, noises, intel: viewerCtx.intel };
+  return { ...wire, bots, dots, mines, coverages, noises, rivalsAlive, intel: viewerCtx.intel };
 }
 
 export function visiblePhysicsFloors(
@@ -130,8 +164,32 @@ export function filterEventsForViewer(
     // that somebody is watching it.
     if (event.type === "pinged") return event.squadId === squadId;
     if (event.type === "mineRotated") return metaById.get(event.botId)?.squadId === squadId;
-    return event.type === "plea" || visibleBot(event.botId) || ("byBotId" in event && visibleBot(event.byBotId));
-  });
+    // Pleas deliberately publish their own position: the call for help is the
+    // mechanic. Every ordinary event instead requires every body identity it
+    // names to be independently authorized. Allowing either endpoint leaked a
+    // hidden attacker through a visible victim (and vice versa), along with
+    // exact contact geometry from hit and dash events.
+    if (event.type === "plea") return true;
+    if (event.type === "downed") {
+      if (!visibleBot(event.botId)) return false;
+      if (event.cause?.kind === "mine" || event.cause?.kind === "environment") return true;
+      return !event.byBotId || visibleBot(event.byBotId);
+    }
+    if (
+      event.type === "hit"
+      || event.type === "dashContact"
+      || event.type === "searched"
+      || event.type === "looted"
+      || event.type === "revived"
+      || event.type === "recruited"
+    ) {
+      return visibleBot(event.botId) && visibleBot(event.byBotId);
+    }
+    return visibleBot(event.botId);
+  }).map((event) => event.type === "downed"
+    && (event.cause?.kind === "mine" || event.cause?.kind === "environment")
+    ? { ...event, byBotId: undefined }
+    : event);
 }
 
 function deterministicMineDisguise(id: string): "health" | "radar" | "dashOvercharge" | "incognito" {
@@ -147,7 +205,46 @@ function wirePosition(bot: WireBot): Vec2 {
   return { x: bot.p[0], y: bot.p[1] };
 }
 
-function physicsFloorForBot(bots: readonly WireBot[], map: MapDocument, botId: string): string {
-  const bot = bots.find((candidate) => candidate.i === botId);
-  return bot ? physicsFloorId(map, bot.fl ?? "outdoor") : "";
+function ordinarilyVisible(
+  wire: Pick<FullWireSnapshot, "doors">,
+  map: MapDocument,
+  observer: WireBot,
+  targetPosition: Vec2,
+  targetFloorId: string,
+): boolean {
+  const observerFloorId = observer.fl ?? "outdoor";
+  if (physicsFloorId(map, observerFloorId) !== physicsFloorId(map, targetFloorId)) return false;
+  const dynamicOccluders = (wire.doors ?? [])
+    .filter((door) => door.blocking && door.floorId === physicsFloorId(map, observerFloorId))
+    .map(doorEntityCollisionRect);
+  const observerPosition = wirePosition(observer);
+  const observerContext = contextKey(map, observerFloorId, observerPosition);
+  const targetContext = contextKey(map, targetFloorId, targetPosition);
+  if (observerContext === targetContext) {
+    if (physicsFloorId(map, observerFloorId) === "outdoor"
+      && distance(observerPosition, targetPosition) > OUTDOOR_SIGHT) return false;
+    return hasLineOfSight(map, observerContext, observerPosition, targetPosition, dynamicOccluders);
+  }
+  return seesOutdoors(map, observerFloorId, observerPosition, targetFloorId, targetPosition, dynamicOccluders);
+}
+
+function botsPhysicallyTouch(
+  observer: WireBot,
+  observerMeta: EntityMeta,
+  target: WireBot,
+  targetMeta: EntityMeta,
+): boolean {
+  const observerSegments = observer.sh ?? Array(observerMeta.maxShields).fill(1);
+  const targetSegments = target.sh ?? Array(targetMeta.maxShields).fill(1);
+  return bodiesTouching({
+    position: wirePosition(observer),
+    radius: observerMeta.radius,
+    facing: observer.f ?? 0,
+    shieldSegments: observerSegments,
+  }, {
+    position: wirePosition(target),
+    radius: targetMeta.radius,
+    facing: target.f ?? 0,
+    shieldSegments: targetSegments,
+  }, 1);
 }

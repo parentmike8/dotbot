@@ -118,7 +118,7 @@ function GameSession({
 
       <RunReadout
         remainingRunMs={remainingRunMs}
-        rivals={rivalsAlive(snapshot?.bots, player?.squadId)}
+        rivals={snapshot?.rivalsAlive ?? rivalsAlive(snapshot?.bots, player?.squadId)}
         onSettings={toggleSettings}
       >
         <button type="button" className="map-button" onClick={toggleWorldMap}>Map <kbd>M</kbd></button>
@@ -215,7 +215,7 @@ function GameSession({
         dashProgress={dashProgress}
         dashDisabled={
           runResult !== null || !player || player.state !== "alive"
-          || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)
+          || (player.dashCooldownMs > 0 && player.dashOverchargeMs <= 0)
         }
       />
 

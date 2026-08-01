@@ -8,7 +8,7 @@ import { buildOutdoorModel } from "./modelOutdoor";
 import { buildMapArt } from "../mapArt";
 import {
   animateAmbient, buildTrailMarks, collectMovers, divotQuads, driftLeaves, fadeTrail, litSide,
-  liftParts, movingPart, stampTrail, trailJoin, trailStep, TRAIL_CHANNEL_WIDTH, TRAIL_MARK_MAX_ALPHA,
+  liftParts, movingPart, resetTrailMarks, stampTrail, trailJoin, trailStep, TRAIL_CHANNEL_WIDTH, TRAIL_MARK_MAX_ALPHA,
   TRAIL_STRIDE,
   type AmbientMover,
 } from "./modelMotion";
@@ -472,6 +472,22 @@ describe("ambient motion", () => {
        */
       fadeTrail(trail, 20_000);
       expect(trail.marks[0].visible).toBe(false);
+    });
+
+    it("clears every mark and chain immediately at a new run boundary", () => {
+      const trail = buildTrailMarks();
+      stampTrail(trail, { x: 100, y: 100 }, { x: 124, y: 100 }, 0, 5_000, "same-runtime-id");
+      fadeTrail(trail, 5_000);
+      expect(trail.marks[0].visible).toBe(true);
+      expect(trail.tails.get("same-runtime-id")).toBe(0);
+
+      resetTrailMarks(trail);
+
+      expect(trail.marks.some((mark) => mark.visible)).toBe(false);
+      expect(trail.segments.every((segment) => segment === null)).toBe(true);
+      expect(trail.born.every((born) => born === -Infinity)).toBe(true);
+      expect(trail.tails.size).toBe(0);
+      expect(trail.next).toBe(0);
     });
 
     it("shows nothing at all before anything has been stamped", () => {

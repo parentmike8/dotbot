@@ -176,6 +176,7 @@ export function fastForwardCombatState(sampled: GameSnapshot, freshest: GameSnap
 }
 
 function interpolateSnapshot(older: GameSnapshot, newer: GameSnapshot, alpha: number, renderTick: number): GameSnapshot {
+  const olderIndexes = indexesFor(older);
   const {
     bots: newerBots,
     dots: newerDots,
@@ -184,47 +185,94 @@ function interpolateSnapshot(older: GameSnapshot, newer: GameSnapshot, alpha: nu
     noises: newerNoises,
     doors: newerDoors,
   } = indexesFor(newer);
+  const afterBoundary = alpha >= 1;
 
   return {
     ...older,
     timeMs: lerp(older.timeMs, newer.timeMs, alpha),
-    bots: older.bots.map((bot) => interpolateBot(bot, newerBots.get(bot.id), alpha)),
-    dots: older.dots.map((dot) => {
+    bots: (afterBoundary ? newer.bots : older.bots).map((bot) => {
+      const previous = olderIndexes.bots.get(bot.id) ?? bot;
+      return interpolateBot(previous, newerBots.get(bot.id), alpha);
+    }),
+    dots: (afterBoundary ? newer.dots : older.dots).map((dot) => {
+      const previous = olderIndexes.dots.get(dot.id) ?? dot;
       const next = newerDots.get(dot.id);
-      return next ? { ...dot, captureProgressMs: lerp(dot.captureProgressMs, next.captureProgressMs, alpha) } : dot;
+      return next ? { ...next, captureProgressMs: lerp(previous.captureProgressMs, next.captureProgressMs, alpha) } : { ...dot };
     }),
-    mines: older.mines.map((mine) => interpolateMine(mine, newerMines.get(mine.id), alpha)),
-    coverages: older.coverages.map((coverage) => {
+    mines: (afterBoundary ? newer.mines : older.mines).map((mine) =>
+      interpolateMine(olderIndexes.mines.get(mine.id) ?? mine, newerMines.get(mine.id), alpha)),
+    coverages: (afterBoundary ? newer.coverages : older.coverages).map((coverage) => {
+      const previous = olderIndexes.coverages.get(coverageKey(coverage)) ?? coverage;
       const next = newerCoverages.get(coverageKey(coverage));
-      return next ? { ...coverage, progressMs: lerp(coverage.progressMs, next.progressMs, alpha) } : coverage;
+      return next ? { ...next, progressMs: lerp(previous.progressMs, next.progressMs, alpha) } : { ...coverage };
     }),
-    noises: older.noises.map((noise) => interpolateNoise(noise, newerNoises.get(noise.id), alpha)),
-    doors: (older.doors ?? []).map((door) => {
+    noises: (afterBoundary ? newer.noises : older.noises).map((noise) =>
+      interpolateNoise(olderIndexes.noises.get(noise.id) ?? noise, newerNoises.get(noise.id), alpha)),
+    doors: (afterBoundary ? (newer.doors ?? []) : (older.doors ?? [])).map((door) => {
+      const previous = olderIndexes.doors.get(door.id) ?? door;
       const next = newerDoors.get(door.id);
-      return next ? { ...next, openness: lerp(door.openness, next.openness, alpha) } : door;
+      return next ? { ...next, openness: lerp(previous.openness, next.openness, alpha) } : { ...door };
     }),
+    rivalsAlive: afterBoundary ? newer.rivalsAlive : older.rivalsAlive,
     debug: { ...older.debug, tickCount: Math.round(renderTick) },
   };
 }
 
 function interpolateBot(bot: DotBotEntity, next: DotBotEntity | undefined, alpha: number): DotBotEntity {
-  if (!next || bot.floorId !== next.floorId) return bot;
+  if (!next || bot.floorId !== next.floorId) {
+    const chosen = next && alpha >= 1 ? next : bot;
+    return {
+      ...chosen,
+      position: { ...chosen.position },
+      shieldSegments: [...chosen.shieldSegments],
+      bays: chosen.bays.map((item) => item && { ...item }),
+      hold: chosen.hold.map((item) => ({ ...item })),
+      radarPings: chosen.radarPings.map((ping) => ({ ...ping })),
+    };
+  }
   // Radar rings are normally absent. Avoid constructing one empty Map per bot
   // per display frame while preserving a freshly materialized output array.
   let radarPings: DotBotEntity["radarPings"] = [];
-  if (bot.radarPings.length > 0) {
-    const nextPings = new Map(next.radarPings.map((ping) => [`${ping.x}:${ping.y}`, ping]));
-    radarPings = bot.radarPings.map((ping) => {
-      const nextPing = nextPings.get(`${ping.x}:${ping.y}`);
-      return nextPing ? { ...ping, ageMs: lerp(ping.ageMs, nextPing.ageMs, alpha) } : ping;
+  const sourcePings = alpha >= 1 ? next.radarPings : bot.radarPings;
+  if (sourcePings.length > 0) {
+    const previousPings = new Map(bot.radarPings.map((ping) => [ping.botId, ping]));
+    const nextPings = new Map(next.radarPings.map((ping) => [ping.botId, ping]));
+    radarPings = sourcePings.map((ping) => {
+      const previousPing = previousPings.get(ping.botId) ?? ping;
+      const nextPing = nextPings.get(ping.botId);
+      if (!nextPing) return { ...ping };
+      const refreshedSample = nextPing.ageMs < previousPing.ageMs
+        || nextPing.x !== previousPing.x
+        || nextPing.y !== previousPing.y
+        || nextPing.floorId !== previousPing.floorId;
+      // A Radar point is sampled intel, not a continuously tracked body. Hold
+      // the old stale return through the interval and switch only at the newer
+      // snapshot tick; tweening would expose the future sample before it exists.
+      if (refreshedSample) return { ...(alpha >= 1 ? nextPing : previousPing) };
+      return {
+        ...nextPing,
+        x: previousPing.x,
+        y: previousPing.y,
+        ageMs: lerp(previousPing.ageMs, nextPing.ageMs, alpha),
+      };
     });
   }
+  const authorized = alpha >= 1 ? next : bot;
   return {
-    ...bot,
+    // Position and countdowns may interpolate, but every discrete field must
+    // switch from the older viewer-authorized entity to the newer one at the
+    // authoritative boundary. In particular, a same-id recruitment can turn a
+    // fully visible squad inventory into a redacted rival inventory without a
+    // floor change; retaining `bot` here kept that private state alive.
+    ...authorized,
     position: interpolatePoint(bot.position, next.position, alpha),
     facing: lerpAngle(bot.facing, next.facing, alpha),
+    shieldSegments: [...authorized.shieldSegments],
+    bays: authorized.bays.map((item) => item && { ...item }),
+    hold: authorized.hold.map((item) => ({ ...item })),
     radarActiveMs: lerp(bot.radarActiveMs, next.radarActiveMs, alpha),
     radarPings,
+    dashOverchargeMs: lerp(bot.dashOverchargeMs, next.dashOverchargeMs, alpha),
     dashCooldownMs: lerp(bot.dashCooldownMs, next.dashCooldownMs, alpha),
     dashActiveMs: lerp(bot.dashActiveMs, next.dashActiveMs, alpha),
     invulnerabilityMs: lerp(bot.invulnerabilityMs, next.invulnerabilityMs, alpha),
@@ -233,8 +281,15 @@ function interpolateBot(bot: DotBotEntity, next: DotBotEntity | undefined, alpha
 }
 
 function interpolateMine(mine: MineEntity, next: MineEntity | undefined, alpha: number): MineEntity {
-  if (!next || mine.floorId !== next.floorId) return mine;
-  return { ...mine, position: interpolatePoint(mine.position, next.position, alpha) };
+  if (!next || mine.floorId !== next.floorId) {
+    return { ...mine, position: { ...mine.position }, revealedToBotIds: [...mine.revealedToBotIds] };
+  }
+  const authorized = alpha >= 1 ? next : mine;
+  return {
+    ...authorized,
+    position: interpolatePoint(mine.position, next.position, alpha),
+    revealedToBotIds: [...authorized.revealedToBotIds],
+  };
 }
 
 function interpolateNoise(noise: NoiseEvent, next: NoiseEvent | undefined, alpha: number): NoiseEvent {

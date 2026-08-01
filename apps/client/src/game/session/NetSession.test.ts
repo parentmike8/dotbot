@@ -400,6 +400,336 @@ describe("NetSession item edges", () => {
     expect(snapshots[1].snapshot.dots).toMatchObject([{ id: "upper", captureProgressMs: 0 }]);
   });
 
+  it("ignores late latest-state frames before they can resurrect private state or stale dot deltas", () => {
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    const receive = (message: unknown) => (session as unknown as { receive(message: unknown): void }).receive(message);
+    receive({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "viewer",
+      meta: [{ id: "viewer", name: "Ada", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
+      tickHz: 60,
+      endTick: 3600,
+      insertionName: "TEST",
+      dotBaseline: [{ id: "outside", position: { x: 1, y: 2 }, radius: 10, floorId: "outdoor", it: "h", active: true }],
+    });
+    receive({
+      type: "snap",
+      tick: 6,
+      ack: 0,
+      bots: [{ i: "viewer", p: [60, 0], o: 40_000, ic: 5_000 }],
+      dotDeltas: [{ id: "outside", captureProgressMs: 500 }],
+      mines: [],
+    });
+    receive({
+      type: "snap",
+      tick: 3,
+      ack: 0,
+      bots: [{ i: "viewer", p: [999, 0], r: [5_000, [["expired", 900, 0, "outdoor", 0]]] }],
+      dotDeltas: [{ id: "outside", captureProgressMs: 0 }],
+      mines: [{
+        id: "detonated",
+        position: { x: 100, y: 100 },
+        radius: 10,
+        floorId: "outdoor",
+        placedAtMs: 0,
+        presentation: "revealed",
+      }],
+    });
+
+    const internals = session as unknown as {
+      snapshots: Array<{ tick: number; snapshot: import("@dotbot/game/types").GameSnapshot }>;
+      dotStore: Map<string, { captureProgressMs?: number }>;
+    };
+    expect(internals.snapshots).toHaveLength(1);
+    expect(internals.snapshots[0]).toMatchObject({
+      tick: 6,
+      snapshot: {
+        bots: [expect.objectContaining({ position: { x: 60, y: 0 }, dashOverchargeMs: 40_000, incognitoMs: 5_000 })],
+        mines: [],
+      },
+    });
+    expect(internals.dotStore.get("outside")?.captureProgressMs).toBe(500);
+  });
+
+  it("starts a run without replay, event, timing, or staged-action state from the prior run", () => {
+    const sent: ClientMessage[] = [];
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    Object.assign(session as unknown as object, {
+      transport: { send: (message: ClientMessage) => sent.push(message) },
+      mapValue: downtownMap,
+      configValue: defaultGameConfig,
+      playerIdValue: "viewer",
+      tickHz: 60,
+      handshakeReady: true,
+      metaIndex: new Map([[
+        "viewer",
+        { id: "viewer", name: "Ada", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 },
+      ]]),
+    });
+    const internals = session as unknown as {
+      receive(message: unknown): void;
+      advancePrediction(ms: number): void;
+      replayActive: boolean;
+      activeKillCamId: string | null;
+      snapshots: Array<{ tick: number; snapshot: import("@dotbot/game/types").GameSnapshot }>;
+      killCams: KillCamClip[];
+      snapshotIntervalsMs: number[];
+      lastSnapshotArrivalMs: number | null;
+      queuedSwapBay?: InputCommand["swapBay"];
+      queuedDrop?: InputCommand["drop"];
+      queuedPing?: InputCommand["ping"];
+      queuedPlea: boolean;
+      runGeneration: number;
+    };
+    internals.receive({
+      type: "snap",
+      tick: 900,
+      ack: 0,
+      bots: [{ i: "viewer", p: [900, 400], r: [8_000, [["old-rival", 950, 400, "outdoor", 0]]] }],
+      mines: [{
+        id: "old-mine",
+        position: { x: 910, y: 400 },
+        radius: 10,
+        floorId: "outdoor",
+        placedAtMs: 0,
+        presentation: "revealed",
+      }],
+    });
+    const oldClip = {
+      id: "viewer-old-run",
+      victimId: "viewer",
+      cause: { kind: "mine", tick: 900, position: { x: 900, y: 400 }, direction: { x: 1, y: 0 } },
+      startTick: 840,
+      deathTick: 900,
+      tickHz: 60,
+      frames: [{
+        tick: 900,
+        victim: { id: "viewer", position: { x: 900, y: 400 }, facing: 0, floorId: "outdoor", shieldSegments: [0, 0, 0], dashActiveMs: 0, state: "downed" },
+        visibleBots: [],
+        blockingDoorIds: [],
+      }],
+    } satisfies KillCamClip;
+    internals.receive({ type: "killCam", clip: toWireKillCamClip(oldClip) });
+    // Keep the real queued clip while staging the full prior-run action set.
+    // matchStart, not replay gating, is what this regression is exercising.
+    internals.replayActive = false;
+    session.sendInput({
+      move: { x: 1, y: 0 },
+      dash: true,
+      useBay: 0,
+      swapBay: { bayIndex: 1, holdIndex: 0 },
+      drop: { from: "bay", index: 2, revision: 7, expected: { kind: "mine" } },
+      take: { fromBotId: "old-body", index: "all" },
+      downedVerb: "revive",
+      plea: true,
+      ping: { kind: "enemy", position: { x: 900, y: 400 }, floorId: "outdoor" },
+    });
+    internals.receive({ type: "ev", events: [{ type: "mineSensor", botId: "viewer", mineId: "old-mine" }] });
+    internals.snapshotIntervalsMs.push(45, 55);
+    internals.lastSnapshotArrivalMs = 1_000;
+    expect(internals.snapshots[0].snapshot).toMatchObject({
+      bots: [expect.objectContaining({ position: { x: 900, y: 400 } })],
+      mines: [expect.objectContaining({ id: "old-mine" })],
+    });
+    expect(internals.killCams).toEqual([oldClip]);
+
+    internals.receive({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "viewer",
+      meta: [{ id: "viewer", name: "Ada", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
+      tickHz: 60,
+      endTick: 3600,
+      insertionName: "TEST",
+      dotBaseline: [],
+    });
+    expect(internals.runGeneration).toBe(1);
+    internals.receive({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "viewer",
+      meta: [{ id: "viewer", name: "Ada", squadId: "alpha", isAmbient: false, maxShields: 3, radius: 24 }],
+      tickHz: 60,
+      endTick: 3600,
+      insertionName: "TEST",
+      dotBaseline: [],
+    });
+    expect(internals.runGeneration).toBe(2);
+    internals.advancePrediction((1000 / 60) * 2 + 1);
+
+    const frames = sent
+      .filter((message): message is Extract<ClientMessage, { type: "input" }> => message.type === "input")
+      .flatMap((message) => message.frames ?? []);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((frame) => frame.move[0] === 0 && frame.move[1] === 0 && frame.dash === false)).toBe(true);
+    expect(frames.every((frame) => frame.useBay === undefined)).toBe(true);
+    expect(frames.every((frame) => frame.swapBay === undefined)).toBe(true);
+    expect(frames.every((frame) => frame.drop === undefined)).toBe(true);
+    expect(frames.every((frame) => frame.take === undefined)).toBe(true);
+    expect(frames.every((frame) => frame.downedVerb === undefined)).toBe(true);
+    expect(frames.every((frame) => frame.plea === undefined)).toBe(true);
+    expect(frames.every((frame) => frame.ping === undefined)).toBe(true);
+    expect(internals.snapshots).toEqual([]);
+    expect(internals.killCams).toEqual([]);
+    expect(session.drainEvents()).toEqual([]);
+    expect(internals.replayActive).toBe(false);
+    expect(internals.activeKillCamId).toBeNull();
+    expect(internals.snapshotIntervalsMs).toEqual([]);
+    expect(internals.lastSnapshotArrivalMs).toBeNull();
+    expect(internals.queuedSwapBay).toBeUndefined();
+    expect(internals.queuedDrop).toBeUndefined();
+    expect(internals.queuedPing).toBeUndefined();
+    expect(internals.queuedPlea).toBe(false);
+  });
+
+  it("scrubs private stream and staged actions when a reconnect lands in results", () => {
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    const internals = session as unknown as {
+      receive(message: unknown): void;
+      snapshots: unknown[];
+      events: unknown[];
+      killCams: unknown[];
+      replayActive: boolean;
+      activeKillCamId: string | null;
+      pendingInputs: unknown[];
+      queuedUseBay?: number;
+      queuedSwapBay?: unknown;
+      queuedDrop?: unknown;
+      stagedDownedVerb?: unknown;
+      queuedTake?: unknown;
+      queuedPlea: boolean;
+      queuedPing?: unknown;
+      metaIndex: Map<string, unknown>;
+      dotStore: Map<string, unknown>;
+      intelValue?: unknown;
+      runGeneration: number;
+    };
+    Object.assign(internals, {
+      snapshots: [{ tick: 90, snapshot: { bots: [{ id: "hidden-rival" }], mines: [{ id: "old-mine" }] } }],
+      events: [{ type: "hit", botId: "hidden-rival", byBotId: "viewer" }],
+      killCams: [{ id: "old-clip" }],
+      replayActive: true,
+      activeKillCamId: "old-clip",
+      pendingInputs: [{ seq: 10, input: { move: { x: 1, y: 0 }, dash: true, useBay: 0 } }],
+      queuedUseBay: 0,
+      queuedSwapBay: { bayIndex: 1, holdIndex: 0 },
+      queuedDrop: { from: "bay", index: 2 },
+      stagedDownedVerb: "loot",
+      queuedTake: { fromBotId: "old-body", index: "all" },
+      queuedPlea: true,
+      queuedPing: { kind: "enemy", position: { x: 10, y: 20 }, floorId: "outdoor" },
+      metaIndex: new Map([["hidden-rival", { id: "hidden-rival" }]]),
+      dotStore: new Map([["private-dot", { id: "private-dot" }]]),
+      intelValue: { signal: { dotId: "private-dot" } },
+    });
+
+    internals.receive({
+      type: "arenaWelcome",
+      playerId: "viewer",
+      arenaId: "PUBLIC",
+      phase: "results",
+      members: [],
+      retiring: false,
+    });
+    internals.receive({
+      type: "runOver",
+      reason: "timeout",
+      keptItems: [],
+      lostItems: [],
+      learnedBlueprints: [],
+    });
+
+    expect(internals.snapshots).toEqual([]);
+    expect(internals.events).toEqual([]);
+    expect(internals.killCams).toEqual([]);
+    expect(internals.replayActive).toBe(false);
+    expect(internals.activeKillCamId).toBeNull();
+    expect(internals.pendingInputs).toEqual([]);
+    expect(internals.queuedUseBay).toBeUndefined();
+    expect(internals.queuedSwapBay).toBeUndefined();
+    expect(internals.queuedDrop).toBeUndefined();
+    expect(internals.stagedDownedVerb).toBeUndefined();
+    expect(internals.queuedTake).toBeUndefined();
+    expect(internals.queuedPlea).toBe(false);
+    expect(internals.queuedPing).toBeUndefined();
+    expect(internals.metaIndex).toEqual(new Map());
+    expect(internals.dotStore).toEqual(new Map());
+    expect(internals.intelValue).toBeUndefined();
+    expect(internals.runGeneration).toBe(0);
+    expect(session.getRunState()).toMatchObject({ phase: "over", reason: "timeout" });
+  });
+
+  it("starts a refreshed client from a retained result baseline before replaying the outcome", async () => {
+    const transport = new FakeTransport();
+    const session = new NetSession({
+      url: "/ws",
+      roomCode: "PUBLIC",
+      name: "Ada",
+      token: "token",
+      transportFactory: () => transport,
+    });
+    const started = session.start();
+    transport.handlers?.open();
+    transport.handlers?.message({
+      type: "arenaWelcome",
+      playerId: "PUBLIC-PLAYER",
+      arenaId: "PUBLIC",
+      phase: "results",
+      members: [],
+      retiring: false,
+    });
+    transport.handlers?.message({
+      type: "matchStart",
+      map: downtownMap,
+      config: defaultGameConfig,
+      yourBotId: "human-PUBLIC-PLAYER",
+      meta: [],
+      tickHz: 60,
+      endTick: 3_600,
+      insertionName: "WEST GATE",
+      dotBaseline: [],
+      matchId: "00000000-0000-4000-8000-000000000023",
+      roles: [],
+    });
+    transport.handlers?.message({
+      type: "runOver",
+      reason: "timeout",
+      keptItems: [],
+      lostItems: [],
+      learnedBlueprints: [],
+    });
+
+    await started;
+    expect(session.map).toBe(downtownMap);
+    expect(session.playerId).toBe("human-PUBLIC-PLAYER");
+    expect(session.getRunGeneration()).toBe(1);
+    expect(session.getRunState()).toMatchObject({ phase: "over", reason: "timeout" });
+    session.dispose();
+  });
+
+  it("scrubs staged take and downed actions during a reconnect handoff", () => {
+    const session = new NetSession({ url: "/ws", roomCode: "TEST", name: "Ada", token: "token" });
+    session.sendInput({
+      move: { x: 0, y: 0 },
+      dash: false,
+      take: { fromBotId: "stale-body", index: "all" },
+      downedVerb: "loot",
+    });
+    const internals = session as unknown as {
+      clearInputsForHandoff(): void;
+      queuedTake: InputCommand["take"];
+      stagedDownedVerb: InputCommand["downedVerb"];
+    };
+    internals.clearInputsForHandoff();
+
+    expect(internals.queuedTake).toBeUndefined();
+    expect(internals.stagedDownedVerb).toBeUndefined();
+  });
+
   it("reconnects with the same GameLift reservation after a brief mobile network handoff", async () => {
     vi.useFakeTimers();
     const transports: FakeTransport[] = [];

@@ -1,10 +1,11 @@
 import { contextKey, doorEntityCollisionRect, physicsFloorId } from "@dotbot/game/mapModel";
 import { distance } from "@dotbot/game/math";
+import { bodiesTouching } from "@dotbot/game/bodyContact";
 import type { DoorEntity, DownCause, GameSnapshot, MapDocument, SimEvent } from "@dotbot/game/types";
 import { hasLineOfSight, OUTDOOR_SIGHT, seesOutdoors } from "@dotbot/game/visibility";
 import type { KillCamActor, KillCamClip, KillCamFrame } from "./messages";
 
-type HistoryActor = KillCamActor & { squadId: string };
+type HistoryActor = KillCamActor & { squadId: string; radius: number; incognitoMs: number };
 
 type HistoryFrame = {
   tick: number;
@@ -140,7 +141,7 @@ export class KillCamHistory {
     let bytes = 0;
     for (const frame of this.frames) {
       bytes += 16;
-      bytes += frame.bots.size * 72;
+      bytes += frame.bots.size * 88;
       bytes += frame.doors.length * 48;
     }
     return bytes;
@@ -170,6 +171,8 @@ function copyActor(bot: GameSnapshot["bots"][number]): HistoryActor {
     dashActiveMs: bot.dashActiveMs,
     state: bot.state,
     squadId: bot.squadId,
+    radius: bot.radius,
+    incognitoMs: bot.incognitoMs,
   };
 }
 
@@ -192,6 +195,7 @@ function historicallyVisible(
   doors: readonly DoorEntity[],
 ): boolean {
   if (physicsFloorId(map, victim.floorId) !== physicsFloorId(map, source.floorId)) return false;
+  if (source.incognitoMs > 0 && !historicallyTouching(victim, source)) return false;
   const occluders = doors
     .filter((door) => door.blocking && door.floorId === physicsFloorId(map, victim.floorId))
     .map(doorEntityCollisionRect);
@@ -203,4 +207,8 @@ function historicallyVisible(
     return hasLineOfSight(map, victimContext, victim.position, source.position, occluders);
   }
   return seesOutdoors(map, victim.floorId, victim.position, source.floorId, source.position, occluders);
+}
+
+function historicallyTouching(victim: HistoryActor, source: HistoryActor): boolean {
+  return bodiesTouching(victim, source, 1);
 }

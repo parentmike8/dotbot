@@ -355,6 +355,35 @@ export function contactDistance(
   return contactKernel(a, b, ux, uy, floor);
 }
 
+export type ContactBody = {
+  position: { x: number; y: number };
+  radius: number;
+  facing: number;
+  shieldSegments: readonly number[];
+};
+
+/**
+ * Exact authored-body overlap for privacy/presentation paths outside the hot
+ * simulation loop.
+ *
+ * Do not replace this with a sum of two `contactReach` samples. That predicate
+ * is only a lower bound for notched, partially plated bodies and can report
+ * daylight while their neighbouring plate sectors genuinely overlap. The
+ * simulation caches these shapes; low-frequency interest, renderer, and replay
+ * admission can afford to build them and must share the same answer.
+ */
+export function bodiesTouching(a: ContactBody, b: ContactBody, epsilon = 0): boolean {
+  const dx = b.position.x - a.position.x;
+  const dy = b.position.y - a.position.y;
+  const centres = Math.hypot(dx, dy);
+  if (centres <= epsilon) return true;
+  const aShape = makeContactShape(a.shieldSegments.length);
+  const bShape = makeContactShape(b.shieldSegments.length);
+  buildContactShape(aShape, a.radius, a.facing, a.shieldSegments);
+  buildContactShape(bShape, b.radius, b.facing, b.shieldSegments);
+  return centres <= contactDistance(aShape, bShape, dx / centres, dy / centres) + epsilon;
+}
+
 /**
  * Exact contact distance plus the two primitives that establish it.
  *

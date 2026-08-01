@@ -42,8 +42,8 @@ function bot(id: string, position: { x: number; y: number }, overrides: Partial<
     searched: false,
     pleaded: false,
     radarActiveMs: 500,
-    radarPings: [{ x: 500, y: 50, ageMs: 0 }],
-    dashOverchargeCharges: 1,
+    radarPings: [{ botId: "rival", floorId: "outdoor", x: 500, y: 50, ageMs: 0 }],
+    dashOverchargeMs: 1_000,
     incognitoMs: 0,
     dashCooldownMs: 0,
     dashActiveMs: 0,
@@ -84,6 +84,7 @@ describe("KillCamHistory", () => {
       bot("mate", { x: 330, y: 140 }, { state: "downed" }),
       bot("visible-party", { x: 210 + offset, y: 120 }),
       bot("hidden-party", { x: 320, y: 150 }),
+      bot("invisible-party", { x: 230 + offset, y: 160 }, { incognitoMs: 500 }),
     ];
     history.record(snapshot(3, 200, { x: 320, y: 100 }, extras(0)));
     history.record(snapshot(6, 202, { x: 310, y: 100 }, extras(2)));
@@ -100,6 +101,7 @@ describe("KillCamHistory", () => {
 
     const encoded = JSON.stringify(clip);
     expect(encoded).not.toContain("hidden-party");
+    expect(encoded).not.toContain("invisible-party");
     expect(encoded).not.toContain("health");
     expect(encoded).not.toContain("radar");
     expect(encoded).not.toContain("radarPings");
@@ -123,6 +125,31 @@ describe("KillCamHistory", () => {
     expect(mine.sourceBotId).toBeUndefined();
     expect(mine.cause.kind).toBe("mine");
     expect(JSON.stringify(mine)).not.toContain("killer");
+  });
+
+  it("keeps an invisible rival out of historical sight until physical contact", () => {
+    const history = new KillCamHistory(map, { historyTicks: 240 });
+    const hidden = snapshot(12, 100, { x: 180, y: 100 });
+    hidden.bots = hidden.bots.map((entry) =>
+      entry.id === "killer" ? { ...entry, incognitoMs: 500 } : entry);
+    history.record(hidden);
+    // Two damaged two-plate bodies overlap at 40 px even though the old
+    // single-ray reach sum reported only 33.6 px. Historical disclosure has
+    // to use the exact authored shape or the replay can hide a real blocker.
+    const contact = snapshot(15, 100, { x: 140, y: 100 });
+    contact.bots = contact.bots.map((entry) => ({
+      ...entry,
+      shieldSegments: [1, 1, 0],
+      ...(entry.id === "killer" ? { incognitoMs: 450 } : {}),
+    }));
+    history.record(contact);
+
+    const clip = history.createClip("victim", "killer", {
+      ...dashCause,
+      position: { x: 140, y: 100 },
+    })!;
+    expect(clip.frames[0].source).toBeUndefined();
+    expect(clip.frames[1].source?.id).toBe("killer");
   });
 
   it("prunes by tick and copies recorded state instead of retaining mutable snapshots", () => {

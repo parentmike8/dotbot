@@ -1,6 +1,6 @@
 import { defaultGameConfig } from "@dotbot/game/config";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
-import type { DotBotEntity, DotEntity, GameSnapshot, MineEntity, NoiseEvent, CoverageSnapshot, RadarPing } from "@dotbot/game/types";
+import type { DotBotEntity, DotEntity, GameSnapshot, MineEntity, NoiseEvent, CoverageSnapshot, RadarContact } from "@dotbot/game/types";
 import type { SimEvent } from "@dotbot/game/types";
 import type { EntityMeta, FullWireSnapshot, KillCamActor, KillCamClip, WireBot, WireDot, WireDotContextSync, WireDotDelta, WireKillCamActor, WireKillCamClip, WireMine, WireSnapshot } from "./messages";
 import type { WireSimEvent } from "./messages";
@@ -139,6 +139,7 @@ export function toWireSnapshot(snapshot: GameSnapshot): FullWireSnapshot {
       position: { x: roundPosition(door.position.x), y: roundPosition(door.position.y) },
       openness: roundFloat(door.openness),
     })),
+    ...(snapshot.rivalsAlive === undefined ? {} : { rivalsAlive: snapshot.rivalsAlive }),
   };
 }
 
@@ -159,6 +160,7 @@ export function toViewerSnapshot(
     ...(wire.coverages.length ? { coverages: wire.coverages } : {}),
     ...(wire.noises.length ? { noises: wire.noises } : {}),
     ...(wire.doors?.length ? { doors: wire.doors } : {}),
+    ...(wire.rivalsAlive === undefined ? {} : { rivalsAlive: wire.rivalsAlive }),
     ...(wire.intel === undefined ? {} : { intel: wire.intel }),
   };
 }
@@ -248,10 +250,10 @@ function toWireBot(bot: DotBotEntity): WireBot {
     wire.iv = roundMs(bot.invulnerabilityMs);
   }
   if (bot.radarActiveMs !== 0 || bot.radarPings.length > 0) {
-    const pings = bot.radarPings.map(toWireRadarPing);
+    const pings = bot.radarPings.map(toWireRadarContact);
     wire.r = pings.length ? [roundMs(bot.radarActiveMs), pings] : [roundMs(bot.radarActiveMs)];
   }
-  if (bot.dashOverchargeCharges !== 0) wire.o = bot.dashOverchargeCharges;
+  if (bot.dashOverchargeMs !== 0) wire.o = roundMs(bot.dashOverchargeMs);
   if (bot.incognitoMs !== 0) wire.ic = roundMs(bot.incognitoMs);
   return wire;
 }
@@ -280,6 +282,7 @@ export function fromWireSnapshot(
     coverages: wire.coverages ?? [],
     noises: wire.noises ?? [],
     doors: (wire.doors ?? []).map((door) => ({ ...door, position: { ...door.position } })),
+    ...(wire.rivalsAlive === undefined ? {} : { rivalsAlive: wire.rivalsAlive }),
     debug: {
       tickHz: 60,
       tickCount: wire.tick,
@@ -323,8 +326,8 @@ function fromWireBot(bot: WireBot, metaIndex: ReadonlyMap<string, EntityMeta>): 
     dashActiveMs: bot.d?.[1] ?? 0,
     invulnerabilityMs: bot.iv ?? 0,
     radarActiveMs: bot.r?.[0] ?? 0,
-    radarPings: bot.r?.[1]?.map((ping) => ({ ...ping })) ?? [],
-    dashOverchargeCharges: bot.o ?? 0,
+    radarPings: bot.r?.[1]?.map(fromWireRadarContact) ?? [],
+    dashOverchargeMs: bot.o ?? 0,
     incognitoMs: bot.ic ?? 0,
   };
 }
@@ -356,8 +359,20 @@ function toWireNoise(noise: NoiseEvent): NoiseEvent {
   };
 }
 
-function toWireRadarPing(ping: RadarPing): RadarPing {
-  return { x: roundPosition(ping.x), y: roundPosition(ping.y), ageMs: roundMs(ping.ageMs) };
+function toWireRadarContact(contact: RadarContact): import("./messages").WireRadarContact {
+  return [
+    contact.botId,
+    roundPosition(contact.x),
+    roundPosition(contact.y),
+    contact.floorId,
+    roundMs(contact.ageMs),
+  ];
+}
+
+function fromWireRadarContact(
+  [botId, x, y, floorId, ageMs]: import("./messages").WireRadarContact,
+): RadarContact {
+  return { botId, x, y, floorId, ageMs };
 }
 
 export function toWireEvent(event: SimEvent): WireSimEvent {

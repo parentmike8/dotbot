@@ -322,6 +322,94 @@ describe("hot arena and identity integration", () => {
     room.dispose();
   });
 
+  it("uses public runtime ids for hot-run mine events and channels while persistence keeps the canonical id", async () => {
+    let now = 0;
+    const canonicalPlayerId = "00000000-0000-4000-8000-000000000026";
+    const retiredReservationId = "00000000-0000-4000-8000-000000000025";
+    const publicPlayerId = "MINE-2345";
+    const persistence = new IntegratedPersistence((_token, name) => ({
+      playerId: canonicalPlayerId,
+      previousPlayerIds: [retiredReservationId],
+      publicPlayerId: publicPlayerId.replace("-", ""),
+      name,
+    }));
+    const messages: ServerMessage[] = [];
+    const room = new Room("EVNT", {
+      now: () => now,
+      persistence,
+      hotArena: { assemblyMinMs: 1_000, assemblyMaxMs: 1_000 },
+      matchIdFactory: () => "00000000-0000-4000-8000-000000000126",
+    });
+    expect(room.join(
+      testPeer("event-peer", messages),
+      "event-token",
+      "Event player",
+      publicPlayerId,
+      undefined,
+      "event-party",
+      undefined,
+      retiredReservationId,
+      canonicalPlayerId,
+    )).not.toBeNull();
+    now = 1_000;
+    room.tick(now);
+    await vi.waitFor(() => expect(room.phase).toBe("live"));
+
+    const internals = room as unknown as {
+      members: Map<string, { botId: string; squadId: string }>;
+      simulation: {
+        coverages: Map<string, import("@dotbot/game/types").CoverageSnapshot>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+      broadcastSnapshot(snapshot: import("@dotbot/game/types").GameSnapshot): void;
+      broadcastEvents(
+        events: import("@dotbot/game/types").SimEvent[],
+        snapshot: import("@dotbot/game/types").GameSnapshot,
+      ): void;
+    };
+    const member = internals.members.get(publicPlayerId)!;
+    expect(member.botId).toBe(`human-${publicPlayerId}`);
+    expect(persistence.starts[0].playerIds).toEqual([canonicalPlayerId]);
+    internals.simulation.coverages.set("capture:runtime-dot", {
+      kind: "capture",
+      actorId: member.botId,
+      targetId: "runtime-dot",
+      progressMs: 500,
+      durationMs: 1_000,
+    });
+
+    messages.length = 0;
+    const snapshot = internals.simulation.getSnapshot();
+    internals.broadcastSnapshot(snapshot);
+    const opaqueMineId = "mine-b8132f69-3f0d-46ef-9ae1-61c917841882";
+    internals.broadcastEvents([{
+      type: "mineSensor",
+      botId: member.botId,
+      squadId: member.squadId,
+      mineId: opaqueMineId,
+      position: { ...snapshot.bots.find((bot) => bot.id === member.botId)!.position },
+      floorId: snapshot.bots.find((bot) => bot.id === member.botId)!.floorId,
+    }], snapshot);
+
+    expect(messages.find((message) => message.type === "snap")?.coverages).toContainEqual({
+      kind: "capture",
+      actorId: member.botId,
+      targetId: "runtime-dot",
+      progressMs: 500,
+      durationMs: 1_000,
+    });
+    expect(messages.find((message) => message.type === "ev")?.events).toContainEqual(expect.objectContaining({
+      type: "mineSensor",
+      botId: member.botId,
+      mineId: opaqueMineId,
+    }));
+    const encoded = JSON.stringify(messages);
+    expect(encoded).toContain(member.botId);
+    expect(encoded).not.toContain(canonicalPlayerId);
+    expect(encoded).not.toContain(retiredReservationId);
+    room.dispose();
+  });
+
   it("starts and settles an 18-human run with canonical UUIDs and aggregate-only finish data", async () => {
     let now = 0;
     const persistence = new IntegratedPersistence((_token, name) => ({
@@ -391,7 +479,7 @@ describe("hot arena and identity integration", () => {
       publicPlayerId: "ROLL2345",
       name,
     }));
-    const manager = new RoomManager({ persistence });
+    const manager = new RoomManager({ persistence, countdownMs: 0 });
     const legacyMessages: ServerMessage[] = [];
 
     expect(await manager.handleHello(testPeer("legacy-peer", legacyMessages), {
@@ -400,10 +488,69 @@ describe("hot arena and identity integration", () => {
       name: "Legacy player",
       roomCode: "",
     })).toBe(true);
-    expect(legacyMessages).toContainEqual(expect.objectContaining({
+    const legacyWelcome = legacyMessages.find((message) => message.type === "welcome");
+    expect(legacyWelcome).toMatchObject({
       type: "welcome",
       playerId: "ROLL-2345",
       roomCode: expect.stringMatching(/^[A-HJ-NP-Z2-9]{4}$/),
+    });
+    expect(JSON.stringify(legacyMessages)).not.toContain(canonicalPlayerId);
+
+    const legacyRoom = manager.join(legacyWelcome!.roomCode)!;
+    legacyRoom.receive("ROLL-2345", { type: "startMatch" });
+    await vi.waitFor(() => expect(legacyRoom.phase).toBe("live"));
+    const legacyStart = legacyMessages.find((message) => message.type === "matchStart");
+    expect(legacyStart?.matchId).toBeUndefined();
+    expect(legacyStart?.roles).toBeUndefined();
+    const legacyInternals = legacyRoom as unknown as {
+      members: Map<string, { botId: string }>;
+      simulation: {
+        bots: Map<string, {
+          id: string;
+          squadId: string;
+          floorId: string;
+          position: { x: number; y: number };
+          radarActiveMs: number;
+          radarPings: unknown[];
+          dashOverchargeMs: number;
+          incognitoMs: number;
+        }>;
+        mines: Map<string, unknown>;
+        getSnapshot(): import("@dotbot/game/types").GameSnapshot;
+      };
+      broadcastSnapshot(snapshot: import("@dotbot/game/types").GameSnapshot): void;
+    };
+    const legacyMember = legacyInternals.members.get("ROLL-2345")!;
+    const legacyBot = legacyInternals.simulation.bots.get(legacyMember.botId)!;
+    legacyBot.radarActiveMs = 4_000;
+    legacyBot.dashOverchargeMs = 45_000;
+    legacyBot.incognitoMs = 5_000;
+    const legacyMineId = "mine-a4f82e4a-0fe8-4e0e-8506-bc74be48f19c";
+    legacyInternals.simulation.mines.set(legacyMineId, {
+      id: legacyMineId,
+      position: { ...legacyBot.position },
+      radius: 10,
+      placedByBotId: legacyBot.id,
+      squadId: legacyBot.squadId,
+      floorId: legacyBot.floorId,
+      placedAtMs: 400,
+      revealedToBotIds: [],
+      armedAtTick: Number.MAX_SAFE_INTEGER,
+      sensorElapsedMs: 0,
+      revealMsByBotId: new Map(),
+    });
+    legacyMessages.length = 0;
+    legacyInternals.broadcastSnapshot(legacyInternals.simulation.getSnapshot());
+    const legacySnapshot = legacyMessages.find((message) => message.type === "snap");
+    expect(legacySnapshot?.bots.find((bot) => bot.i === legacyBot.id)).toMatchObject({
+      r: [4_000],
+      o: 45_000,
+      ic: 5_000,
+    });
+    expect(legacySnapshot?.mines).toContainEqual(expect.objectContaining({
+      id: legacyMineId,
+      presentation: "squad",
+      placedByBotId: legacyBot.id,
     }));
     expect(JSON.stringify(legacyMessages)).not.toContain(canonicalPlayerId);
 

@@ -297,6 +297,8 @@ describe("RoomManager atomic party admission", () => {
     expect(room.size).toBe(0);
     expect(await manager.commitPublicParty(prepared)).toBe(true);
     expect(room.size).toBe(2);
+    expect([...((room as unknown as { members: Map<string, { matchStart: unknown }> }).members.values())]
+      .map((member) => member.matchStart)).toEqual([null, null]);
     expect(room.publicArenaMembers.map((member) => member.partyId)).toEqual([
       baseAdmission.partyId,
       baseAdmission.partyId,

@@ -53,7 +53,7 @@ function actor(overrides: Partial<DotBotEntity> = {}): DotBotEntity {
     pleaded: false,
     radarActiveMs: 0,
     radarPings: [],
-    dashOverchargeCharges: 0,
+    dashOverchargeMs: 0,
     incognitoMs: 0,
     dashCooldownMs: 0,
     dashActiveMs: 0,

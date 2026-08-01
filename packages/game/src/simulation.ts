@@ -382,6 +382,7 @@ type InternalBot = DotBotEntity & {
 type InternalDot = DotEntity;
 
 type InternalMine = MineEntity & {
+  armedAtTick: number;
   sensorElapsedMs: number;
   revealMsByBotId: Map<string, number>;
 };
@@ -431,6 +432,8 @@ export class DotBotSimulation {
   }> = [];
   private readonly dots = new Map<string, InternalDot>();
   private readonly mines = new Map<string, InternalMine>();
+  /** Every authored mine is the same physical disc; build its contact shape once. */
+  private readonly mineContactShape: ContactShape;
   private readonly coverages = new Map<string, ActiveCoverage>();
   private readonly doors = new Map<string, InternalDoor>();
   /** Everything static a bot collides with, per physics floor. */
@@ -457,12 +460,13 @@ export class DotBotSimulation {
   /** `aggressor faction -> protected squad`, refreshed only by a hostile action. */
   private readonly squadHostilityUntil = new Map<string, number>();
   private noiseSeq = 0;
-  private mineSeq = 0;
   private dropSeq = 0;
 
   private constructor(map: MapDocument, config: GameConfig) {
     this.map = map;
     this.config = config;
+    this.mineContactShape = makeContactShape(1);
+    buildContactShape(this.mineContactShape, config.dotRadius, 0, [1]);
     this.buildStaticCollision();
     this.collectStairs();
     this.collectDoors();
@@ -616,7 +620,7 @@ export class DotBotSimulation {
       radarActiveMs: 0,
       radarPings: [],
       radarPingElapsedMs: 0,
-      dashOverchargeCharges: 0,
+      dashOverchargeMs: 0,
       incognitoMs: 0,
       dashCooldownMs: 0,
       dashActiveMs: 0,
@@ -727,6 +731,11 @@ export class DotBotSimulation {
     this.controllers.delete(botId);
     this.inputs.delete(botId);
 
+    for (const [mineId, mine] of this.mines) {
+      if (mine.placedByBotId === botId) this.mines.delete(mineId);
+      else mine.revealMsByBotId.delete(botId);
+    }
+
     for (const [key, coverage] of this.coverages) {
       if (coverage.actorId === botId || coverage.targetId === botId) {
         this.coverages.delete(key);
@@ -740,6 +749,7 @@ export class DotBotSimulation {
     }
 
     for (const other of this.bots.values()) {
+      other.radarPings = other.radarPings.filter((contact) => contact.botId !== botId);
       other.aiAvoidTargets.delete(botId);
       other.contactDwell.delete(botId);
       other.dashBlockedTargets.delete(botId);
@@ -867,6 +877,18 @@ export class DotBotSimulation {
     }
 
     this.disposed = true;
+    this.bots.clear();
+    this.controllers.clear();
+    this.inputs.clear();
+    this.squadMarks = [];
+    this.dots.clear();
+    this.mines.clear();
+    this.coverages.clear();
+    this.doors.clear();
+    this.events = [];
+    this.noises = [];
+    this.noiseSourceById.clear();
+    this.squadHostilityUntil.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -993,7 +1015,10 @@ export class DotBotSimulation {
       if (expiresAt <= this.timeMs) this.squadHostilityUntil.delete(key);
     }
     for (const bot of this.bots.values()) {
-      bot.dashCooldownMs = Math.max(0, bot.dashCooldownMs - dtMs);
+      bot.dashOverchargeMs = Math.max(0, bot.dashOverchargeMs - dtMs);
+      bot.dashCooldownMs = bot.dashOverchargeMs > 0
+        ? 0
+        : Math.max(0, bot.dashCooldownMs - dtMs);
       bot.dashActiveMs = Math.max(0, bot.dashActiveMs - dtMs);
       // Held full while the dash is live and only then allowed to run down, so the
       // grace measures time since the dash ENDED however it ended — expired, or cut
@@ -1010,16 +1035,15 @@ export class DotBotSimulation {
       bot.radarPings = bot.radarPings
         .map((ping) => ({ ...ping, ageMs: ping.ageMs + dtMs }))
         .filter((ping) => ping.ageMs < this.config.radarPingTtlMs);
-      if (previousRadarMs > 0) {
+      if (previousRadarMs > 0 && bot.radarActiveMs > 0) {
         bot.radarPingElapsedMs += dtMs;
         while (bot.radarPingElapsedMs >= this.config.radarPingIntervalMs) {
           bot.radarPingElapsedMs -= this.config.radarPingIntervalMs;
-          for (const target of this.bots.values()) {
-            if (target.id !== bot.id && target.floorId === bot.floorId && distance(bot.position, target.position) <= this.config.radarRadius) {
-              bot.radarPings.push({ ...target.position, ageMs: 0 });
-            }
-          }
+          this.sampleRadar(bot);
         }
+      } else if (bot.radarActiveMs <= 0) {
+        bot.radarPingElapsedMs = 0;
+        bot.radarPings = [];
       }
       bot.aiRetargetMs = Math.max(0, bot.aiRetargetMs - dtMs);
       bot.aiRepathMs = Math.max(0, bot.aiRepathMs - dtMs);
@@ -1111,11 +1135,10 @@ export class DotBotSimulation {
       }
 
       if (aliveInput.dash && !bot.activeSwap) {
-        const overcharged = bot.dashOverchargeCharges > 0;
+        const overcharged = bot.dashOverchargeMs > 0;
         if ((overcharged || bot.dashCooldownMs <= 0) && bot.dashActiveMs <= 0) {
           bot.dashActiveMs = this.config.dashDurationMs;
-          if (overcharged) bot.dashOverchargeCharges -= 1;
-          else bot.dashCooldownMs = this.config.dashCooldownMs;
+          bot.dashCooldownMs = overcharged ? 0 : this.config.dashCooldownMs;
           this.recordDashStartContacts(bot);
           this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
         }
@@ -1181,6 +1204,41 @@ export class DotBotSimulation {
     return true;
   }
 
+  /** Sample only player-role bodies. The result is stale intel, never body authority. */
+  private sampleRadar(bot: InternalBot): void {
+    for (const target of this.bots.values()) {
+      if (
+        target.id === bot.id
+        || target.isAmbient
+        || target.incognitoMs > 0
+        || physicsFloorId(this.map, target.floorId) !== physicsFloorId(this.map, bot.floorId)
+        || distance(bot.position, target.position) > this.config.radarRadius
+      ) {
+        continue;
+      }
+      bot.radarPings = bot.radarPings.filter((contact) => contact.botId !== target.id);
+      bot.radarPings.push({
+        botId: target.id,
+        floorId: target.floorId,
+        ...target.position,
+        ageMs: 0,
+      });
+    }
+    this.revealMinesForRadar(bot);
+  }
+
+  private revealMinesForRadar(bot: InternalBot): void {
+    for (const mine of this.mines.values()) {
+      if (
+        mine.squadId !== bot.squadId
+        && physicsFloorId(this.map, mine.floorId) === physicsFloorId(this.map, bot.floorId)
+        && distance(mine.position, bot.position) <= this.config.radarRadius
+      ) {
+        mine.revealMsByBotId.set(bot.id, bot.radarActiveMs);
+      }
+    }
+  }
+
   private fireBay(bot: InternalBot, bayIndex: BayIndex): void {
     const item = bot.bays[bayIndex];
     if (!item || item.kind === "blueprint") return;
@@ -1198,25 +1256,32 @@ export class DotBotSimulation {
       case "radar":
         bot.radarActiveMs = this.config.radarDurationMs;
         bot.radarPingElapsedMs = 0;
-        for (const mine of this.mines.values()) {
-          if (mine.floorId === bot.floorId && distance(mine.position, bot.position) <= this.config.radarRadius) {
-            mine.revealMsByBotId.set(bot.id, this.config.radarDurationMs);
-          }
-        }
+        this.revealMinesForRadar(bot);
         break;
       case "dashOvercharge":
-        bot.dashOverchargeCharges += this.config.dashOverchargeUses;
+        bot.dashOverchargeMs = this.config.dashOverchargeDurationMs;
+        bot.dashCooldownMs = 0;
         break;
       case "incognito":
         bot.incognitoMs = this.config.incognitoDurationMs;
+        for (const observer of this.bots.values()) {
+          observer.radarPings = observer.radarPings.filter((contact) => contact.botId !== bot.id);
+        }
         break;
     }
     this.emitNoise("channel", bot.position, bot.floorId, this.config.powerupNoiseLoudness, bot);
   }
 
   private placeMine(bot: InternalBot): void {
+    let mineId: string;
+    do {
+      mineId = opaqueMineId();
+    } while (this.mines.has(mineId));
     const mine: InternalMine = {
-      id: `mine-${bot.id}-${this.mineSeq++}`,
+      // Public snapshots need a stable entity id, but it must not encode the
+      // owner's bot id: rivals receive this id even when every ownership field
+      // is correctly redacted by the interest filter.
+      id: mineId,
       position: { ...bot.position },
       radius: this.config.dotRadius,
       placedByBotId: bot.id,
@@ -1224,10 +1289,22 @@ export class DotBotSimulation {
       floorId: bot.floorId,
       placedAtMs: this.timeMs,
       revealedToBotIds: [],
+      armedAtTick: this.tickCount + 1,
       sensorElapsedMs: 0,
       revealMsByBotId: new Map(),
     };
     this.mines.set(mine.id, mine);
+    for (const observer of this.bots.values()) {
+      if (
+        observer.id !== bot.id
+        && observer.squadId !== mine.squadId
+        && observer.radarActiveMs > 0
+        && physicsFloorId(this.map, observer.floorId) === physicsFloorId(this.map, mine.floorId)
+        && distance(observer.position, mine.position) <= this.config.radarRadius
+      ) {
+        mine.revealMsByBotId.set(observer.id, observer.radarActiveMs);
+      }
+    }
 
     const owned = [...this.mines.values()]
       .filter((candidate) => candidate.placedByBotId === bot.id)
@@ -1241,21 +1318,23 @@ export class DotBotSimulation {
 
   private resolveMines(dtMs: number): void {
     for (const mine of [...this.mines.values()]) {
-      const owner = this.bots.get(mine.placedByBotId);
+      if (this.tickCount < mine.armedAtTick) continue;
       const intruders = [...this.bots.values()]
         .filter((bot) =>
           bot.state === "alive"
           && bot.floorId === mine.floorId
-          && (owner ? !areFriendly(owner, bot) : bot.squadId !== mine.squadId),
+          && this.mineIsHostileTo(mine, bot),
         )
         .sort((left, right) => distance(left.position, mine.position) - distance(right.position, mine.position) || left.id.localeCompare(right.id));
-      const trigger = intruders.find((bot) => distance(bot.position, mine.position) + mine.radius <= bot.radius - 2);
+      const trigger = intruders.find((bot) => this.mineTouchesBot(mine, bot));
       if (trigger) {
         this.detonateMine(mine, trigger);
         continue;
       }
 
-      const sensed = intruders.find((bot) => distance(bot.position, mine.position) <= this.config.mineSenseRadius);
+      const sensed = intruders.find((bot) =>
+        bot.incognitoMs <= 0
+        && distance(bot.position, mine.position) <= this.config.mineSenseRadius);
       if (!sensed) {
         mine.sensorElapsedMs = 0;
         continue;
@@ -1275,11 +1354,37 @@ export class DotBotSimulation {
     }
   }
 
+  private mineIsHostileTo(mine: InternalMine, target: InternalBot): boolean {
+    return target.factionKind === "ambient" || target.squadId !== mine.squadId;
+  }
+
+  /** Mine disc against the same exact plated silhouette used by separation and combat. */
+  private mineTouchesBot(mine: InternalMine, target: InternalBot): boolean {
+    const dx = mine.position.x - target.position.x;
+    const dy = mine.position.y - target.position.y;
+    const centres = Math.hypot(dx, dy);
+    if (centres <= 0.001) return true;
+    const towardMine = Math.atan2(dy, dx);
+    const seed = contactReach(target.radius, target.facing, target.shieldSegments, towardMine) + mine.radius;
+    const contact = contactDistance(
+      this.shapeOf(target),
+      this.mineContactShape,
+      dx / centres,
+      dy / centres,
+      seed,
+    );
+    return centres <= contact;
+  }
+
   private detonateMine(mine: InternalMine, target: InternalBot): void {
     this.mines.delete(mine.id);
-    const owner = this.bots.get(mine.placedByBotId);
-    if (owner && !this.canDamage(owner, target)) return;
-    if (owner) this.recordHostileAction(owner, target);
+    if (!this.mineIsHostileTo(mine, target)) return;
+    // The device is the source. Never key AI alerts or escort hostility to its
+    // hidden owner: target selection would reveal the placement squad even
+    // though the owner and squad are correctly redacted from every wire event.
+    // The owner's invisibility elsewhere also cannot silence the local blast.
+    this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation);
+    if (target.invulnerabilityMs > 0) return;
     // A mine is a point source: the authored plate cell it sits in takes it, or
     // the exposed core does. Body-vs-body dashes additionally account for the
     // attacker's finite shape intercepting the SIDE of a plate.
@@ -1287,8 +1392,6 @@ export class DotBotSimulation {
     const armourHit = applyArmourHit(target.facing, target.shieldSegments, impactAngle);
     target.shields = plateSum(target.shieldSegments);
     target.invulnerabilityMs = this.config.shieldInvulnerabilityMs;
-    this.emitNoise("mineDetonation", mine.position, mine.floorId, NOISE_LOUDNESS.mineDetonation, owner);
-
     if (armourHit.core) {
       const away = normalize(subtract(target.position, mine.position));
       this.putBotDown(target, mine.placedByBotId, {
@@ -1323,6 +1426,15 @@ export class DotBotSimulation {
     target.shields = 0;
     target.state = "downed";
     target.dashActiveMs = 0;
+    target.dashOverchargeMs = 0;
+    target.radarActiveMs = 0;
+    target.radarPingElapsedMs = 0;
+    target.radarPings = [];
+    target.incognitoMs = 0;
+    for (const mine of this.mines.values()) mine.revealMsByBotId.delete(target.id);
+    for (const observer of this.bots.values()) {
+      observer.radarPings = observer.radarPings.filter((contact) => contact.botId !== target.id);
+    }
     target.aiHuntTargetId = null;
     target.velocity = zeroVec();
     target.knockbackMs = 0;
@@ -1336,13 +1448,13 @@ export class DotBotSimulation {
    * is 25 distance checks instead of 625, and at the scale this is meant to
    * survive the difference is the whole point.
    */
-  private humanPositions(): Vec2[] {
-    const at: Vec2[] = [];
+  private humanBots(): InternalBot[] {
+    const humans: InternalBot[] = [];
     for (const bot of this.bots.values()) {
       if (bot.state !== "alive") continue;
-      if (this.controllers.get(bot.id) === "human") at.push(bot.position);
+      if (this.controllers.get(bot.id) === "human") humans.push(bot);
     }
-    return at;
+    return humans;
   }
 
   /**
@@ -1379,14 +1491,18 @@ export class DotBotSimulation {
   }
 
   private updateBotAi(): void {
-    const humans = this.humanPositions();
+    const humans = this.humanBots();
     const active: InternalBot[] = [];
     for (const bot of this.bots.values()) {
       if (this.controllers.get(bot.id) !== "ai" || bot.state !== "alive") continue;
 
       let nearest = Infinity;
       for (const human of humans) {
-        const away = distance(bot.position, human);
+        // Invisibility denies rival live tracking, including the performance
+        // scheduler. Same-squad escorts keep their normal cadence and behavior;
+        // concealment is not meant to sever the player's own squad.
+        if (human.incognitoMs > 0 && !areFriendly(bot, human)) continue;
+        const away = distance(bot.position, human.position);
         if (away < nearest) nearest = away;
       }
       bot.aiAttention = nearest;
@@ -1449,13 +1565,13 @@ export class DotBotSimulation {
 
   /** Canopy applies only when this hostile is not the pursuit already remembered. */
   private canAcquireHuntTarget(bot: InternalBot, target: InternalBot): boolean {
-    return bot.aiHuntTargetId === target.id || canopyAllowsNewTarget(
+    return target.incognitoMs <= 0 && (bot.aiHuntTargetId === target.id || canopyAllowsNewTarget(
       this.map,
       bot.floorId,
       bot.position,
       target.floorId,
       target.position,
-    );
+    ));
   }
 
   /**
@@ -1797,6 +1913,7 @@ export class DotBotSimulation {
    * chosen for.
    */
   private huntClaimants(target: InternalBot): string[] {
+    if (target.incognitoMs > 0) return [];
     const claimants: string[] = [];
     for (const bot of this.bots.values()) {
       if (bot.state !== "alive" || bot.id === target.id) continue;
@@ -2748,7 +2865,7 @@ export class DotBotSimulation {
       if (length(away) < 0.5) return;
       bot.lastAim = away;
       bot.dashActiveMs = this.config.dashDurationMs;
-      bot.dashCooldownMs = this.config.dashCooldownMs;
+      bot.dashCooldownMs = bot.dashOverchargeMs > 0 ? 0 : this.config.dashCooldownMs;
       this.recordDashStartContacts(bot);
       this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
       return;
@@ -2773,7 +2890,9 @@ export class DotBotSimulation {
     }
     bot.lastAim = toHostile;
     bot.dashActiveMs = this.config.dashDurationMs;
-    bot.dashCooldownMs = this.config.dashCooldownMs + 250 + this.nextRandom() * 450;
+    bot.dashCooldownMs = bot.dashOverchargeMs > 0
+      ? 0
+      : this.config.dashCooldownMs + 250 + this.nextRandom() * 450;
     this.recordDashStartContacts(bot);
     this.emitNoise("dash", bot.position, bot.floorId, NOISE_LOUDNESS.dash, bot);
   }
@@ -3925,6 +4044,9 @@ export class DotBotSimulation {
      */
     if (!areFriendly(reviver, target)) {
       const from = target.squadId;
+      for (const [mineId, mine] of this.mines) {
+        if (mine.placedByBotId === target.id) this.mines.delete(mineId);
+      }
       target.squadId = reviver.squadId;
       // Their objective was chosen as a rival's. It is not one any more.
       target.aiPath = [];
@@ -4050,6 +4172,19 @@ function sameItem(left: Item, right: unknown): boolean {
   return candidate.kind === "mine";
 }
 
+/** Stable for this mine's lifetime without encoding its owner, placement time,
+ * or the count/order of mines the viewer was never authorized to know about. */
+function opaqueMineId(): string {
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  // RFC 4122 v4 layout keeps the result recognizable and well-supported while
+  // retaining 122 random bits. The `mine-` prefix remains useful in diagnostics.
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `mine-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function toBotSnapshot(bot: InternalBot): DotBotEntity {
   return {
     id: bot.id,
@@ -4076,7 +4211,7 @@ function toBotSnapshot(bot: InternalBot): DotBotEntity {
     pleaded: bot.pleaded,
     radarActiveMs: bot.radarActiveMs,
     radarPings: bot.radarPings.map((ping) => ({ ...ping })),
-    dashOverchargeCharges: bot.dashOverchargeCharges,
+    dashOverchargeMs: bot.dashOverchargeMs,
     incognitoMs: bot.incognitoMs,
     dashCooldownMs: bot.dashCooldownMs,
     dashActiveMs: bot.dashActiveMs,

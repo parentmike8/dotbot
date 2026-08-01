@@ -28,7 +28,7 @@ const bot: DotBotEntity = {
   pleaded: false,
   radarActiveMs: 0,
   radarPings: [],
-  dashOverchargeCharges: 0,
+  dashOverchargeMs: 0,
   incognitoMs: 0,
   dashCooldownMs: 312.5,
   dashActiveMs: 12.5,
@@ -94,6 +94,37 @@ describe("snapshot wire mapping", () => {
       phase: "opening",
       blocking: true,
     })]);
+  });
+
+  it("round-trips viewer-private identified radar contacts, timed overcharge, and authorized rival count", () => {
+    const privateBot = {
+      ...bot,
+      radarActiveMs: 1_234,
+      radarPings: [{
+        botId: "rival",
+        floorId: "outdoor",
+        x: 444.444,
+        y: 555.555,
+        ageMs: 321,
+      }],
+      dashOverchargeMs: 45_678,
+    } satisfies DotBotEntity;
+    const full = { ...toWireSnapshot({ ...snapshot, bots: [privateBot] }), rivalsAlive: 7 };
+    const payload = JSON.parse(JSON.stringify(toViewerSnapshot(full, 9)));
+    const restored = fromWireSnapshot(payload, new Map([[bot.id, toEntityMeta(bot)]]), full.dots);
+
+    expect(restored.rivalsAlive).toBe(7);
+    expect(restored.bots[0]).toMatchObject({
+      radarActiveMs: 1_234,
+      radarPings: [{
+        botId: "rival",
+        floorId: "outdoor",
+        x: 444.44,
+        y: 555.55,
+        ageMs: 321,
+      }],
+      dashOverchargeMs: 45_678,
+    });
   });
 
   it("omits empty collections and default bot fields while preserving round-trip defaults", () => {

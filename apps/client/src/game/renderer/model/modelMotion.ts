@@ -1030,6 +1030,21 @@ export function fadeTrail(trail: TrailMarks, nowMs: number): void {
   }
 }
 
+/** A new authoritative run starts at time zero, so no mark or chain from the
+ * previous run may survive to be interpreted against the reset clock. */
+export function resetTrailMarks(trail: TrailMarks): void {
+  for (let index = 0; index < trail.marks.length; index += 1) {
+    removeTrailSegment(trail, index);
+    trail.marks[index].clear();
+    trail.marks[index].visible = false;
+    trail.marks[index].alpha = 1;
+  }
+  trail.born.fill(-Infinity);
+  trail.segments.fill(null);
+  trail.tails.clear();
+  trail.next = 0;
+}
+
 /**
  * Longer than any single frame of walking, shorter than any teleport.
  *

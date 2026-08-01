@@ -44,6 +44,9 @@ export interface GameSession {
   setReplayActive?(active: boolean): void;
   /** Authoritative run outcome for this session implementation. */
   getRunState(): RunState;
+  /** Monotonic local count of authoritative matchStart boundaries. Network
+   * sessions use this to reset presentation even if a prior runOver was missed. */
+  getRunGeneration?(): number;
   /** Leave while downed. Local ends immediately; network leaves the run. */
   leaveRun(): void;
   /** Debug instrumentation; optional so NetSession can no-op it. */

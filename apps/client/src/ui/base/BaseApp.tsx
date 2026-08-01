@@ -708,7 +708,7 @@ function BaseSession(props: BaseSessionProps) {
               !player
               || player.state !== "alive"
               || (resolvedWorld.authoritative && authorityStatus !== "connected")
-              || (player.dashCooldownMs > 0 && player.dashOverchargeCharges <= 0)
+              || (player.dashCooldownMs > 0 && player.dashOverchargeMs <= 0)
             }
             aria-label="Dash"
           >

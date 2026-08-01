@@ -18,6 +18,7 @@ import {
 } from "@dotbot/game/visibility";
 import { OUTDOOR_FLOOR_ID } from "@dotbot/game/types";
 import type { DotBotEntity, GameSnapshot, HitResult, Item, MapDocument, Rect, SimEvent, Solid, Vec2 } from "@dotbot/game/types";
+import { bodiesTouching } from "@dotbot/game/bodyContact";
 import type { KillCamClip, MatchIntel } from "@dotbot/protocol";
 import type { KillCamImpact } from "../killCam";
 import { CORE_REACH } from "@dotbot/game/shields";
@@ -57,7 +58,7 @@ import {
   parseObjectParallaxStrength,
   redrawOutdoorObjects,
 } from "./model/modelParallax";
-import { animateAmbient, driftLeaves, fadeTrail, stampTrail, trailStep } from "./model/modelMotion";
+import { animateAmbient, driftLeaves, fadeTrail, resetTrailMarks, stampTrail, trailStep } from "./model/modelMotion";
 import { driftWater } from "./model/modelWater";
 import { GRD } from "./model/modelGround";
 import { isInWater } from "@dotbot/game/water";
@@ -387,6 +388,48 @@ export class GameRenderer {
     }
   }
 
+  /** Clear presentation state whose clocks and identities belong to one run.
+   * Hot arenas reuse the renderer, and the next simulation restarts at time
+   * zero; retaining any of these would replay old signals or smooth a reused
+   * runtime id from its previous body. */
+  resetForNewRun(): void {
+    this.pleaSignals.clear();
+    this.mineSignals.clear();
+    this.impactFlashes.length = 0;
+    for (const view of this.botViews.values()) view.root.destroy({ children: true });
+    this.botViews.clear();
+    for (const view of this.impactViews.values()) view.root.destroy({ children: true });
+    this.impactViews.clear();
+    this.trailAnchors.clear();
+    resetTrailMarks(this.art.trails);
+    this.maskedGfx.clear();
+    this.doorGfx.clear();
+    this.collisionGfx.clear();
+    this.dynamicGfx.clear();
+    this.screenGfx.clear();
+    this.visionMaskGfx.clear();
+    this.fogGfx.clear();
+    this.foregroundFogGfx.clear();
+    this.impactLayer.visible = false;
+    this.art.trails.view.visible = false;
+    this.signLayer.visible = false;
+    this.wadeLevel = 0;
+    this.wadeLayer.alpha = 0;
+    this.wadeLayer.visible = false;
+    this.squadMarks = [];
+    this.lastViewer = null;
+    this.lastTimeMs = 0;
+    this.lastCamera = { x: 0, y: 0, scale: 1 };
+    this.cameraCenter = null;
+    this.lastCameraTarget = null;
+    this.cameraVelocity = { x: 0, y: 0 };
+    this.cameraImpulse = { x: 0, y: 0 };
+    this.lastCameraAt = performance.now();
+    this.replayCameraActive = false;
+    this.lastParallaxCentre = { x: Number.NaN, y: Number.NaN };
+    this.lastParallaxFloorId = undefined;
+  }
+
   /**
    * Fabrication reveal: M5 placement and M6 output call this.
    *
@@ -609,7 +652,7 @@ export class GameRenderer {
     if (interactionChannel) {
       this.drawProgressRing(this.dynamicGfx, interactionChannel.position, interactionChannel.radius, interactionChannel.progress, INK.opening, 3);
     }
-    if (currentPlayer && !killCam) this.drawRadarPings(currentPlayer);
+    if (currentPlayer && !killCam) this.drawRadarPings(currentPlayer, snapshot);
 
     if (player && !killCam) {
       this.drawNoises(snapshot, player);
@@ -1560,8 +1603,10 @@ export class GameRenderer {
       const { x, y } = mine.position;
       const size = Math.max(4, mine.radius * 0.45);
       if (mine.presentation === "squad" || mine.presentation === "revealed") {
-        this.maskedGfx.circle(x, y, mine.radius).fill({ color: 0xf1f3f5 });
-        this.maskedGfx.moveTo(x - size, y - size).lineTo(x + size, y + size)
+        // Authorized mine intel is intentionally outside the sight mask: squad
+        // ownership and personal Radar reveal are the two through-wall rules.
+        this.dynamicGfx.circle(x, y, mine.radius).fill({ color: 0xf1f3f5 });
+        this.dynamicGfx.moveTo(x - size, y - size).lineTo(x + size, y + size)
           .moveTo(x + size, y - size).lineTo(x - size, y + size)
           .stroke({ color: INK.structure, width: 2 });
         continue;
@@ -1579,11 +1624,14 @@ export class GameRenderer {
     }
   }
 
-  private drawRadarPings(player: DotBotEntity): void {
+  private drawRadarPings(player: DotBotEntity, snapshot: GameSnapshot): void {
     for (const ping of player.radarPings) {
+      if (physicsFloorId(this.map, ping.floorId) !== physicsFloorId(this.map, player.floorId)) continue;
       const alpha = clamp01(1 - ping.ageMs / 2000);
       const radius = 5 + (1 - alpha) * 8;
-      this.dynamicGfx.circle(ping.x, ping.y, radius).stroke({ color: DOT_COLOR.powerup, width: 2, alpha });
+      const target = snapshot.bots.find((bot) => bot.id === ping.botId);
+      const color = target?.squadId === player.squadId ? SQUAD_CYAN : RIVAL_RED;
+      this.dynamicGfx.circle(ping.x, ping.y, radius).stroke({ color, width: 2, alpha });
     }
   }
 
@@ -1597,6 +1645,7 @@ export class GameRenderer {
     for (const bot of sorted) {
       const squad = viewerSquadId !== undefined && bot.squadId === viewerSquadId;
       const sameArena = this.contextKey(bot.floorId, bot.position) === playerContext;
+      if (!squad && bot.incognitoMs > 0 && (!player || !botsPhysicallyTouch(player, bot))) continue;
 
       if (squad) {
         // Squad members render through walls and across floors, but only at
@@ -1678,6 +1727,7 @@ export class GameRenderer {
       if (physicsFloorId(this.map, bot.floorId) !== OUTDOOR_FLOOR_ID) continue;
       if (!isSoftGround(groundAt(this.map, at))) continue;
       if (bot.id !== player.id) {
+        if (bot.incognitoMs > 0 && !botsPhysicallyTouch(player, bot)) continue;
         if (this.contextKey(bot.floorId, bot.position) !== playerContext) continue;
         occluders ??= this.doorOccluders(snapshot, player.floorId);
         if (!hasLineOfSight(
@@ -1739,7 +1789,7 @@ export class GameRenderer {
      * holding a copy of the same number; the bot itself already reports it.
      */
     if (bot.dashCooldownMs > view.dashPeakMs) view.dashPeakMs = bot.dashCooldownMs;
-    const dashReady = bot.dashOverchargeCharges > 0 || bot.dashCooldownMs <= 0;
+    const dashReady = bot.dashOverchargeMs > 0 || bot.dashCooldownMs <= 0;
     const dashLevel = dashReady || view.dashPeakMs <= 0
       ? 1
       : clamp01(1 - bot.dashCooldownMs / view.dashPeakMs);
@@ -2075,6 +2125,10 @@ export class GameRenderer {
       .arc(center.x, center.y, radius, startAngle, endAngle)
       .stroke(strokeStyle);
   }
+}
+
+function botsPhysicallyTouch(observer: DotBotEntity, target: DotBotEntity): boolean {
+  return bodiesTouching(observer, target, 1);
 }
 
 function clampVector(vector: Vec2, maximum: number): Vec2 {

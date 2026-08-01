@@ -1,8 +1,11 @@
 import { downtownMap } from "@dotbot/game/content/downtown";
-import type { CoverageSnapshot, NoiseEvent } from "@dotbot/game/types";
+import { contextKey } from "@dotbot/game/mapModel";
+import type { CoverageSnapshot, MapDocument, NoiseEvent, SimEvent } from "@dotbot/game/types";
+import { hasLineOfSight } from "@dotbot/game/visibility";
 import { describe, expect, it } from "vitest";
 import type { EntityMeta, FullWireSnapshot, WireBot } from "./messages";
 import { filterEventsForViewer, filterForViewer } from "./interest";
+import { fromWireSnapshot, toViewerSnapshot } from "./wire";
 
 const bot = (i: string, fl: string, x: number, y: number, overrides: Partial<WireBot> = {}): WireBot => ({
   i, fl, p: [x, y], f: 0, sh: [1, 1, 1], b: [null, null, null, null], h: [], c: 0,
@@ -17,16 +20,16 @@ const meta: EntityMeta[] = [
 const bots: WireBot[] = [
   bot("viewer", "outdoor", 500, 500, {
     b: ["h", null, null, null], bs: ["mercy", null, null, null], ir: 3,
-    c: 1, r: [100, [{ x: 10, y: 20, ageMs: 0 }]],
+    c: 1, r: [100, [["street-enemy", 10, 20, "outdoor", 0]]],
   }),
   bot("mate", "lot6:B1", 500, 1200, {
     b: ["r", null, null, null], bs: ["lot6", null, null, null], ir: 4,
-    c: 1, r: [100, [{ x: 30, y: 40, ageMs: 0 }]],
+    c: 1, r: [100, [["street-enemy", 30, 40, "outdoor", 0]]],
   }),
-  bot("street-enemy", "outdoor", 1000, 660, {
+  bot("street-enemy", "outdoor", 540, 500, {
     b: ["d", null, null, null], h: ["b:bed"],
     bs: ["yard", null, null, null], hs: ["mercy"], ir: 7,
-    c: 2, r: [100, [{ x: 50, y: 60, ageMs: 0 }]],
+    c: 2, r: [100, [["viewer", 50, 60, "outdoor", 0]]],
   }),
   bot("upper-enemy", "mercy:F1", 400, 250),
 ];
@@ -43,9 +46,33 @@ const noises: NoiseEvent[] = [
   { id: "quiet", kind: "dash", position: { x: 400, y: 250 }, floorId: "mercy:F1", loudness: 0.5, ageMs: 0, ttlMs: 1000 },
 ];
 const mines: FullWireSnapshot["mines"] = [
-  { id: "mine-alpha-0", position: { x: 620, y: 500 }, radius: 10, placedByBotId: "viewer", squadId: "a", floorId: "outdoor", placedAtMs: 10, revealedToBotIds: ["street-enemy"] },
+  { id: "mine-00000000-0000-4000-8000-000000000001", position: { x: 620, y: 500 }, radius: 10, placedByBotId: "viewer", squadId: "a", floorId: "outdoor", placedAtMs: 10, revealedToBotIds: ["street-enemy"] },
 ];
 const wire: FullWireSnapshot = { tick: 1, bots, dots, mines, coverages, noises };
+
+const occlusionMap: MapDocument = {
+  id: "interest-occlusion",
+  name: "Interest occlusion",
+  width: 500,
+  height: 360,
+  outdoor: {
+    roads: [],
+    parks: [],
+    walls: [
+      { id: "north", x: 0, y: 0, w: 500, h: 20 },
+      { id: "south", x: 0, y: 340, w: 500, h: 20 },
+      { id: "west", x: 0, y: 0, w: 20, h: 360 },
+      { id: "east", x: 480, y: 0, w: 20, h: 360 },
+      { id: "divider", x: 240, y: 60, w: 12, h: 240 },
+    ],
+    objects: [],
+    dotSpawns: [],
+  },
+  buildings: [],
+  extractionPoints: [],
+  insertionPoints: [],
+  botSpawns: [],
+};
 
 describe("filterForViewer", () => {
   it("includes the viewer floor, excludes other-floor enemies, and always includes squadmates", () => {
@@ -57,11 +84,23 @@ describe("filterForViewer", () => {
     expect(filtered.dots.map(({ id }) => id)).toEqual(["ground-dot"]);
   });
 
-  it("keeps coverage when either participating bot is included", () => {
-    const filtered = filterForViewer(wire, meta, {
+  it("ships coverage only when its actor and every bot target are authorized", () => {
+    const filtered = filterForViewer({
+      ...wire,
+      coverages: [
+        // Visible squad actor, hidden bot target: must not name the target.
+        coverages[0],
+        // Hidden actor, visible bot target: must not name the actor.
+        { kind: "revive", actorId: "upper-enemy", targetId: "street-enemy", progressMs: 10, durationMs: 100 },
+        // Visible actor, non-bot target: safe and needed for dot/extract/swap UI.
+        { kind: "capture", actorId: "street-enemy", targetId: "ground-dot", progressMs: 20, durationMs: 100 },
+      ],
+    }, meta, {
       map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor", "lot6:B1"]),
     });
-    expect(filtered.coverages).toEqual([coverages[0]]);
+    expect(filtered.coverages).toEqual([
+      { kind: "capture", actorId: "street-enemy", targetId: "ground-dot", progressMs: 20, durationMs: 100 },
+    ]);
   });
 
   it("keeps squad inventory detail, redacts enemy composition, and always exposes carried count", () => {
@@ -119,11 +158,173 @@ describe("filterForViewer", () => {
     expect(filtered.bots.find((entry) => entry.i === "street-enemy")?.r).toBeUndefined();
   });
 
+  it("withholds exact rival bodies behind walls or invisibility while retaining viewer-private radar contacts", () => {
+    const privateMeta: EntityMeta[] = [
+      { id: "viewer", name: "Viewer", squadId: "a", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "mate", name: "Mate", squadId: "a", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "visible", name: "Visible", squadId: "b", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "hidden", name: "Hidden", squadId: "b", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "invisible", name: "Invisible", squadId: "b", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "ambient", name: "Ambient", squadId: "grey", isAmbient: true, maxShields: 3, radius: 24 },
+    ];
+    const privateWire: FullWireSnapshot = {
+      tick: 4,
+      bots: [
+        bot("viewer", "outdoor", 100, 180, {
+          r: [500, [["hidden", 400, 180, "outdoor", 20]]],
+          o: 500,
+          ic: 500,
+        }),
+        bot("mate", "outdoor", 100, 260),
+        bot("visible", "outdoor", 100, 300),
+        bot("hidden", "outdoor", 400, 180, { o: 900, ic: 900 }),
+        bot("invisible", "outdoor", 180, 180, { ic: 900 }),
+        bot("ambient", "outdoor", 100, 100),
+      ],
+      dots: [],
+      mines: [],
+      coverages: [{
+        kind: "capture",
+        actorId: "hidden",
+        targetId: "hidden-dot",
+        progressMs: 20,
+        durationMs: 100,
+      }],
+      noises: [],
+    };
+
+    const filtered = filterForViewer(privateWire, privateMeta, {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    expect(filtered.bots.map(({ i }) => i)).toEqual(["viewer", "mate", "visible", "ambient"]);
+    expect(filtered.bots.find(({ i }) => i === "viewer")?.r?.[1]).toEqual([
+      ["hidden", 400, 180, "outdoor", 20],
+    ]);
+    expect(filtered.bots.find(({ i }) => i === "hidden")).toBeUndefined();
+    expect(filtered.coverages).toEqual([]);
+    expect(filtered.rivalsAlive).toBe(3);
+
+    const contactWire = {
+      ...privateWire,
+      bots: privateWire.bots.map((entry) => entry.i === "invisible" ? { ...entry, p: [145, 180] as [number, number] } : entry),
+    };
+    const atContact = filterForViewer(contactWire, privateMeta, {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    const disclosed = atContact.bots.find(({ i }) => i === "invisible")!;
+    expect(disclosed).toBeDefined();
+    expect(disclosed.ic).toBeUndefined();
+    expect(disclosed.o).toBeUndefined();
+
+    // This is the exact damaged-body pose that the old one-ray reach sum calls
+    // 33.6 units wide even though the two authored bodies overlap until 48.
+    // Visibility must use the same exact contact geometry as separation/combat,
+    // or an invisible rival can physically block the viewer without appearing.
+    const damagedContactWire = {
+      ...privateWire,
+      bots: privateWire.bots.map((entry) => {
+        if (entry.i === "viewer") return { ...entry, sh: [1, 1, 0] };
+        if (entry.i === "invisible") {
+          return { ...entry, p: [140, 180] as [number, number], sh: [1, 1, 0] };
+        }
+        return entry;
+      }),
+    };
+    const damagedContact = filterForViewer(damagedContactWire, privateMeta, {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    expect(damagedContact.bots.some(({ i }) => i === "invisible")).toBe(true);
+
+    const crossFloorMeta = [...privateMeta, {
+      id: "invisible-upper", name: "Upper invisible", squadId: "b", isAmbient: false, maxShields: 3, radius: 24,
+    }];
+    const crossFloorWire: FullWireSnapshot = {
+      ...privateWire,
+      bots: [
+        { ...privateWire.bots[0], s: "downed" },
+        privateWire.bots[1],
+        bot("invisible-upper", "tower:F1", 100, 260, { ic: 900 }),
+      ],
+    };
+    const spectating = filterForViewer(crossFloorWire, crossFloorMeta, {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      spectatedBotId: "mate",
+      squadPhysicsFloorIds: new Set(["outdoor", "tower:F1"]),
+    });
+    expect(spectating.bots.some(({ i }) => i === "invisible-upper")).toBe(false);
+  });
+
+  it("round-trips distinct two-client wire views without turning a through-wall Radar contact into body authority", () => {
+    const networkMeta: EntityMeta[] = [
+      { id: "radar-user", name: "Radar user", squadId: "a", isAmbient: false, maxShields: 3, radius: 24 },
+      { id: "occluded-rival", name: "Occluded rival", squadId: "b", isAmbient: false, maxShields: 3, radius: 24 },
+    ];
+    const networkWire: FullWireSnapshot = {
+      tick: 120,
+      bots: [
+        bot("radar-user", "outdoor", 100, 180, {
+          r: [8_000, [["occluded-rival", 400, 180, "outdoor", 0]]],
+        }),
+        bot("occluded-rival", "outdoor", 400, 180),
+      ],
+      dots: [],
+      mines: [],
+      coverages: [],
+      noises: [],
+    };
+    expect(hasLineOfSight(
+      occlusionMap,
+      contextKey(occlusionMap, "outdoor", { x: 100, y: 180 }),
+      { x: 100, y: 180 },
+      { x: 400, y: 180 },
+    )).toBe(false);
+
+    const radarView = filterForViewer(networkWire, networkMeta, {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "radar-user",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    const rivalView = filterForViewer(networkWire, networkMeta, {
+      map: occlusionMap,
+      squadId: "b",
+      viewerBotId: "occluded-rival",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    });
+    const metaIndex = new Map(networkMeta.map((entry) => [entry.id, entry]));
+    const decodedRadar = fromWireSnapshot(toViewerSnapshot(radarView, 7), metaIndex, []);
+    const decodedRival = fromWireSnapshot(toViewerSnapshot(rivalView, 11), metaIndex, []);
+
+    expect(decodedRadar.bots.map(({ id }) => id)).toEqual(["radar-user"]);
+    expect(decodedRadar.bots[0].radarPings).toEqual([{
+      botId: "occluded-rival",
+      x: 400,
+      y: 180,
+      floorId: "outdoor",
+      ageMs: 0,
+    }]);
+    expect(decodedRival.bots.map(({ id }) => id)).toEqual(["occluded-rival"]);
+    expect(decodedRival.bots[0].radarPings).toEqual([]);
+    expect(JSON.stringify(toViewerSnapshot(rivalView, 11))).not.toContain("radar-user");
+  });
+
   it("shows squad mines as X data, disguises them with seam data for rivals, and reveals only to the radar firer", () => {
     const squad = filterForViewer(wire, meta, {
       map: downtownMap, squadId: "a", viewerBotId: "viewer", squadPhysicsFloorIds: new Set(["outdoor"]),
     });
     expect(squad.mines[0]).toMatchObject({ presentation: "squad", placedByBotId: "viewer", squadId: "a" });
+    expect(squad.mines[0].placedAtMs).toBe(10);
     expect(squad.mines[0].seam).toBeUndefined();
 
     const radarFirer = filterForViewer(wire, meta, {
@@ -134,13 +335,84 @@ describe("filterForViewer", () => {
     expect(radarFirer.mines[0].placedByBotId).toBeUndefined();
     expect(radarFirer.mines[0].squadId).toBeUndefined();
     expect(radarFirer.mines[0].revealedToBotIds).toBeUndefined();
+    expect(radarFirer.mines[0].placedAtMs).toBe(0);
 
     const disguisedWire = { ...wire, mines: wire.mines.map(({ revealedToBotIds: _, ...mine }) => mine) };
     const rival = filterForViewer(disguisedWire, meta, {
       map: downtownMap, squadId: "b", viewerBotId: "street-enemy", squadPhysicsFloorIds: new Set(["outdoor"]),
     });
     expect(rival.mines[0]).toMatchObject({ presentation: "disguised", seam: true });
+    expect(rival.mines[0].placedAtMs).toBe(0);
     expect(rival.mines[0].disguise).toMatch(/health|radar|dashOvercharge|incognito/);
+  });
+
+  it("withholds rival mines behind walls unless personally radar-revealed", () => {
+    const mineWire: FullWireSnapshot = {
+      tick: 1,
+      bots: [bot("viewer", "outdoor", 100, 180)],
+      dots: [],
+      mines: [{
+        id: "hidden-mine",
+        position: { x: 400, y: 180 },
+        radius: 10,
+        floorId: "outdoor",
+        placedAtMs: 0,
+        placedByBotId: "enemy",
+        squadId: "b",
+      }],
+      coverages: [],
+      noises: [],
+    };
+    const viewerMeta = [meta[0]];
+    const context = {
+      map: occlusionMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    };
+    expect(filterForViewer(mineWire, viewerMeta, context).mines).toEqual([]);
+
+    mineWire.mines[0].revealedToBotIds = ["viewer"];
+    const revealed = filterForViewer(mineWire, viewerMeta, context).mines;
+    expect(revealed).toHaveLength(1);
+    expect(revealed[0]).toMatchObject({ presentation: "revealed" });
+    expect(revealed[0].placedByBotId).toBeUndefined();
+    expect(revealed[0].squadId).toBeUndefined();
+  });
+
+  it("does not preserve hidden rival mine placement order", () => {
+    const later = {
+      id: "mine-f0000000-0000-4000-8000-000000000002",
+      position: { x: 530, y: 500 },
+      radius: 10,
+      placedByBotId: "street-enemy",
+      squadId: "b",
+      floorId: "outdoor",
+      placedAtMs: 900,
+    };
+    const earlier = {
+      ...later,
+      id: "mine-10000000-0000-4000-8000-000000000001",
+      position: { x: 520, y: 500 },
+      placedAtMs: 100,
+    };
+    const context = {
+      map: downtownMap,
+      squadId: "a",
+      viewerBotId: "viewer",
+      squadPhysicsFloorIds: new Set(["outdoor"]),
+    };
+    const ids = (ordered: FullWireSnapshot["mines"]) => filterForViewer(
+      { ...wire, mines: ordered },
+      meta,
+      context,
+    ).mines.map((mine) => ({ id: mine.id, placedAtMs: mine.placedAtMs }));
+
+    expect(ids([later, earlier])).toEqual(ids([earlier, later]));
+    expect(ids([later, earlier])).toEqual([
+      { id: earlier.id, placedAtMs: 0 },
+      { id: later.id, placedAtMs: 0 },
+    ]);
   });
 
   it("uses classifyNoise floor-leak and loudness semantics", () => {
@@ -162,13 +434,57 @@ describe("filterForViewer", () => {
     expect(filtered.dots).toEqual([]);
   });
 
-  it("includes events tied to an included bot or the viewer squad", () => {
+  it("includes events only when every referenced body is authorized", () => {
     const events = filterEventsForViewer([
       { type: "downed", botId: "street-enemy", byBotId: "viewer" },
       { type: "looted", botId: "upper-enemy", byBotId: "street-enemy", items: [] },
       { type: "revived", botId: "mate", byBotId: "mate" },
     ], meta, new Set(["viewer", "mate"]), "a");
-    expect(events.map((event) => event.type)).toEqual(["downed", "revived"]);
+    expect(events.map((event) => event.type)).toEqual(["revived"]);
+  });
+
+  it("withholds two-body events when either actor or target is hidden", () => {
+    const eventPairs: Array<[SimEvent, SimEvent]> = [
+      [
+        { type: "hit", botId: "viewer", byBotId: "upper-enemy", result: "plateBreak", position: { x: 1, y: 2 }, direction: { x: 1, y: 0 }, tick: 10 },
+        { type: "hit", botId: "upper-enemy", byBotId: "viewer", result: "plateBreak", position: { x: 1, y: 2 }, direction: { x: 1, y: 0 }, tick: 10 },
+      ],
+      [
+        { type: "dashContact", botId: "viewer", byBotId: "upper-enemy", result: "bump", position: { x: 1, y: 2 }, direction: { x: 1, y: 0 }, tick: 10 },
+        { type: "dashContact", botId: "upper-enemy", byBotId: "viewer", result: "bump", position: { x: 1, y: 2 }, direction: { x: 1, y: 0 }, tick: 10 },
+      ],
+      [
+        { type: "downed", botId: "viewer", byBotId: "upper-enemy" },
+        { type: "downed", botId: "upper-enemy", byBotId: "viewer" },
+      ],
+      [
+        { type: "searched", botId: "viewer", byBotId: "upper-enemy" },
+        { type: "searched", botId: "upper-enemy", byBotId: "viewer" },
+      ],
+      [
+        { type: "looted", botId: "viewer", byBotId: "upper-enemy", items: [] },
+        { type: "looted", botId: "upper-enemy", byBotId: "viewer", items: [] },
+      ],
+      [
+        { type: "revived", botId: "viewer", byBotId: "upper-enemy" },
+        { type: "revived", botId: "upper-enemy", byBotId: "viewer" },
+      ],
+      [
+        { type: "recruited", botId: "viewer", byBotId: "upper-enemy", fromSquadId: "a", squadId: "b" },
+        { type: "recruited", botId: "upper-enemy", byBotId: "viewer", fromSquadId: "b", squadId: "a" },
+      ],
+    ];
+    const oneBodyAuthorized = eventPairs.flat();
+
+    expect(filterEventsForViewer(oneBodyAuthorized, meta, new Set(["viewer"]), "a")).toEqual([]);
+    expect(filterEventsForViewer([
+      { type: "downed", botId: "viewer", byBotId: "environment", cause: { kind: "environment", tick: 10, position: { x: 1, y: 2 }, direction: { x: 1, y: 0 } } },
+    ], meta, new Set(["viewer"]), "a")).toEqual([{
+      type: "downed",
+      botId: "viewer",
+      byBotId: undefined,
+      cause: { kind: "environment", tick: 10, position: { x: 1, y: 2 }, direction: { x: 1, y: 0 } },
+    }]);
   });
 
   it("delivers a squad mark to that squad only", () => {
@@ -195,9 +511,25 @@ describe("filterForViewer", () => {
   });
 
   it("keeps mine sensor pings squad-private", () => {
-    const event = { type: "mineSensor" as const, botId: "viewer", squadId: "a", mineId: "mine-alpha-0", position: { x: 1, y: 2 }, floorId: "outdoor" };
+    const event = { type: "mineSensor" as const, botId: "viewer", squadId: "a", mineId: "mine-00000000-0000-4000-8000-000000000001", position: { x: 1, y: 2 }, floorId: "outdoor" };
     expect(filterEventsForViewer([event], meta, new Set(["viewer"]), "a")).toEqual([event]);
     expect(filterEventsForViewer([event], meta, new Set(["viewer"]), "b")).toEqual([]);
+  });
+
+  it("never discloses a mine owner's identity through the victim's down event", () => {
+    const event = {
+      type: "downed" as const,
+      botId: "viewer",
+      byBotId: "hidden-owner",
+      cause: {
+        kind: "mine" as const,
+        tick: 10,
+        position: { x: 1, y: 2 },
+        direction: { x: 1, y: 0 },
+      },
+    };
+    expect(filterEventsForViewer([event], meta, new Set(["viewer"]), "a"))
+      .toEqual([{ ...event, byBotId: undefined }]);
   });
 
   it("broadcasts pleas across squad and floor interest boundaries", () => {
