@@ -1101,6 +1101,11 @@ async function createAtomicArena(
     await retainCleanup(cleanupIntent);
     const preflight = await preflightParty(endpointHost, endpointPort, partySecret, roster, 6);
     if (!preflight.accepted) {
+      console.warn("new public arena preflight was rejected", {
+        stage: "party-preflight",
+        code: preflight.code ?? "unknown",
+        retryable: preflight.retryable,
+      });
       throw new MatchmakerError(preflight.retryable ? 503 : 409, "The new arena rejected the intact party.", preflight.retryable);
     }
     cleanupIntent = { ...cleanupIntent, cleanupDiscoveryUntil: Date.now() + 2 * 60_000 };
@@ -1308,7 +1313,8 @@ async function createPartyPlayerSessions(
       PlayerIds: memberPlayerIds,
       PlayerDataMap: playerDataMap,
     })));
-  } catch {
+  } catch (error) {
+    console.warn("GameLift whole-party reservation request failed", serviceFailureLog(error, "create-player-sessions"));
     // The service may have committed some or all reservations before the SDK
     // lost its response. The pre-call cleanup intent lets reconciliation find
     // only this signed claim's exact canonical players.
@@ -1318,6 +1324,20 @@ async function createPartyPlayerSessions(
   const expected = { gameSessionId, endpointHost, endpointPort, playerDataMap };
   const allocations = validateWholePartyPlayerSessions(memberPlayerIds, sessions, expected);
   if (!allocations) {
+    console.warn("GameLift whole-party reservation response was rejected", {
+      stage: "validate-player-sessions",
+      expectedCount: memberPlayerIds.length,
+      actualCount: sessions.length,
+      sessions: sessions.slice(0, 3).map((session) => ({
+        hasPlayerId: typeof session.PlayerId === "string",
+        hasPlayerSessionId: typeof session.PlayerSessionId === "string",
+        gameSessionMatches: session.GameSessionId === gameSessionId,
+        playerDataMatches: typeof session.PlayerId === "string" && session.PlayerData === playerDataMap[session.PlayerId],
+        status: session.Status ?? "missing",
+        endpointMatches: (session.DnsName || session.IpAddress) === endpointHost,
+        portMatches: session.Port === endpointPort,
+      })),
+    });
     const knownIds = [...new Set(sessions.flatMap((session) => {
       const playerId = session.PlayerId;
       return typeof playerId === "string" && memberPlayerIds.includes(playerId)
@@ -1360,6 +1380,21 @@ export async function retryGameLiftPlayerSessionReadiness<T>(
 export function isGameLiftPlayerSessionReadinessError(error: unknown): boolean {
   const name = awsErrorName(error);
   return name === "InvalidRequestException" || name === "NotReadyException";
+}
+
+function serviceFailureLog(error: unknown, stage: string): { stage: string; errorName: string; errorMessage?: string; httpStatus?: number } {
+  const message = error instanceof Error
+    ? error.message.replace(/[^\x20-\x7e]/g, " ").slice(0, 300)
+    : undefined;
+  const httpStatus = error && typeof error === "object"
+    ? (error as { $metadata?: { httpStatusCode?: unknown } }).$metadata?.httpStatusCode
+    : undefined;
+  return {
+    stage,
+    errorName: safeErrorName(error),
+    ...(message ? { errorMessage: message } : {}),
+    ...(typeof httpStatus === "number" ? { httpStatus } : {}),
+  };
 }
 
 /** GameLift changes an unaccepted player session from RESERVED to TIMEDOUT
