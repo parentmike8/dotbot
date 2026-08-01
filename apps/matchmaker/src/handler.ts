@@ -35,7 +35,7 @@ let relaySecretPromise: Promise<string> | null = null;
 type PersistenceInternalEvent = { source: "dotbot-game-server"; operation: string; args: unknown };
 type ArenaInternalEvent = { source: "dotbot-arena-server"; operation: "setAdmission"; args: unknown };
 type InternalEvent = PersistenceInternalEvent | ArenaInternalEvent;
-type RoomRecord = { pk: string; gameSessionId?: string; status: "creating" | "active"; expiresAt: number };
+type RoomRecord = { pk: string; gameSessionId?: string; status: "creating" | "active" | "terminating"; expiresAt: number };
 type Identity = { playerId: string; name: string; partyId?: string };
 type PublicArenaRecord = RoomRecord & {
   arenaId?: string;
@@ -1515,38 +1515,103 @@ export function partyPackingUpdateRequest(
   };
 }
 
-async function releaseDirectoryReservation(key: string, gameSessionId: string, arenaId: string, claimId: string): Promise<void> {
+export function releasePartyPackingReservationRequest(
+  tableName: string,
+  key: string,
+  record: PublicArenaRecord,
+  claimId: string,
+): { command: "already-terminating"; emptied: true } | { command: "update"; input: UpdateCommandInput; emptied: boolean } | null {
+  const reservations = record.partyReservations ?? [];
+  if (!record.gameSessionId || !record.arenaId) return null;
+  if (record.status === "terminating" && reservations.length === 0) {
+    return { command: "already-terminating", emptied: true };
+  }
+  if (record.status !== "active" || !reservations.some((reservation) => reservation.claimId === claimId)) return null;
+  const next = reservations.filter((reservation) => reservation.claimId !== claimId).map(clonePackingReservation);
+  const oldPackingRevision = record.packingRevision;
+  const revisionCondition = Number.isInteger(oldPackingRevision)
+    ? "packingRevision = :packingRevision"
+    : "attribute_not_exists(packingRevision)";
+  const commonValues = {
+    ":active": "active",
+    ":session": record.gameSessionId,
+    ":arena": record.arenaId,
+    ...(Number.isInteger(oldPackingRevision) ? { ":packingRevision": oldPackingRevision } : {}),
+  };
+  if (next.length === 0) {
+    return {
+      command: "update",
+      emptied: true,
+      input: {
+        TableName: tableName,
+        Key: { pk: key },
+        UpdateExpression: "SET #status = :terminating, partyReservations = :reservations, packingRevision = :nextPackingRevision, expiresAt = :expires",
+        ConditionExpression: `#status = :active AND gameSessionId = :session AND arenaId = :arena AND ${revisionCondition}`,
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: {
+          ...commonValues,
+          ":terminating": "terminating",
+          ":reservations": [],
+          ":nextPackingRevision": (oldPackingRevision ?? 0) + 1,
+          ":expires": Math.floor(Date.now() / 1000) + 5 * 60,
+        },
+      },
+    };
+  }
+  return {
+    command: "update",
+    emptied: false,
+    input: {
+      TableName: tableName,
+      Key: { pk: key },
+      UpdateExpression: "SET partyReservations = :reservations, packingRevision = :nextPackingRevision",
+      ConditionExpression: `#status = :active AND gameSessionId = :session AND arenaId = :arena AND ${revisionCondition}`,
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ...commonValues,
+        ":reservations": next,
+        ":nextPackingRevision": (oldPackingRevision ?? 0) + 1,
+      },
+    },
+  };
+}
+
+async function releaseDirectoryReservation(key: string, gameSessionId: string, arenaId: string, claimId: string): Promise<boolean> {
   const tableName = requiredEnv("TABLE_NAME");
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const record = (await database.send(new GetCommand({ TableName: tableName, Key: { pk: key }, ConsistentRead: true }))).Item as PublicArenaRecord | undefined;
-    if (!record || record.gameSessionId !== gameSessionId || record.arenaId !== arenaId) return;
-    const reservations = record.partyReservations ?? [];
-    if (!reservations.some((reservation) => reservation.claimId === claimId)) return;
-    // Release remains allowed after admission closes; only the exact immutable
-    // pointer and packing revision are authoritative during cleanup.
-    const next = reservations.filter((reservation) => reservation.claimId !== claimId).map(clonePackingReservation);
-    const oldPackingRevision = record.packingRevision;
+    if (!record || record.gameSessionId !== gameSessionId || record.arenaId !== arenaId) return false;
+    const request = releasePartyPackingReservationRequest(tableName, key, record, claimId);
+    if (!request) return false;
+    if (request.command === "already-terminating") {
+      await terminateGameSessionForCleanup(gameSessionId);
+      return true;
+    }
     try {
-      await database.send(new UpdateCommand({
-        TableName: tableName,
-        Key: { pk: key },
-        UpdateExpression: "SET partyReservations = :reservations, packingRevision = :nextPackingRevision",
-        ConditionExpression: `gameSessionId = :session AND arenaId = :arena AND ${Number.isInteger(oldPackingRevision) ? "packingRevision = :packingRevision" : "attribute_not_exists(packingRevision)"}`,
-        ExpressionAttributeValues: {
-          ":session": gameSessionId,
-          ":arena": arenaId,
-          ":reservations": next,
-          ":nextPackingRevision": (oldPackingRevision ?? 0) + 1,
-          ...(Number.isInteger(oldPackingRevision) ? { ":packingRevision": oldPackingRevision } : {}),
-        },
-      }));
-      return;
+      await database.send(new UpdateCommand(request.input));
+      if (request.emptied) await terminateGameSessionForCleanup(gameSessionId);
+      return request.emptied;
     } catch (error) {
       if (awsErrorName(error) === "ConditionalCheckFailedException") continue;
       throw error;
     }
   }
   throw new MatchmakerError(503, "Party packing cleanup is busy. Retry together.", true);
+}
+
+async function terminateGameSessionForCleanup(gameSessionId: string): Promise<void> {
+  try {
+    await gameLift.send(new TerminateGameSessionCommand({
+      GameSessionId: gameSessionId,
+      TerminationMode: "TRIGGER_ON_PROCESS_TERMINATE",
+    }));
+  } catch (error) {
+    if (awsErrorName(error) === "NotFoundException") return;
+    if (awsErrorName(error) !== "InvalidGameSessionStatusException") throw error;
+    const described = await gameLift.send(new DescribeGameSessionsCommand({ GameSessionId: gameSessionId }));
+    const status = described.GameSessions?.find((session) => session.GameSessionId === gameSessionId)?.Status;
+    if (status !== "TERMINATING" && status !== "TERMINATED") throw error;
+  }
 }
 
 export function recoverableAtomicArenaCreation(
@@ -1796,17 +1861,15 @@ async function compensatePartyAllocation(allocation: AtomicArenaAllocation, clai
   } catch (error) {
     reservationCleanupError ??= error;
   }
+  let emptiedArena = false;
   try {
-    await releaseDirectoryReservation(allocation.arenaKey, allocation.gameSessionId, allocation.arenaId, claimId);
+    emptiedArena = await releaseDirectoryReservation(allocation.arenaKey, allocation.gameSessionId, allocation.arenaId, claimId);
   } catch (error) {
     directoryCleanupError = error;
   }
-  if (allocation.terminateGameSession) {
+  if (allocation.terminateGameSession && !emptiedArena) {
     try {
-      await gameLift.send(new TerminateGameSessionCommand({
-        GameSessionId: allocation.gameSessionId,
-        TerminationMode: "TRIGGER_ON_PROCESS_TERMINATE",
-      }));
+      await terminateGameSessionForCleanup(allocation.gameSessionId);
       // A confirmed whole-GameSession termination subsumes an uncertain
       // per-reservation removal for a never-published replacement arena.
       reservationCleanupError = undefined;

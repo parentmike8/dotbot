@@ -26,6 +26,7 @@ import {
   partyRosterAllocationDigest,
   publicArenaKey,
   recoverableAtomicArenaCreation,
+  releasePartyPackingReservationRequest,
   retryGameLiftPlayerSessionReadiness,
   retainAtomicAllocationCleanupRequest,
   retainAtomicArenaCreationIntentRequest,
@@ -524,6 +525,90 @@ describe("matchmaker endpoint helpers", () => {
       ":lease": 1234,
       ":session": "game-session-1",
       ":arena": "A2BC",
+    });
+  });
+
+  it("atomically tombstones an arena pointer when cancellation removes its final party", () => {
+    const claimId = "00000000-0000-4000-8000-000000000039";
+    const record = {
+      pk: "PUBLIC#ca-central-1#web-42",
+      status: "active" as const,
+      expiresAt: 2_000,
+      gameSessionId: "game-session-1",
+      arenaId: "A2BC",
+      partyReservations: [{
+        claimId,
+        partyId: "party-00000000000000000000000000000039",
+        version: 1,
+        memberPlayerIds: ["00000000-0000-4000-8000-000000000001"],
+      }],
+      packingRevision: 7,
+    };
+
+    expect(releasePartyPackingReservationRequest("sessions", record.pk, record, claimId)).toMatchObject({
+      command: "update",
+      emptied: true,
+      input: {
+        TableName: "sessions",
+        Key: { pk: record.pk },
+        UpdateExpression: "SET #status = :terminating, partyReservations = :reservations, packingRevision = :nextPackingRevision, expiresAt = :expires",
+        ConditionExpression: "#status = :active AND gameSessionId = :session AND arenaId = :arena AND packingRevision = :packingRevision",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: {
+          ":active": "active",
+          ":session": "game-session-1",
+          ":arena": "A2BC",
+          ":packingRevision": 7,
+          ":terminating": "terminating",
+          ":reservations": [],
+          ":nextPackingRevision": 8,
+        },
+      },
+    });
+  });
+
+  it("replays termination when a previous cleanup already tombstoned the empty arena", () => {
+    const record = {
+      pk: "PUBLIC#ca-central-1#web-42",
+      status: "terminating" as const,
+      expiresAt: 2_000,
+      gameSessionId: "game-session-1",
+      arenaId: "A2BC",
+      partyReservations: [],
+      packingRevision: 8,
+    };
+
+    expect(releasePartyPackingReservationRequest("sessions", record.pk, record, "00000000-0000-4000-8000-000000000039"))
+      .toEqual({ command: "already-terminating", emptied: true });
+  });
+
+  it("preserves an arena and advances its fence when other parties remain", () => {
+    const firstClaim = "00000000-0000-4000-8000-000000000039";
+    const secondClaim = "00000000-0000-4000-8000-000000000040";
+    const first = packingReservation(rosterFor(39, 1));
+    const second = packingReservation(rosterFor(40, 1));
+    const record = {
+      pk: "PUBLIC#ca-central-1#web-42",
+      status: "active" as const,
+      expiresAt: 2_000,
+      gameSessionId: "game-session-1",
+      arenaId: "A2BC",
+      partyReservations: [{ ...first, claimId: firstClaim }, { ...second, claimId: secondClaim }],
+      packingRevision: 7,
+    };
+
+    const request = releasePartyPackingReservationRequest("sessions", record.pk, record, firstClaim);
+    expect(request).toMatchObject({
+      command: "update",
+      emptied: false,
+      input: {
+        ConditionExpression: expect.stringContaining("packingRevision = :packingRevision"),
+        ExpressionAttributeValues: {
+          ":packingRevision": 7,
+          ":nextPackingRevision": 8,
+          ":reservations": [{ ...second, claimId: secondClaim }],
+        },
+      },
     });
   });
 
