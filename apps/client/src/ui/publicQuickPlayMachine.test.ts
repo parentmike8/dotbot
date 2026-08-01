@@ -5,6 +5,7 @@ import {
   assemblySecondsRemaining,
   fetchDeploymentConfig,
   parsePublicQuickPlayResume,
+  publicQuickPlayCancellationTicket,
   publicQuickPlayReducer,
   publicQuickPlayResume,
   publicQuickPlayStateFromResume,
@@ -203,6 +204,9 @@ describe("public quick-play client state machine", () => {
       type: "claim", operationId: cancelOperationId, intent: "initial", now: 200,
     });
     cancelling = publicQuickPlayReducer(cancelling, {
+      type: "allocated", operationId: cancelOperationId, allocation,
+    });
+    cancelling = publicQuickPlayReducer(cancelling, {
       type: "cancel", operationId: cancelOperationId, returnToBase: true,
     });
     const cancelResume = publicQuickPlayResume(cancelling);
@@ -212,13 +216,20 @@ describe("public quick-play client state machine", () => {
       intent: "initial",
       action: "cancel",
       returnToBase: true,
+      queueTicket: allocation.queueTicket,
     });
-    expect(publicQuickPlayStateFromResume(cancelResume!)).toMatchObject({
+    expect(JSON.stringify(cancelResume)).not.toContain(allocation.playerSessionId);
+    expect(JSON.stringify(cancelResume)).not.toContain(allocation.websocketUrl);
+    const resumedCancellation = publicQuickPlayStateFromResume(cancelResume!);
+    expect(resumedCancellation).toMatchObject({
       phase: "cancelling",
       operationId: cancelOperationId,
       connection: "disconnected",
       returnToBase: true,
+      cancellationQueueTicket: allocation.queueTicket,
     });
+    expect(publicQuickPlayCancellationTicket(resumedCancellation)).toBe(allocation.queueTicket);
+    expect(publicQuickPlayCancellationTicket(resumedCancellation)).not.toBe(cancelOperationId);
   });
 
   it("rejects an expired allocation from refresh storage", () => {
@@ -253,6 +264,7 @@ describe("public quick-play client state machine", () => {
       intent: "initial",
       action: "cancel",
       returnToBase: true,
+      queueTicket: allocation.queueTicket,
     });
   });
 

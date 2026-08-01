@@ -41,6 +41,10 @@ export type PublicQuickPlayState = {
   connection: "disconnected" | "connecting" | "connected" | "reconnecting" | "failed";
   error?: { message: string; retryable: boolean };
   returnToBase?: boolean;
+  /** Opaque whole-party cancellation handle retained independently from the
+   * per-member connection envelope so refresh cannot substitute this tab's
+   * idempotency key for a leader-owned party claim. */
+  cancellationQueueTicket?: string;
 };
 
 export type PublicQuickPlayEvent =
@@ -121,6 +125,10 @@ export function shouldCancelBeforeBaseReturn(
   return !playerSessionInUseElsewhere && state.phase === "error" && Boolean(state.allocation) && !state.matchId;
 }
 
+export function publicQuickPlayCancellationTicket(state: PublicQuickPlayState): string | undefined {
+  return state.cancellationQueueTicket ?? state.allocation?.queueTicket ?? state.operationId;
+}
+
 export function publicQuickPlayReducer(
   state: PublicQuickPlayState,
   event: PublicQuickPlayEvent,
@@ -176,7 +184,14 @@ export function publicQuickPlayReducer(
     case "cancel":
       if (state.phase !== "claiming" && state.phase !== "connecting" && state.phase !== "assembling"
         && !(state.phase === "error" && state.allocation && !state.matchId)) return state;
-      return { ...state, phase: "cancelling", connection: "disconnected", returnToBase: event.returnToBase, error: undefined };
+      return {
+        ...state,
+        phase: "cancelling",
+        connection: "disconnected",
+        returnToBase: event.returnToBase,
+        cancellationQueueTicket: state.cancellationQueueTicket ?? state.allocation?.queueTicket,
+        error: undefined,
+      };
     case "cancelled":
       return state.phase === "cancelling" ? initialPublicQuickPlayState : state;
     case "reconnect":
@@ -189,6 +204,7 @@ export function publicQuickPlayReducer(
         connection: "connecting",
         error: undefined,
         returnToBase: undefined,
+        cancellationQueueTicket: undefined,
       };
     case "failed":
       if (state.phase === "cancelling" && event.retryable && !event.connection) {
@@ -214,7 +230,7 @@ type PublicQuickPlayResumeBase = {
 export type PublicQuickPlayResume = PublicQuickPlayResumeBase & (
   | { action: "claim"; returnToBase: false; startedAt: number }
   | { action: "connect"; returnToBase: false; allocation: PublicPartyAllocation; admitted?: true }
-  | { action: "cancel"; returnToBase: boolean }
+  | { action: "cancel"; returnToBase: boolean; queueTicket?: string }
 );
 
 export function publicQuickPlayStateFromResume(resume: PublicQuickPlayResume): PublicQuickPlayState {
@@ -234,6 +250,7 @@ export function publicQuickPlayStateFromResume(resume: PublicQuickPlayResume): P
       intent: resume.intent,
       connection: "disconnected",
       returnToBase: resume.returnToBase,
+      ...(resume.queueTicket ? { cancellationQueueTicket: resume.queueTicket } : {}),
     };
   }
   return {
@@ -270,6 +287,7 @@ export function publicQuickPlayResume(state: PublicQuickPlayState): PublicQuickP
       intent: state.intent,
       action: "cancel",
       returnToBase: state.returnToBase === true,
+      ...(state.cancellationQueueTicket ? { queueTicket: state.cancellationQueueTicket } : {}),
     };
   }
   if (!state.allocation) return null;
@@ -285,7 +303,7 @@ export function publicQuickPlayResume(state: PublicQuickPlayState): PublicQuickP
 }
 
 export function parsePublicQuickPlayResume(value: unknown): PublicQuickPlayResume | null {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, ["version", "operationId", "intent", "action", "returnToBase", "allocation", "startedAt", "admitted"])
+  if (!isRecord(value) || !hasOnlyAllowedKeys(value, ["version", "operationId", "intent", "action", "returnToBase", "allocation", "startedAt", "admitted", "queueTicket"])
     || Object.keys(value).length < 5) return null;
   if (value.version !== 1 || typeof value.operationId !== "string"
     || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.operationId)
@@ -296,10 +314,15 @@ export function parsePublicQuickPlayResume(value: unknown): PublicQuickPlayResum
       || value.admitted !== undefined || !Number.isSafeInteger(value.startedAt)
       || (value.startedAt as number) < 0 || Object.keys(value).length !== 6))
     || (value.action !== "claim" && value.startedAt !== undefined)
+    || (value.action !== "cancel" && value.queueTicket !== undefined)
     || (value.admitted !== undefined && (value.action !== "connect" || value.admitted !== true))
     || (value.action === "connect" && value.returnToBase !== false)
     || (value.action === "connect" && !isResumeAllocation(value.allocation, value.admitted === true))
-    || (value.action === "cancel" && value.allocation !== undefined && !isResumeAllocation(value.allocation, true))) return null;
+    || (value.action === "cancel" && value.allocation !== undefined && !isResumeAllocation(value.allocation, true))
+    || (value.action === "cancel" && value.queueTicket !== undefined
+      && (typeof value.queueTicket !== "string" || !isUuid(value.queueTicket)))
+    || (value.action === "cancel" && typeof value.queueTicket === "string" && isResumeAllocation(value.allocation, true)
+      && value.queueTicket !== value.allocation.queueTicket)) return null;
   if (value.action === "claim") {
     return {
       version: 1,
@@ -321,12 +344,15 @@ export function parsePublicQuickPlayResume(value: unknown): PublicQuickPlayResum
       ...(value.admitted === true ? { admitted: true } : {}),
     };
   }
+  const legacyAllocation = isResumeAllocation(value.allocation, true) ? value.allocation : undefined;
+  const queueTicket = typeof value.queueTicket === "string" ? value.queueTicket : legacyAllocation?.queueTicket;
   return {
     version: 1,
     operationId: value.operationId,
     intent: value.intent,
     action: "cancel",
     returnToBase: value.returnToBase,
+    ...(queueTicket ? { queueTicket } : {}),
   };
 }
 
@@ -350,6 +376,10 @@ function isResumeAllocation(value: unknown, admitted = false): value is PublicPa
 
 function isLoopback(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function isPublicMatchmakerUrl(value: unknown): value is string {

@@ -15,6 +15,7 @@ import {
   assemblySecondsRemaining,
   initialPublicQuickPlayState,
   parsePublicQuickPlayResume,
+  publicQuickPlayCancellationTicket,
   publicQuickPlayReducer,
   publicQuickPlayResume,
   publicQuickPlayStateFromResume,
@@ -203,7 +204,11 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
       cancellationRequests.current.add(operationId);
       dispatch({ type: "cancel", operationId, returnToBase: true });
       setMessage("PUBLIC ASSEMBLY TIMED OUT · RELEASING PARTY CLAIM");
-      await finishCancellation(operationId, stateRef.current.allocation?.queueTicket ?? operationId, token);
+      await finishCancellation(
+        operationId,
+        publicQuickPlayCancellationTicket(stateRef.current) ?? operationId,
+        token,
+      );
     }
   }
 
@@ -348,7 +353,11 @@ export function PublicQuickPlayApp({ config, embedded = false, onReturnToBase }:
       dispatch({ type: "failed", operationId: current.operationId, message: queueErrorMessage(error), retryable: true });
       return;
     }
-    await finishCancellation(current.operationId, current.allocation?.queueTicket ?? current.operationId, token);
+    await finishCancellation(
+      current.operationId,
+      publicQuickPlayCancellationTicket(current) ?? current.operationId,
+      token,
+    );
   }
 
   async function finishCancellation(operationId: string, queueTicket: string, token: string): Promise<void> {
